@@ -416,6 +416,37 @@ static IRVreg *lower_slice(LCtx *c, Expr *e) {
   return dest;
 }
 
+static Sym *prelude_fn(const char *name);
+
+// string equality: both operands lowered as slice addresses; calls prelude
+static IRVreg *call_str_cmp(LCtx *c, Expr *e, bool want_eq) {
+  IRVreg *a = lv_expr(c, e->a);
+  IRVreg *b = lv_expr(c, e->b);
+  Sym *fn = prelude_fn("__streq");
+  IRIns *call = emit(c, IR_CALL);
+  call->callee = sym_symbol(fn);
+  IRArg *aa = arena_alloc(sizeof(IRArg));
+  aa->vreg = a;
+  aa->ty = NULL;
+  vec_push(&call->args, aa);
+  IRArg *ab = arena_alloc(sizeof(IRArg));
+  ab->vreg = b;
+  ab->ty = NULL;
+  vec_push(&call->args, ab);
+  call->dst = new_vreg(c, IT_U8);
+  if (!want_eq) {
+    IRIns *not_ = emit(c, IR_CMP);
+    (void)not_;
+    // negate via XOR 1
+    IRIns *x = emit(c, IR_XOR);
+    x->dst = new_vreg(c, IT_U8);
+    x->a = call->dst;
+    x->b = v_const(c, 1, IT_U8);
+    return x->dst;
+  }
+  return call->dst;
+}
+
 // ------------------------------------------------------------ aggregates ---
 
 static bool ty_is_aggregate(Type *t) {
@@ -431,6 +462,9 @@ static bool ty_is_aggregate(Type *t) {
 
 static IRVreg *compute_addr(LCtx *c, Expr *e) {
   switch (e->kind) {
+  case EX_STR:
+    // string literal used in address context: materialize its slice temp
+    return lv_expr(c, e);
   case EX_NAME: {
     Sym *sym = e->sym;
     IRSlot *slot = lookup_slot(c, e->sv);
@@ -660,8 +694,14 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
     case P_CARET: return v_binop(c, IR_XOR, a, b, a->ty, false);
     case P_SHL: return v_binop(c, IR_SHL, a, b, a->ty, false);
     case P_SHR: return v_binop(c, IR_SHR, a, b, a->ty, ty_is_signed_int(a->ty));
-    case P_EQ: return v_cmp(c, CC_EQ, a, b, flt);
-    case P_NE: return v_cmp(c, CC_NE, a, b, flt);
+    case P_EQ:
+      if (e->a->typed && ((Type *)e->a->typed)->kind == TY_STRING)
+        return call_str_cmp(c, e, true);
+      return v_cmp(c, CC_EQ, a, b, flt);
+    case P_NE:
+      if (e->a->typed && ((Type *)e->a->typed)->kind == TY_STRING)
+        return call_str_cmp(c, e, false);
+      return v_cmp(c, CC_NE, a, b, flt);
     case P_LT: return v_cmp(c, CC_LT, a, b, flt);
     case P_LE: return v_cmp(c, CC_LE, a, b, flt);
     case P_GT: return v_cmp(c, CC_GT, a, b, flt);
@@ -1426,6 +1466,36 @@ void lower_program(void) {
         vec_push(&g_ir_fns, lower_fn(sym));
       else if (sym->kind == SY_STATIC)
         lower_static(sym);
+    }
+  }
+}
+
+void lower_dump_ir(void) {
+  for (size_t i = 0; i < g_ir_fns.n; i++) {
+    IRFn *fn = g_ir_fns.items[i];
+    printf("fn %s\n", fn->symbol);
+    for (size_t bi = 0; bi < fn->blocks.n; bi++) {
+      IRBlock *b = fn->blocks.items[bi];
+      printf("  block %d\n", b->id);
+      for (size_t pi = 0; pi < b->phis.n; pi++) {
+        IRPhi *phi = b->phis.items[pi];
+        printf("    phi v%d =\n", phi->dst->id);
+        for (size_t k = 0; k < phi->preds.n; k++)
+          printf("      [pred %d] v%d\n", ((IRBlock *)phi->preds.items[k])->id,
+                 ((IRVreg *)phi->args.items[k])->id);
+      }
+      for (size_t ii = 0; ii < b->ins.n; ii++) {
+        IRIns *ins = b->ins.items[ii];
+        printf("    op=%d dst=v%d a=v%d b=v%d imm=%lld size=%lld flt=%d sgn=%d callee=%s\n",
+               (int)ins->op, ins->dst ? ins->dst->id : -1, ins->a ? ins->a->id : -1,
+               ins->b ? ins->b->id : -1, (long long)ins->imm, (long long)ins->size,
+               (int)ins->is_float, (int)ins->signed_ops, ins->callee ? ins->callee : "-");
+      }
+      if (b->term)
+        printf("    term op=%d dst(b)=%d a=v%d b(b)=%d\n", (int)b->term->op,
+               b->term->dst ? ((IRBlock *)b->term->dst)->id : -1,
+               b->term->a ? b->term->a->id : -1,
+               b->term->b ? ((IRBlock *)b->term->b)->id : -1);
     }
   }
 }

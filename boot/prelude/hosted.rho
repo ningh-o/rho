@@ -78,3 +78,17 @@ fn print_int(v: i64) {
 fn print_ln() {
   print("\n");
 }
+
+fn __streq(a: string, b: string) -> bool {
+  if len(a) != len(b) {
+    return false;
+  }
+  let mut i: usize = 0;
+  while i < len(a) {
+    if a[i] != b[i] {
+      return false;
+    }
+    i += 1;
+  }
+  return true;
+}

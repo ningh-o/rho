@@ -1,4 +1,6 @@
 #include "ir.h"
+
+void lower_dump_ir(void);
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -278,6 +280,8 @@ static const char *build_to(const char *file, Target target, const char *out_pat
   }
   lower_set_root(root_mod);
   lower_program();
+  if (getenv("RHO_DUMP_IR"))
+    lower_dump_ir();
   SB asm = {0};
   if (target == TGT_AMD64_LINUX || target == TGT_AMD64_MAC)
     emit_amd64(target, &asm);

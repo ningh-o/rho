@@ -849,7 +849,10 @@ static Type *check_expr(Expr *e, Type *expected) {
     } else {
       ERR(e, "unknown operator %s", tok_spell(op));
     }
-    e->typed = l; // may remain INT_LIT; consumers pin it
+    // both operands untyped: pin the default width now
+    if (l->kind == TY_INT_LIT)
+      l = ty_prim(PRIM_I32);
+    e->typed = l;
     return e->typed;
   }
   case EX_INDEX: {
@@ -1767,6 +1770,11 @@ static void resolve_sym_type(Sym *sym) {
     if (!v.ok) {
       err_at(d->file, d->line, d->col,
              "`%s` initializer must be a compile-time constant", str_to_c(d->name));
+    } else {
+      CV *memo = arena_alloc(sizeof(CV));
+      *memo = v;
+      d->ceval_cache = memo;
+      d->ceval_cache_ok = true;
     }
     sym->type = t;
     break;
