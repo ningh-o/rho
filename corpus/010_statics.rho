@@ -1,0 +1,15 @@
+// exit: 14
+const BASE: i32 = 10;
+const SCALED: i32 = BASE * 2 + 1;
+static mut HITS: i32 = 0;
+
+fn hit() -> i32 {
+  HITS += 1;
+  return HITS;
+}
+
+fn main() -> i32 {
+  let a: i32 = hit();
+  let b: i32 = hit();
+  return a + b + SCALED - BASE;
+}

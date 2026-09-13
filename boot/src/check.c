@@ -213,7 +213,7 @@ static void scope_decl(Str name, Sym *sym) {
 
 static Type *resolve_type_in_module(Module *m, TypeAst *ta);
 static Type *check_expr(Expr *e, Type *expected);
-static Type *struct_field_type(RecType *rec, size_t i);
+Type *struct_field_type(RecType *rec, size_t i);
 static void check_fn_body(Decl *d, Sym *sym);
 
 static Str dir_of(Str path) {
@@ -404,7 +404,7 @@ static Type *named_type(Sym *sym, Module *owner, TypeAst *ta) {
   return ty_intern2(str_from(mangled), t);
 }
 
-static Type *struct_field_type(RecType *rec, size_t i) {
+Type *struct_field_type(RecType *rec, size_t i) {
   if (!rec->fields_done) {
     if (rec->resolving)
       return ty_err_; // self-containing struct; layout phase reports it
@@ -682,17 +682,20 @@ static Type *check_block_value(Vec *stmts, Type *expected);
 static Type *check_expr(Expr *e, Type *expected) {
   switch (e->kind) {
   case EX_INT: {
+    // stay untyped until a consumer fixes the width
     if (expected && ty_is_int(expected) && expected->kind != TY_INT_LIT)
       e->typed = expected;
     else
-      e->typed = ty_prim(PRIM_I32);
+      e->typed = ty_newk(TY_INT_LIT);
     return e->typed;
   }
   case EX_FLOAT: {
     if (expected && expected->kind == TY_F32)
       e->typed = expected;
+    else if (expected && expected->kind == TY_F64)
+      e->typed = expected;
     else
-      e->typed = ty_prim(PRIM_F64);
+      e->typed = ty_newk(TY_FLOAT_LIT);
     return e->typed;
   }
   case EX_STR:
@@ -741,7 +744,7 @@ static Type *check_expr(Expr *e, Type *expected) {
     case P_MINUS:
       if (!ty_is_int(a) && !ty_is_float(a))
         ERR(e, "`-` needs a number");
-      e->typed = a->kind == TY_INT_LIT ? ty_prim(PRIM_I32) : a;
+      e->typed = a; // INT_LIT stays untyped; adapted in context
       break;
     case P_STAR: {
       if (a->kind != TY_PTR) {
@@ -829,7 +832,7 @@ static Type *check_expr(Expr *e, Type *expected) {
         ERR(e, "shift needs an integer left side");
       if (!ty_is_int(r))
         ERR(e, "shift needs an integer right side");
-      e->typed = l->kind == TY_INT_LIT ? ty_prim(PRIM_I32) : l;
+      e->typed = l; // may remain INT_LIT; consumers pin it
       return e->typed;
     }
     if (!ty_eq(l, r)) {
@@ -846,12 +849,16 @@ static Type *check_expr(Expr *e, Type *expected) {
     } else {
       ERR(e, "unknown operator %s", tok_spell(op));
     }
-    e->typed = l->kind == TY_INT_LIT ? ty_prim(PRIM_I32) : l;
+    e->typed = l; // may remain INT_LIT; consumers pin it
     return e->typed;
   }
   case EX_INDEX: {
     Type *base = check_expr(e->a, NULL);
     Type *idx = check_expr(e->b, NULL);
+    if (idx->kind == TY_INT_LIT) {
+      idx = ty_prim(PRIM_USIZE);
+      e->b->typed = idx;
+    }
     if (!ty_is_int(idx))
       ERR(e->b, "index must be an integer, found `%s`", ty_name(idx));
     if (base->kind == TY_ARRAY || base->kind == TY_SLICE) {
@@ -867,6 +874,14 @@ static Type *check_expr(Expr *e, Type *expected) {
   case EX_SLICE: {
     Type *base = check_expr(e->a, NULL);
     Type *lo = check_expr(e->b, NULL), *hi = check_expr(e->c, NULL);
+    if (lo->kind == TY_INT_LIT) {
+      lo = ty_prim(PRIM_USIZE);
+      e->b->typed = lo;
+    }
+    if (hi->kind == TY_INT_LIT) {
+      hi = ty_prim(PRIM_USIZE);
+      e->c->typed = hi;
+    }
     if (!ty_is_int(lo) || !ty_is_int(hi))
       ERR(e, "slice bounds must be integers");
     if (base->kind == TY_ARRAY || base->kind == TY_SLICE)
@@ -1211,6 +1226,10 @@ static Type *check_call(Expr *e, Type *expected) {
     }
     Type *elem = resolve_type_in_module(cur_module, tye->ty->elem);
     Type *len = check_expr(e->args.items[1], NULL);
+    if (len->kind == TY_INT_LIT) {
+      len = ty_prim(PRIM_USIZE);
+      ((Expr *)e->args.items[1])->typed = len;
+    }
     if (!ty_is_int(len))
       ERR((Expr *)e->args.items[1], "make length must be an integer");
     e->typed = ty_slice(elem);
@@ -1383,6 +1402,8 @@ static Type *check_match(Expr *e, Type *expected) {
               found = true; // keep going
             }
             covered[j] = true;
+            arm->variant_index = (int)j;
+            arm->disc = v->disc;
             found = true;
             break;
           }
@@ -1488,7 +1509,8 @@ void check_stmt(Stmt *s) {
     bool compound = s->assign_op != P_ASSIGN;
     Type *value;
     if (compound) {
-      value = check_expr(s->b, NULL);
+      value = adapt_literal(check_expr(s->b, target), target);
+      s->b->typed = value;
       // target op value must be well-formed and equal target's type
       if (s->assign_op == P_SHLEQ || s->assign_op == P_SHREQ) {
         if (!ty_is_int(target) || !ty_is_int(value))
@@ -1983,4 +2005,18 @@ int64_t struct_field_offset(RecType *rec, size_t i) {
 
 int64_t variant_payload_offset(Type *enum_t) {
   return 4; // tag is 4 bytes; payload starts after it (no packing)
+}
+
+const char *prelude_symbol(const char *name) {
+  Sym *fn = prelude_module ? map_get(&prelude_module->syms, str_from(name)) : NULL;
+  return fn ? sym_symbol(fn) : name;
+}
+
+bool ty_is_aggregate_t(Type *t) {
+  switch (t->kind) {
+  case TY_STRUCT: case TY_ENUM: case TY_ARRAY: case TY_SLICE: case TY_STRING:
+    return true;
+  default:
+    return false;
+  }
 }

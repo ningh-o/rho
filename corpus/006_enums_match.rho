@@ -1,0 +1,22 @@
+// exit: 9
+enum Shape {
+  Circle,
+  Square,
+  Triangle = 7,
+}
+
+fn code(s: Shape) -> i32 {
+  return match s {
+    Shape.Circle => 1,
+    Shape.Square => 2,
+    Shape.Triangle => 3,
+  };
+}
+
+fn main() -> i32 {
+  let a: i32 = code(Shape.Circle);
+  let b: i32 = code(Shape.Square);
+  let c: i32 = code(Shape.Triangle);
+  let d: i32 = code(Shape.Triangle);
+  return a + b + c + d;
+}

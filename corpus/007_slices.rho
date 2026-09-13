@@ -1,0 +1,21 @@
+// exit: 2
+fn sum(xs: []i32) -> i32 {
+  let mut total: i32 = 0;
+  let mut i: usize = 0;
+  while i < len(xs) {
+    total += xs[i];
+    i += 1;
+  }
+  return total;
+}
+
+fn main() -> i32 {
+  let xs: []i32 = make([]i32, 5);
+  let mut i: usize = 0;
+  while i < len(xs) {
+    xs[i] = i as i32 * 2 + 2;
+    i += 1;
+  }
+  let part: []i32 = xs[0..3];
+  return sum(xs) + sum(part) - 40;
+}

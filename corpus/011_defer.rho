@@ -1,0 +1,17 @@
+// exit: 3
+static mut LOG: i32 = 0;
+
+fn work() -> i32 {
+  defer LOG += 1;
+  defer LOG += 10;
+  LOG += 100;
+  return 0;
+}
+
+fn main() -> i32 {
+  let r: i32 = work();
+  if LOG != 111 {
+    return 99;
+  }
+  return r + 3;
+}

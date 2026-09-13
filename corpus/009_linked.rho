@@ -1,0 +1,25 @@
+// exit: 6
+struct Node {
+  v: i32,
+  next: *Node,
+}
+
+fn push(head: *Node, v: i32) -> *Node {
+  return new Node { v: v, next: head };
+}
+
+fn main() -> i32 {
+  let mut list: *Node = null;
+  let mut k: i32 = 3;
+  while k > 0 {
+    list = push(list, k);
+    k -= 1;
+  }
+  let mut total: i32 = 0;
+  let mut cur: *Node = list;
+  while cur != null {
+    total += cur.v;
+    cur = cur.next;
+  }
+  return total;
+}

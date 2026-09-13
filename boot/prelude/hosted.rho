@@ -1,3 +1,15 @@
+extern fn malloc(n: usize) -> *u8;
+
+extern fn free(p: *u8);
+
+fn __alloc(n: usize) -> *u8 {
+  return malloc(n);
+}
+
+fn __free(p: *u8) {
+  free(p);
+}
+
 extern fn write(fd: i32, buf: *u8, n: usize) -> isize;
 
 extern fn exit(code: i32) -> void;
@@ -21,4 +33,48 @@ fn assert(cond: bool) {
   if (!cond) {
     panic("assertion failed");
   }
+}
+
+fn __panic_div() {
+  panic("division by zero");
+}
+
+fn __panic_oob() {
+  panic("index out of bounds");
+}
+
+fn __panic_null() {
+  panic("null dereference");
+}
+
+fn print_bytes(b: []u8) {
+  write(1, b.ptr, b.len);
+}
+
+fn print_int(v: i64) {
+  let buf: []u8 = make([]u8, 24);
+  let mut n: usize = 24;
+  let mut x: i64 = v;
+  let neg: bool = (x < 0);
+  if neg {
+    x = (0 - x);
+  }
+  loop {
+    n -= 1;
+    let d: i64 = (x % 10);
+    buf[n] = (48 + d) as u8;
+    x /= 10;
+    if (x == 0) {
+      break;
+    }
+  }
+  if neg {
+    n -= 1;
+    buf[n] = 45;
+  }
+  print_bytes(buf[n..24]);
+}
+
+fn print_ln() {
+  print("\n");
 }

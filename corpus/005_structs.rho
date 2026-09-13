@@ -1,0 +1,25 @@
+// exit: 6
+struct Rect {
+  w: i32,
+  h: i32,
+}
+
+fn Rect.area(self: *Rect) -> i32 {
+  return self.w * self.h;
+}
+
+fn Rect.grow(self: *Rect, by: i32) {
+  self.w += by;
+  self.h += by;
+}
+
+fn Rect.square(n: i32) -> *Rect {
+  return new Rect { w: n, h: n };
+}
+
+fn main() -> i32 {
+  let r = Rect.square(3);
+  r.grow(1);
+  let a: i32 = r.area();
+  return a - 10;
+}

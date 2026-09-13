@@ -1,4 +1,6 @@
-#include "rho.h"
+#include "ir.h"
+#include <sys/wait.h>
+#include <unistd.h>
 
 extern const char PRELUDE_SOURCE[];
 extern const char *g_root_dir;
@@ -233,6 +235,174 @@ static int run_selftest(bool update, bool fmt_only) {
   return selftest_failures ? 1 : 0;
 }
 
+static void usage(void);
+
+// ------------------------------------------------------------- codegen ----=
+
+static Target parse_target(const char *s) {
+  if (!strcmp(s, "amd64-linux"))
+    return TGT_AMD64_LINUX;
+  if (!strcmp(s, "amd64-mac"))
+    return TGT_AMD64_MAC;
+  if (!strcmp(s, "arm64-mac"))
+    return TGT_ARM64_MAC;
+  if (!strcmp(s, "wasm32-wasi"))
+    return TGT_WASM32_WASI;
+  fprintf(stderr, "rho: unknown target `%s`\n", s);
+  exit(2);
+}
+
+static const char *target_cc(Target t) {
+  switch (t) {
+  case TGT_AMD64_LINUX:
+    return "cc -no-pie";
+  case TGT_AMD64_MAC:
+  case TGT_ARM64_MAC:
+    return "cc";
+  default:
+    return "cc";
+  }
+}
+
+// full pipeline: check -> lower -> emit -> assemble+link. Returns the path to
+// the built artifact (arena). On any failure prints diagnostics, returns NULL.
+static const char *build_to(const char *file, Target target, const char *out_path) {
+  Decl *root = compile_root(str_from(file));
+  if (!root)
+    return NULL;
+  Module *root_mod = NULL;
+  for (size_t i = 0; i < g_module_order.n; i++) {
+    Module *m = g_module_order.items[i];
+    if (str_eq_c(m->path, file))
+      root_mod = m;
+  }
+  lower_set_root(root_mod);
+  lower_program();
+  SB asm = {0};
+  if (target == TGT_AMD64_LINUX || target == TGT_AMD64_MAC)
+    emit_amd64(target, &asm);
+  else if (target == TGT_ARM64_MAC) {
+    fprintf(stderr, "rho: arm64-mac arrives in 0.0.3\n");
+    return NULL;
+  } else {
+    fprintf(stderr, "rho: wasm32-wasi arrives in 0.0.4\n");
+    return NULL;
+  }
+  const char *s_path = arena_printf("%s.s", out_path);
+  if (!write_file(str_from(s_path), sb_finish(&asm))) {
+    fprintf(stderr, "rho: cannot write %s\n", s_path);
+    return NULL;
+  }
+  const char *cc_cmd = target_cc(target);
+  const char *arch = target == TGT_AMD64_LINUX || target == TGT_AMD64_MAC ? "-arch x86_64 " : "";
+  SB cmd = {0};
+  sb_printf(&cmd, "%s %s%s -o %s 2>&1", cc_cmd, arch, s_path, out_path);
+  if (system(str_to_c(sb_finish(&cmd))) != 0) {
+    fprintf(stderr, "rho: assembler/linker failed\n");
+    return NULL;
+  }
+  return out_path;
+}
+
+static int cmd_build_run_test(const char *cmd, int argc, char **argv) {
+  if (!strcmp(cmd, "test")) {
+    const char *dir = argc > 2 ? argv[2] : "corpus";
+    Vec files = list_dir(str_from(dir), ".rho");
+    int failures = 0, ran = 0;
+    for (size_t i = 0; i < files.n; i++) {
+      const char *path = files.items[i];
+      const char *base = strrchr(path, '/');
+      base = base ? base + 1 : path;
+      char name[256];
+      snprintf(name, sizeof(name), "%s", base);
+      char *dot = strrchr(name, '.');
+      if (dot)
+        *dot = 0;
+      const char *bin = arena_printf("build/corpus_%s", name);
+      const char *built = build_to(path, TGT_AMD64_MAC, bin);
+      if (!built) {
+        printf("FAIL %s (build)\n", name);
+        failures++;
+        continue;
+      }
+      SB run_cmd = {0};
+      sb_printf(&run_cmd, "%s > /tmp/rho_out_XXXX 2>/dev/null", built);
+      // use a fixed temp name for determinism
+      const char *tmpout = arena_printf("/tmp/rho_out_%s", name);
+      SB rc = {0};
+      sb_printf(&rc, "%s > %s", built, tmpout);
+      int status = system(str_to_c(sb_finish(&rc)));
+      int code = WEXITSTATUS(status);
+      // expected exit
+      int want_code = 0;
+      Str src = read_file_or_die(str_from(path));
+      SB first = {0};
+      for (size_t k = 0; k < src.n && src.p[k] != '\n'; k++)
+        sb_push(&first, src.p[k]);
+      const char *line = first.buf ? first.buf : "";
+      const char *ex = strstr(line, "exit:");
+      if (ex)
+        want_code = (int)strtol(ex + 5, NULL, 10);
+      // expected stdout
+      Str want_out = {0};
+      const char *out_path = arena_printf("%.*s/%s.out", (int)(strlen(dir)), dir, name);
+      str_read_file(str_from(out_path), &want_out);
+      Str got_out = {0};
+      str_read_file(str_from(tmpout), &got_out);
+      ran++;
+      bool ok = code == want_code && str_eq(got_out, want_out);
+      if (!ok) {
+        printf("FAIL %s (exit %d, want %d)%s\n", name, code, want_code,
+               got_out.n != want_out.n ? " stdout differs" : "");
+        failures++;
+      }
+      (void)run_cmd;
+    }
+    printf("%s: %d ran, %d failed\n", failures ? "corpus FAIL" : "corpus ok", ran, failures);
+    return failures ? 1 : 0;
+  }
+
+  // build / run
+  const char *file = NULL, *out = NULL, *target_s = "amd64-mac";
+  for (int i = 2; i < argc; i++) {
+    if (!strcmp(argv[i], "-o") && i + 1 < argc)
+      out = argv[++i];
+    else if (!strcmp(argv[i], "--target") && i + 1 < argc)
+      target_s = argv[++i];
+    else
+      file = argv[i];
+  }
+  if (!file) {
+    usage();
+    return 2;
+  }
+  Target target = parse_target(target_s);
+  const char *bin;
+  if (!strcmp(cmd, "build")) {
+    bin = out ? out : "a.out";
+  } else {
+    bin = arena_printf("/tmp/rho_run_%d", (int)getpid());
+  }
+  const char *built = build_to(file, target, bin);
+  if (!built)
+    return 1;
+  if (!strcmp(cmd, "run")) {
+    SB rc = {0};
+    sb_append_c(&rc, built);
+    for (int i = 2; i < argc; i++) {
+      if (!strcmp(argv[i], "--")) {
+        for (int j = i + 1; j < argc; j++)
+          sb_printf(&rc, " \"%s\"", argv[j]);
+        break;
+      }
+    }
+    int status = system(str_to_c(sb_finish(&rc)));
+    return WEXITSTATUS(status);
+  }
+  printf("built %s\n", bin);
+  return 0;
+}
+
 // ------------------------------------------------------------------ main ---
 
 static void usage(void) {
@@ -309,10 +479,8 @@ int main(int argc, char **argv) {
     return 0;
   }
 
-  if (!strcmp(cmd, "build") || !strcmp(cmd, "run") || !strcmp(cmd, "test")) {
-    fprintf(stderr, "rho: `%s` arrives in 0.0.2 (code generation)\n", cmd);
-    return 2;
-  }
+  if (!strcmp(cmd, "build") || !strcmp(cmd, "run") || !strcmp(cmd, "test"))
+    return cmd_build_run_test(cmd, argc, argv);
 
   usage();
   return 2;

@@ -196,6 +196,8 @@ typedef struct MatchArm {
   enum { PAT_WILDCARD, PAT_INT, PAT_STR, PAT_UNIT, PAT_TUPLE, PAT_STRUCT } pk;
   Vec pat_path;   // TUPLE/STRUCT: char* segments (usually 1)
   uint64_t pat_int;
+  int variant_index; // UNIT on enum: filled by checker
+  uint64_t disc;     // UNIT on enum: variant discriminant, filled by checker
   Str pat_str;
   Vec pat_names;  // TUPLE: char* bindings ("_" = ignore)
   Vec pat_fields; // STRUCT: FieldAst* (name + optional binding name)
@@ -389,6 +391,7 @@ typedef struct CV {
 } CV;
 
 bool ty_is_int(Type *t);
+bool ty_is_aggregate_t(Type *t);
 bool ty_is_signed(Type *t);
 bool ty_is_managed(Type *t);
 
@@ -405,6 +408,7 @@ extern Vec g_module_order; // Module*
 Module *g_prelude_module(void);
 // symbol name used in assembly for a fn/extern
 const char *sym_symbol(Sym *s);
+const char *prelude_symbol(const char *name);
 
 // ------------------------------------------------------------------ fmt ---
 
