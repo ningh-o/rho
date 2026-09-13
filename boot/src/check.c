@@ -8,74 +8,10 @@ typedef struct Sym Sym;
 typedef struct Module Module;
 typedef struct Scope Scope;
 
-typedef enum TypeKind {
-  TY_VOID, TY_BOOL, TY_I8, TY_I16, TY_I32, TY_I64, TY_U8, TY_U16, TY_U32,
-  TY_U64, TY_F32, TY_F64, TY_STRING, TY_USIZE, TY_ISIZE,
-  TY_INT_LIT, TY_FLOAT_LIT, TY_NULL,
-  TY_ARRAY, TY_SLICE, TY_PTR, TY_WEAK, TY_FN, TY_STRUCT, TY_ENUM, TY_ERR,
-  TY_MODULE,
-} TypeKind;
-
-typedef struct RecType RecType;
-typedef struct Type Type;
-
-struct RecType {
-  Decl *decl;
-  Module *owner;
-  Vec targs;        // Type* (0.0.5)
-  Str mangled;
-  Vec field_types;  // resolved lazily, parallel to decl->fields
-  bool fields_done;
-  bool resolving;
-  Vec methods;      // Sym*, declaration order
-};
-
-struct Type {
-  TypeKind kind;
-  Type *elem;   // ARRAY/SLICE/PTR/WEAK
-  uint64_t len; // ARRAY
-  RecType *rec; // STRUCT/ENUM
-  Vec params;   // FN: Type*
-  Type *ret;    // FN
-  const char *mangled;
-};
-
-typedef enum SymKind {
-  SY_LOCAL, SY_PARAM, SY_FN, SY_STRUCT, SY_ENUM, SY_STATIC, SY_CONST,
-  SY_MODULE, SY_EXTERN, SY_VARIANT,
-} SymKind;
-
-typedef struct Sym {
-  SymKind kind;
-  Str name;
-  Type *type;
-  Decl *decl;
-  Module *owner;
-  bool mutable;
-  void *module;      // SY_MODULE: Module*
-  int variant_index; // SY_VARIANT
-  int local_id;      // slot index within function (params first)
-} Sym;
-
-typedef struct Module {
-  Str path;
-  Str ns;
-  Decl *root;
-  Map syms;
-  bool is_prelude;
-  bool checked;
-} Module;
-
-typedef struct Scope {
-  Map syms;
-  Scope *parent;
-} Scope;
-
 static Map modules_by_path;
-static Vec module_order;
-static Module *cur_module;
-static Module *prelude_module;
-
+Vec g_module_order;
+static Map interned_types;
+static Map recs_by_key;
 static Map interned_types;
 static Map recs_by_key;
 
@@ -90,13 +26,13 @@ static Sym *cur_fn;
 
 #define ERR(e, ...) err_at((e)->file, (e)->line, (e)->col, __VA_ARGS__)
 
-typedef struct CV {
-  bool ok, is_int;
-  uint64_t i;
-  double f;
-  Str s;
-  bool b;
-} CV;
+typedef struct Scope {
+  Map syms;
+  Scope *parent;
+} Scope;
+
+static Module *cur_module;
+static Module *prelude_module;
 static CV const_eval(Expr *e, Module *m);
 
 static const char *ty_name(Type *t) { return t->mangled; }
@@ -319,7 +255,7 @@ static Module *load_module(Str path, Str ns, bool is_prelude) {
   m->root = root;
   m->is_prelude = is_prelude;
   map_put(&modules_by_path, path, m);
-  vec_push(&module_order, m);
+  vec_push(&g_module_order, m);
   cur_module = m;
 
   for (size_t i = 0; i < root->decls.n; i++) {
@@ -384,7 +320,7 @@ static bool prelude_loaded = false;
 void check_reset(void) {
   ty_void_ = NULL; // forces type-singleton re-init below
   modules_by_path = (Map){0};
-  module_order = (Vec){0};
+  g_module_order = (Vec){0};
   interned_types = (Map){0};
   recs_by_key = (Map){0};
   cur_module = NULL;
@@ -407,7 +343,7 @@ void prelude_init(void) {
   m->root = root;
   m->is_prelude = true;
   map_put(&modules_by_path, path, m);
-  vec_push(&module_order, m);
+  vec_push(&g_module_order, m);
   cur_module = m;
   for (size_t i = 0; i < root->decls.n; i++) {
     Decl *d = root->decls.items[i];
@@ -1037,7 +973,7 @@ static Type *check_field_access(Expr *e, Type *expected) {
       return e->typed;
     }
     if (item->kind == SY_STATIC || item->kind == SY_CONST) {
-      if (!item->decl->pub_ && !item->owner->is_prelude) {
+      if (!item->decl->pub_ && !((Module *)item->owner)->is_prelude) {
         ERR(e, "`%s.%s` is not public", str_to_c(e->a->sv), str_to_c(e->sv));
       }
       e->sym = item;
@@ -1183,7 +1119,7 @@ static CallTarget resolve_callee(Expr *callee) {
       if (base && base->kind == SY_MODULE) {
         Sym *item = map_get(&((Module *)base->module)->syms, callee->sv);
         if (item && (item->kind == SY_FN || item->kind == SY_EXTERN)) {
-          if (!item->decl->pub_ && !item->owner->is_prelude) {
+          if (!item->decl->pub_ && !((Module *)item->owner)->is_prelude) {
             ERR(callee, "`%s.%s` is not public", str_to_c(callee->a->sv), str_to_c(callee->sv));
           }
           ct.kind = item->kind == SY_FN ? CT_FN : CT_EXTERN;
@@ -1213,7 +1149,7 @@ static CallTarget resolve_callee(Expr *callee) {
       }
       // 3) associated function: `Type.make(...)` — plain fn in owner module
       if (base && (base->kind == SY_STRUCT || base->kind == SY_ENUM)) {
-        Sym *fn = map_get(&base->owner->syms, callee->sv);
+        Sym *fn = map_get(&((Module *)base->owner)->syms, callee->sv);
         if (fn && fn->kind == SY_FN && !fn->decl->is_method) {
           ct.kind = CT_FN;
           ct.sym = fn;
@@ -1839,7 +1775,7 @@ int check_module(Decl *module) {
     m->ns = str_from("");
     m->root = module;
     map_put(&modules_by_path, path, m);
-    vec_push(&module_order, m);
+    vec_push(&g_module_order, m);
     cur_module = m;
     // register its decls (same loop as load_module, minus file reading)
     for (size_t i = 0; i < module->decls.n; i++) {
@@ -1897,8 +1833,8 @@ int check_module(Decl *module) {
   }
 
   // phase 2: resolve all top-level types (modules now all known)
-  for (size_t i = 0; i < module_order.n; i++) {
-    Module *m = module_order.items[i];
+  for (size_t i = 0; i < g_module_order.n; i++) {
+    Module *m = g_module_order.items[i];
     cur_module = m;
     for (size_t k = 0; k < m->syms.keys.n; k++) {
       Str *key = m->syms.keys.items[k];
@@ -1907,8 +1843,8 @@ int check_module(Decl *module) {
   }
 
   // phase 3: fn bodies
-  for (size_t i = 0; i < module_order.n; i++) {
-    Module *m = module_order.items[i];
+  for (size_t i = 0; i < g_module_order.n; i++) {
+    Module *m = g_module_order.items[i];
     if (m->checked)
       continue;
     m->checked = true;
@@ -1921,4 +1857,130 @@ int check_module(Decl *module) {
   }
   cur_module = NULL;
   return diag_count() - before;
+}
+
+// ============================================================ shared =======
+
+Module *g_prelude_module(void) { return prelude_module; }
+
+static const char *sanitize(const char *s) {
+  SB sb = {0};
+  for (const char *p = s; *p; p++) {
+    char c = *p;
+    bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '_';
+    sb_push(&sb, ok ? c : '_');
+  }
+  sb_push(&sb, 0);
+  return sb.buf;
+}
+
+const char *sym_symbol(Sym *s) {
+  if (s->symbol)
+    return s->symbol;
+  if (s->kind == SY_EXTERN) {
+    s->symbol = str_to_c(s->name); // C ABI name; emitter adds prefix per target
+    return s->symbol;
+  }
+  Module *m = s->owner;
+  s->symbol = arena_printf("rho_%s__%s", sanitize(str_to_c(m->path)), str_to_c(s->name));
+  return s->symbol;
+}
+
+static void layout_rec(RecType *rec);
+
+int64_t type_align(Type *t) {
+  switch (t->kind) {
+  case TY_BOOL: case TY_I8: case TY_U8: return 1;
+  case TY_I16: case TY_U16: return 2;
+  case TY_I32: case TY_U32: case TY_F32: return 4;
+  case TY_I64: case TY_U64: case TY_F64: case TY_ISIZE: case TY_USIZE:
+    return 8;
+  case TY_PTR: case TY_WEAK: case TY_SLICE: case TY_STRING: return 8;
+  case TY_ARRAY: return type_align(t->elem);
+  case TY_STRUCT: case TY_ENUM:
+    layout_rec(t->rec);
+    return t->rec->align;
+  default:
+    return 8;
+  }
+}
+
+static int64_t round_up_i64(int64_t v, int64_t a) { return (v + a - 1) / a * a; }
+
+int64_t type_size(Type *t) {
+  switch (t->kind) {
+  case TY_BOOL: case TY_I8: case TY_U8: return 1;
+  case TY_I16: case TY_U16: return 2;
+  case TY_I32: case TY_U32: case TY_F32: return 4;
+  case TY_I64: case TY_U64: case TY_F64: case TY_ISIZE: case TY_USIZE:
+    return 8;
+  case TY_PTR: case TY_WEAK: return 8;
+  case TY_SLICE: case TY_STRING: return 24; // {buf, ptr, len}
+  case TY_ARRAY: return (int64_t)t->len * type_size(t->elem);
+  case TY_STRUCT: case TY_ENUM:
+    layout_rec(t->rec);
+    return t->rec->size;
+  default:
+    return 8;
+  }
+}
+
+static void layout_rec(RecType *rec) {
+  if (rec->align != 0)
+    return;
+  rec->align = -1; // cycle marker
+  Decl *d = rec->decl;
+  Module *saved = cur_module;
+  cur_module = rec->owner;
+  int64_t size = 0, align = 1;
+  if (d->kind == DK_STRUCT) {
+    struct_field_type(rec, 0); // resolve field types first
+    for (size_t i = 0; i < d->fields.n; i++) {
+      Type *ft = rec->field_types.items[i];
+      int64_t fa = type_align(ft);
+      align = align > fa ? align : fa;
+      int64_t off = round_up_i64(size, fa);
+      vec_push(&rec->offsets, (void *)(long)off);
+      size = off + type_size(ft);
+    }
+  } else {
+    align = 4;
+    size = 4; // tag
+    for (size_t i = 0; i < d->variants.n; i++) {
+      VariantAst *v = d->variants.items[i];
+      if (v->vkind == VAR_TUPLE) {
+        for (size_t j = 0; j < v->types.n; j++) {
+          Type *vt = resolve_type_in_module(rec->owner, v->types.items[j]);
+          int64_t va = type_align(vt);
+          align = align > va ? align : va;
+          int64_t vs = type_size(vt);
+          size = size > vs ? size : vs;
+        }
+      } else if (v->vkind == VAR_STRUCT) {
+        for (size_t j = 0; j < v->fields.n; j++) {
+          Type *vt = resolve_type_in_module(
+              rec->owner, ((FieldAst *)v->fields.items[j])->ty);
+          int64_t va = type_align(vt);
+          align = align > va ? align : va;
+          int64_t vs = type_size(vt);
+          size = size > vs ? size : vs;
+        }
+      }
+    }
+  }
+  cur_module = saved;
+  rec->align = align;
+  rec->size = round_up_i64(size, align);
+}
+
+int64_t struct_field_offset(RecType *rec, size_t i) {
+  layout_rec(rec);
+  if (rec->offsets.n > i)
+    return (long)rec->offsets.items[i];
+  return 0;
+}
+
+int64_t variant_payload_offset(Type *enum_t) {
+  return 4; // tag is 4 bytes; payload starts after it (no packing)
 }

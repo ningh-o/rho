@@ -313,8 +313,98 @@ void check_reset(void);
 // Runs the resolver/typechecker over a parsed module tree (module itself
 // first, then its `use` imports, transitively). Fills typed/sym annotations.
 // Returns the number of errors reported (also appended to `diags`).
-void check_reset(void);
 int check_module(Decl *module);
+
+// --------------------------------------------------------- type model -----
+// Shared with the lowering and codegen phases.
+
+typedef enum TypeKind {
+  TY_VOID, TY_BOOL, TY_I8, TY_I16, TY_I32, TY_I64, TY_U8, TY_U16, TY_U32,
+  TY_U64, TY_F32, TY_F64, TY_STRING, TY_USIZE, TY_ISIZE,
+  TY_INT_LIT, TY_FLOAT_LIT, TY_NULL,
+  TY_ARRAY, TY_SLICE, TY_PTR, TY_WEAK, TY_FN, TY_STRUCT, TY_ENUM, TY_ERR,
+  TY_MODULE,
+} TypeKind;
+
+typedef struct RecType RecType;
+typedef struct Type Type;
+
+struct RecType {
+  Decl *decl;
+  void *owner;      // Module*
+  Vec targs;
+  Str mangled;
+  Vec field_types;  // Type*, parallel to decl->fields
+  bool fields_done;
+  bool resolving;
+  Vec methods;      // Sym*
+  Vec offsets;      // int64_t field offsets (structs), stored as long
+  int64_t size;     // layout, computed after check
+  int64_t align;
+};
+
+struct Type {
+  TypeKind kind;
+  Type *elem;   // ARRAY/SLICE/PTR/WEAK
+  uint64_t len; // ARRAY
+  RecType *rec; // STRUCT/ENUM
+  Vec params;   // FN: Type*
+  Type *ret;    // FN
+  const char *mangled;
+};
+
+typedef enum SymKind {
+  SY_LOCAL, SY_PARAM, SY_FN, SY_STRUCT, SY_ENUM, SY_STATIC, SY_CONST,
+  SY_MODULE, SY_EXTERN, SY_VARIANT,
+} SymKind;
+
+typedef struct Sym {
+  SymKind kind;
+  Str name;
+  Type *type;
+  Decl *decl;
+  void *owner;       // Module*
+  bool mutable;
+  void *module;      // SY_MODULE: Module*
+  int variant_index; // SY_VARIANT
+  int local_id;      // slot index within function (params first)
+  const char *symbol; // codegen symbol (fns/externs), set after check
+} Sym;
+
+typedef struct Module {
+  Str path;
+  Str ns;
+  Decl *root;
+  Map syms;
+  bool is_prelude;
+  bool checked;
+} Module;
+
+typedef struct CV {
+  bool ok, is_int;
+  uint64_t i;
+  double f;
+  Str s;
+  bool b;
+} CV;
+
+bool ty_is_int(Type *t);
+bool ty_is_signed(Type *t);
+bool ty_is_managed(Type *t);
+
+// layout (valid after check_module)
+int64_t type_size(Type *t);
+int64_t type_align(Type *t);
+// enum variant payload offset (after the tag)
+int64_t variant_payload_offset(Type *enum_t);
+// field offsets; parallel to rec->decl->fields
+int64_t struct_field_offset(RecType *rec, size_t i);
+
+// module registry (filled by check_module)
+extern Vec g_module_order; // Module*
+Module *g_prelude_module(void);
+// symbol name used in assembly for a fn/extern
+const char *sym_symbol(Sym *s);
 
 // ------------------------------------------------------------------ fmt ---
 
