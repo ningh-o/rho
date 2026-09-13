@@ -181,13 +181,14 @@ static void emit_divmod64(Emitter64 *e, IRIns *i, bool is_mod) {
   }
   int lbl = g_label64++;
   ld(e, bo, 8, false, "x9");
-  sb_printf(e->out, "  cbz x9, Ldivz%d\n", lbl);
-  sb_printf(e->out, "Ldivz%d:\n  bl _%s\n", lbl, prelude_symbol("__panic_div"));
+  sb_printf(e->out, "  cbnz x9, Lok%d\n", lbl);
+  sb_printf(e->out, "  bl _%s\n", prelude_symbol("__panic_div"));
+  sb_printf(e->out, "Lok%d:\n", lbl);
   if (i->signed_ops) {
-    sb_printf(e->out, "  cmp x9, #-1\n  b.ne Lok%d\n", lbl);
+    sb_printf(e->out, "  cmp x9, #-1\n  b.ne Lok2%d\n", lbl);
     ld(e, ao, 8, false, "x8");
     sb_printf(e->out, "  neg x8, x8\n  mov x9, #0\n  b Ldone%d\n", lbl);
-    sb_printf(e->out, "Lok%d:\n", lbl);
+    sb_printf(e->out, "Lok2%d:\n", lbl);
   }
   ld(e, ao, 8, false, "x10");
   sb_printf(e->out, "  %s x8, x10, x9\n", i->signed_ops ? "sdiv" : "udiv");
