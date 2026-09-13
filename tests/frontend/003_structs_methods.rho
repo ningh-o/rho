@@ -1,0 +1,41 @@
+// structs, heap allocation, methods, associated functions
+struct Vec2 {
+    x: f64,
+    y: f64,
+}
+
+fn Vec2.make(x: f64, y: f64) -> *Vec2 {
+    return new Vec2 { x: x, y: y };
+}
+
+fn Vec2.dot(self: *Vec2, o: *Vec2) -> f64 {
+    return self.x * o.x + self.y * o.y;
+}
+
+fn Vec2.length(self: *Vec2) -> f64 {
+    return self.x * self.x + self.y * self.y;
+}
+
+struct Pair {
+    a: i32,
+    b: i32,
+}
+
+fn swap(p: *Pair) {
+    let old_a: i32 = p.a;
+    p.a = p.b;
+    p.b = old_a;
+}
+
+fn main() -> i32 {
+    let v = Vec2.make(3.0, 4.0);
+    let w = Vec2.make(1.0, 2.0);
+    let d: f64 = v.dot(w);
+    let l: f64 = v.length();
+    let p = new Pair { a: 1, b: 2 };
+    swap(p);
+    if p.a == 2 && d > 0.0 && l > 0.0 {
+        return p.b;
+    }
+    return 0;
+}

@@ -1,0 +1,34 @@
+tests/frontend/004_enums_match.rho:11:12: error: expected `=>` (`=>`), found `.`
+tests/frontend/004_enums_match.rho:11:12: error: expected an expression, found `.`
+tests/frontend/004_enums_match.rho:11:12: error: expected `}` (`}`), found identifier
+tests/frontend/004_enums_match.rho:11:12: error: expected `;` (`;`), found identifier
+tests/frontend/004_enums_match.rho:11:18: error: expected `;`, found `=>`
+tests/frontend/004_enums_match.rho:11:18: error: expected an expression, found `=>`
+tests/frontend/004_enums_match.rho:11:19: error: expected `;`, found string
+tests/frontend/004_enums_match.rho:11:25: error: expected `;`, found `,`
+tests/frontend/004_enums_match.rho:11:25: error: expected an expression, found `,`
+tests/frontend/004_enums_match.rho:12:9: error: expected `;`, found identifier
+tests/frontend/004_enums_match.rho:12:18: error: expected `;`, found `=>`
+tests/frontend/004_enums_match.rho:12:18: error: expected an expression, found `=>`
+tests/frontend/004_enums_match.rho:12:19: error: expected `;`, found string
+tests/frontend/004_enums_match.rho:12:25: error: expected `;`, found `,`
+tests/frontend/004_enums_match.rho:12:25: error: expected an expression, found `,`
+tests/frontend/004_enums_match.rho:13:9: error: expected `;`, found identifier
+tests/frontend/004_enums_match.rho:13:18: error: expected `;`, found `=>`
+tests/frontend/004_enums_match.rho:13:18: error: expected an expression, found `=>`
+tests/frontend/004_enums_match.rho:13:19: error: expected `;`, found string
+tests/frontend/004_enums_match.rho:13:25: error: expected `;`, found `,`
+tests/frontend/004_enums_match.rho:13:25: error: expected an expression, found `,`
+tests/frontend/004_enums_match.rho:14:9: error: expected `;`, found identifier
+tests/frontend/004_enums_match.rho:14:18: error: expected `;`, found `=>`
+tests/frontend/004_enums_match.rho:14:18: error: expected an expression, found `=>`
+tests/frontend/004_enums_match.rho:14:19: error: expected `;`, found string
+tests/frontend/004_enums_match.rho:14:25: error: expected `;`, found `,`
+tests/frontend/004_enums_match.rho:14:25: error: expected an expression, found `,`
+tests/frontend/004_enums_match.rho:15:7: error: expected a declaration (fn/struct/enum/static/const/use), found `;`
+tests/frontend/004_enums_match.rho:16:2: error: expected a declaration (fn/struct/enum/static/const/use), found `}`
+tests/frontend/004_enums_match.rho:10:12: error: match is not exhaustive: missing `Add`
+tests/frontend/004_enums_match.rho:10:12: error: return value: expected `string`, found `void`
+tests/frontend/004_enums_match.rho:11:12: error: unknown name `Add`
+tests/frontend/004_enums_match.rho:9:1: error: missing return: `apply` is `string`
+tests/frontend/004_enums_match.rho:19:12: error: return value: expected `string`, found `void`

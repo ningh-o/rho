@@ -1,0 +1,43 @@
+// pointers, deref, null
+struct Node {
+    value: i32,
+    next: *Node,
+}
+
+fn push(head: *Node, v: i32) -> *Node {
+    let n = new Node { value: v, next: head };
+    return n;
+}
+
+fn total(head: *Node) -> i32 {
+    let mut sum: i32 = 0;
+    let mut cur: *Node = head;
+    while cur != null {
+        sum += cur.value;
+        cur = cur.next;
+    }
+    return sum;
+}
+
+fn find(head: *Node, v: i32) -> *Node {
+    let mut cur: *Node = head;
+    while cur != null {
+        if cur.value == v {
+            return cur;
+        }
+        cur = cur.next;
+    }
+    return null;
+}
+
+fn main() -> i32 {
+    let head: *Node = null;
+    let list: *Node = push(push(push(head, 1), 2), 3);
+    let t: i32 = total(list);
+    let hit: *Node = find(list, 2);
+    let miss: *Node = find(list, 9);
+    if t == 6 && hit != null && hit.value == 2 && miss == null {
+        return 0;
+    }
+    return 1;
+}

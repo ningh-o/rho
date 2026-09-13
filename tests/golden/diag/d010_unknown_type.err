@@ -1,0 +1,1 @@
+tests/diag/d010_unknown_type.rho:1:15: error: unknown type `Widget`

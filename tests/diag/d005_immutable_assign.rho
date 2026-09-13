@@ -1,0 +1,10 @@
+struct Box {
+    v: i32,
+}
+
+fn main() -> i32 {
+    let b = new Box { v: 1 };
+    let n: i32 = 5;
+    n = 6;
+    return b.v;
+}

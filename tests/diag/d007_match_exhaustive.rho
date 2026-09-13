@@ -1,0 +1,16 @@
+enum Op {
+    Add,
+    Sub,
+    Mul,
+}
+
+fn name(code: Op) -> string {
+    return match code {
+        Op.Add => "add",
+        Op.Sub => "sub",
+    };
+}
+
+fn main() -> i32 {
+    return 0;
+}

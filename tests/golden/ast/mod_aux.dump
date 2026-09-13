@@ -1,0 +1,1 @@
+(module (const QUARTER i32 (bin * (int 5) (int 5))) (fn pub triple (params (n i32)) (ret i32) (return (bin * (name n) (int 3)))) (struct Secret (hidden i32)) (fn unveil (params (s *Secret)) (ret i32) (return (field (name s) hidden))))

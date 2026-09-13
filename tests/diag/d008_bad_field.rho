@@ -1,0 +1,8 @@
+struct Cat {
+    legs: i32,
+}
+
+fn main() -> i32 {
+    let c = new Cat { legs: 4 };
+    return c.wings;
+}

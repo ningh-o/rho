@@ -1,0 +1,6 @@
+tests/frontend/005_slices_strings.rho:24:32: error: expected `)` (`)`), found `,`
+tests/frontend/005_slices_strings.rho:24:32: error: expected `;` (`;`), found `,`
+tests/frontend/005_slices_strings.rho:24:32: error: expected an expression, found `,`
+tests/frontend/005_slices_strings.rho:24:33: error: expected `;`, found integer
+tests/frontend/005_slices_strings.rho:24:35: error: expected `;`, found `)`
+tests/frontend/005_slices_strings.rho:24:35: error: expected an expression, found `)`

@@ -1,0 +1,2 @@
+tests/diag/d004_shadowing.rho:3:5: error: `x` shadows an existing binding
+tests/diag/d004_shadowing.rho:0:0: error: duplicate name `x`

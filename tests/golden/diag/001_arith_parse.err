@@ -1,0 +1,3 @@
+tests/frontend/001_arith.rho:3:20: error: malformed number
+tests/frontend/001_arith.rho:8:34: error: expected `;` (`;`), found identifier
+tests/frontend/001_arith.rho:19:19: error: expected `;` (`;`), found identifier

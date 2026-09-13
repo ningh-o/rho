@@ -1,0 +1,14 @@
+// helper module for 006
+pub const QUARTER: i32 = 5 * 5;
+
+pub fn triple(n: i32) -> i32 {
+    return n * 3;
+}
+
+struct Secret {
+    hidden: i32,
+}
+
+fn unveil(s: *Secret) -> i32 {
+    return s.hidden;
+}

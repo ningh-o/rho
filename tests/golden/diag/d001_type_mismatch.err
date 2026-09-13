@@ -1,0 +1,1 @@
+tests/diag/d001_type_mismatch.rho:3:12: error: return value: expected `i32`, found `string`

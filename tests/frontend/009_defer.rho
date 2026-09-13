@@ -1,0 +1,21 @@
+// defer runs at scope exit
+static mut LOG: i32 = 0;
+
+fn scoped() -> i32 {
+    {
+        defer {
+            LOG += 100;
+        }
+        LOG += 1;
+    }
+    defer LOG += 10;
+    if LOG == 101 {
+        return 5;
+    }
+    return 6;
+}
+
+fn main() -> i32 {
+    let r: i32 = scoped();
+    return r - 5 + LOG;
+}

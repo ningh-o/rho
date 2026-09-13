@@ -1,0 +1,2 @@
+tests/diag/d008_bad_field.rho:7:14: error: no field `wings` on `tests/diag/d008_bad_field.rho.Cat`
+tests/diag/d008_bad_field.rho:7:14: error: return value: expected `i32`, found `<error>`

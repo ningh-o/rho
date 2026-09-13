@@ -1,0 +1,19 @@
+name: ci
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: build boot compiler
+        run: make -j
+      - name: selftest (ast goldens, diagnostics, fmt roundtrip)
+        run: make test

@@ -1,0 +1,1 @@
+tests/diag/d009_arg_count.rho:6:17: error: function takes 3 arguments, got 2

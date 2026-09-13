@@ -1,0 +1,1 @@
+tests/diag/d007_match_exhaustive.rho:8:12: error: match is not exhaustive: missing `Mul`

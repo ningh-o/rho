@@ -1,0 +1,2 @@
+tests/diag/d006_bad_index.rho:3:14: error: cannot index `i32`
+tests/diag/d006_bad_index.rho:3:14: error: return value: expected `i32`, found `<error>`

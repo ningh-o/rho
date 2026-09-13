@@ -1,0 +1,43 @@
+// control flow shapes
+fn find(n: i32) -> i32 {
+    let mut i: i32 = 0;
+    while i * i < n {
+        if i == 10 {
+            break;
+        }
+        i += 1;
+    }
+    return i;
+}
+
+fn spin(until: i32) -> i32 {
+    let mut k: i32 = 0;
+    loop {
+        k += 1;
+        if k >= until {
+            break;
+        }
+    }
+    return k;
+}
+
+fn grade(score: i32) -> string {
+    let g = if score >= 90 {
+        "excellent"
+    } else if score >= 60 {
+        "pass"
+    } else {
+        "fail"
+    };
+    return g;
+}
+
+fn main() -> i32 {
+    let a: i32 = find(50);
+    let b: i32 = spin(3);
+    let label = grade(a * 10 + b);
+    if label == "pass" {
+        return 1;
+    }
+    return 0;
+}

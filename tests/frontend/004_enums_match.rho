@@ -1,0 +1,37 @@
+// enums, unit match, integer match, explicit discriminants
+enum Op {
+    Add,
+    Sub,
+    Mul,
+    Div = 10,
+}
+
+fn apply(code: Op) -> string {
+    return match code {
+        Op.Add => "add",
+        Op.Sub => "sub",
+        Op.Mul => "mul",
+        Op.Div => "div",
+    };
+}
+
+fn digit_name(d: i32) -> string {
+    return match d {
+        0 => "zero",
+        1 => "one",
+        _ => "many",
+    };
+}
+
+fn encode(code: Op) -> i32 {
+    return code as i32;
+}
+
+fn main() -> i32 {
+    let a: string = apply(Op.Mul);
+    let b: string = digit_name(1);
+    if a == "mul" && b == "one" && encode(Op.Div) == 10 {
+        return encode(Op.Add);
+    }
+    return -1;
+}

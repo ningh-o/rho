@@ -1,0 +1,30 @@
+// arithmetic, precedence, literal forms
+fn calc(base: i32) -> i32 {
+    let hex: i32 = 0xFF;
+    let bin: i32 = 0b1010;
+    let big: i32 = 1_000;
+    let mixed: i32 = base + hex * 2 - bin / 2 % 7;
+    let shifted: i32 = (mixed << 2) >> 1;
+    let masked: i32 = mixed & 0x0F | 0x30 ^ 0x11;
+    let logic: bool = big > 10 && hex != 0 || !(masked < 0);
+    if logic {
+        return shifted;
+    }
+    return 0 - base;
+}
+
+fn floats() -> f64 {
+    let a: f64 = 3.5;
+    let b: f32 = 2.5;
+    let c: f64 = 1e2;
+    return a + c + b as f64;
+}
+
+fn main() -> i32 {
+    let r: i32 = calc(4);
+    let f: f64 = floats();
+    if f > 100.0 {
+        return r;
+    }
+    return -1;
+}

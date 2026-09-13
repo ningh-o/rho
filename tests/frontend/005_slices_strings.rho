@@ -1,0 +1,36 @@
+// slices, strings, indexing, slicing
+fn sum(xs: []i32) -> i32 {
+    let mut total: i32 = 0;
+    let mut i: usize = 0;
+    while i < len(xs) {
+        total += xs[i];
+        i += 1;
+    }
+    return total;
+}
+
+fn first_word(s: string) -> string {
+    let mut i: usize = 0;
+    while i < len(s) {
+        if s[i] == " "[0] {
+            return s[0..i];
+        }
+        i += 1;
+    }
+    return s;
+}
+
+fn main() -> i32 {
+    let xs: []i32 = make([]i32, 4);
+    xs[0] = 10;
+    xs[1] = 20;
+    xs[2] = 30;
+    xs[3] = 40;
+    let total: i32 = sum(xs);
+    let head: string = first_word("hello world");
+    let tail: string = head[1..len(head)];
+    if total == 100 && head == "hello" && tail == "ello" {
+        return 0;
+    }
+    return 1;
+}

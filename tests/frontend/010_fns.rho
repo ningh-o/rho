@@ -1,0 +1,45 @@
+// recursion, early returns, nested scopes
+fn fib(n: i32) -> i32 {
+    if n < 2 {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+
+fn collatz_steps(n: i32) -> i32 {
+    let mut k: i32 = n;
+    let mut steps: i32 = 0;
+    while k != 1 {
+        if k % 2 == 0 {
+            k /= 2;
+        } else {
+            k = 3 * k + 1;
+        }
+        steps += 1;
+    }
+    return steps;
+}
+
+fn shadow_free() -> i32 {
+    let mut acc: i32 = 0;
+    {
+        let bump: i32 = 10;
+        acc += bump;
+    }
+    {
+        let bump: i32 = 20;
+        acc += bump;
+    }
+    return acc;
+}
+
+fn main() -> i32 {
+    let f: i32 = fib(10);
+    let c: i32 = collatz_steps(27);
+    let s: i32 = shadow_free();
+    let mut bonus: i32 = 0;
+    if c != 111 {
+        bonus = 1;
+    }
+    return f + bonus + s - 55 - 30;
+}

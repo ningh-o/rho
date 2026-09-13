@@ -1,0 +1,20 @@
+tests/frontend/005_slices_strings.rho:24:32: error: expected `)` (`)`), found `,`
+tests/frontend/005_slices_strings.rho:24:32: error: expected `;` (`;`), found `,`
+tests/frontend/005_slices_strings.rho:24:32: error: expected an expression, found `,`
+tests/frontend/005_slices_strings.rho:24:33: error: expected `;`, found integer
+tests/frontend/005_slices_strings.rho:24:35: error: expected `;`, found `)`
+tests/frontend/005_slices_strings.rho:24:35: error: expected an expression, found `)`
+tests/frontend/005_slices_strings.rho:24:26: error: make takes (type, length)
+tests/frontend/005_slices_strings.rho:25:8: error: cannot index `<error>`
+tests/frontend/005_slices_strings.rho:25:5: error: cannot assign `i32` to `<error>`
+tests/frontend/005_slices_strings.rho:25:5: error: cannot assign to an immutable binding (declare it `let mut`)
+tests/frontend/005_slices_strings.rho:26:8: error: cannot index `<error>`
+tests/frontend/005_slices_strings.rho:26:5: error: cannot assign `i32` to `<error>`
+tests/frontend/005_slices_strings.rho:26:5: error: cannot assign to an immutable binding (declare it `let mut`)
+tests/frontend/005_slices_strings.rho:27:8: error: cannot index `<error>`
+tests/frontend/005_slices_strings.rho:27:5: error: cannot assign `i32` to `<error>`
+tests/frontend/005_slices_strings.rho:27:5: error: cannot assign to an immutable binding (declare it `let mut`)
+tests/frontend/005_slices_strings.rho:28:8: error: cannot index `<error>`
+tests/frontend/005_slices_strings.rho:28:5: error: cannot assign `i32` to `<error>`
+tests/frontend/005_slices_strings.rho:28:5: error: cannot assign to an immutable binding (declare it `let mut`)
+tests/frontend/005_slices_strings.rho:29:26: error: argument: expected `[]i32`, found `<error>`

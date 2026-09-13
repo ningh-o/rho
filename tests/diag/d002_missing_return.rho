@@ -1,0 +1,9 @@
+fn half(n: i32) -> i32 {
+    if n > 0 {
+        return n / 2;
+    }
+}
+
+fn main() -> i32 {
+    return 0;
+}

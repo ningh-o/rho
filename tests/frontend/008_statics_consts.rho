@@ -1,0 +1,20 @@
+// compile-time constants and mutable statics
+const WHEELS: i32 = 4;
+const AXLES: i32 = WHEELS / 2;
+static mut TRIPS: i32 = 0;
+static mut LAST: i32 = WHEELS * AXLES + 1;
+
+fn drive() -> i32 {
+    TRIPS += 1;
+    LAST = TRIPS * WHEELS;
+    return LAST;
+}
+
+fn main() -> i32 {
+    let a: i32 = drive();
+    let b: i32 = drive();
+    if a == 4 && b == 8 && TRIPS == 2 {
+        return 0;
+    }
+    return -1;
+}

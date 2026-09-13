@@ -1,0 +1,1 @@
+(module (use mod_aux) (fn main (params) (ret i32) (let t i32 (call (field (name mod_aux) triple) (int 7))) (let q i32 (field (name mod_aux) QUARTER)) (expr (if (bin && (bin == (name t) (int 21)) (bin == (name q) (int 25))) (block (return (bin - (name t) (name q)))))) (return (un - (int 1)))))

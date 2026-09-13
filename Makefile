@@ -1,0 +1,27 @@
+CC ?= cc
+CFLAGS ?= -std=c11 -O2 -Wall -Wextra -Wno-unused-parameter
+BOOT_SRC := $(wildcard boot/src/*.c)
+BOOT_OBJ := $(BOOT_SRC:.c=.o)
+
+build/rho-boot: $(BOOT_OBJ)
+	@mkdir -p build
+	$(CC) $(CFLAGS) -o $@ $(BOOT_OBJ)
+
+boot/src/%.o: boot/src/%.c boot/src/rho.h boot/src/prelude_data.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+boot/src/prelude_data.c: boot/prelude/hosted.rho tools/embed.py
+	python3 tools/embed.py boot/prelude/hosted.rho PRELUDE_SOURCE boot/src/prelude_data.c
+
+.PHONY: test goldens fmt-check clean
+test: build/rho-boot
+	./build/rho-boot selftest
+
+goldens: build/rho-boot
+	./build/rho-boot selftest --update-goldens
+
+fmt-check: build/rho-boot
+	./build/rho-boot selftest --fmt
+
+clean:
+	rm -rf build boot/src/*.o boot/src/prelude_data.c boot/src/prelude_data.h

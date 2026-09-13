@@ -1,0 +1,3 @@
+tests/frontend/006_modules.rho:7:19: error: cannot compare `<error>` and `i32`
+tests/frontend/006_modules.rho:8:16: error: type mismatch in `-`: `i32` vs `<error>`
+tests/frontend/006_modules.rho:8:16: error: return value: expected `i32`, found `<error>`

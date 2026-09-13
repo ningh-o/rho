@@ -1,0 +1,1 @@
+tests/diag/d002_missing_return.rho:1:1: error: missing return: `half` is `i32`

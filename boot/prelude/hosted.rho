@@ -1,0 +1,24 @@
+extern fn write(fd: i32, buf: *u8, n: usize) -> isize;
+
+extern fn exit(code: i32) -> void;
+
+fn print(s: string) {
+  write(1, s.ptr, s.len);
+}
+
+fn eprint(s: string) {
+  write(2, s.ptr, s.len);
+}
+
+fn panic(msg: string) {
+  eprint("panic: ");
+  eprint(msg);
+  eprint("\n");
+  exit(101);
+}
+
+fn assert(cond: bool) {
+  if (!cond) {
+    panic("assertion failed");
+  }
+}

@@ -1,0 +1,19 @@
+tests/frontend/001_arith.rho:3:20: error: malformed number
+tests/frontend/001_arith.rho:8:34: error: expected `;` (`;`), found identifier
+tests/frontend/001_arith.rho:19:19: error: expected `;` (`;`), found identifier
+tests/frontend/001_arith.rho:3:21: error: unknown name `F`
+tests/frontend/001_arith.rho:6:29: error: type mismatch in `*`: `<error>` vs `i32`
+tests/frontend/001_arith.rho:6:22: error: type mismatch in `+`: `i32` vs `<error>`
+tests/frontend/001_arith.rho:6:22: error: type mismatch in `-`: `<error>` vs `i32`
+tests/frontend/001_arith.rho:7:25: error: shift needs an integer left side
+tests/frontend/001_arith.rho:7:25: error: shift needs an integer left side
+tests/frontend/001_arith.rho:8:23: error: type mismatch in `&`: `<error>` vs `i32`
+tests/frontend/001_arith.rho:8:34: error: unknown name `F`
+tests/frontend/001_arith.rho:8:34: error: type mismatch in `|`: `<error>` vs `i32`
+tests/frontend/001_arith.rho:9:35: error: cannot compare `<error>` and `i32`
+tests/frontend/001_arith.rho:9:49: error: cannot compare `<error>` and `i32`
+tests/frontend/001_arith.rho:11:16: error: return value: expected `i32`, found `<error>`
+tests/frontend/001_arith.rho:19:19: error: unknown name `e2`
+tests/frontend/001_arith.rho:20:12: error: type mismatch in `+`: `f64` vs `i32`
+tests/frontend/001_arith.rho:20:12: error: type mismatch in `+`: `<error>` vs `f64`
+tests/frontend/001_arith.rho:20:12: error: return value: expected `f64`, found `<error>`

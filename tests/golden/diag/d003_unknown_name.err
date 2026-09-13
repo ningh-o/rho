@@ -1,0 +1,2 @@
+tests/diag/d003_unknown_name.rho:2:12: error: unknown name `undefined_thing`
+tests/diag/d003_unknown_name.rho:2:12: error: return value: expected `i32`, found `<error>`

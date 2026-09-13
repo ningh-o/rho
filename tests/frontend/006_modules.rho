@@ -1,0 +1,11 @@
+// module import + qualified access
+use mod_aux;
+
+fn main() -> i32 {
+    let t: i32 = mod_aux.triple(7);
+    let q: i32 = mod_aux.QUARTER;
+    if t == 21 && q == 25 {
+        return t - q;
+    }
+    return -1;
+}
