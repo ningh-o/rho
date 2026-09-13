@@ -769,6 +769,11 @@ static Type *check_expr(Expr *e, Type *expected) {
                src->kind == TY_INT_LIT || src->kind == TY_FLOAT_LIT);
     if (src->kind == TY_BOOL || target->kind == TY_BOOL)
       ok = false;
+    // pointer/usize escapes: the one sanctioned hole for std/runtime plumbing
+    if ((src->kind == TY_PTR || target->kind == TY_PTR) &&
+        (target->kind == TY_USIZE || target->kind == TY_I64 ||
+         src->kind == TY_USIZE || src->kind == TY_I64))
+      ok = true;
     if (!ok)
       ERR(e, "cannot cast `%s` to `%s`", ty_name(src), ty_name(target));
     e->typed = target;
