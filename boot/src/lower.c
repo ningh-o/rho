@@ -1499,3 +1499,9 @@ void lower_dump_ir(void) {
     }
   }
 }
+
+#include <stdlib.h>
+void lower_dump_ir_if_requested(void) {
+  if (getenv("RHO_DUMP_IR"))
+    lower_dump_ir();
+}

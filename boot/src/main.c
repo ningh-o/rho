@@ -1,6 +1,7 @@
 #include "ir.h"
 
 void lower_dump_ir(void);
+void lower_dump_ir_if_requested(void);
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -283,11 +284,12 @@ static const char *build_to(const char *file, Target target, const char *out_pat
   if (getenv("RHO_DUMP_IR"))
     lower_dump_ir();
   SB asm = {0};
-  if (target == TGT_AMD64_LINUX || target == TGT_AMD64_MAC)
+  if (target == TGT_AMD64_LINUX || target == TGT_AMD64_MAC) {
+    lower_dump_ir_if_requested();
     emit_amd64(target, &asm);
-  else if (target == TGT_ARM64_MAC) {
-    fprintf(stderr, "rho: arm64-mac arrives in 0.0.3\n");
-    return NULL;
+  } else if (target == TGT_ARM64_MAC) {
+    lower_dump_ir_if_requested();
+    emit_arm64(target, &asm);
   } else {
     fprintf(stderr, "rho: wasm32-wasi arrives in 0.0.4\n");
     return NULL;
@@ -310,7 +312,14 @@ static const char *build_to(const char *file, Target target, const char *out_pat
 
 static int cmd_build_run_test(const char *cmd, int argc, char **argv) {
   if (!strcmp(cmd, "test")) {
-    const char *dir = argc > 2 ? argv[2] : "corpus";
+    const char *dir = "corpus";
+    Target tt = TGT_AMD64_MAC;
+    for (int i = 2; i < argc; i++) {
+      if (!strcmp(argv[i], "--target") && i + 1 < argc)
+        tt = parse_target(argv[++i]);
+      else
+        dir = argv[i];
+    }
     Vec files = list_dir(str_from(dir), ".rho");
     int failures = 0, ran = 0;
     for (size_t i = 0; i < files.n; i++) {
@@ -323,7 +332,7 @@ static int cmd_build_run_test(const char *cmd, int argc, char **argv) {
       if (dot)
         *dot = 0;
       const char *bin = arena_printf("build/corpus_%s", name);
-      const char *built = build_to(path, TGT_AMD64_MAC, bin);
+      const char *built = build_to(path, tt, bin);
       if (!built) {
         printf("FAIL %s (build)\n", name);
         failures++;
@@ -367,7 +376,7 @@ static int cmd_build_run_test(const char *cmd, int argc, char **argv) {
   }
 
   // build / run
-  const char *file = NULL, *out = NULL, *target_s = "amd64-mac";
+  const char *file = NULL, *out = NULL, *target_s = "arm64-mac";
   for (int i = 2; i < argc; i++) {
     if (!strcmp(argv[i], "-o") && i + 1 < argc)
       out = argv[++i];
