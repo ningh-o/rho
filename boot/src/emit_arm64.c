@@ -402,7 +402,10 @@ static void emit_ins64(Emitter64 *e, IRIns *i) {
   case IR_COPYMEM: {
     ld(e, vreg_off(e, i->addr), 8, false, "x8");
     ld(e, vreg_off(e, i->a), 8, false, "x9");
-    sb_printf(e->out, "  mov x10, #%lld\n", (long long)i->size);
+    if (i->size < 0)
+      ld(e, vreg_off(e, i->b), 8, false, "x10"); // runtime byte count
+    else
+      sb_printf(e->out, "  mov x10, #%lld\n", (long long)i->size);
     int lbl = g_label64++;
     sb_printf(e->out, "Lcpy%d:\n  ldrb w11, [x9]\n  strb w11, [x8]\n"
                       "  add x8, x8, #1\n  add x9, x9, #1\n"

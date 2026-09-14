@@ -810,6 +810,11 @@ static Type *named_type(Sym *sym, Module *owner, TypeAst *ta) {
     if (all_bound && !any_param)
       return inst_from_targs(sym, owner, targs);
     if (all_bound && any_param) {
+      if (getenv("RHO_DBG_M"))
+        fprintf(stderr, "[bare] %s -> template of %s (owner %s)\n",
+                sym->name.p ? sym->name.p : "?",
+                d->name.p ? d->name.p : "?",
+                ((Module *)owner)->path.p ? ((Module *)owner)->path.p : "?");
       Type *t = ty_newk(sym->kind == SY_STRUCT ? TY_STRUCT : TY_ENUM);
       t->rec = ensure_template(d, owner);
       return t; // template reference (self position in a template signature)
@@ -1817,6 +1822,14 @@ static CallTarget resolve_callee(Expr *callee) {
         }
       }
     }
+    if (getenv("RHO_DBG_M") && rec_t) {
+      RecType *rr = rec_t->rec;
+      RecType *tt = rr->decl->templ;
+      fprintf(stderr, "[nomethod] rec=%s tmpl=%s nmethods=%u tmplmethods=%u\n",
+              rr->mangled.p ? rr->mangled.p : "?",
+              tt ? (tt->mangled.p ? tt->mangled.p : "?") : "NULL",
+              (unsigned)rr->methods.n, tt ? (unsigned)tt->methods.n : 0u);
+    }
     ERR(callee, "no method `%s` for `%s`", str_to_c(callee->sv), ty_name(bt));
     return ct;
   }
@@ -1899,6 +1912,105 @@ static Type *check_call(Expr *e, Type *expected) {
       e->typed = ty_ptr(bt->elem);
       return e->typed;
     }
+  }
+  // intrinsics.* — the raw-memory kernel of spec §10 (std builds on it;
+  // the self-hosted compiler needs it for argv and buffer plumbing)
+  if (e->a->kind == EX_FIELD && e->a->a->kind == EX_NAME &&
+      str_eq_c(e->a->a->sv, "intrinsics")) {
+    const char *name = str_to_c(e->a->sv);
+    Type *ptr_u8 = ty_ptr(ty_prim(PRIM_U8));
+    bool is_load = !strcmp(name, "load_u8") || !strcmp(name, "load_u32") ||
+                   !strcmp(name, "load_u64") || !strcmp(name, "load_i64");
+    bool is_store = !strcmp(name, "store_u8") || !strcmp(name, "store_u32") ||
+                    !strcmp(name, "store_u64") || !strcmp(name, "store_i64");
+    bool is_memcpy = !strcmp(name, "memcpy");
+    bool is_slice_str = !strcmp(name, "slice_string");
+    if (!is_load && !is_store && !is_memcpy && !is_slice_str) {
+      ERR(e, "unknown intrinsic `%s`", name);
+      e->typed = ty_err_;
+      return e->typed;
+    }
+    if (is_load) {
+      if (e->args.n != 1) {
+        ERR(e, "intrinsics.%s takes one argument", name);
+        e->typed = ty_err_;
+        return e->typed;
+      }
+      Type *t = check_expr(e->args.items[0], NULL);
+      if (t->kind != TY_PTR) {
+        ERR(e, "intrinsics.%s needs a pointer, found `%s`", name, ty_name(t));
+        e->typed = ty_err_;
+        return e->typed;
+      }
+      e->typed = ty_prim(!strcmp(name, "load_u8") ? PRIM_U8
+                      : !strcmp(name, "load_u32") ? PRIM_U32
+                      : !strcmp(name, "load_u64") ? PRIM_U64
+                                                  : PRIM_I64);
+      return e->typed;
+    }
+    if (is_store) {
+      if (e->args.n != 2) {
+        ERR(e, "intrinsics.%s takes two arguments", name);
+        e->typed = ty_err_;
+        return e->typed;
+      }
+      Type *t = check_expr(e->args.items[0], NULL);
+      if (t->kind != TY_PTR) {
+        ERR(e, "intrinsics.%s needs a pointer, found `%s`", name, ty_name(t));
+        e->typed = ty_err_;
+        return e->typed;
+      }
+      Type *v = adapt_literal(check_expr(e->args.items[1], NULL), NULL);
+      Type *want = ty_prim(!strcmp(name, "store_u8") ? PRIM_U8
+                          : !strcmp(name, "store_u32") ? PRIM_U32
+                          : !strcmp(name, "store_u64") ? PRIM_U64
+                                                       : PRIM_I64);
+      if (!ty_eq(adapt_literal(v, want), want)) {
+        ERR(e, "intrinsics.%s value: expected `%s`, found `%s`", name,
+            ty_name(want), ty_name(v));
+        e->typed = ty_err_;
+        return e->typed;
+      }
+      e->typed = ty_void_;
+      return e->typed;
+    }
+    if (is_memcpy) {
+      if (e->args.n != 3) {
+        ERR(e, "intrinsics.memcpy takes three arguments");
+        e->typed = ty_err_;
+        return e->typed;
+      }
+      for (int k = 0; k < 2; k++) {
+        Type *t = check_expr(e->args.items[k], NULL);
+        if (t->kind != TY_PTR) {
+          ERR(e, "intrinsics.memcpy needs pointers, found `%s`", ty_name(t));
+          e->typed = ty_err_;
+          return e->typed;
+        }
+      }
+      Type *n = check_expr(e->args.items[2], NULL);
+      if (!ty_is_int(n)) {
+        ERR(e, "intrinsics.memcpy length must be an integer, found `%s`", ty_name(n));
+        e->typed = ty_err_;
+        return e->typed;
+      }
+      e->typed = ty_void_;
+      return e->typed;
+    }
+    // slice_string: copy a []u8 into a fresh managed string
+    if (e->args.n != 1) {
+      ERR(e, "intrinsics.slice_string takes one argument");
+      e->typed = ty_err_;
+      return e->typed;
+    }
+    Type *t = check_expr(e->args.items[0], NULL);
+    if (t->kind != TY_SLICE || t->elem->kind != TY_U8) {
+      ERR(e, "intrinsics.slice_string needs a []u8, found `%s`", ty_name(t));
+      e->typed = ty_err_;
+      return e->typed;
+    }
+    e->typed = ty_prim(PRIM_STRING);
+    return e->typed;
   }
 
   CallTarget ct = resolve_callee(e->a);
@@ -2580,6 +2692,10 @@ static void resolve_sym_type(Sym *sym) {
   case SY_FN:
   case SY_EXTERN: {
     Vec ps = {0};
+    if (getenv("RHO_DBG_M"))
+      fprintf(stderr, "[res] %s recv=%.*s tparams=%u is_self=%u\n", str_to_c(sym->name),
+              (int)d->recv.n, d->recv.p ? d->recv.p : "", (unsigned)d->tparams.n,
+              (unsigned)(d->params.n ? ((Param *)d->params.items[0])->is_self : 0));
     if (d->tparams.n) {
       g_tenv = template_env_of(d);
       d->templated = true;
@@ -2612,6 +2728,9 @@ static void resolve_sym_type(Sym *sym) {
           err_at(d->file, d->line, d->col, "`self` must be a struct or enum");
         } else {
           vec_push(&rec_t->rec->methods, sym);
+          if (getenv("RHO_DBG_M"))
+            fprintf(stderr, "[reg] %s on %s\n", str_to_c(sym->name),
+                    rec_t->rec->mangled.p ? rec_t->rec->mangled.p : "?");
         }
       }
     }

@@ -677,7 +677,10 @@ static void emit_ins(WFnCtx *c, IRIns *i) {
   case IR_COPYMEM:
     lget(c, i->addr);
     lget(c, i->a);
-    i32c(c, i->size);
+    if (i->size < 0)
+      lget(c, i->b); // runtime byte count
+    else
+      i32c(c, i->size);
     w8(c->body, 0xFC);
     w8(c->body, 0x0A); // memory.copy
     wuleb(c->body, 0);

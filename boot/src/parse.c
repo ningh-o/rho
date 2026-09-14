@@ -69,8 +69,14 @@ static TypeAst *parse_type(Parser *p) {
   Token *start = peek(p);
   TypeAst *t;
   if (accept(p, P_LBRACKET)) {
-    // []T slice or [N]T array
+    // []T slice or [N]T array — `[*` can only start the element type
+    // (a constant size expression never begins with a deref)
     NODE(t, TA_ARRAY);
+    if (at(p, P_STAR)) {
+      t->elem = parse_type(p);
+      expect(p, P_RBRACKET, "`]`");
+      return t;
+    }
     if (!at(p, P_RBRACKET)) {
       t->size = parse_expr(p);
     }

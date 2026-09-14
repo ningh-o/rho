@@ -469,7 +469,11 @@ static void emit_ins(Emitter *e, IRIns *i) {
   case IR_COPYMEM: {
     mov_slot_reg(e, vreg_off(e, i->addr), 8, false, "%rdi");
     mov_slot_reg(e, vreg_off(e, i->a), 8, false, "%rsi");
-    sb_printf(e->out, "  movq $%lld, %%rcx\n  cld\n  rep movsb\n", (long long)i->size);
+    if (i->size < 0)
+      mov_slot_reg(e, vreg_off(e, i->b), 8, false, "%rcx"); // runtime count
+    else
+      sb_printf(e->out, "  movq $%lld, %%rcx\n", (long long)i->size);
+    sb_printf(e->out, "  cld\n  rep movsb\n");
     break;
   }
   case IR_ZERO: {

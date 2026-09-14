@@ -2201,6 +2201,88 @@ static IRVreg *compute_call_value(LCtx *c, Expr *e) {
     call->dst = new_vreg(c, IT_PTR);
     return call->dst;
   }
+  // intrinsics.* — raw-memory kernel (spec §10)
+  if (e->a->kind == EX_FIELD && e->a->a->kind == EX_NAME &&
+      str_eq_c(e->a->a->sv, "intrinsics")) {
+    const char *name = str_to_c(e->a->sv);
+    if (!strcmp(name, "load_u8") || !strcmp(name, "load_u32") ||
+        !strcmp(name, "load_u64") || !strcmp(name, "load_i64")) {
+      IRType it = !strcmp(name, "load_u8") ? IT_U8
+                  : !strcmp(name, "load_u32") ? IT_U32
+                  : !strcmp(name, "load_u64") ? IT_U64
+                                              : IT_I64;
+      IRVreg *p = lv_expr(c, e->args.items[0]);
+      return v_load(c, p, it);
+    }
+    if (!strcmp(name, "store_u8") || !strcmp(name, "store_u32") ||
+        !strcmp(name, "store_u64") || !strcmp(name, "store_i64")) {
+      IRVreg *p = lv_expr(c, e->args.items[0]);
+      IRVreg *v = lv_expr(c, e->args.items[1]);
+      v_store(c, p, v);
+      return v_const(c, 0, IT_U8);
+    }
+    if (!strcmp(name, "memcpy")) {
+      IRVreg *dst = lv_expr(c, e->args.items[0]);
+      IRVreg *src = lv_expr(c, e->args.items[1]);
+      IRIns *cp = emit(c, IR_COPYMEM);
+      cp->addr = dst;
+      cp->a = src;
+      cp->b = lv_expr(c, e->args.items[2]); // runtime size
+      cp->size = -1;
+      return v_const(c, 0, IT_U8);
+    }
+    if (!strcmp(name, "slice_string")) {
+      IRVreg *base = lv_expr(c, e->args.items[0]); // []u8 aggregate address
+      IRVreg *len = v_load(c, v_addi(c, base, 16), IT_USIZE);
+      IRVreg *ptr = v_load(c, v_addi(c, base, 8), IT_PTR);
+      // obj = __alloc(len + 24): header at obj, data at obj+24 — the same
+      // layout make() produces; buf fields hold the header
+      IRVreg *total = v_binop(c, IR_ADD, len, v_const(c, 24, IT_USIZE), IT_USIZE, false);
+      IRVreg *obj = call_prelude1(c, "__alloc", total, IT_PTR);
+      // header: {rc=1, wrc=0, drop=null}
+      IRVreg *obj8 = v_addi(c, obj, 8);
+      IRVreg *obj16 = v_addi(c, obj, 16);
+      IRVreg *obj24 = v_addi(c, obj, 24);
+      IRVreg *rc1 = v_const(c, 1, IT_USIZE);
+      IRVreg *zero = v_const(c, 0, IT_USIZE);
+      IRIns *rc = emit(c, IR_STORE);
+      rc->addr = obj;
+      rc->a = rc1;
+      rc->size = 8;
+      IRIns *wrc = emit(c, IR_STORE);
+      wrc->addr = obj8;
+      wrc->a = zero;
+      wrc->size = 8;
+      IRVreg *drop0 = v_const(c, 0, IT_PTR); // operands before emit: landmine #1
+      IRIns *dr = emit(c, IR_STORE);
+      dr->addr = obj16;
+      dr->a = drop0;
+      dr->size = 8;
+      IRIns *cp = emit(c, IR_COPYMEM);
+      cp->addr = obj24;
+      cp->a = ptr;
+      cp->b = len; // runtime byte count
+      cp->size = -1;
+      // build {buf=obj (header), ptr=obj+24 (data), len}
+      IRSlot *tmp = new_slot(c, 24, 8, "strval");
+      IRVreg *dest = v_slotaddr(c, tmp);
+      IRVreg *d8 = v_addi(c, dest, 8);
+      IRVreg *d16 = v_addi(c, dest, 16);
+      IRIns *s1 = emit(c, IR_STORE);
+      s1->addr = dest;
+      s1->a = obj;
+      s1->size = 8;
+      IRIns *s2 = emit(c, IR_STORE);
+      s2->addr = d8;
+      s2->a = obj24;
+      s2->size = 8;
+      IRIns *s3 = emit(c, IR_STORE);
+      s3->addr = d16;
+      s3->a = len;
+      s3->size = 8;
+      return dest;
+    }
+  }
   if (is_variant_ctor(e)) {
     Type *et = e->typed;
     IRSlot *tmp = new_slot(c, type_size(et), type_align(et), "enumval");
