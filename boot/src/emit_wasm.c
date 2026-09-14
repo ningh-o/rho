@@ -257,6 +257,7 @@ typedef struct WFnCtx {
   SB *body;
   Vec slot_off; // slot id -> (long) frame offset (>=0 once laid out)
   int64_t frame;
+  int hidden;  // 1 when fn->returns_aggregate: local 0 = the out pointer
   Vec labels;  // WLabel: REAL wasm constructs (if placeholders, loop labels)
   Vec claims;  // WClaim: virtual join ownership (no construct of their own)
   Vec loops;   // IRBlock* headers, innermost last
@@ -281,8 +282,13 @@ static int64_t slot_offset(WFnCtx *c, IRSlot *s) {
   return off;
 }
 
+// local layout: [hidden out ptr] [declared params] [$fb] [vregs...]
+static int fb_local(WFnCtx *c) {
+  return (int)c->fn->params.n + c->hidden;
+}
+
 static int vreg_local(WFnCtx *c, IRVreg *v) {
-  return (int)c->fn->params.n + 1 + v->id; // params, $fb, vregs...
+  return (int)c->fn->params.n + c->hidden + 1 + v->id;
 }
 
 static void lget(WFnCtx *c, IRVreg *v) {
@@ -535,7 +541,7 @@ static void emit_ins(WFnCtx *c, IRIns *i) {
     } else {
       // frame slot address: $fb + off
       w8(c->body, 0x20);
-      wuleb(c->body, (uint64_t)c->fn->params.n); // local.get $fb
+      wuleb(c->body, fb_local(c)); // local.get $fb
       i32c(c, slot_offset(c, i->slot));
       w8(c->body, 0x6A);
       lset(c, i->dst);
@@ -917,8 +923,8 @@ static IRBlock *emit_region(WFnCtx *c, IRBlock *b, IRBlock *from) {
     if (b->term->op == (IROp)OP_RET) {
       // restore the shadow stack, then return (value stays on the stack)
       w8(c->body, 0x20);
-      wuleb(c->body, (uint64_t)c->fn->params.n); // local.get $fb
-      w8(c->body, 0x24);                         // global.set 0 ($sp)
+      wuleb(c->body, fb_local(c)); // local.get $fb
+      w8(c->body, 0x24);           // global.set 0 ($sp)
       wuleb(c->body, 0);
       if (b->term->a)
         lget(c, b->term->a);
@@ -1028,10 +1034,19 @@ static SB *emit_fn_body(WFn *wf) {
   w8(c.body, 0x6B); // i32.sub
   w8(c.body, 0x24); // global.set 0
   wuleb(c.body, 0);
-  w8(c.body, 0x23); // global.get 0
-  wuleb(c.body, 0);
-  w8(c.body, 0x21); // local.set $fb
-  wuleb(c.body, (uint64_t)fn->params.n);
+  c.hidden = fn->returns_aggregate ? 1 : 0;
+  // the hidden out pointer (agg returns): local 0 -> the out slot
+  if (c.hidden) {
+    w8(c.body, 0x20); // local.get 0 (out ptr)
+    wuleb(c.body, 0);
+    w8(c.body, 0x20); // local.get $fb
+    wuleb(c.body, (uint64_t)fn->params.n);
+    i32c(&c, slot_offset(&c, fn->out_slot));
+    w8(c.body, 0x6A); // i32.add
+    w8(c.body, 0x36); // i32.store
+    wuleb(c.body, 2);
+    wuleb(c.body, 0);
+  }
 
   // incoming params: store each wasm param local into its frame slot
   for (size_t i = 0; i < fn->params.n; i++) {
@@ -1040,7 +1055,7 @@ static SB *emit_fn_body(WFn *wf) {
     bool agg = ty_travels_as_ptr(pt);
     // wasm store operand order: address first, value second
     w8(c.body, 0x20); // local.get $fb
-    wuleb(c.body, (uint64_t)fn->params.n);
+    wuleb(c.body, (uint64_t)(fn->params.n + c.hidden));
     i32c(&c, slot_offset(&c, ps));
     w8(c.body, 0x6A); // i32.add — address = $fb + off
     w8(c.body, 0x20);
@@ -1111,6 +1126,14 @@ void emit_wasm(Target target, SB *out) {
     p.n = 0;
     vec_push(&p, (void *)(long)IT_I32);
     w_type_for(p, false, IT_I32); // proc_exit
+  }
+
+  if (getenv("RHO_WASM_DEBUG")) {
+    fprintf(stderr, "import 0 = fd_write\nimport 1 = proc_exit\n");
+    for (size_t i = 0; i < g_ir_fns.n; i++) {
+      IRFn *fn = g_ir_fns.items[i];
+      fprintf(stderr, "func %d = %s\n", (int)(2 + i), fn->symbol);
+    }
   }
 
   // function table (indices 0,1 are the wasi imports)
@@ -1275,11 +1298,16 @@ void emit_wasm(Target target, SB *out) {
       WFn *wf = W.fns.items[i];
       IRFn *fn = wf->fn;
       SB *code = emit_fn_body(wf);
-      // locals: one group per local so indices stay params, $fb, then vregs
-      // in id order. Params occupy locals 0..n-1 via the SIGNATURE (not the
-      // decl); the decl covers $fb and the vregs only.
+      // locals: one group per local so indices stay params, [out], $fb,
+      // then vregs in id order. Params occupy locals 0..n-1 via the
+      // SIGNATURE; an agg-returning fn has the hidden out ptr at local
+      // params.n; the decl covers [out], $fb and the vregs.
       SB entry = {0};
-      wuleb(&entry, 1 + fn->next_vreg);
+      wuleb(&entry, (fn->returns_aggregate ? 1 : 0) + 1 + fn->next_vreg);
+      if (fn->returns_aggregate) {
+        wuleb(&entry, 1);
+        w8(&entry, 0x7F); // hidden out ptr
+      }
       wuleb(&entry, 1);
       w8(&entry, 0x7F); // $fb
       for (int v = 0; v < fn->next_vreg; v++) {
