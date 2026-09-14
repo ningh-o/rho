@@ -2,8 +2,18 @@
 
 void lower_dump_ir(void);
 void lower_dump_ir_if_requested(void);
+#if !defined(__wasm__)
 #include <sys/wait.h>
 #include <unistd.h>
+#else
+// wasi-libc has no <sys/wait.h>; and system() is declared in stdlib.h but
+// never defined — the browser build only emits wasm binaries directly
+#define WEXITSTATUS(status) (status)
+int system(const char *cmd) {
+  (void)cmd;
+  return -1;
+}
+#endif
 
 extern const char PRELUDE_SOURCE[];
 extern const char *g_root_dir;
@@ -83,6 +93,10 @@ static bool str_read_file(Str path, Str *out) {
 
 static Vec list_dir(Str dir, const char *ext) {
   Vec files = {0};
+#if defined(__wasm__)
+  (void)dir; (void)ext; // the browser build never lists directories
+  return files;
+#else
   SB cmd = {0};
   sb_printf(&cmd, "find %.*s -name '*%s' | sort", (int)dir.n, dir.p, ext);
   FILE *f = popen(str_to_c(sb_finish(&cmd)), "r");
@@ -98,6 +112,7 @@ static Vec list_dir(Str dir, const char *ext) {
   }
   pclose(f);
   return files;
+#endif
 }
 
 static int selftest_failures;
@@ -286,18 +301,18 @@ static const char *build_to(const char *file, Target target, const char *out_pat
   lower_program();
   if (getenv("RHO_DUMP_IR"))
     lower_dump_ir();
-  SB asm = {0};
+  SB emitted = {0};
   if (target == TGT_AMD64_LINUX || target == TGT_AMD64_MAC) {
     lower_dump_ir_if_requested();
-    emit_amd64(target, &asm);
+    emit_amd64(target, &emitted);
   } else if (target == TGT_ARM64_MAC) {
     lower_dump_ir_if_requested();
-    emit_arm64(target, &asm);
+    emit_arm64(target, &emitted);
   } else {
     // wasm: emit the binary module directly, no assembler step
     lower_dump_ir_if_requested();
-    emit_wasm(target, &asm);
-    if (!write_file(str_from(out_path), sb_finish(&asm))) {
+    emit_wasm(target, &emitted);
+    if (!write_file(str_from(out_path), sb_finish(&emitted))) {
       fprintf(stderr, "rho: cannot write %s\n", out_path);
       return NULL;
     }
@@ -305,7 +320,7 @@ static const char *build_to(const char *file, Target target, const char *out_pat
     return out_path;
   }
   const char *s_path = arena_printf("%s.s", out_path);
-  if (!write_file(str_from(s_path), sb_finish(&asm))) {
+  if (!write_file(str_from(s_path), sb_finish(&emitted))) {
     fprintf(stderr, "rho: cannot write %s\n", s_path);
     return NULL;
   }
@@ -409,7 +424,11 @@ static int cmd_build_run_test(const char *cmd, int argc, char **argv) {
   if (!strcmp(cmd, "build")) {
     bin = out ? out : "a.out";
   } else {
+#if defined(__wasm__)
+    bin = "/tmp/rho_run";
+#else
     bin = arena_printf("/tmp/rho_run_%d", (int)getpid());
+#endif
   }
   const char *built = build_to(file, target, bin);
   if (!built)

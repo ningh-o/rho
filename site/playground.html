@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Playground — rho</title>
+  <meta name="description" content="Write and run rho programs in your browser. The compiler itself runs as WebAssembly.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body class="play">
+  <header class="site">
+    <div class="wrap">
+      <a class="mark" href="index.html">ρ<small>rho</small></a>
+      <nav>
+        <a href="index.html">tutorial</a>
+        <a href="playground.html" class="active">playground</a>
+        <a href="https://github.com/ningh-o/rho">source</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="play-main">
+    <section class="pane">
+      <div class="pane-head">
+        <select id="example">
+          <option value="">examples…</option>
+        </select>
+        <span class="grow"></span>
+        <span>main.rho</span>
+      </div>
+      <div class="editor">
+        <pre class="highlight" id="highlight" aria-hidden="true"></pre>
+        <textarea id="input" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off"></textarea>
+      </div>
+    </section>
+
+    <section class="pane">
+      <div class="pane-head">
+        <span>output</span>
+        <span class="grow"></span>
+        <button class="run" id="run" style="padding: 5px 18px;">Run</button>
+      </div>
+      <div class="output" id="output">
+        <span class="hint">the output of your program appears here</span>
+      </div>
+      <div class="status" id="status"></div>
+    </section>
+  </main>
+
+  <script type="module" src="assets/playground.js"></script>
+</body>
+</html>

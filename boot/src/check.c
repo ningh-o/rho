@@ -1090,6 +1090,20 @@ static void require(Type *got, Type *expected, Expr *e, const char *what) {
     ERR(e, "%s: expected `%s`, found `%s`", what, ty_name(expected), ty_name(got));
 }
 
+// an error type, possibly wrapped in a pointer/slice/array that failed to
+// resolve — such types already carry their own diagnostic. Failed generic
+// instantiations keep their kind but carry the <error> mangled name.
+static bool ty_is_or_has_err(Type *t) {
+  if (!t)
+    return false;
+  if (t->kind == TY_ERR || (t->mangled && !strcmp(t->mangled, "<error>")))
+    return true;
+  if (t->kind == TY_PTR || t->kind == TY_WEAK || t->kind == TY_SLICE ||
+      t->kind == TY_ARRAY)
+    return ty_is_or_has_err(t->elem);
+  return false;
+}
+
 // does an lvalue chain root at a mutable place? indexing a slice or writing
 // through a pointer mutates heap storage — allowed regardless of how the
 // reference itself was bound. Indexing an inline array mutates the binding.
@@ -1303,6 +1317,17 @@ static Type *check_expr(Expr *e, Type *expected) {
     // both operands untyped: pin the default width now
     if (l->kind == TY_INT_LIT)
       l = ty_prim(PRIM_I32);
+    if (l->kind == TY_FLOAT_LIT) {
+      // float literals default to f64 (spec §1), or follow the context;
+      // retype the operand nodes too so the lowerer sees settled types
+      l = expected && expected->kind == TY_F32 ? ty_prim(PRIM_F32) : ty_prim(PRIM_F64);
+      Type *at = (Type *)e->a->typed;
+      Type *bt2 = (Type *)e->b->typed;
+      if (at && at->kind == TY_FLOAT_LIT)
+        e->a->typed = l;
+      if (bt2 && bt2->kind == TY_FLOAT_LIT)
+        e->b->typed = l;
+    }
     e->typed = l;
     return e->typed;
   }
@@ -2283,7 +2308,14 @@ void check_stmt(Stmt *s) {
   case ST_LET: {
     Type *ann = s->ty ? resolve_type_in_module(cur_module, s->ty) : NULL;
     Type *t = check_expr(s->a, ann);
-    if (!ann) {
+    if (ann) {
+      // the annotation pins the binding's type; literals adapt, anything
+      // else must genuinely match. An error type already has its own
+      // diagnostic — don't pile a second one onto it
+      if (!ty_is_or_has_err(ann) && !ty_is_or_has_err(t))
+        require(t, ann, s->a, "initializer");
+      t = ann;
+    } else {
       if (t->kind == TY_INT_LIT)
         t = ty_prim(PRIM_I32);
       else if (t->kind == TY_FLOAT_LIT)

@@ -1,2 +1,2 @@
 tests/diag/d023_cannot_infer.rho:10:24: error: cannot infer `T` for `default`
-tests/diag/d023_cannot_infer.rho:11:10: error: return value: expected `i32`, found `T`
+tests/diag/d023_cannot_infer.rho:10:24: error: initializer: expected `i32`, found `T`

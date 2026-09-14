@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>rho — a small, hand-forged systems language</title>
+  <meta name="description" content="rho (ρ): statically typed, reference-counted, zero undefined behavior. One binary toolchain that emits machine code and WebAssembly directly. Learn it here, run it in your browser.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <header class="site">
+    <div class="wrap">
+      <a class="mark" href="index.html">ρ<small>rho</small></a>
+      <nav>
+        <a href="index.html" class="active">tutorial</a>
+        <a href="playground.html">playground</a>
+        <a href="https://github.com/ningh-o/rho">source</a>
+      </nav>
+    </div>
+  </header>
+
+  <section class="hero">
+    <div class="wrap">
+      <div class="glyph">ρ</div>
+      <h1>A small, hand-forged systems language</h1>
+      <p class="lede">
+        Statically typed. Reference-counted, with no garbage collector and no
+        use-after-free. Integer overflow wraps, slices are bounds-checked —
+        <b style="color:var(--ink)">zero undefined behavior</b>. The compiler emits
+        machine code and WebAssembly itself, and the same source always compiles to
+        byte-identical output.
+      </p>
+      <div class="cta">
+        <a class="btn primary" href="#ch-hello">Start the tutorial</a>
+        <a class="btn" href="playground.html">Open the playground</a>
+      </div>
+      <div class="pillars">
+        <div class="pillar"><b>One binary toolchain</b><span>build, run, test, fmt, check — no build system, no headers, no ceremony.</span></div>
+        <div class="pillar"><b>Direct codegen</b><span>amd64, arm64 and wasm32 emitted by the compiler. No LLVM.</span></div>
+        <div class="pillar"><b>Reference counting</b><span>deterministic cleanup, weak refs for cycles, zero GC pauses.</span></div>
+        <div class="pillar"><b>Determinism</b><span>same source, same compiler → byte-identical binaries. Tested, not promised.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <nav class="toc wrap" aria-label="Chapters">
+    <a href="#ch-hello"><span class="n">01</span>Hello, rho</a>
+    <a href="#ch-values"><span class="n">02</span>Numbers that stay defined</a>
+    <a href="#ch-bindings"><span class="n">03</span>let and mut</a>
+    <a href="#ch-control"><span class="n">04</span>Control flow</a>
+    <a href="#ch-functions"><span class="n">05</span>Functions and recursion</a>
+    <a href="#ch-structs"><span class="n">06</span>Structs on the heap</a>
+    <a href="#ch-enums"><span class="n">07</span>Enums and match</a>
+    <a href="#ch-slices"><span class="n">08</span>Slices, safely</a>
+    <a href="#ch-errors"><span class="n">09</span>Result, Option and ?</a>
+    <a href="#ch-closures"><span class="n">10</span>Closures</a>
+    <a href="#ch-generics"><span class="n">11</span>Generics</a>
+    <a href="#ch-defer"><span class="n">12</span>defer</a>
+    <a href="#ch-memory"><span class="n">13</span>Ownership you can hold</a>
+    <a href="#ch-toolchain"><span class="n">14</span>The toolchain</a>
+  </nav>
+
+  <main class="wrap">
+    <section class="chapter" id="ch-hello">
+      <h2><span class="num">01</span>Hello, rho</h2>
+      <p>
+        A rho program is a set of functions; execution starts at <b>main</b>.
+        Types are written after a colon, the return type after <b>-&gt;</b>, and
+        every statement ends with a semicolon. <b>print</b> comes from the
+        prelude — the standard library that every program imports implicitly.
+      </p>
+      <template data-example="hello"></template>
+    </section>
+
+    <section class="chapter" id="ch-values">
+      <h2><span class="num">02</span>Numbers that stay defined</h2>
+      <p>
+        rho has signed and unsigned integers from <b>i8</b> to <b>i64</b>,
+        IEEE-754 floats, and <b>bool</b>. There is no undefined behavior:
+        <b>integer overflow wraps</b> in two's complement. Literals can carry
+        <b>_</b> separators and come in decimal, hex and binary. An unsuffixed
+        integer literal adapts to its context and defaults to <b>i32</b>;
+        float literals default to <b>f64</b>.
+      </p>
+      <template data-example="values"></template>
+    </section>
+
+    <section class="chapter" id="ch-bindings">
+      <h2><span class="num">03</span>let and mut</h2>
+      <p>
+        Bindings are <b>immutable by default</b>; writing to one requires
+        <b>let mut</b>. Shadowing an outer name is an error, and assignment is a
+        statement, not an expression — <b>=</b> and <b>==</b> can never be
+        confused.
+      </p>
+      <template data-example="bindings"></template>
+    </section>
+
+    <section class="chapter" id="ch-control">
+      <h2><span class="num">04</span>Control flow</h2>
+      <p>
+        Conditions must be <b>bool</b> — there is no truthiness. <b>if</b> is an
+        expression, so it yields a value; <b>while</b> and <b>loop</b> are
+        statements, and <b>break</b>/<b>continue</b> target the innermost loop.
+      </p>
+      <template data-example="control"></template>
+    </section>
+
+    <section class="chapter" id="ch-functions">
+      <h2><span class="num">05</span>Functions and recursion</h2>
+      <p>
+        Arguments are passed by value; parameters are mutable local copies.
+        Declaration order does not matter, and recursion is ordinary. A method
+        is just a function whose first parameter is named <b>self</b> — it is
+        then callable with dot syntax.
+      </p>
+      <template data-example="functions"></template>
+    </section>
+
+    <section class="chapter" id="ch-structs">
+      <h2><span class="num">06</span>Structs on the heap</h2>
+      <p>
+        <b>new</b> allocates a struct on the heap with a reference count of one.
+        A value of type <b>*Point</b> is an owning reference: copying it bumps
+        the count, and when the count reaches zero the object is freed —
+        deterministically, right there, no garbage collector.
+      </p>
+      <template data-example="structs"></template>
+    </section>
+
+    <section class="chapter" id="ch-enums">
+      <h2><span class="num">07</span>Enums and match</h2>
+      <p>
+        Enum variants can be unit, tuple-like, or struct-like. <b>match</b>
+        destructures payloads into bindings, is itself an expression, and is
+        <b>exhaustiveness-checked</b> — a match that forgets a variant does not
+        compile.
+      </p>
+      <template data-example="enums"></template>
+    </section>
+
+    <section class="chapter" id="ch-slices">
+      <h2><span class="num">08</span>Slices, safely</h2>
+      <p>
+        <b>make([]T, n)</b> allocates a zeroed, owned array. A slice is a view
+        carrying its own length; indexing is <b>bounds-checked</b> and slicing
+        with <b>[i..j]</b> shares the buffer. Out-of-range access panics with
+        the index and length — it never reads memory it should not.
+      </p>
+      <template data-example="slices"></template>
+    </section>
+
+    <section class="chapter" id="ch-errors">
+      <h2><span class="num">09</span>Result, Option and ?</h2>
+      <p>
+        Errors are values. A function that can fail returns
+        <b>Result[T, E]</b>; an absent value returns <b>Option[T]</b>. The
+        <b>?</b> operator unwraps the happy path and returns the error early —
+        explicit, but without the ceremony.
+      </p>
+      <template data-example="errors"></template>
+    </section>
+
+    <section class="chapter" id="ch-closures">
+      <h2><span class="num">10</span>Closures</h2>
+      <p>
+        Functions are values. A closure captures what it uses from the
+        enclosing scope — immutable bindings by copy, mutable ones by shared
+        box — and static functions and closures share one call syntax.
+      </p>
+      <template data-example="closures"></template>
+    </section>
+
+    <section class="chapter" id="ch-generics">
+      <h2><span class="num">11</span>Generics</h2>
+      <p>
+        Functions and types can take type parameters. Instantiation is implicit
+        and <b>monomorphizing</b>: each distinct concrete use compiles a
+        specialized copy, verified per instantiation. There are no trait bounds
+        to fight — if an instantiation type-checks, it works.
+      </p>
+      <template data-example="generics"></template>
+    </section>
+
+    <section class="chapter" id="ch-defer">
+      <h2><span class="num">12</span>defer</h2>
+      <p>
+        <b>defer</b> schedules a statement to run when the enclosing scope
+        exits — on every path, including <b>return</b>, <b>break</b> and
+        <b>continue</b>. Defers in one scope run in reverse order.
+      </p>
+      <template data-example="defer"></template>
+    </section>
+
+    <section class="chapter" id="ch-memory">
+      <h2><span class="num">13</span>Ownership you can hold</h2>
+      <p>
+        Every heap object carries <b>{rc, wrc, drop}</b>. The compiler inserts
+        retain/release around each copy and destruction — the rule is uniform:
+        <b>each copy takes one retain, each destruction one release</b>. When a
+        count reaches zero the drop glue runs immediately. Cycles are broken
+        with <b>weak[T]</b>; a weak reference observes death instead of
+        preventing it, and <b>w.get()</b> returns null once the object is gone.
+      </p>
+      <template data-example="memory"></template>
+    </section>
+
+    <section class="chapter" id="ch-toolchain">
+      <h2><span class="num">14</span>The toolchain</h2>
+      <p>
+        One binary does everything:
+      </p>
+      <ul>
+        <li><b>rho build main.rho --target wasm32-wasi</b> — compile; targets: <b>arm64-mac</b>, <b>amd64-linux</b>, <b>wasm32-wasi</b></li>
+        <li><b>rho run main.rho</b> — build to a temp file and execute</li>
+        <li><b>rho test</b> — run every <b>test_*</b> function</li>
+        <li><b>rho fmt</b> — canonical formatting; one style, no configuration</li>
+        <li><b>rho check</b> — type-check only</li>
+      </ul>
+      <p>
+        Determinism is a tested invariant: compiling the same source twice
+        yields <b>byte-identical</b> output — and the playground you used above
+        runs this exact compiler compiled to WebAssembly, producing exactly the
+        bytes the native toolchain produces.
+      </p>
+      <p>
+        The full story — the memory model, the SSA IR, the bootstrap plan — is
+        in the <a href="https://github.com/ningh-o/rho/blob/master/spec/spec.md">language
+        specification</a>.
+      </p>
+    </section>
+  </main>
+
+  <footer class="site">
+    <div class="wrap">
+      ρ 0.0.x — the boot-compiler era. <a href="https://github.com/ningh-o/rho">source</a>
+      · <a href="spec/spec.md">spec</a> · <a href="playground.html">playground</a>
+    </div>
+  </footer>
+
+  <script type="module" src="assets/tutorial.js"></script>
+</body>
+</html>

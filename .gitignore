@@ -1,6 +1,8 @@
 build/
 *.o
 *.wasm
+# the playground ships the compiler itself
+!site/assets/rho-boot.wasm
 out/
 .DS_Store
 *.o.tmp
