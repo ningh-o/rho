@@ -1,0 +1,12 @@
+enum E {
+  A,
+}
+
+fn default[T]() -> T {
+  return E.A;
+}
+
+fn main() -> i32 {
+  let x: i32 = default();
+  return x;
+}

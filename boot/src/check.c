@@ -167,6 +167,331 @@ static Type *ty_fn(Vec params, Type *ret) {
   return ty_intern(sb, t);
 }
 
+// ============================================================ generics =====
+//
+// Monomorphization: generic decls are templates. Signatures resolve once
+// against TY_PARAM placeholders; call sites infer the mapping, and each
+// distinct instantiation clones the declaration, re-resolves and re-checks
+// its body under the concrete environment, and is lowered as a plain
+// function. Template decls themselves are never checked or lowered.
+
+static Map *g_tenv;  // active name -> Type* while resolving/checking a clone
+
+static Type *ty_param_(char *name) {
+  Type *t = ty_newk(TY_PARAM);
+  t->mangled = name;
+  return t;
+}
+
+static Map *template_env_of(Decl *d) {
+  Map *env = arena_alloc_zeroed(sizeof(Map));
+  for (size_t i = 0; i < d->tparams.n; i++)
+    map_put(env, str_from(d->tparams.items[i]), ty_param_(d->tparams.items[i]));
+  return env;
+}
+
+static Type *subst_type(Type *t, Map *env) {
+  if (!t)
+    return t;
+  switch (t->kind) {
+  case TY_PARAM: {
+    Type *r = map_get(env, str_from(t->mangled));
+    return r ? r : t;
+  }
+  case TY_PTR:
+    return ty_ptr(subst_type(t->elem, env));
+  case TY_WEAK:
+    return ty_weak(subst_type(t->elem, env));
+  case TY_SLICE:
+    return ty_slice(subst_type(t->elem, env));
+  case TY_ARRAY:
+    return ty_array(subst_type(t->elem, env), t->len);
+  case TY_FN: {
+    Vec ps = {0};
+    for (size_t i = 0; i < t->params.n; i++)
+      vec_push(&ps, subst_type(t->params.items[i], env));
+    return ty_fn(ps, subst_type(t->ret, env));
+  }
+  default:
+    return t;
+  }
+}
+
+// bind type parameters by matching a template parameter type against the
+// argument's concrete type, structurally
+static void infer_targs(Type *tmpl, Type *arg, Map *env) {
+  if (!tmpl || !arg || tmpl->kind != TY_PARAM) {
+    if (!tmpl || !arg)
+      return;
+    switch (tmpl->kind) {
+    case TY_PTR:
+      if (arg->kind == TY_PTR)
+        infer_targs(tmpl->elem, arg->elem, env);
+      return;
+    case TY_WEAK:
+      if (arg->kind == TY_WEAK)
+        infer_targs(tmpl->elem, arg->elem, env);
+      return;
+    case TY_SLICE:
+      if (arg->kind == TY_SLICE)
+        infer_targs(tmpl->elem, arg->elem, env);
+      return;
+    case TY_ARRAY:
+      if (arg->kind == TY_ARRAY && arg->len == tmpl->len)
+        infer_targs(tmpl->elem, arg->elem, env);
+      return;
+    case TY_FN:
+      if (arg->kind == TY_FN && arg->params.n == tmpl->params.n) {
+        for (size_t i = 0; i < tmpl->params.n; i++)
+          infer_targs(tmpl->params.items[i], arg->params.items[i], env);
+        infer_targs(tmpl->ret, arg->ret, env);
+      }
+      return;
+    case TY_STRUCT:
+    case TY_ENUM:
+      if (arg->kind == tmpl->kind && arg->rec->decl == tmpl->rec->decl) {
+        size_t n = tmpl->rec->targs.n < arg->rec->targs.n ? tmpl->rec->targs.n
+                                                          : arg->rec->targs.n;
+        for (size_t i = 0; i < n; i++)
+          infer_targs(tmpl->rec->targs.items[i], arg->rec->targs.items[i], env);
+      }
+      return;
+    default:
+      return;
+    }
+  }
+  Type *bound = map_get(env, str_from(tmpl->mangled));
+  if (!bound)
+    map_put(env, str_from(tmpl->mangled), arg);
+  else if (bound != arg && bound->kind != TY_ERR && arg->kind != TY_ERR) {
+    // conflicting bindings: the substituted signature reports it via require()
+    if (bound->kind == TY_INT_LIT || arg->kind == TY_INT_LIT ||
+        bound->kind == TY_FLOAT_LIT || arg->kind == TY_FLOAT_LIT)
+      map_put(env, str_from(tmpl->mangled), bound->kind == TY_INT_LIT ? arg : bound);
+  }
+}
+
+static bool type_has_param(Type *t) {
+  if (!t)
+    return false;
+  switch (t->kind) {
+  case TY_PARAM:
+    return true;
+  case TY_PTR: case TY_WEAK: case TY_SLICE:
+    return type_has_param(t->elem);
+  case TY_ARRAY:
+    return type_has_param(t->elem);
+  case TY_FN:
+    if (type_has_param(t->ret))
+      return true;
+    for (size_t i = 0; i < t->params.n; i++)
+      if (type_has_param(t->params.items[i]))
+        return true;
+    return false;
+  default:
+    return false;
+  }
+}
+
+// ---- declaration cloning (instantiation bodies) ----------------------------
+
+static TypeAst *clone_typeast(TypeAst *t);
+static Expr *clone_expr(Expr *e);
+
+static Vec clone_ptr_vec(Vec *v, void *(*fn)(void *)) {
+  Vec out = {0};
+  for (size_t i = 0; i < v->n; i++)
+    vec_push(&out, fn(v->items[i]));
+  return out;
+}
+
+static TypeAst *clone_typeast(TypeAst *t) {
+  if (!t)
+    return NULL;
+  TypeAst *c = arena_alloc(sizeof(TypeAst));
+  *c = *t;
+  c->targs = clone_ptr_vec(&t->targs, (void *(*)(void *))clone_typeast);
+  c->params = clone_ptr_vec(&t->params, (void *(*)(void *))clone_typeast);
+  c->elem = clone_typeast(t->elem);
+  c->ret = clone_typeast(t->ret);
+  c->size = clone_expr(t->size);
+  return c;
+}
+
+static FieldAst *clone_fieldast(FieldAst *f) {
+  if (!f)
+    return NULL;
+  FieldAst *c = arena_alloc(sizeof(FieldAst));
+  *c = *f;
+  c->ty = clone_typeast(f->ty);
+  return c;
+}
+
+static Param *clone_param(Param *p) {
+  if (!p)
+    return NULL;
+  Param *c = arena_alloc(sizeof(Param));
+  *c = *p;
+  c->ty = clone_typeast(p->ty);
+  return c;
+}
+
+static MatchArm *clone_arm(MatchArm *a) {
+  if (!a)
+    return NULL;
+  MatchArm *c = arena_alloc(sizeof(MatchArm));
+  c->pk = a->pk;
+  c->pat_path = a->pat_path; // char* segments are immutable
+  c->pat_int = a->pat_int;
+  c->pat_str = a->pat_str;
+  c->pat_names = a->pat_names;
+  c->pat_fields = clone_ptr_vec(&a->pat_fields, (void *(*)(void *))clone_fieldast);
+  c->body = clone_expr(a->body);
+  c->file = a->file;
+  c->line = a->line;
+  c->col = a->col;
+  return c;
+}
+
+static Stmt *clone_stmt(Stmt *s) {
+  if (!s)
+    return NULL;
+  Stmt *c = arena_alloc_zeroed(sizeof(Stmt));
+  c->kind = s->kind;
+  c->file = s->file;
+  c->line = s->line;
+  c->col = s->col;
+  c->mut = s->mut;
+  c->tail = s->tail;
+  c->name = s->name;
+  c->ty = clone_typeast(s->ty);
+  c->a = clone_expr(s->a);
+  c->b = clone_expr(s->b);
+  c->assign_op = s->assign_op;
+  c->stmts = clone_ptr_vec(&s->stmts, (void *(*)(void *))clone_stmt);
+  c->cond = clone_expr(s->cond);
+  c->body = clone_ptr_vec(&s->body, (void *(*)(void *))clone_stmt);
+  return c;
+}
+
+static Expr *clone_expr(Expr *e) {
+  if (!e)
+    return NULL;
+  Expr *c = arena_alloc_zeroed(sizeof(Expr));
+  c->kind = e->kind;
+  c->file = e->file;
+  c->line = e->line;
+  c->col = e->col;
+  c->iv = e->iv;
+  c->fv = e->fv;
+  c->sv = e->sv;
+  c->bv = e->bv;
+  c->a = clone_expr(e->a);
+  c->b = clone_expr(e->b);
+  c->c = clone_expr(e->c);
+  c->binop = e->binop;
+  c->unop = e->unop;
+  c->args = clone_ptr_vec(&e->args, (void *(*)(void *))clone_expr);
+  c->arg_names = e->arg_names; // char* entries, immutable
+  c->ty = clone_typeast(e->ty);
+  c->arms = clone_ptr_vec(&e->arms, (void *(*)(void *))clone_arm);
+  c->params = clone_ptr_vec(&e->params, (void *(*)(void *))clone_param);
+  c->ret = clone_typeast(e->ret);
+  // NEW field lists: FieldAst* in items alongside args
+  if (e->kind == EX_NEW) {
+    Vec items = {0};
+    for (size_t i = 0; i < e->items.n; i++)
+      vec_push(&items, clone_fieldast(e->items.items[i]));
+    c->items = items;
+  } else {
+    c->items = clone_ptr_vec(&e->items, (void *(*)(void *))clone_stmt);
+  }
+  return c;
+}
+
+static Decl *clone_fn_decl(Decl *d) {
+  Decl *c = arena_alloc_zeroed(sizeof(Decl));
+  c->kind = DK_FN;
+  c->file = d->file;
+  c->line = d->line;
+  c->col = d->col;
+  c->pub_ = d->pub_;
+  c->name = d->name;
+  c->params = clone_ptr_vec(&d->params, (void *(*)(void *))clone_param);
+  c->ret = clone_typeast(d->ret);
+  c->body = clone_ptr_vec(&d->body, (void *(*)(void *))clone_stmt);
+  c->is_method = d->is_method;
+  c->recv = d->recv;
+  return c;
+}
+
+// ---- instantiation ---------------------------------------------------------
+
+static Vec g_instantiations; // Sym* pending body checks, in discovery order
+static Map g_instantiated;   // mangled key -> Sym* (dedup across modules)
+static int g_instantiation_depth;
+
+static void resolve_sym_type(Sym *sym);
+
+static Sym *instantiate_fn(Sym *gsym, Vec *names, Map *env, Expr *at) {
+  Decl *d = gsym->decl;
+  // mangle in the canonical parameter order so the name is deterministic
+  SB sb = {0};
+  sb_printf(&sb, "%.*s$", (int)d->name.n, d->name.p);
+  for (size_t i = 0; i < names->n; i++) {
+    char *name = names->items[i];
+    Type *targ = map_get(env, str_from(name));
+    if (i)
+      sb_push(&sb, ',');
+    if (!targ || targ->kind == TY_PARAM) {
+      err_at(at->file, at->line, at->col, "cannot infer `%s` for `%s`", name,
+             str_to_c(d->name));
+      return gsym;
+    }
+    if (targ->kind == TY_INT_LIT)
+      targ = ty_prim(PRIM_I32);
+    if (targ->kind == TY_FLOAT_LIT)
+      targ = ty_prim(PRIM_F64);
+    map_put(env, str_from(name), targ);
+    // sanitize into the symbol name
+    for (const char *p = targ->mangled; *p; p++)
+      sb_push(&sb, ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+                            (*p >= '0' && *p <= '9') || *p == '_')
+                       ? *p
+                       : '_');
+  }
+  Str mangled = sb_finish(&sb);
+  Sym *existing = map_get(&g_instantiated, mangled);
+  if (existing)
+    return existing;
+  if (++g_instantiation_depth > 256) {
+    err_at(at->file, at->line, at->col,
+           "generic instantiation nesting too deep (recursive generics?)");
+    g_instantiation_depth--;
+    return gsym;
+  }
+  Decl *clone = clone_fn_decl(d);
+  clone->name = mangled;
+  clone->tenv = env;
+  Sym *sym = arena_alloc_zeroed(sizeof(Sym));
+  sym->kind = SY_FN;
+  sym->name = mangled;
+  sym->decl = clone;
+  sym->owner = gsym->owner;
+  map_put(&g_instantiated, mangled, sym);
+  Module *saved = cur_module;
+  Map *saved_env = g_tenv;
+  cur_module = gsym->owner;
+  g_tenv = env;
+  resolve_sym_type(sym);
+  g_tenv = saved_env;
+  cur_module = saved;
+  map_put(&((Module *)gsym->owner)->syms, mangled, sym);
+  vec_push(&g_instantiations, sym);
+  g_instantiation_depth--;
+  return sym;
+}
+
 // ------------------------------------------------------------ scopes ---
 
 static Scope *scope_push(void) {
@@ -214,6 +539,7 @@ static void scope_decl(Str name, Sym *sym) {
 static Type *resolve_type_in_module(Module *m, TypeAst *ta);
 static Type *check_expr(Expr *e, Type *expected);
 Type *struct_field_type(RecType *rec, size_t i);
+Type *variant_field_type(Type *enum_t, int variant, int field);
 static void check_fn_body(Decl *d, Sym *sym);
 
 static Str dir_of(Str path) {
@@ -327,6 +653,10 @@ void check_reset(void) {
   prelude_module = NULL;
   cur_scope = NULL;
   prelude_loaded = false;
+  g_tenv = NULL;
+  g_instantiations = (Vec){0};
+  g_instantiated = (Map){0};
+  g_instantiation_depth = 0;
 }
 
 void prelude_init(void) {
@@ -390,18 +720,106 @@ static RecType *rec_intern(Decl *decl, Module *owner, Str mangled) {
   return r;
 }
 
-static Type *named_type(Sym *sym, Module *owner, TypeAst *ta) {
-  if (ta && ta->targs.n > 0) {
-    err_at(ta->file, ta->line, ta->col, "generic types arrive in 0.0.5");
-    return ty_err_;
+// the RecType of a generic definition (T's bound to TY_PARAM placeholders)
+static RecType *ensure_template(Decl *d, Module *owner) {
+  if (!d->templ) {
+    char *base = arena_printf("%.*s.%.*s", (int)owner->path.n, owner->path.p, (int)d->name.n,
+                              d->name.p);
+    RecType *rec = rec_intern(d, owner, str_from(arena_printf("%s[]", base)));
+    if (!rec->env) {
+      rec->is_template = true;
+      rec->env = template_env_of(d);
+      rec->targs = (Vec){0};
+      for (size_t i = 0; i < d->tparams.n; i++)
+        vec_push(&rec->targs, map_get(rec->env, str_from(d->tparams.items[i])));
+      d->templ = rec;
+    }
   }
+  return (RecType *)d->templ;
+}
+
+static Type *inst_from_targs(Sym *sym, Module *owner, Vec targs) {
   Decl *d = sym->decl;
-  char *mangled = arena_printf("%.*s.%.*s", (int)owner->path.n, owner->path.p, (int)d->name.n,
-                               d->name.p);
-  RecType *rec = rec_intern(d, owner, str_from(mangled));
+  char *base = arena_printf("%.*s.%.*s", (int)owner->path.n, owner->path.p, (int)d->name.n,
+                            d->name.p);
+  SB sb = {0};
+  sb_printf(&sb, "%s[", base);
+  for (size_t i = 0; i < targs.n; i++) {
+    if (i)
+      sb_push(&sb, ',');
+    sb_append_c(&sb, ((Type *)targs.items[i])->mangled);
+  }
+  sb_push(&sb, ']');
+  Str mangled = sb_finish(&sb);
+  RecType *rec = rec_intern(d, owner, mangled);
+  if (!rec->env) {
+    rec->env = arena_alloc_zeroed(sizeof(Map));
+    for (size_t i = 0; i < d->tparams.n; i++)
+      map_put(rec->env, str_from(d->tparams.items[i]), targs.items[i]);
+    rec->targs = targs;
+  }
   Type *t = ty_newk(sym->kind == SY_STRUCT ? TY_STRUCT : TY_ENUM);
   t->rec = rec;
-  return ty_intern2(str_from(mangled), t);
+  return ty_intern2(mangled, t);
+}
+
+static Type *named_type(Sym *sym, Module *owner, TypeAst *ta) {
+  Decl *d = sym->decl;
+  size_t nparams = d->tparams.n;
+  size_t ntargs = ta ? ta->targs.n : 0;
+  if (nparams == 0 && ntargs == 0) {
+    char *base = arena_printf("%.*s.%.*s", (int)owner->path.n, owner->path.p, (int)d->name.n,
+                              d->name.p);
+    RecType *rec = rec_intern(d, owner, str_from(base));
+    Type *t = ty_newk(sym->kind == SY_STRUCT ? TY_STRUCT : TY_ENUM);
+    t->rec = rec;
+    return ty_intern2(str_from(base), t);
+  }
+  if (ntargs == 0) {
+    // bare generic name: inside an instantiation clone (env all concrete) it
+    // names the concrete instance; inside the definition itself it names the
+    // template; anywhere else it is an error
+    bool all_bound = true, any_param = false;
+    Vec targs = {0};
+    for (size_t i = 0; i < d->tparams.n; i++) {
+      Type *tv = g_tenv ? map_get(g_tenv, str_from(d->tparams.items[i])) : NULL;
+      if (!tv || tv->kind == TY_ERR) {
+        all_bound = false;
+        break;
+      }
+      if (tv->kind == TY_PARAM)
+        any_param = true;
+      vec_push(&targs, tv);
+    }
+    if (all_bound && !any_param)
+      return inst_from_targs(sym, owner, targs);
+    if (all_bound && any_param) {
+      Type *t = ty_newk(sym->kind == SY_STRUCT ? TY_STRUCT : TY_ENUM);
+      t->rec = ensure_template(d, owner);
+      return t; // template reference (self position in a template signature)
+    }
+    if (ta)
+      err_at(ta->file, ta->line, ta->col, "generic type `%s` needs type arguments",
+             str_to_c(d->name));
+    return ty_err_;
+  }
+  if (nparams != ntargs) {
+    err_at(ta->file, ta->line, ta->col, "`%s` takes %zu type arguments, got %zu",
+           str_to_c(d->name), nparams, ntargs);
+    return ty_err_;
+  }
+  Vec targs = {0};
+  for (size_t i = 0; i < ntargs; i++) {
+    Type *targ = resolve_type_in_module(owner, ta->targs.items[i]);
+    if (targ->kind == TY_INT_LIT)
+      targ = ty_prim(PRIM_I32);
+    if (targ->kind == TY_FLOAT_LIT)
+      targ = ty_prim(PRIM_F64);
+    if (targ->kind == TY_ERR)
+      return ty_err_;
+    vec_push(&targs, targ);
+  }
+  return inst_from_targs(sym, owner, targs);
 }
 
 Type *struct_field_type(RecType *rec, size_t i) {
@@ -411,11 +829,14 @@ Type *struct_field_type(RecType *rec, size_t i) {
     rec->resolving = true;
     Decl *d = rec->decl;
     Module *saved = cur_module;
+    Map *saved_env = g_tenv;
     cur_module = rec->owner;
+    g_tenv = (Map *)rec->env;
     for (size_t j = 0; j < d->fields.n; j++) {
       FieldAst *fa = d->fields.items[j];
       vec_push(&rec->field_types, resolve_type_in_module(rec->owner, fa->ty));
     }
+    g_tenv = saved_env;
     rec->resolving = false;
     rec->fields_done = true;
     cur_module = saved;
@@ -459,6 +880,13 @@ static Type *resolve_type_in_module(Module *m, TypeAst *ta) {
   case TA_NAMED: {
     Str last = str_from(ta->path.items[ta->path.n - 1]);
     if (ta->path.n == 1) {
+      if (g_tenv && ta->targs.n == 0) {
+        Type *tv = map_get(g_tenv, last);
+        if (tv) {
+          result = tv;
+          break;
+        }
+      }
       Sym *sym = map_get(&m->syms, last);
       if (!sym || (sym->kind != SY_STRUCT && sym->kind != SY_ENUM)) {
         if (prelude_module && prelude_module != m)
@@ -1082,10 +1510,15 @@ static Type *check_field_access(Expr *e, Type *expected) {
           vs->kind = SY_VARIANT;
           vs->name = e->sv;
           vs->type = sym->type;
+          // unit variant of a generic enum: take the expected instantiation
+          // when the context pins one (`let x: Option[i32] = Option.None`)
+          if (sym->type->rec && sym->type->rec->is_template && expected &&
+              expected->kind == TY_ENUM && expected->rec->decl == d)
+            vs->type = expected;
           vs->decl = d;
           vs->variant_index = (int)i;
           e->sym = vs;
-          e->typed = sym->type;
+          e->typed = vs->type;
           return e->typed;
         }
       }
@@ -1102,18 +1535,20 @@ static Type *check_field_access(Expr *e, Type *expected) {
 // A resolved call target.
 typedef struct CallTarget {
   enum { CT_FN, CT_EXTERN, CT_VARIANT, CT_INDIRECT, CT_NONE } kind;
-  Sym *sym;         // CT_FN/CT_EXTERN
-  Type *fn_type;    // resolved signature (params include self for methods)
-  int variant;      // CT_VARIANT: variant index
-  Type *enum_type;  // CT_VARIANT
-  bool is_method;   // callee supplies self as args[0]
-  bool is_ctor;     // struct-variant with named args
+  Sym *sym;          // CT_FN/CT_EXTERN
+  Type *fn_type;     // resolved signature (params include self for methods)
+  int variant;       // CT_VARIANT: variant index
+  Type *enum_type;   // CT_VARIANT
+  bool is_method;    // callee supplies self as args[0]
+  bool is_ctor;      // struct-variant with named args
+  RecType *inst_rec; // method found on a generic template: the receiver's
+                     // instantiation the call must be specialized for
 } CallTarget;
 
 static Type *deref_to_struct(Type *t) {
   while (t && t->kind == TY_PTR)
     t = t->elem;
-  return t && (t->kind == TY_STRUCT) ? t : NULL;
+  return t && (t->kind == TY_STRUCT || t->kind == TY_ENUM) ? t : NULL;
 }
 
 static CallTarget resolve_callee(Expr *callee) {
@@ -1208,6 +1643,24 @@ static CallTarget resolve_callee(Expr *callee) {
           return ct;
         }
       }
+      // generic receiver: the methods live on the template — the call is
+      // specialized for this instantiation in check_call
+      if (rec->is_template == false && rec->decl->templ) {
+        RecType *tmpl = rec->decl->templ;
+        for (size_t i = 0; i < tmpl->methods.n; i++) {
+          Sym *m = tmpl->methods.items[i];
+          if (str_eq(m->name, callee->sv)) {
+            ct.kind = CT_FN;
+            ct.sym = m;
+            ct.fn_type = m->type;
+            ct.is_method = true;
+            ct.inst_rec = rec;
+            callee->sym = m;
+            callee->a->typed = bt;
+            return ct;
+          }
+        }
+      }
     }
     ERR(callee, "no method `%s` for `%s`", str_to_c(callee->sv), ty_name(bt));
     return ct;
@@ -1270,8 +1723,114 @@ static Type *check_call(Expr *e, Type *expected) {
     e->typed = ty_err_;
     return e->typed;
   }
+  // generic call: infer the type arguments and specialize
+  if (ct.kind == CT_FN &&
+      (ct.inst_rec || (ct.sym->decl->templated && ct.sym->decl->tparams.n))) {
+    Map *env = arena_alloc_zeroed(sizeof(Map));
+    Vec names = {0};
+    if (ct.inst_rec) {
+      Decl *rd = ct.inst_rec->decl;
+      for (size_t i = 0; i < rd->tparams.n && i < ct.inst_rec->targs.n; i++) {
+        vec_push(&names, rd->tparams.items[i]);
+        map_put(env, str_from(rd->tparams.items[i]), ct.inst_rec->targs.items[i]);
+      }
+    }
+    for (size_t i = 0; i < ct.sym->decl->tparams.n; i++)
+      vec_push(&names, ct.sym->decl->tparams.items[i]);
+    Type *fn_t = ct.fn_type; // template signature
+    size_t nparams = fn_t->params.n;
+    size_t first_arg = ct.is_method ? 1 : 0;
+    if (ct.is_method) {
+      Type *recv = e->a->a->typed;
+      if (!recv)
+        recv = check_expr(e->a->a, NULL);
+      infer_targs(fn_t->params.items[0], recv, env);
+    }
+    if (e->args.n + first_arg != nparams)
+      ERR(e, "function takes %zu arguments, got %zu", nparams - first_arg, e->args.n);
+    for (size_t i = 0; i < e->args.n; i++) {
+      Type *at = check_expr(e->args.items[i], NULL);
+      infer_targs(fn_t->params.items[first_arg + i], at, env);
+    }
+    // untyped literals adapt through a direct `-> T` return
+    if (expected && fn_t->ret && fn_t->ret->kind == TY_PARAM) {
+      Type *targ = map_get(env, str_from(fn_t->ret->mangled));
+      if (targ && targ->kind == TY_INT_LIT && ty_is_int(expected))
+        map_put(env, str_from(fn_t->ret->mangled), expected);
+      else if (targ && targ->kind == TY_FLOAT_LIT && ty_is_float(expected))
+        map_put(env, str_from(fn_t->ret->mangled), expected);
+    }
+    Map *saved_env = g_tenv;
+    g_tenv = NULL;
+    Sym *inst = instantiate_fn(ct.sym, &names, env, e);
+    g_tenv = saved_env;
+    ct.sym = inst;
+    ct.fn_type = inst->type;
+    ct.inst_rec = NULL;
+    e->a->sym = inst; // lower emits the call against the instantiation
+  }
   if (ct.kind == CT_VARIANT) {
-    VariantAst *v = ((Decl *)ct.enum_type->rec->decl)->variants.items[ct.variant];
+    Type *et = ct.enum_type;
+    VariantAst *v = ((Decl *)et->rec->decl)->variants.items[ct.variant];
+    // generic enum: infer the type arguments from the payload values
+    if (et->rec->is_template) {
+      Map *env = arena_alloc_zeroed(sizeof(Map));
+      Decl *ed = et->rec->decl;
+      size_t np = v->vkind == VAR_TUPLE ? v->types.n : v->vkind == VAR_STRUCT ? v->fields.n : 0;
+      for (size_t i = 0; i < e->args.n && i < np; i++) {
+        int fidx = (int)i;
+        if (v->vkind == VAR_STRUCT) {
+          char *nm = e->arg_names.n > i ? e->arg_names.items[i] : NULL;
+          fidx = -1;
+          for (size_t j = 0; j < v->fields.n; j++)
+            if (nm && str_eq_c(((FieldAst *)v->fields.items[j])->name, nm)) {
+              fidx = (int)j;
+              break;
+            }
+          if (fidx < 0)
+            continue;
+        }
+        Type *at = check_expr(e->args.items[i], NULL);
+        infer_targs(variant_field_type(et, ct.variant, fidx), at, env);
+      }
+      for (size_t i = 0; i < ed->tparams.n; i++) {
+        Type *targ = map_get(env, str_from(ed->tparams.items[i]));
+        if (!targ || targ->kind == TY_PARAM) {
+          ERR(e, "cannot infer `%s` for `%s`", (char *)ed->tparams.items[i],
+              str_to_c(ed->name));
+          e->typed = ty_err_;
+          return e->typed;
+        }
+      }
+      // build the concrete instance
+      SB msb = {0};
+      sb_printf(&msb, "%.*s.%.*s[", (int)((Module *)et->rec->owner)->path.n,
+                ((Module *)et->rec->owner)->path.p, (int)ed->name.n, ed->name.p);
+      Vec targs = {0};
+      for (size_t i = 0; i < ed->tparams.n; i++) {
+        Type *targ = map_get(env, str_from(ed->tparams.items[i]));
+        if (targ->kind == TY_INT_LIT)
+          targ = ty_prim(PRIM_I32);
+        if (targ->kind == TY_FLOAT_LIT)
+          targ = ty_prim(PRIM_F64);
+        if (i)
+          sb_push(&msb, ',');
+        sb_append_c(&msb, targ->mangled);
+        vec_push(&targs, targ);
+      }
+      sb_push(&msb, ']');
+      Str mangled = sb_finish(&msb);
+      RecType *rec = rec_intern(ed, et->rec->owner, mangled);
+      if (!rec->env) {
+        rec->env = arena_alloc_zeroed(sizeof(Map));
+        for (size_t i = 0; i < ed->tparams.n; i++)
+          map_put(rec->env, str_from(ed->tparams.items[i]), targs.items[i]);
+        rec->targs = targs;
+      }
+      Type *inst = ty_newk(TY_ENUM);
+      inst->rec = rec;
+      et = ty_intern2(mangled, inst);
+    }
     size_t npayload = v->vkind == VAR_TUPLE ? v->types.n : v->vkind == VAR_STRUCT ? v->fields.n : 0;
     if (npayload == 0) {
       if (e->args.n != 0)
@@ -1282,7 +1841,7 @@ static Type *check_call(Expr *e, Type *expected) {
             e->args.n);
       } else {
         for (size_t i = 0; i < e->args.n; i++) {
-          Type *pt = resolve_type_in_module(cur_module, v->types.items[i]);
+          Type *pt = variant_field_type(et, ct.variant, (int)i);
           require(check_expr(e->args.items[i], pt), pt, e->args.items[i], "variant payload");
         }
       }
@@ -1298,8 +1857,9 @@ static Type *check_call(Expr *e, Type *expected) {
         for (size_t j = 0; j < v->fields.n; j++) {
           FieldAst *fa = v->fields.items[j];
           if (str_eq_c(fa->name, nm)) {
-            Type *ft = resolve_type_in_module(cur_module, fa->ty);
-            require(check_expr(e->args.items[i], ft), ft, (Expr *)e->args.items[i], "variant field");
+            Type *ft = variant_field_type(et, ct.variant, (int)j);
+            require(check_expr(e->args.items[i], ft), ft, (Expr *)e->args.items[i],
+                    "variant field");
             found = true;
             break;
           }
@@ -1311,7 +1871,7 @@ static Type *check_call(Expr *e, Type *expected) {
         ERR(e, "variant `%s` needs %zu fields, got %zu", str_to_c(v->name), v->fields.n,
             e->args.n);
     }
-    e->typed = ct.enum_type;
+    e->typed = et;
     return e->typed;
   }
 
@@ -1443,10 +2003,11 @@ static Type *check_match(Expr *e, Type *expected) {
                 bs = arena_alloc_zeroed(sizeof(Sym));
                 bs->kind = SY_LOCAL;
                 bs->name = str_from(nm);
-                bs->type = resolve_type_in_module(cur_module, v->types.items[b]);
+                bs->type = variant_field_type(scrut, arm->variant_index, (int)b);
                 bs->local_id = next_local_id++;
               }
               vec_push(&arm->bind_syms, bs);
+              vec_push(&arm->bind_fidx, (void *)(long)b);
             }
           } else if (arm->pk == PAT_STRUCT && v->vkind == VAR_STRUCT) {
             // every pattern field must exist on the variant; bindings in
@@ -1464,10 +2025,11 @@ static Type *check_match(Expr *e, Type *expected) {
                     bs = arena_alloc_zeroed(sizeof(Sym));
                     bs->kind = SY_LOCAL;
                     bs->name = str_from(nm);
-                    bs->type = resolve_type_in_module(cur_module, vf->ty);
+                    bs->type = variant_field_type(scrut, arm->variant_index, (int)j2);
                     bs->local_id = next_local_id++;
                   }
                   vec_push(&arm->bind_syms, bs);
+                  vec_push(&arm->bind_fidx, (void *)(long)j2);
                   break;
                 }
               }
@@ -1811,11 +2373,27 @@ static void resolve_sym_type(Sym *sym) {
     return;
   Decl *d = sym->decl;
   Module *saved = cur_module;
+  Map *saved_env = g_tenv;
   cur_module = sym->owner;
   switch (sym->kind) {
   case SY_FN:
   case SY_EXTERN: {
     Vec ps = {0};
+    if (d->tparams.n) {
+      g_tenv = template_env_of(d);
+      d->templated = true;
+    }
+    // a method/associated fn on a generic type resolves under that type's
+    // template environment, so `self: Pair` and `-> A` both see the tparams;
+    // instantiations already carry their concrete env — don't overwrite it
+    if (d->recv.n && !d->tenv && sym->owner) {
+      Sym *rs = map_get(&((Module *)sym->owner)->syms, d->recv);
+      if (rs && (rs->kind == SY_STRUCT || rs->kind == SY_ENUM) && rs->decl->tparams.n) {
+        RecType *tmpl = ensure_template(rs->decl, (Module *)sym->owner);
+        g_tenv = (Map *)tmpl->env;
+        d->templated = true;
+      }
+    }
     for (size_t i = 0; i < d->params.n; i++) {
       Param *pa = d->params.items[i];
       Type *pt = resolve_type_in_module(sym->owner, pa->ty);
@@ -1836,7 +2414,13 @@ static void resolve_sym_type(Sym *sym) {
   }
   case SY_STRUCT:
   case SY_ENUM:
-    sym->type = named_type(sym, sym->owner, NULL);
+    if (d->tparams.n) {
+      Type *t = ty_newk(sym->kind == SY_STRUCT ? TY_STRUCT : TY_ENUM);
+      t->rec = ensure_template(d, sym->owner);
+      sym->type = t;
+    } else {
+      sym->type = named_type(sym, sym->owner, NULL);
+    }
     break;
   case SY_STATIC:
   case SY_CONST: {
@@ -1858,6 +2442,7 @@ static void resolve_sym_type(Sym *sym) {
     break;
   }
   cur_module = saved;
+  g_tenv = saved_env;
 }
 
 int check_module(Decl *module) {
@@ -1947,7 +2532,7 @@ int check_module(Decl *module) {
     }
   }
 
-  // phase 3: fn bodies
+  // phase 3: fn bodies (templates are checked per instantiation, not here)
   for (size_t i = 0; i < g_module_order.n; i++) {
     Module *m = g_module_order.items[i];
     if (m->checked)
@@ -1956,9 +2541,20 @@ int check_module(Decl *module) {
     for (size_t k = 0; k < m->syms.keys.n; k++) {
       Str *key = m->syms.keys.items[k];
       Sym *sym = map_get(&m->syms, *key);
-      if ((sym->kind == SY_FN) && sym->decl && sym->decl->body.n)
+      if ((sym->kind == SY_FN) && sym->decl && sym->decl->body.n && !sym->decl->templated &&
+          !sym->decl->tenv)
         check_fn_body(sym->decl, sym);
     }
+  }
+  // instantiation worklist: each clone's body re-checked under its concrete
+  // environment; checking may discover further instantiations, so the loop
+  // runs until the queue settles
+  for (size_t wl = 0; wl < g_instantiations.n; wl++) {
+    Sym *sym = g_instantiations.items[wl];
+    Map *saved_env = g_tenv;
+    g_tenv = (Map *)sym->decl->tenv;
+    check_fn_body(sym->decl, sym);
+    g_tenv = saved_env;
   }
   cur_module = NULL;
   return diag_count() - before;
@@ -1988,7 +2584,10 @@ const char *sym_symbol(Sym *s) {
     return s->symbol;
   }
   Module *m = s->owner;
-  s->symbol = arena_printf("rho_%s__%s", sanitize(str_to_c(m->path)), str_to_c(s->name));
+  // instantiation names carry type arguments (`swap$i32,i64`) — sanitize so
+  // the assembler sees one legal token
+  s->symbol = arena_printf("rho_%s__%s", sanitize(str_to_c(m->path)),
+                           sanitize(str_to_c(s->name)));
   return s->symbol;
 }
 
@@ -2052,11 +2651,16 @@ static void layout_rec(RecType *rec) {
   } else {
     align = 4;
     size = 4; // tag
+    Map *saved_env = g_tenv;
+    g_tenv = (Map *)rec->env;
     for (size_t i = 0; i < d->variants.n; i++) {
       VariantAst *v = d->variants.items[i];
       Vec *foff = arena_alloc(sizeof(Vec));
       *foff = (Vec){0};
+      Vec *ftys = arena_alloc(sizeof(Vec));
+      *ftys = (Vec){0};
       vec_push(&rec->var_offsets, foff);
+      vec_push(&rec->var_types, ftys);
       if (v->vkind == VAR_UNIT) {
         vec_push(&rec->var_poff, (void *)(long)4);
         continue;
@@ -2067,6 +2671,7 @@ static void layout_rec(RecType *rec) {
         TypeAst *fta = v->vkind == VAR_TUPLE ? v->types.items[j]
                                             : ((FieldAst *)v->fields.items[j])->ty;
         Type *vt = resolve_type_in_module(rec->owner, fta);
+        vec_push(ftys, vt);
         int64_t va = type_align(vt);
         align = align > va ? align : va;
         off = round_up_i64(off, va);
@@ -2076,6 +2681,7 @@ static void layout_rec(RecType *rec) {
       vec_push(&rec->var_poff, (void *)(long)(foff->n ? (long)foff->items[0] : 4));
       size = size > off ? size : off;
     }
+    g_tenv = saved_env;
   }
   cur_module = saved;
   rec->align = align;
@@ -2104,6 +2710,16 @@ int64_t variant_field_offset(Type *enum_t, int variant, int field) {
       return (long)foff->items[field];
   }
   return 4;
+}
+
+Type *variant_field_type(Type *enum_t, int variant, int field) {
+  layout_rec(enum_t->rec);
+  if ((size_t)variant < enum_t->rec->var_types.n) {
+    Vec *ftys = enum_t->rec->var_types.items[variant];
+    if ((size_t)field < ftys->n)
+      return ftys->items[field];
+  }
+  return ty_err_;
 }
 
 const char *prelude_symbol(const char *name) {

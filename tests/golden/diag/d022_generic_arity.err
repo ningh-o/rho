@@ -1,0 +1,1 @@
+tests/diag/d022_generic_arity.rho:7:11: error: `Pair` takes 2 type arguments, got 1

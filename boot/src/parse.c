@@ -154,6 +154,19 @@ static Param *parse_param(Parser *p) {
   return pa;
 }
 
+// optional `[T, U]` type-parameter list (fn/struct/enum declarations)
+static void parse_tparams(Parser *p, Vec *out) {
+  if (!accept(p, P_LBRACKET))
+    return;
+  if (!at(p, P_RBRACKET)) {
+    do {
+      Token *id = expect_ident(p, "type parameter name");
+      vec_push(out, str_to_c(id->text));
+    } while (accept(p, P_COMMA));
+  }
+  expect(p, P_RBRACKET, "`]`");
+}
+
 static Stmt *parse_stmt(Parser *p);
 
 static Stmt *parse_block_stmts(Parser *p, Tok end) {
@@ -731,6 +744,7 @@ Decl *parse_file(Str path, Str src) {
         Token *m = expect_ident(&p, "method name");
         d->name = m->text;
       }
+      parse_tparams(&p, &d->tparams);
       expect(&p, P_LPAREN, "`(`");
       if (!at(&p, P_RPAREN)) {
         do {
@@ -747,6 +761,7 @@ Decl *parse_file(Str path, Str src) {
       d->kind = DK_STRUCT;
       Token *id = expect_ident(&p, "struct name");
       d->name = id->text;
+      parse_tparams(&p, &d->tparams);
       expect(&p, P_LBRACE, "`{`");
       while (!at(&p, P_RBRACE) && !at(&p, TK_EOF)) {
         Token *fn = expect_ident(&p, "field name");
@@ -766,6 +781,7 @@ Decl *parse_file(Str path, Str src) {
       d->kind = DK_ENUM;
       Token *id = expect_ident(&p, "enum name");
       d->name = id->text;
+      parse_tparams(&p, &d->tparams);
       expect(&p, P_LBRACE, "`{`");
       uint64_t next_disc = 0;
       while (!at(&p, P_RBRACE) && !at(&p, TK_EOF)) {

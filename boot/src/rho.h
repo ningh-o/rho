@@ -203,6 +203,7 @@ typedef struct MatchArm {
   Vec pat_fields; // STRUCT: FieldAst* (name + optional binding name)
   Vec bind_syms;  // checker: Sym* payload bindings, parallel to pat_names /
                   // pat_fields (NULL entry = `_`)
+  Vec bind_fidx;  // checker: payload field index per binding (as long)
   Expr *body;     // expression or block
   Str file;
   int line, col;
@@ -299,13 +300,16 @@ typedef struct Decl {
   Vec variants;      // ENUM: VariantAst*
   Expr *init;        // STATIC/CONST
   Vec body;          // FN: Stmt*
-  Vec tparams;       // FN/STRUCT/ENUM: char* (0.0.5)
+  Vec tparams;       // FN/STRUCT/ENUM: char* type parameter names
   bool is_method;    // FN: first param named self
   Str recv;          // FN method: receiver type name (`fn Point.sum`)
   Vec decls;         // module root only: Decl*
   Map *symbols;      // checker: module-level symbols
   void *ceval_cache; // const-eval memo (checker-owned struct)
   bool ceval_cache_ok;
+  void *tenv;        // checker: Map* name->Type* env this decl resolves under
+  bool templated;    // checker: signature mentions a type parameter (never lowered)
+  void *templ;       // checker: RecType* of the generic definition (struct/enum)
 } Decl;
 
 Decl *parse_file(Str path, Str src); // full module: parse + check happens later
@@ -327,7 +331,7 @@ typedef enum TypeKind {
   TY_U64, TY_F32, TY_F64, TY_STRING, TY_USIZE, TY_ISIZE,
   TY_INT_LIT, TY_FLOAT_LIT, TY_NULL,
   TY_ARRAY, TY_SLICE, TY_PTR, TY_WEAK, TY_FN, TY_STRUCT, TY_ENUM, TY_ERR,
-  TY_MODULE,
+  TY_MODULE, TY_PARAM,
 } TypeKind;
 
 typedef struct RecType RecType;
@@ -336,15 +340,18 @@ typedef struct Type Type;
 struct RecType {
   Decl *decl;
   void *owner;      // Module*
-  Vec targs;
+  Vec targs;        // generic instantiation: Type* per tparam (TY_PARAM on the template)
   Str mangled;
+  void *env;        // Map* tparam name -> Type* (generic instantiations/templates)
   Vec field_types;  // Type*, parallel to decl->fields
   bool fields_done;
   bool resolving;
+  bool is_template; // the unsubstituted generic definition
   Vec methods;      // Sym*
   Vec offsets;      // int64_t field offsets (structs), stored as long
   Vec var_poff;     // ENUM: int64_t payload base offset per variant (as long)
   Vec var_offsets;  // ENUM: Vec* of int64_t payload field offsets per variant
+  Vec var_types;    // ENUM: Vec* of Type* payload field types per variant
   int64_t size;     // layout, computed after check
   int64_t align;
 };

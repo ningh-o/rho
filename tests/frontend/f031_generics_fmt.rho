@@ -1,0 +1,30 @@
+fn id[T](x: T) -> T {
+  return x;
+}
+
+struct Pair[A, B] {
+  a: A,
+  b: B,
+}
+
+fn Pair.sum(self: *Pair) -> i64 {
+  return (self.a as i64) + (self.b as i64);
+}
+
+enum Opt[T] {
+  Some(T),
+  None,
+}
+
+fn main() -> i32 {
+  let p: *Pair[i32, i64] = new Pair[i32, i64] { a: 1, b: 2 };
+  let o: Opt[i32] = Opt.Some(3);
+  return id(4) + (p.sum() as i32) + o.sum2();
+}
+
+fn Opt.sum2(self: Opt) -> i32 {
+  return match self {
+    Opt.Some(v) => v,
+    Opt.None => 0,
+  };
+}

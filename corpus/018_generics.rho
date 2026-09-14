@@ -1,0 +1,47 @@
+// exit: 53
+fn id[T](x: T) -> T {
+  return x;
+}
+
+fn swap[A, B](p: *Pair[A, B]) -> *Pair[B, A] {
+  return new Pair[B, A] { a: p.b, b: p.a };
+}
+
+struct Pair[A, B] {
+  a: A,
+  b: B,
+}
+
+fn Pair.sum(self: *Pair) -> i64 {
+  return (self.a as i64) + (self.b as i64);
+}
+
+enum Opt[T] {
+  Some(T),
+  None,
+}
+
+fn Opt.or(self: Opt, alt: T) -> T {
+  return match self {
+    Opt.Some(v) => v,
+    Opt.None => alt,
+  };
+}
+
+fn twice[T](x: T) -> *Pair[T, T] {
+  return new Pair[T, T] { a: x, b: x };
+}
+
+fn main() -> i32 {
+  let a: i32 = id(7);
+  let b: i64 = id(11);
+  let p: *Pair[i32, i64] = new Pair[i32, i64] { a: 3, b: 4 };
+  let q: *Pair[i64, i32] = swap(p);
+  let s: i64 = p.sum();
+  let nested: *Pair[i32, i32] = twice(5);
+  let o: Opt[i32] = Opt.Some(9);
+  let n: Opt[i32] = Opt.None;
+  let r: i32 = o.or(1) + n.or(2);
+  let m: i64 = (nested.a + nested.b) as i64;
+  return ((a as i64) + b + q.a + (q.b as i64) + s + m + (r as i64)) as i32;
+}

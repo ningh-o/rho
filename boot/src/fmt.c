@@ -453,6 +453,18 @@ static void f_stmts(SB *sb, Vec *stmts) {
   }
 }
 
+static void f_tparams(SB *sb, Vec *tparams) {
+  if (!tparams || tparams->n == 0)
+    return;
+  sb_push(sb, '[');
+  for (size_t i = 0; i < tparams->n; i++) {
+    if (i)
+      sb_append_c(sb, ", ");
+    sb_append_c(sb, tparams->items[i]);
+  }
+  sb_push(sb, ']');
+}
+
 static void f_params(SB *sb, Vec *params) {
   sb_push(sb, '(');
   for (size_t i = 0; i < params->n; i++) {
@@ -491,7 +503,12 @@ static void f_decl(SB *sb, Decl *d) {
     if (d->pub_)
       sb_append_c(sb, "pub ");
     sb_append_c(sb, "fn ");
+    if (d->recv.n) {
+      sb_append(sb, d->recv);
+      sb_push(sb, '.');
+    }
     sb_append(sb, d->name);
+    f_tparams(sb, &d->tparams);
     f_params(sb, &d->params);
     if (d->ret) {
       sb_append_c(sb, " -> ");
@@ -509,6 +526,7 @@ static void f_decl(SB *sb, Decl *d) {
       sb_append_c(sb, "pub ");
     sb_append_c(sb, "struct ");
     sb_append(sb, d->name);
+    f_tparams(sb, &d->tparams);
     if (d->fields.n == 0) {
       sb_append_c(sb, " {}");
       break;
@@ -532,6 +550,7 @@ static void f_decl(SB *sb, Decl *d) {
       sb_append_c(sb, "pub ");
     sb_append_c(sb, "enum ");
     sb_append(sb, d->name);
+    f_tparams(sb, &d->tparams);
     sb_append_c(sb, " {");
     f_indent++;
     for (size_t i = 0; i < d->variants.n; i++) {

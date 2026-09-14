@@ -848,7 +848,8 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
           if (!bs)
             continue;
           Type *ft = bs->type;
-          int64_t off = variant_field_offset(scrut_t, arm->variant_index, (int)b);
+          int fidx = arm->bind_fidx.n > b ? (int)(long)arm->bind_fidx.items[b] : (int)b;
+          int64_t off = variant_field_offset(scrut_t, arm->variant_index, fidx);
           IRVreg *faddr = v_addi(c, scrut, off);
           IRSlot *slot = new_slot(c, type_size(ft), type_align(ft), str_to_c(bs->name));
           bind(c, bs->name, slot);
@@ -1549,7 +1550,7 @@ void lower_program(void) {
     for (size_t k = 0; k < m->syms.keys.n; k++) {
       Str *key = m->syms.keys.items[k];
       Sym *sym = map_get(&m->syms, *key);
-      if (sym->kind == SY_FN && sym->decl && sym->decl->body.n)
+      if (sym->kind == SY_FN && sym->decl && sym->decl->body.n && !sym->decl->templated)
         vec_push(&g_ir_fns, lower_fn(sym));
       else if (sym->kind == SY_STATIC)
         lower_static(sym);
