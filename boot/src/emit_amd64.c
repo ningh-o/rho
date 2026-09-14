@@ -607,8 +607,10 @@ void emit_amd64(Target target, SB *out) {
     emit_fn(&e, g_ir_fns.items[i]);
 
   // string literals + float consts in rodata; every literal carries an
-  // immortal rc header {sentinel, 0, null} so slice traffic no-ops on it
-  sb_append_c(out, is_mac ? ".section __TEXT,__cstring,cstring_literals\n"
+  // immortal rc header {sentinel, 0, null} so slice traffic no-ops on it.
+  // Mach-O side needs a non-merging section: ld64 folds/reorders __cstring
+  // literals, which would break the buf/+24 pairing
+  sb_append_c(out, is_mac ? ".section __TEXT,__rhostr,regular\n"
                           : ".section .rodata\n");
   for (size_t i = 0; i < g_ir_fns.n; i++) {
     IRFn *fn = g_ir_fns.items[i];

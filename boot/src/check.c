@@ -70,8 +70,14 @@ bool ty_is_signed(Type *t) {
 }
 
 bool ty_is_managed(Type *t) {
+  if (!t)
+    return false;
   switch (t->kind) {
-  case TY_PTR: case TY_WEAK: case TY_SLICE: case TY_STRING: case TY_FN:
+  // raw byte pointers (malloc results, extern buffers) carry no rc header;
+  // a pointer is reference-counted exactly when it points at a `new` object
+  case TY_PTR:
+    return t->elem && (t->elem->kind == TY_STRUCT || t->elem->kind == TY_ENUM);
+  case TY_WEAK: case TY_SLICE: case TY_STRING: case TY_FN:
     return true;
   case TY_ARRAY: return ty_is_managed(t->elem);
   case TY_STRUCT:
@@ -1847,6 +1853,34 @@ static Type *check_call(Expr *e, Type *expected) {
     e->typed = ty_prim(PRIM_USIZE);
     return e->typed;
   }
+  // weak.from(p): borrow a `new` object as a weak reference
+  if (e->a->kind == EX_FIELD && e->a->a->kind == EX_NAME &&
+      str_eq_c(e->a->a->sv, "weak") && str_eq_c(e->a->sv, "from")) {
+    if (e->args.n != 1) {
+      ERR(e, "weak.from takes one argument");
+      e->typed = ty_err_;
+      return e->typed;
+    }
+    Type *t = check_expr(e->args.items[0], NULL);
+    if (t->kind != TY_PTR ||
+        (t->elem->kind != TY_STRUCT && t->elem->kind != TY_ENUM)) {
+      ERR(e, "weak.from needs a pointer to a `new` object, found `%s`", ty_name(t));
+      e->typed = ty_err_;
+      return e->typed;
+    }
+    e->typed = ty_weak(t->elem);
+    return e->typed;
+  }
+  // w.get(): follow a weak reference; null once the object is gone
+  if (e->a->kind == EX_FIELD && str_eq_c(e->a->sv, "get")) {
+    Type *bt = e->a->a->typed ? e->a->a->typed : check_expr(e->a->a, NULL);
+    if (bt && bt->kind == TY_WEAK) {
+      if (e->args.n != 0)
+        ERR(e, "get takes no arguments");
+      e->typed = ty_ptr(bt->elem);
+      return e->typed;
+    }
+  }
 
   CallTarget ct = resolve_callee(e->a);
   if (ct.kind == CT_NONE) {
@@ -2711,7 +2745,7 @@ int check_module(Decl *module) {
 
 Module *g_prelude_module(void) { return prelude_module; }
 
-static const char *sanitize(const char *s) {
+const char *rho_sanitize(const char *s) {
   SB sb = {0};
   for (const char *p = s; *p; p++) {
     char c = *p;
@@ -2733,8 +2767,8 @@ const char *sym_symbol(Sym *s) {
   Module *m = s->owner;
   // instantiation names carry type arguments (`swap$i32,i64`) — sanitize so
   // the assembler sees one legal token
-  s->symbol = arena_printf("rho_%s__%s", sanitize(str_to_c(m->path)),
-                           sanitize(str_to_c(s->name)));
+  s->symbol = arena_printf("rho_%s__%s", rho_sanitize(str_to_c(m->path)),
+                           rho_sanitize(str_to_c(s->name)));
   return s->symbol;
 }
 

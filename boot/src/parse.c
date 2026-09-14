@@ -281,6 +281,13 @@ static Expr *parse_primary(Parser *p) {
     e->sv = start->text;
     return e;
   }
+  case KW_WEAK: {
+    // `weak.from(p)` — the weak namespace in expression position
+    advance(p);
+    NODE(e, EX_NAME);
+    e->sv = str_from("weak");
+    return e;
+  }
   case TK_IDENT: {
     advance(p);
     NODE(e, EX_NAME);

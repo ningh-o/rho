@@ -459,11 +459,11 @@ static void emit_term64(Emitter64 *e, IRIns *t) {
     int lbl = g_label64++;
     ld(e, cof, 1, false, "x8");
     sb_printf(e->out, "  cbz x8, Lcbf%d\n", lbl);
-    e->cur = tt;
+    // phi edge copies match preds against e->cur, which must stay the
+    // branching block for both arms (mirrors emit_amd64)
     emit_edge64(e, tt);
     sb_printf(e->out, "  b L%d_%d\n", e->fn->uid, tt->id);
     sb_printf(e->out, "Lcbf%d:\n", lbl);
-    e->cur = ff;
     emit_edge64(e, ff);
     sb_printf(e->out, "  b L%d_%d\n", e->fn->uid, ff->id);
   } else if (t->op == (IROp)OP_RET) {
@@ -531,7 +531,9 @@ void emit_arm64(Target target, SB *out) {
   for (size_t i = 0; i < g_ir_fns.n; i++)
     emit_fn64(&e, g_ir_fns.items[i]);
 
-  sb_append_c(out, ".section __TEXT,__cstring,cstring_literals\n");
+  // rc-headed literals must live in a non-merging section: ld64 folds and
+  // reorders __cstring literals, which would break the buf/+24 pairing
+  sb_append_c(out, ".section __TEXT,__rhostr,regular\n");
   for (size_t i = 0; i < g_ir_fns.n; i++) {
     IRFn *fn = g_ir_fns.items[i];
     for (size_t j = 0; j < fn->literals.n; j++) {

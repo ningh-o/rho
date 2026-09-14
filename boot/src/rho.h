@@ -425,6 +425,7 @@ extern Vec g_module_order; // Module*
 Module *g_prelude_module(void);
 // symbol name used in assembly for a fn/extern
 const char *sym_symbol(Sym *s);
+const char *rho_sanitize(const char *s);
 const char *prelude_symbol(const char *name);
 
 // ------------------------------------------------------------------ fmt ---

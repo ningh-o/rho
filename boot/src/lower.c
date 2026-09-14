@@ -495,6 +495,10 @@ static bool expr_owned(Expr *e) {
   case EX_CLOSURE:
     return true;
   case EX_CALL:
+    // weak.get() lends the object without taking a count: it is a borrow
+    if (e->a->kind == EX_FIELD && str_eq_c(e->a->sv, "get") && e->a->a &&
+        e->a->a->typed && ((Type *)e->a->a->typed)->kind == TY_WEAK)
+      return false;
     return ty_is_managed(e->typed);
   case EX_MAKE:
   case EX_MATCH:
@@ -701,9 +705,15 @@ static LCtx *rc_ctx(IRFn *lf) {
 }
 
 static void rc_runtime_build(void) {
-  // __rc_inc(p: *u8)
-  {
-    IRFn *lf = rc_new_fn("rho__rc_inc");
+  // count helpers come in two conventions: __rc_inc/__rc_dec take the DATA
+  // pointer (header at p-24 — *T values, closure envs), __rc_inch/__rc_dech
+  // take the HEADER directly (slice buf fields, which sub-slices share while
+  // ptr moves). Both null-check their argument.
+  for (int variant = 0; variant < 4; variant++) {
+    bool retain = (variant & 1) == 0;
+    bool from_data = (variant & 2) == 0;
+    IRFn *lf = rc_new_fn(
+        arena_printf("rho__rc_%s%s", retain ? "inc" : "dec", from_data ? "" : "h"));
     LCtx *c = rc_ctx(lf);
     IRSlot *ps = new_slot(c, 8, 8, "p");
     vec_push(&lf->params, ps);
@@ -713,35 +723,23 @@ static void rc_runtime_build(void) {
     IRBlock *cont = new_block(c), *done = new_block(c);
     emit_cbr(c, isnull, done, cont);
     use_block(c, cont);
-    IRVreg *h = v_addi(c, p, -24);
+    IRVreg *h = from_data ? v_addi(c, p, -24) : p;
     IRVreg *rc = v_load(c, h, IT_USIZE);
     IRVreg *top = v_binop(c, IR_SHR, rc, v_const(c, 63, IT_USIZE), IT_USIZE, false);
     IRVreg *immortal = v_cmp(c, CC_NE, top, v_const(c, 0, IT_USIZE), false);
-    IRBlock *bump = new_block(c);
-    emit_cbr(c, immortal, done, bump);
-    use_block(c, bump);
-    IRVreg *rc2 = v_binop(c, IR_ADD, rc, v_const(c, 1, IT_USIZE), IT_USIZE, true);
-    v_store(c, h, rc2);
-    emit_br(c, done);
-    use_block(c, done);
-    rc_finish(&g_ir_fns, lf);
-  }
-  // __rc_dec(p: *u8): on zero, run header.drop and free unless weak refs hold it
-  {
-    IRFn *lf = rc_new_fn("rho__rc_dec");
-    LCtx *c = rc_ctx(lf);
-    IRSlot *ps = new_slot(c, 8, 8, "p");
-    vec_push(&lf->params, ps);
-    vec_push(&lf->param_types, NULL);
-    IRVreg *p = v_load(c, v_slotaddr(c, ps), IT_PTR);
-    IRVreg *isnull = v_cmp(c, CC_EQ, p, v_const(c, 0, IT_PTR), false);
-    IRBlock *cont = new_block(c), *done = new_block(c);
-    emit_cbr(c, isnull, done, cont);
-    use_block(c, cont);
-    IRVreg *h = v_addi(c, p, -24);
-    IRVreg *rc = v_load(c, h, IT_USIZE);
-    IRVreg *top = v_binop(c, IR_SHR, rc, v_const(c, 63, IT_USIZE), IT_USIZE, false);
-    IRVreg *immortal = v_cmp(c, CC_NE, top, v_const(c, 0, IT_USIZE), false);
+    if (retain) {
+      IRBlock *bump = new_block(c);
+      emit_cbr(c, immortal, done, bump);
+      use_block(c, bump);
+      IRVreg *rc2 = v_binop(c, IR_ADD, rc, v_const(c, 1, IT_USIZE), IT_USIZE, true);
+      v_store(c, h, rc2);
+      emit_br(c, done);
+      use_block(c, done);
+      rc_finish(&g_ir_fns, lf);
+      continue;
+    }
+    // release: on zero, run header.drop (with the data pointer) and free
+    // unless weak refs hold it
     IRBlock *live = new_block(c);
     emit_cbr(c, immortal, done, live);
     use_block(c, live);
@@ -758,7 +756,7 @@ static void rc_runtime_build(void) {
     use_block(c, run_drop);
     Vec dargs = {0};
     IRArg *da = arena_alloc(sizeof(IRArg));
-    da->vreg = p;
+    da->vreg = from_data ? p : v_addi(c, h, 24);
     da->ty = NULL;
     vec_push(&dargs, da);
     IRIns *dc = emit(c, IR_CALL);
@@ -849,7 +847,8 @@ static void rc_runtime_build(void) {
     vec_push(&lf->params, ps);
     vec_push(&lf->param_types, NULL);
     IRVreg *p = v_load(c, v_slotaddr(c, ps), IT_PTR);
-    IRVreg *isnull = v_cmp(c, CC_EQ, p, v_const(c, 0, IT_PTR), false);
+    IRVreg *nullv = v_const(c, 0, IT_PTR); // before the branch: phi edges read it
+    IRVreg *isnull = v_cmp(c, CC_EQ, p, nullv, false);
     IRBlock *cont = new_block(c), *done = new_block(c);
     IRVreg *res = NULL;
     emit_cbr(c, isnull, done, cont);
@@ -862,7 +861,7 @@ static void rc_runtime_build(void) {
     use_block(c, done);
     // phi: null path -> 0, cont path -> h
     IRPhi *phi = emit_phi_in(c, done, IT_PTR);
-    phi_add(phi, lf->entry, v_const(c, 0, IT_PTR));
+    phi_add(phi, lf->entry, nullv);
     phi_add(phi, cont, h);
     res = phi->dst;
     emit_ret(c, res);
@@ -876,7 +875,8 @@ static void rc_runtime_build(void) {
     vec_push(&lf->params, hs);
     vec_push(&lf->param_types, NULL);
     IRVreg *h = v_load(c, v_slotaddr(c, hs), IT_PTR);
-    IRVreg *isnull = v_cmp(c, CC_EQ, h, v_const(c, 0, IT_PTR), false);
+    IRVreg *nullv = v_const(c, 0, IT_PTR); // before the branch: phi edges read it
+    IRVreg *isnull = v_cmp(c, CC_EQ, h, nullv, false);
     IRBlock *live = new_block(c), *done = new_block(c);
     emit_cbr(c, isnull, done, live);
     use_block(c, live);
@@ -892,8 +892,8 @@ static void rc_runtime_build(void) {
     emit_br(c, done);
     use_block(c, done);
     IRPhi *phi = emit_phi_in(c, done, IT_PTR);
-    phi_add(phi, lf->entry, v_const(c, 0, IT_PTR));
-    phi_add(phi, live, v_const(c, 0, IT_PTR));
+    phi_add(phi, lf->entry, nullv);
+    phi_add(phi, live, nullv);
     phi_add(phi, yes, data);
     emit_ret(c, phi->dst);
     vec_push(&g_ir_fns, lf);
@@ -923,7 +923,8 @@ static const char *value_fn_for(Type *t, bool retain) {
   Map *cache = retain ? &g_ret_fns : &g_rel_fns;
   if (map_has(cache, str_from(t->mangled)))
     return map_get(cache, str_from(t->mangled));
-  char *sym = arena_printf("rho__%s$%s", retain ? "ret" : "rel", t->mangled);
+  char *sym = arena_printf("rho__%s$%s", retain ? "ret" : "rel",
+                         rho_sanitize(t->mangled));
   map_put(cache, str_from(t->mangled), sym);
   IRFn *lf = rc_new_fn(sym);
   LCtx *c = rc_ctx(lf);
@@ -968,10 +969,12 @@ static void value_walk(LCtx *c, Type *t, IRVreg *addr, bool retain) {
   }
   case TY_SLICE:
   case TY_STRING: {
-    if (ty_is_managed(t->elem)) {
+    // strings are byte buffers: elem is NULL and the buffer refcount below is
+    // the whole story; only slices walk their elements
+    if (t->kind == TY_SLICE && ty_is_managed(t->elem)) {
       IRVreg *ptr = v_load(c, v_addi(c, addr, 8), IT_PTR);
       IRVreg *n = v_load(c, v_addi(c, addr, 16), IT_USIZE);
-      int64_t esz = t->kind == TY_STRING ? 1 : type_size(t->elem);
+      int64_t esz = type_size(t->elem);
       IRSlot *is = new_slot(c, 8, 8, "i");
       v_store(c, v_slotaddr(c, is), v_const(c, 0, IT_USIZE));
       IRBlock *hdr = new_block(c), *body = new_block(c), *done = new_block(c);
@@ -990,11 +993,10 @@ static void value_walk(LCtx *c, Type *t, IRVreg *addr, bool retain) {
       emit_br(c, hdr);
       use_block(c, done);
     }
+    // buf is the allocation header (sub-slices share it while ptr moves),
+    // so the count helpers take it directly
     IRVreg *buf = v_load(c, addr, IT_PTR);
-    if (retain)
-      rc_inc_v(c, buf);
-    else
-      rc_dec_v(c, buf);
+    rc_call1(c, retain ? "rho__rc_inch" : "rho__rc_dech", buf);
     return;
   }
   case TY_ARRAY: {
@@ -1365,6 +1367,9 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
       IRBlock *lhs_block = c->fn->cur;
       IRVreg *l = lv_expr(c, e->a);
       IRVreg *l_as_u8 = v_cast(c, l, IT_U8);
+      // short-circuit consts must precede the branch: phi edges read them
+      IRVreg *sc_zero = v_const(c, 0, IT_U8);
+      IRVreg *sc_one = v_const(c, 1, IT_U8);
       if (op == P_ANDAND)
         emit_cbr(c, l, rhs, join);
       else
@@ -1375,7 +1380,7 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
       IRBlock *rhs_block = c->fn->cur;
       emit_br(c, join);
       use_block(c, join);
-      phi_add(phi, lhs_block, op == P_ANDAND ? v_const(c, 0, IT_U8) : v_const(c, 1, IT_U8));
+      phi_add(phi, lhs_block, op == P_ANDAND ? sc_zero : sc_one);
       phi_add(phi, rhs_block, r_as_u8);
       (void)l_as_u8;
       return phi->dst;
@@ -1742,7 +1747,8 @@ static void build_call(LCtx *c, Sym *fn, Expr *receiver, Vec *args_exprs, IRVreg
   // args: vregs for scalars, addresses for aggregates; the method receiver,
   // when present, is argument 0
   Vec call_args = {0};
-  Vec owned_args = {0}; // Expr* of owned rvalues needing a post-call release
+  Vec owned_args = {0};   // Expr* of owned rvalues needing a post-call release
+  Vec owned_slots = {0};  // parallel: index of each owned value inside call_args
   Type *ret = fn->type->ret;
   bool agg_ret = ret && ty_is_aggregate(ret);
   if (agg_ret) {
@@ -1758,8 +1764,10 @@ static void build_call(LCtx *c, Sym *fn, Expr *receiver, Vec *args_exprs, IRVreg
     a->vreg = lv_expr(c, receiver);
     a->ty = self_t;
     vec_push(&call_args, a);
-    if (ty_is_managed(self_t) && expr_owned(receiver))
+    if (ty_is_managed(self_t) && expr_owned(receiver)) {
       vec_push(&owned_args, receiver);
+      vec_push(&owned_slots, (void *)(long)(call_args.n - 1));
+    }
     param_index = 1;
   }
   for (size_t i = 0; i < args_exprs->n; i++) {
@@ -1771,8 +1779,10 @@ static void build_call(LCtx *c, Sym *fn, Expr *receiver, Vec *args_exprs, IRVreg
     a->vreg = lv_expr(c, arg); // aggregate rvalue = address of temp
     a->ty = pt;
     vec_push(&call_args, a);
-    if (pt && ty_is_managed(pt) && expr_owned(arg))
+    if (pt && ty_is_managed(pt) && expr_owned(arg)) {
       vec_push(&owned_args, arg);
+      vec_push(&owned_slots, (void *)(long)(call_args.n - 1));
+    }
   }
   IRIns *call = emit(c, IR_CALL);
   call->callee = sym_symbol(fn);
@@ -1783,7 +1793,8 @@ static void build_call(LCtx *c, Sym *fn, Expr *receiver, Vec *args_exprs, IRVreg
   for (size_t i = 0; i < owned_args.n; i++) {
     Expr *arg = owned_args.items[i];
     Type *at = arg->typed;
-    IRVreg *pv = ((IRArg *)call_args.items[agg_ret ? i + 2 : i + 1])->vreg;
+    IRVreg *pv =
+        ((IRArg *)call_args.items[(long)owned_slots.items[i]])->vreg;
     if (ty_is_aggregate(at))
       release_addr(c, at, pv);
     else
@@ -1844,9 +1855,10 @@ static IRVreg *lower_make(LCtx *c, Expr *e, IRVreg *dest) {
   wrc->addr = obj8;
   wrc->a = zero;
   wrc->size = 8;
+  IRVreg *drop0 = v_const(c, 0, IT_PTR); // operands before emit: see landmine #1
   IRIns *dr = emit(c, IR_STORE);
   dr->addr = obj16;
-  dr->a = v_const(c, 0, IT_PTR);
+  dr->a = drop0;
   dr->size = 8;
   // slice {buf=obj, ptr=obj+24, len=n}
   if (!dest) {
@@ -1915,8 +1927,15 @@ static IRVreg *lower_new(LCtx *c, Expr *e) {
         IRVreg *faddr = v_addi(c, data, off);
         if (ty_is_aggregate(ft)) {
           lv_agg(c, init, faddr);
+          if (!expr_owned(init))
+            retain_addr(c, ft, faddr);
         } else {
-          v_store(c, faddr, lv_expr(c, init));
+          IRVreg *v = lv_expr(c, init);
+          v_store(c, faddr, v);
+          // the field owns a reference: borrowed inits hand it a +1; owned
+          // producers transfer their single count
+          if (ty_is_managed(ft) && !expr_owned(init))
+            rc_inc_v(c, v);
         }
         break;
       }
@@ -1986,10 +2005,16 @@ static IRVreg *lower_enum_ctor(LCtx *c, Expr *e, IRVreg *dest) {
     int64_t off = variant_field_offset(et, vs->variant_index, fidx);
     Type *ft = arg->typed;
     IRVreg *faddr = v_addi(c, dest, off);
-    if (ft && ty_is_aggregate(ft))
+    if (ft && ty_is_aggregate(ft)) {
       lv_agg(c, arg, faddr);
-    else
-      v_store(c, faddr, lv_expr(c, arg));
+      if (!expr_owned(arg))
+        retain_addr(c, ft, faddr);
+    } else {
+      IRVreg *pv = lv_expr(c, arg);
+      v_store(c, faddr, pv);
+      if (ft && ty_is_managed(ft) && !expr_owned(arg))
+        rc_inc_v(c, pv);
+    }
   }
   return dest;
 }
@@ -2003,6 +2028,32 @@ static IRVreg *compute_call_value(LCtx *c, Expr *e) {
       return v_const(c, at->len, IT_USIZE);
     IRVreg *addr = lv_expr(c, arg); // slice/string aggregate address
     return v_load(c, v_addi(c, addr, 16), IT_USIZE);
+  }
+  // weak.from(p) -> __rc_wref(p): bumps wrc, returns the header handle
+  if (e->a->kind == EX_FIELD && e->a->a->kind == EX_NAME &&
+      str_eq_c(e->a->a->sv, "weak") && str_eq_c(e->a->sv, "from")) {
+    IRVreg *p = lv_expr(c, e->args.items[0]);
+    IRIns *call = emit(c, IR_CALL);
+    call->callee = "rho__rc_wref";
+    IRArg *a = arena_alloc(sizeof(IRArg));
+    a->vreg = p;
+    a->ty = NULL;
+    vec_push(&call->args, a);
+    call->dst = new_vreg(c, IT_PTR);
+    return call->dst;
+  }
+  // w.get() -> __rc_wget(w): data pointer or null when the object died
+  if (e->a->kind == EX_FIELD && str_eq_c(e->a->sv, "get") && e->a->a->typed &&
+      ((Type *)e->a->a->typed)->kind == TY_WEAK) {
+    IRVreg *w = lv_expr(c, e->a->a);
+    IRIns *call = emit(c, IR_CALL);
+    call->callee = "rho__rc_wget";
+    IRArg *a = arena_alloc(sizeof(IRArg));
+    a->vreg = w;
+    a->ty = NULL;
+    vec_push(&call->args, a);
+    call->dst = new_vreg(c, IT_PTR);
+    return call->dst;
   }
   if (is_variant_ctor(e)) {
     Type *et = e->typed;
@@ -2022,6 +2073,8 @@ static IRVreg *compute_call_value(LCtx *c, Expr *e) {
     Type *ret = ft->ret;
     bool agg = ret && ty_is_aggregate(ret);
     Vec args = {0};
+    Vec owned_args = {0};  // Expr* of owned rvalues needing a post-call release
+    Vec owned_slots = {0}; // parallel: index into args
     IRVreg *out = NULL;
     if (agg) {
       IRSlot *tmp = new_slot(c, type_size(ret), type_align(ret), "out");
@@ -2038,6 +2091,10 @@ static IRVreg *compute_call_value(LCtx *c, Expr *e) {
       a->vreg = lv_expr(c, arg);
       a->ty = pt;
       vec_push(&args, a);
+      if (pt && ty_is_managed(pt) && expr_owned(arg)) {
+        vec_push(&owned_args, arg);
+        vec_push(&owned_slots, (void *)(long)(args.n - 1));
+      }
     }
     IRArg *ea = arena_alloc(sizeof(IRArg));
     ea->vreg = env;
@@ -2046,6 +2103,16 @@ static IRVreg *compute_call_value(LCtx *c, Expr *e) {
     IRIns *call = emit(c, IR_CALL);
     call->callee_vreg = code;
     call->args = args;
+    // owned arguments handed their +1 to the callee's param copies
+    for (size_t i = 0; i < owned_args.n; i++) {
+      Expr *arg = owned_args.items[i];
+      Type *at = arg->typed;
+      IRVreg *pv = ((IRArg *)args.items[(long)owned_slots.items[i]])->vreg;
+      if (ty_is_aggregate(at))
+        release_addr(c, at, pv);
+      else
+        rc_dec_v(c, pv);
+    }
     if (agg)
       return out;
     if (ret && ret->kind != TY_VOID) {
@@ -2273,7 +2340,6 @@ static void lv_stmt(LCtx *c, Stmt *s) {
     lv_expr_discard(c, s->a);
     break;
   case ST_RETURN: {
-    run_defers(c, NULL);
     Type *t = s->a ? s->a->typed : NULL;
     if (s->a && ty_is_aggregate(t)) {
       IRVreg *src = lv_expr(c, s->a);
@@ -2284,17 +2350,22 @@ static void lv_stmt(LCtx *c, Stmt *s) {
       cp->size = type_size(t);
       if (ty_is_managed(t) && !expr_owned(s->a))
         retain_addr(c, t, dst);
+      run_defers(c, NULL);
       release_scopes_to(c, NULL);
       emit_ret(c, NULL);
     } else if (s->a && ty_is_managed(t)) {
       IRVreg *v = lv_expr(c, s->a);
       if (!expr_owned(s->a))
         rc_inc_v(c, v);
+      run_defers(c, NULL);
       release_scopes_to(c, NULL);
       emit_ret(c, v);
     } else {
+      // evaluate before defers/release: the value may read scope-owned data
+      IRVreg *v = s->a ? lv_expr(c, s->a) : NULL;
+      run_defers(c, NULL);
       release_scopes_to(c, NULL);
-      emit_ret(c, s->a ? lv_expr(c, s->a) : NULL);
+      emit_ret(c, v);
     }
     // continuation block for unreachable code after return
     IRBlock *dead = new_block(c);
@@ -2527,10 +2598,12 @@ void lower_dump_ir(void) {
       }
       for (size_t ii = 0; ii < b->ins.n; ii++) {
         IRIns *ins = b->ins.items[ii];
-        printf("    op=%d dst=v%d a=v%d b=v%d imm=%lld size=%lld flt=%d sgn=%d callee=%s\n",
+        printf("    op=%d dst=v%d a=v%d b=v%d addr=v%d slot=%d imm=%lld size=%lld flt=%d sgn=%d callee=%s\n",
                (int)ins->op, ins->dst ? ins->dst->id : -1, ins->a ? ins->a->id : -1,
-               ins->b ? ins->b->id : -1, (long long)ins->imm, (long long)ins->size,
-               (int)ins->is_float, (int)ins->signed_ops, ins->callee ? ins->callee : "-");
+               ins->b ? ins->b->id : -1, ins->addr ? ins->addr->id : -1,
+               ins->slot ? (int)ins->slot->id : -1, (long long)ins->imm,
+               (long long)ins->size, (int)ins->is_float, (int)ins->signed_ops,
+               ins->callee ? ins->callee : "-");
       }
       if (b->term)
         printf("    term op=%d dst(b)=%d a=v%d b(b)=%d\n", (int)b->term->op,

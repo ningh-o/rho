@@ -1,0 +1,33 @@
+// exit: 5
+struct Node {
+  v: i32,
+}
+
+fn observe(w: weak[Node]) -> i32 {
+  let p: *Node = w.get();
+  if p == null {
+    return 0 - 1;
+  }
+  return p.v;
+}
+
+fn churn() -> i32 {
+  let mut acc: i32 = 0;
+  let mut i: i32 = 0;
+  while i < 10000 {
+    let xs: []i32 = make([]i32, 8);
+    xs[0] = i;
+    acc = acc + xs[0] - i;
+    i += 1;
+  }
+  return acc;
+}
+
+fn main() -> i32 {
+  let mut n: *Node = new Node { v: 5 };
+  let w: weak[Node] = weak.from(n);
+  let alive: i32 = observe(w);
+  n = null; // the node dies; the weak reference outlives its storage
+  let dead: i32 = observe(w);
+  return alive + dead + 1 + churn();
+}
