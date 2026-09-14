@@ -2670,6 +2670,9 @@ static IRFn *lower_fn(Sym *sym) {
 static void lower_static(Sym *sym) {
   Decl *d = sym->decl;
   Type *t = sym->type;
+  if (getenv("RHO_DEBUG"))
+    fprintf(stderr, "STATIC %s init=%p typed=%p mut=%d\n", str_to_c(sym->name),
+            (void *)d->init, d->init ? (void *)d->init->typed : NULL, (int)d->is_mut);
   IRGlobal *g = arena_alloc_zeroed(sizeof(IRGlobal));
   g->symbol = sym_symbol(sym);
   g->size = type_size(t);
@@ -2714,6 +2717,11 @@ static void lower_static(Sym *sym) {
 void lower_program(void) {
   g_ir_fns = (Vec){0};
   g_ir_globals = (Vec){0};
+  // per-compile caches: stale symbols would point at previous compiles'
+  // glue fns (which no longer exist in this module's emission)
+  g_ret_fns = (Map){0};
+  g_rel_fns = (Map){0};
+  g_eq_fns = (Map){0};
   rc_runtime_build(); // __rc_inc/dec/w* helpers every managed program needs
   for (size_t i = 0; i < g_module_order.n; i++) {
     Module *m = g_module_order.items[i];

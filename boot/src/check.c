@@ -2611,6 +2611,8 @@ static void resolve_sym_type(Sym *sym) {
       d->ceval_cache_ok = true;
     }
     sym->type = t;
+    if (d->init)
+      d->init->typed = t; // lower_static tests this to emit the data segment
     break;
   }
   default:
