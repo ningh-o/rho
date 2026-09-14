@@ -1381,10 +1381,57 @@ static Type *check_expr(Expr *e, Type *expected) {
     ERR(e, "closures arrive in 0.0.5");
     e->typed = ty_err_;
     return e->typed;
-  case EX_QMARK:
-    ERR(e, "`?` arrives in 0.0.5");
-    e->typed = ty_err_;
+  case EX_QMARK: {
+    Type *operand = check_expr(e->a, NULL);
+    if (operand->kind != TY_ENUM) {
+      const char *what = operand->mangled ? operand->mangled : "an untyped literal";
+      ERR(e, "`?` needs a Result or Option, found `%s`", what);
+      e->typed = ty_err_;
+      return e->typed;
+    }
+    Decl *ed = operand->rec->decl;
+    int ok = -1, err = -1, none = -1, some = -1;
+    for (size_t i = 0; i < ed->variants.n; i++) {
+      Str vn = ((VariantAst *)ed->variants.items[i])->name;
+      if (str_eq_c(vn, "Ok"))
+        ok = (int)i;
+      if (str_eq_c(vn, "Err"))
+        err = (int)i;
+      if (str_eq_c(vn, "Some"))
+        some = (int)i;
+      if (str_eq_c(vn, "None"))
+        none = (int)i;
+    }
+    bool result_like = ok >= 0 && err >= 0;
+    bool option_like = some >= 0 && none >= 0;
+    if (!result_like && !option_like) {
+      ERR(e, "`?` needs a Result or Option, found `%s`", ty_name(operand));
+      e->typed = ty_err_;
+      return e->typed;
+    }
+    e->q_ok = result_like ? ok : some;
+    e->q_err = result_like ? err : none;
+    // the enclosing function must return the same family, with a
+    // compatible error payload for Results
+    if (!cur_ret || cur_ret->kind != TY_ENUM || cur_ret->rec->decl != ed) {
+      ERR(e, "`?` propagates into `%s`, but this function returns `%s`",
+          result_like ? "Result" : "Option", ty_name(cur_ret ? cur_ret : ty_void_));
+      e->typed = ty_err_;
+      return e->typed;
+    }
+    if (result_like) {
+      Type *e_op = variant_field_type(operand, err, 0);
+      Type *e_ret = variant_field_type(cur_ret, err, 0);
+      if (!ty_eq(e_op, e_ret)) {
+        ERR(e, "error payload mismatch: function propagates `%s`, operand carries `%s`",
+            ty_name(e_ret), ty_name(e_op));
+        e->typed = ty_err_;
+        return e->typed;
+      }
+    }
+    e->typed = variant_field_type(operand, e->q_ok, 0);
     return e->typed;
+  }
   case EX_MAKE: // never produced by the parser; `make` is checked in EX_CALL
   case EX_ENUM_CTOR:
   case EX_METHOD:
@@ -1792,6 +1839,17 @@ static Type *check_call(Expr *e, Type *expected) {
         }
         Type *at = check_expr(e->args.items[i], NULL);
         infer_targs(variant_field_type(et, ct.variant, fidx), at, env);
+      }
+      // tparams the payload cannot pin (Result.Err leaves T open) come from
+      // the expected instantiation when the context provides one
+      if (expected && expected->kind == TY_ENUM && expected->rec->decl == ed &&
+          expected->rec->targs.n == ed->tparams.n && !expected->rec->is_template) {
+        for (size_t i = 0; i < ed->tparams.n; i++) {
+          char *tn = ed->tparams.items[i];
+          Type *bound = map_get(env, str_from(tn));
+          if (!bound || bound->kind == TY_PARAM)
+            map_put(env, str_from(tn), expected->rec->targs.items[i]);
+        }
       }
       for (size_t i = 0; i < ed->tparams.n; i++) {
         Type *targ = map_get(env, str_from(ed->tparams.items[i]));
@@ -2387,9 +2445,15 @@ static void resolve_sym_type(Sym *sym) {
     // template environment, so `self: Pair` and `-> A` both see the tparams;
     // instantiations already carry their concrete env — don't overwrite it
     if (d->recv.n && !d->tenv && sym->owner) {
-      Sym *rs = map_get(&((Module *)sym->owner)->syms, d->recv);
+      Module *om = (Module *)sym->owner;
+      Sym *rs = map_get(&om->syms, d->recv);
+      Module *towner = om;
+      if (!rs && prelude_module && prelude_module != om) {
+        rs = map_get(&prelude_module->syms, d->recv);
+        towner = prelude_module;
+      }
       if (rs && (rs->kind == SY_STRUCT || rs->kind == SY_ENUM) && rs->decl->tparams.n) {
-        RecType *tmpl = ensure_template(rs->decl, (Module *)sym->owner);
+        RecType *tmpl = ensure_template(rs->decl, towner);
         g_tenv = (Map *)tmpl->env;
         d->templated = true;
       }

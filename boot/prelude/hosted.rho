@@ -2,6 +2,44 @@ extern fn malloc(n: usize) -> *u8;
 
 extern fn free(p: *u8);
 
+pub enum Option[T] {
+  Some(T),
+  None,
+}
+
+pub enum Result[T, E] {
+  Ok(T),
+  Err(E),
+}
+
+fn Option.is_some(self: Option) -> bool {
+  return match self {
+    Option.Some(_) => true,
+    Option.None => false,
+  };
+}
+
+fn Option.is_none(self: Option) -> bool {
+  return match self {
+    Option.Some(_) => false,
+    Option.None => true,
+  };
+}
+
+fn Result.is_ok(self: Result) -> bool {
+  return match self {
+    Result.Ok(_) => true,
+    Result.Err(_) => false,
+  };
+}
+
+fn Result.is_err(self: Result) -> bool {
+  return match self {
+    Result.Ok(_) => false,
+    Result.Err(_) => true,
+  };
+}
+
 fn __alloc(n: usize) -> *u8 {
   return malloc(n);
 }

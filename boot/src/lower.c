@@ -250,6 +250,12 @@ static IRVreg *v_cast(LCtx *c, IRVreg *src, IRType to) {
   return i->dst;
 }
 
+// the aggregate-return destination: the out slot holds the caller's buffer
+// pointer — load through it, never write into the slot itself
+static IRVreg *ret_dest(LCtx *c) {
+  return v_load(c, v_slotaddr(c, c->fn->out_slot), IT_PTR);
+}
+
 // ------------------------------------------------------------ scopes -------
 
 static void scope_push(LCtx *c) {
@@ -435,13 +441,12 @@ static IRVreg *call_str_cmp(LCtx *c, Expr *e, bool want_eq) {
   vec_push(&call->args, ab);
   call->dst = new_vreg(c, IT_U8);
   if (!want_eq) {
-    IRIns *not_ = emit(c, IR_CMP);
-    (void)not_;
+    IRVreg *one = v_const(c, 1, IT_U8);
     // negate via XOR 1
     IRIns *x = emit(c, IR_XOR);
     x->dst = new_vreg(c, IT_U8);
     x->a = call->dst;
-    x->b = v_const(c, 1, IT_U8);
+    x->b = one;
     return x->dst;
   }
   return call->dst;
@@ -883,6 +888,36 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
     use_block(c, join);
     return phi->dst;
   }
+  case EX_QMARK: {
+    // `expr?` — on failure, return the whole value unchanged (it already
+    // carries the failing tag and payload); on success, yield the payload
+    Type *et = e->a->typed;
+    IRVreg *val = lv_expr(c, e->a);
+    IRVreg *tag = v_load(c, val, IT_I32);
+    VariantAst *okv =
+        ((Decl *)et->rec->decl)->variants.items[e->q_ok];
+    IRVreg *is_ok = v_cmp(c, CC_EQ, tag, v_const(c, okv->disc, IT_I32), false);
+    IRBlock *cont = new_block(c);
+    IRBlock *prop = new_block(c);
+    emit_cbr(c, is_ok, cont, prop);
+    use_block(c, prop);
+    run_defers(c, NULL);
+    IRVreg *dst = ret_dest(c);
+    IRIns *cp = emit(c, IR_COPYMEM);
+    cp->addr = dst;
+    cp->a = val;
+    cp->size = type_size(et);
+    emit_ret(c, NULL);
+    IRBlock *dead = new_block(c);
+    use_block(c, dead);
+    emit_br(c, cont); // unreachable; keeps the CFG well-formed
+    use_block(c, cont);
+    Type *pt = e->typed;
+    int64_t off = variant_field_offset(et, e->q_ok, 0);
+    if (pt && ty_is_aggregate(pt))
+      return v_addi(c, val, off);
+    return v_load(c, v_addi(c, val, off), ir_type_of(pt));
+  }
   default:
     if (t && ty_is_aggregate(t))
       return compute_addr(c, e);
@@ -1042,17 +1077,20 @@ static IRVreg *lower_new(LCtx *c, Expr *e) {
   IRVreg *obj = call_prelude1(c, "__alloc", v_const(c, (uint64_t)size + 24, IT_USIZE), IT_PTR);
   IRVreg *obj8 = v_addi(c, obj, 8);
   IRVreg *obj16 = v_addi(c, obj, 16);
+  IRVreg *rc1 = v_const(c, 1, IT_USIZE);
   IRIns *rc = emit(c, IR_STORE);
   rc->addr = obj;
-  rc->a = v_const(c, 1, IT_USIZE);
+  rc->a = rc1;
   rc->size = 8;
+  IRVreg *zero = v_const(c, 0, IT_USIZE);
   IRIns *wrc = emit(c, IR_STORE);
   wrc->addr = obj8;
-  wrc->a = v_const(c, 0, IT_USIZE);
+  wrc->a = zero;
   wrc->size = 8;
+  IRVreg *nullp = v_const(c, 0, IT_PTR);
   IRIns *dr = emit(c, IR_STORE);
   dr->addr = obj16;
-  dr->a = v_const(c, 0, IT_PTR);
+  dr->a = nullp;
   dr->size = 8;
   // the returned reference points at the DATA, 24 bytes past the header
   IRVreg *data = v_addi(c, obj, 24);
@@ -1239,9 +1277,10 @@ static void lv_agg(LCtx *c, Expr *e, IRVreg *dest) {
       call->args = call_args;
       return;
     }
+    IRVreg *src = lv_expr(c, e);
     IRIns *cp = emit(c, IR_COPYMEM);
     cp->addr = dest;
-    cp->a = lv_expr(c, e);
+    cp->a = src;
     cp->size = size;
     return;
   }
@@ -1346,9 +1385,9 @@ static void lv_stmt(LCtx *c, Stmt *s) {
     Type *t = s->a ? s->a->typed : NULL;
     if (s->a && ty_is_aggregate(t)) {
       IRVreg *src = lv_expr(c, s->a);
-      IRVreg *outa = v_slotaddr(c, c->fn->out_slot);
+      IRVreg *dst = ret_dest(c);
       IRIns *cp = emit(c, IR_COPYMEM);
-      cp->addr = outa;
+      cp->addr = dst;
       cp->a = src;
       cp->size = type_size(t);
       emit_ret(c, NULL);

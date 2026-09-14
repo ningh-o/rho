@@ -1,0 +1,19 @@
+fn half_even(v: i32) -> Result[i32, string] {
+  if v % 2 != 0 {
+    return Result.Err("odd");
+  }
+  return Result.Ok(v / 2);
+}
+
+fn run(v: i32) -> Result[i32, string] {
+  let h: i32 = half_even(v)?;
+  return Result.Ok(h * 2);
+}
+
+fn main() -> i32 {
+  let r: Result[i32, string] = run(8);
+  return match r {
+    Result.Ok(x) => x,
+    Result.Err(_) => 0 - 1,
+  };
+}

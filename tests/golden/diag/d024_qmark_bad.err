@@ -1,0 +1,2 @@
+tests/diag/d024_qmark_bad.rho:2:18: error: `?` needs a Result or Option, found `an untyped literal`
+tests/diag/d024_qmark_bad.rho:3:10: error: return value: expected `i32`, found `<error>`

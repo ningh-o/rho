@@ -231,6 +231,7 @@ typedef struct Expr {
   Vec arms;        // MATCH: MatchArm*
   Vec params;      // CLOSURE: Param*
   TypeAst *ret;    // CLOSURE
+  int q_ok, q_err; // QMARK: success/failure variant indices (checker)
 
   // filled by checker
   void *typed;     // Type* — computed type of this expression
