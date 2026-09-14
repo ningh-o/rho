@@ -165,6 +165,16 @@ static bool ty_travels_as_ptr(Type *pt) {
                 pt->kind == TY_ARRAY || pt->kind == TY_FN);
 }
 
+// does any RET terminator in fn carry a value?
+static bool fn_returns_value(IRFn *fn) {
+  for (size_t b = 0; b < fn->blocks.n; b++) {
+    IRBlock *blk = fn->blocks.items[b];
+    if (blk->term && blk->term->op == (IROp)OP_RET && blk->term->a)
+      return true;
+  }
+  return false;
+}
+
 static int w_type_of_fn(IRFn *fn) {
   Vec params = {0};
   for (size_t i = 0; i < fn->params.n; i++) {
@@ -173,9 +183,14 @@ static int w_type_of_fn(IRFn *fn) {
     vec_push(&params,
              (void *)(long)(pt && !ty_travels_as_ptr(pt) ? w_ir_type(pt) : IT_PTR));
   }
-  if (fn->returns_aggregate || !fn->ret || fn->ret->kind == TY_VOID)
+  // synth (rc) fns carry fn->ret == NULL whether or not they return — ask
+  // the terminators: any RET with a value means the signature needs one
+  bool no_ret = fn->returns_aggregate || (fn->ret && fn->ret->kind == TY_VOID) ||
+                (!fn->ret && !fn_returns_value(fn));
+  if (no_ret)
     return w_type_for(params, false, IT_I32);
-  return w_type_for(params, true, w_ir_type(fn->ret));
+  IRType ret = fn->ret ? w_ir_type(fn->ret) : IT_PTR; // synth fns return ptrs
+  return w_type_for(params, true, ret);
 }
 
 static int w_type_of_call(IRIns *i) {
@@ -225,7 +240,8 @@ static void w_layout_data(void) {
         gl->init.items[b] = (void *)(long)((v >> (8 * b)) & 0xFF);
     }
   }
-  W.stack_top = W.heap_base + 0x10000;
+  // the bump heap grows up toward the stack; leave it 8 MiB of headroom
+  W.stack_top = W.heap_base + 0x800000;
   W.data_end = at;
 }
 
@@ -390,6 +406,61 @@ static void emit_cmp(WFnCtx *c, IRIns *i) {
   lset(c, i->dst);
 }
 
+// integer div/mod with the zero and MIN/-1 guards the spec promises:
+// divisor == 0 -> __panic_div; signed divisor == -1 -> 0 - a (wraps)
+static void emit_int_divmod(WFnCtx *c, IRIns *i) {
+  bool is64 = w_is64(i->a->ty);
+  bool is_mod = i->op == IR_MOD;
+  lget(c, i->b);
+  w8(c->body, is64 ? 0x50 : 0x45); // eqz
+  w8(c->body, 0x04);               // if void
+  w8(c->body, 0x40);
+  {
+    const char *sym = prelude_symbol("__panic_div");
+    WFn *t = map_get(&W.fn_by_symbol, str_from(sym));
+    if (t) {
+      w8(c->body, 0x10); // call
+      wuleb(c->body, t->index);
+    }
+    w8(c->body, 0x00); // unreachable — panic never returns
+  }
+  w8(c->body, 0x05); // else
+  if (i->signed_ops) {
+    lget(c, i->b);
+    if (is64) {
+      w8(c->body, 0x42); // i64.const -1
+      wsleb(c->body, -1);
+      w8(c->body, 0x51); // i64.eq
+    } else {
+      w8(c->body, 0x41); // i32.const -1
+      wsleb(c->body, -1);
+      w8(c->body, 0x46); // i32.eq
+    }
+    w8(c->body, 0x04); // if void
+    w8(c->body, 0x40);
+    // dst = 0 - a (wraps: MIN / -1 -> MIN)
+    if (is64)
+      w8(c->body, 0x42), wsleb(c->body, 0);
+    else
+      w8(c->body, 0x41), wsleb(c->body, 0);
+    lget(c, i->a);
+    w8(c->body, is64 ? 0x7D : 0x6B); // sub
+    lset(c, i->dst);
+    w8(c->body, 0x05); // else
+    lget(c, i->a);
+    lget(c, i->b);
+    w8(c->body, arith_op(i->op, i->a->ty, i->signed_ops, false));
+    lset(c, i->dst);
+    w8(c->body, 0x0B); // end
+  } else {
+    lget(c, i->a);
+    lget(c, i->b);
+    w8(c->body, arith_op(i->op, i->a->ty, i->signed_ops, false));
+    lset(c, i->dst);
+  }
+  w8(c->body, 0x0B); // end if
+}
+
 static void table_index_of(const char *symbol) {
   if (map_has(&W.table_idx, str_from(symbol)))
     return;
@@ -425,10 +496,22 @@ static void emit_ins(WFnCtx *c, IRIns *i) {
     lset(c, i->dst);
     break;
   }
-  case IR_ADD: case IR_SUB: case IR_MUL: case IR_DIV: case IR_MOD:
+  case IR_DIV: case IR_MOD:
+    if (!i->is_float) {
+      emit_int_divmod(c, i);
+      break;
+    }
+    // fall through to the float path
+  case IR_ADD: case IR_SUB: case IR_MUL:
   case IR_AND: case IR_OR: case IR_XOR: case IR_SHL: case IR_SHR:
     lget(c, i->a);
     lget(c, i->b);
+    // pointer(+/-)usize mixes i32 and i64 on wasm32: narrow the wide side
+    // (wrap semantics; addresses live in the 32-bit memory space)
+    if (!w_is64(i->a->ty) && w_is64(i->b->ty) && !i->is_float)
+      w8(c->body, 0xA7); // i32.wrap_i64
+    else if (w_is64(i->a->ty) && !w_is64(i->b->ty) && !i->is_float)
+      w8(c->body, 0xAD); // i64.extend_i32_u — zero-extend the narrow side
     w8(c->body, arith_op(i->op, i->a->ty, i->signed_ops, i->is_float));
     lset(c, i->dst);
     break;
@@ -756,63 +839,64 @@ static void emit_br(WFnCtx *c, IRBlock *from, IRBlock *t) {
   wuleb(c->body, d);
 }
 
-// emits blocks from `b` until the region branches out or returns;
-// returns the block the region branched to, or NULL
-static IRBlock *emit_region(WFnCtx *c, IRBlock *b) {
-  IRBlock *from = b;
+// emits blocks from `b` (reached from `from`) until the region branches
+// out or returns; returns the block the region branched to, or NULL.
+// `from` is the phi-edge predecessor for the first block.
+static IRBlock *emit_region(WFnCtx *c, IRBlock *b, IRBlock *from) {
+  int started_loop = 0; // this invocation opened the loop labels
+  IRBlock *my_header = NULL, *my_exit = NULL;
   while (b) {
     if (b->emitted || has_target(c, b)) {
       emit_br(c, from, b);
       return b;
     }
-    if (getenv("RHO_WASM_DEBUG"))
-      fprintf(stderr, "REGION B%d%s labels=%u claims=%u\n", b->id,
-              b->loop_header ? " LOOP" : "", (unsigned)c->labels.n,
-              (unsigned)c->claims.n);
     if (b->loop_header) {
-      // block $exit { loop $h { header-ins; cond; if { body } } br $exit }
-      IRBlock *body = NULL, *exit = b->loop_exit;
-      if (!exit && b->term && b->term->op == (IROp)OP_CBR)
-        exit = (IRBlock *)b->term->b;
-      push_label(c, 0, exit); // block $exit
-      push_label(c, 1, b);    // loop $h
-      for (size_t k = 0; k < b->ins.n; k++)
-        emit_ins(c, b->ins.items[k]);
-      if (b->term && b->term->op == (IROp)OP_CBR) {
-        push_label(c, 2, NULL); // the loop's if occupies a br depth
-        lget(c, b->term->a);
-        w8(c->body, 0x04); // if
-        w8(c->body, 0x40); // void blocktype
-        b->emitted = true;
-        emit_region(c, (IRBlock *)b->term->dst); // the body; ends br $h
-        w8(c->body, 0x0C); // br $h — repeat
-        wuleb(c->body, br_depth(c, b));
-        w8(c->body, 0x0B); // end if — cond false falls out of the loop
-        pop_label(c);
-      } else {
-        b->emitted = true;
-      }
-      w8(c->body, 0x0B); // end loop $h
-      pop_label(c);
-      w8(c->body, 0x0B); // end block $exit — cond-false falls through it
-      pop_label(c);
-      if (!exit)
-        return NULL;
-      b = exit; // exit code emits right here, once
-      continue;
+      // block $exit { loop $h { <body>; } } — the header's own term is
+      // dispatched generically below; the body's terminal br back to the
+      // header closes the loop, br to the exit breaks out
+      my_exit = b->loop_exit;
+      my_header = b;
+      push_label(c, 0, my_exit); // block $exit
+      push_label(c, 1, my_header); // loop $h
+      w8(c->body, 0x02); // block
+      w8(c->body, 0x40);
+      w8(c->body, 0x03); // loop
+      w8(c->body, 0x40);
+      started_loop = 1;
     }
     b->emitted = true;
     for (size_t k = 0; k < b->ins.n; k++)
       emit_ins(c, b->ins.items[k]);
-    if (!b->term)
+    if (!b->term) {
+      if (started_loop) {
+        w8(c->body, 0x0B); // end loop
+        w8(c->body, 0x0B); // end block
+        pop_label(c);
+        pop_label(c);
+      }
       return NULL;
+    }
     if (b->term->op == (IROp)OP_BR) {
       IRBlock *t = (IRBlock *)b->term->dst;
-      // a forward entry into a not-yet-emitted loop becomes the loop
-      // construct itself (while headers carry no phis, so no edge copies)
+      // forward entry into a not-yet-emitted loop becomes the construct
       if (t->loop_header && !t->emitted) {
         from = b;
         b = t;
+        continue;
+      }
+      if (t == my_header && started_loop) {
+        // back edge: repeat the loop
+        emit_br(c, b, t);
+        w8(c->body, 0x0B); // end loop
+        w8(c->body, 0x0B); // end block
+        pop_label(c);
+        pop_label(c);
+        if (!my_exit)
+          return NULL;
+        from = b;
+        b = my_exit;
+        started_loop = 0;
+        my_header = my_exit = NULL;
         continue;
       }
       if (inlineable(c, t)) {
@@ -821,6 +905,14 @@ static IRBlock *emit_region(WFnCtx *c, IRBlock *b) {
         continue;
       }
       emit_br(c, b, t);
+      if (started_loop && t == my_exit) {
+        // break: leave the loop, the exit's code follows in the caller
+        w8(c->body, 0x0B); // end loop
+        w8(c->body, 0x0B); // end block
+        pop_label(c);
+        pop_label(c);
+        return t;
+      }
       return t;
     }
     if (b->term->op == (IROp)OP_RET) {
@@ -832,6 +924,12 @@ static IRBlock *emit_region(WFnCtx *c, IRBlock *b) {
       if (b->term->a)
         lget(c, b->term->a);
       w8(c->body, 0x0F); // return
+      if (started_loop) {
+        w8(c->body, 0x0B); // end loop (lexically required)
+        w8(c->body, 0x0B); // end block
+        pop_label(c);
+        pop_label(c);
+      }
       return NULL;
     }
     // cbr: if { then } else { else }; both arms land on the join via br,
@@ -848,9 +946,6 @@ static IRBlock *emit_region(WFnCtx *c, IRBlock *b) {
         join = join ? join : join2; // one arm may return outright
     }
     bool claimed = false;
-    if (getenv("RHO_WASM_DEBUG"))
-      fprintf(stderr, "  DIAMOND B%d join=B%s claimed?\n", b->id,
-              join ? (char *)arena_printf("%d", join->id) : "none");
     if (join && !has_target(c, join) && !join->emitted) {
       WClaim *cl = arena_alloc(sizeof(WClaim));
       cl->b = join;
@@ -862,21 +957,53 @@ static IRBlock *emit_region(WFnCtx *c, IRBlock *b) {
     lget(c, b->term->a);
     w8(c->body, 0x04); // if
     w8(c->body, 0x40); // void blocktype
-    emit_region(c, t);
+    emit_region(c, t, b);
     w8(c->body, 0x05); // else
-    emit_region(c, f);
+    emit_region(c, f, b);
     w8(c->body, 0x0B); // end if
     pop_label(c);      // drop the if placeholder
-    if (!join)
+    if (!join) {
+      if (started_loop) {
+        w8(c->body, 0x0B); // end loop
+        w8(c->body, 0x0B); // end block
+        pop_label(c);
+        pop_label(c);
+      }
       return NULL; // both arms returned
+    }
     if (join->emitted) {
       if (claimed)
         c->claims.n--; // ours went stale the moment it was emitted
-      return join;
+      if (started_loop && join == my_exit) {
+        // a break-if: both arms already br'd; close the loop, emit exit
+        w8(c->body, 0x0B); // end loop
+        w8(c->body, 0x0B); // end block
+        pop_label(c);
+        pop_label(c);
+        started_loop = 0;
+        my_header = my_exit = NULL;
+        from = b;
+        b = join;
+        continue;
+      }
+      return join; // an earlier construct emitted it
     }
-    if (!claimed)
+    if (!claimed) {
+      if (started_loop && join == my_exit) {
+        // break-if against this loop's exit: close and continue at exit
+        w8(c->body, 0x0B); // end loop
+        w8(c->body, 0x0B); // end block
+        pop_label(c);
+        pop_label(c);
+        started_loop = 0;
+        my_header = my_exit = NULL;
+        from = b;
+        b = join;
+        continue;
+      }
       return join; // an enclosing construct owns the join and its code
-    c->claims.n--;   // our claim: the join's code follows right here
+    }
+    c->claims.n--; // our claim: the join's code follows right here
     from = b;
     b = join;
   }
@@ -943,7 +1070,7 @@ static SB *emit_fn_body(WFn *wf) {
               blk->term ? (int)blk->term->op : -1);
     }
   }
-  emit_region(&c, fn->entry);
+  emit_region(&c, fn->entry, fn->entry);
   w8(c.body, 0x0B); // end function body
   return c.body;
 }
