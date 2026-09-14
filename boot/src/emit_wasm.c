@@ -1021,17 +1021,18 @@ static SB *emit_fn_body(WFn *wf) {
   for (size_t i = 0; i < fn->slots.n; i++)
     slot_offset(&c, fn->slots.items[i]);
 
-  // prologue: $fb = $sp; $sp -= frame
-  w8(c.body, 0x23); // global.get 0
-  wuleb(c.body, 0);
-  w8(c.body, 0x21); // local.set $fb
-  wuleb(c.body, (uint64_t)fn->params.n);
+  // prologue: $sp -= frame; $fb = $sp — slots live at $fb + off inside
+  // [fb, fb+frame), safely below every live caller frame
   w8(c.body, 0x23); // global.get 0
   wuleb(c.body, 0);
   i32c(&c, c.frame);
   w8(c.body, 0x6B); // i32.sub
   w8(c.body, 0x24); // global.set 0
   wuleb(c.body, 0);
+  w8(c.body, 0x23); // global.get 0
+  wuleb(c.body, 0);
+  w8(c.body, 0x21); // local.set $fb
+  wuleb(c.body, (uint64_t)fn->params.n);
 
   // incoming params: store each wasm param local into its frame slot
   for (size_t i = 0; i < fn->params.n; i++) {
