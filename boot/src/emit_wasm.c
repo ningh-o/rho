@@ -339,21 +339,20 @@ static void emit_load(WFnCtx *c, IRIns *i) {
 static void emit_store(WFnCtx *c, IRIns *i) {
   lget(c, i->addr);
   lget(c, i->a);
-  // op follows the VALUE's wasm type (pointers store as i32)
+  // pointers store as i32 regardless of the 8-byte memory footprint;
+  // everything else follows the store SIZE (a literal's vreg may be typed
+  // i64 while the field is i32 — the size is authoritative, like native)
   IRType t = i->a->ty;
-  if (t == IT_F32) {
-    w8(c->body, 0x38);
+  int64_t sz = i->size;
+  if (i->is_float) {
+    w8(c->body, sz == 4 ? 0x38 : 0x39);
+    wuleb(c->body, sz == 4 ? 2 : 3);
+  } else if (t == IT_PTR) {
+    w8(c->body, 0x36); // i32.store
     wuleb(c->body, 2);
-  } else if (t == IT_F64) {
-    w8(c->body, 0x39);
-    wuleb(c->body, 3);
-  } else if (w_is64(t)) {
-    w8(c->body, 0x37); // i64.store
-    wuleb(c->body, 3);
   } else {
-    int64_t sz = i->size;
-    w8(c->body, sz == 1 ? 0x3A : sz == 2 ? 0x3B : 0x36);
-    wuleb(c->body, sz == 1 ? 0 : sz == 2 ? 1 : 2);
+    w8(c->body, sz == 1 ? 0x3A : sz == 2 ? 0x3B : sz == 4 ? 0x36 : 0x37);
+    wuleb(c->body, sz == 1 ? 0 : sz == 2 ? 1 : sz == 4 ? 2 : 3);
   }
   wuleb(c->body, 0);
 }
@@ -1076,10 +1075,15 @@ static SB *emit_fn_body(WFn *wf) {
   return c.body;
 }
 
-// collect each vreg's IRType (every vreg has exactly one def instruction)
+// collect each vreg's IRType: one def instruction, or a block phi
 static IRType vreg_type(IRFn *fn, int id) {
   for (size_t b = 0; b < fn->blocks.n; b++) {
     IRBlock *blk = fn->blocks.items[b];
+    for (size_t p = 0; p < blk->phis.n; p++) {
+      IRPhi *phi = blk->phis.items[p];
+      if (phi->dst->id == id)
+        return phi->dst->ty;
+    }
     for (size_t k = 0; k < blk->ins.n; k++) {
       IRIns *i = blk->ins.items[k];
       if (i->dst && i->dst->id == id)
