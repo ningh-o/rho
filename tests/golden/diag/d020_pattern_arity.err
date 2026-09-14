@@ -1,0 +1,2 @@
+tests/diag/d020_pattern_arity.rho:8:5: error: pattern `A` binds 1 values, variant has 2
+tests/diag/d020_pattern_arity.rho:8:15: error: unknown name `x`

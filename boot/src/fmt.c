@@ -282,6 +282,14 @@ static void f_if_full(SB *sb, Expr *e) {
   sb_push(sb, '}');
 }
 
+static void f_pat_path(SB *sb, MatchArm *arm) {
+  for (size_t j = 0; j < arm->pat_path.n; j++) {
+    if (j)
+      sb_push(sb, '.');
+    sb_append_c(sb, arm->pat_path.items[j]);
+  }
+}
+
 static void f_match_full(SB *sb, Expr *e) {
   sb_append_c(sb, "match ");
   f_expr_full(sb, e->a);
@@ -294,9 +302,9 @@ static void f_match_full(SB *sb, Expr *e) {
     case PAT_WILDCARD: sb_append_c(sb, "_"); break;
     case PAT_INT: sb_printf(sb, "%llu", (unsigned long long)arm->pat_int); break;
     case PAT_STR: f_strlit(sb, arm->pat_str); break;
-    case PAT_UNIT: sb_append_c(sb, arm->pat_path.items[arm->pat_path.n - 1]); break;
+    case PAT_UNIT: f_pat_path(sb, arm); break;
     case PAT_TUPLE: {
-      sb_append_c(sb, arm->pat_path.items[0]);
+      f_pat_path(sb, arm);
       sb_push(sb, '(');
       for (size_t j = 0; j < arm->pat_names.n; j++) {
         if (j)
@@ -307,7 +315,7 @@ static void f_match_full(SB *sb, Expr *e) {
       break;
     }
     case PAT_STRUCT: {
-      sb_append_c(sb, arm->pat_path.items[0]);
+      f_pat_path(sb, arm);
       sb_append_c(sb, " { ");
       for (size_t j = 0; j < arm->pat_fields.n; j++) {
         FieldAst *fa = arm->pat_fields.items[j];

@@ -219,22 +219,35 @@ static void d_expr(SB *sb, Expr *e) {
       case PAT_INT: sb_printf(sb, "%llu", (unsigned long long)arm->pat_int); break;
       case PAT_STR: d_str_lit(sb, arm->pat_str); break;
       case PAT_UNIT:
-        d_ident(sb, arm->pat_path.n ? arm->pat_path.items[arm->pat_path.n - 1] : "_");
+        for (size_t j = 0; j < arm->pat_path.n; j++) {
+          if (j)
+            sb_push(sb, '.');
+          d_ident(sb, arm->pat_path.items[j]);
+        }
         break;
       case PAT_TUPLE:
-        d_ident(sb, arm->pat_path.items[0]);
+        for (size_t j = 0; j < arm->pat_path.n; j++) {
+          if (j)
+            sb_push(sb, '.');
+          d_ident(sb, arm->pat_path.items[j]);
+        }
         sb_append_c(sb, "(");
         for (size_t j = 0; j < arm->pat_names.n; j++)
           sb_printf(sb, "%s%s", j ? " " : "", (char *)arm->pat_names.items[j]);
         sb_push(sb, ')');
         break;
       case PAT_STRUCT:
-        d_ident(sb, arm->pat_path.items[0]);
+        for (size_t j = 0; j < arm->pat_path.n; j++) {
+          if (j)
+            sb_push(sb, '.');
+          d_ident(sb, arm->pat_path.items[j]);
+        }
         sb_append_c(sb, "{");
         for (size_t j = 0; j < arm->pat_fields.n; j++) {
           FieldAst *fa = arm->pat_fields.items[j];
-          sb_printf(sb, "%s%s %s", j ? " " : "", (char *)fa->name.p,
-                    (char *)arm->pat_names.items[j]);
+          sb_printf(sb, "%s", j ? " " : "");
+          sb_append(sb, fa->name); // Str: not NUL-terminated in place
+          sb_printf(sb, " %s", (char *)arm->pat_names.items[j]);
         }
         sb_push(sb, '}');
         break;

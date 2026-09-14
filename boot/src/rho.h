@@ -201,6 +201,8 @@ typedef struct MatchArm {
   Str pat_str;
   Vec pat_names;  // TUPLE: char* bindings ("_" = ignore)
   Vec pat_fields; // STRUCT: FieldAst* (name + optional binding name)
+  Vec bind_syms;  // checker: Sym* payload bindings, parallel to pat_names /
+                  // pat_fields (NULL entry = `_`)
   Expr *body;     // expression or block
   Str file;
   int line, col;
@@ -341,6 +343,8 @@ struct RecType {
   bool resolving;
   Vec methods;      // Sym*
   Vec offsets;      // int64_t field offsets (structs), stored as long
+  Vec var_poff;     // ENUM: int64_t payload base offset per variant (as long)
+  Vec var_offsets;  // ENUM: Vec* of int64_t payload field offsets per variant
   int64_t size;     // layout, computed after check
   int64_t align;
 };
@@ -398,8 +402,10 @@ bool ty_is_managed(Type *t);
 // layout (valid after check_module)
 int64_t type_size(Type *t);
 int64_t type_align(Type *t);
-// enum variant payload offset (after the tag)
-int64_t variant_payload_offset(Type *enum_t);
+// enum variant payload offset (after the tag, per-variant aligned)
+int64_t variant_payload_offset(Type *enum_t, int variant);
+// payload field offset within a variant (relative to the enum value start)
+int64_t variant_field_offset(Type *enum_t, int variant, int field);
 // field offsets; parallel to rec->decl->fields
 int64_t struct_field_offset(RecType *rec, size_t i);
 

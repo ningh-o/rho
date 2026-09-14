@@ -1,0 +1,17 @@
+enum Op {
+  Add(i32, i32),
+  Scale { k: i32, v: i32 },
+  Zero,
+}
+
+fn eval(o: Op) -> i32 {
+  return match o {
+    Op.Add(_, b) => b,
+    Op.Scale { k: _, v } => v,
+    Op.Zero => 0,
+  };
+}
+
+fn main() -> i32 {
+  return eval(Op.Add(1, 2)) + eval(Op.Scale(k: 3, v: 4)) + eval(Op.Zero);
+}

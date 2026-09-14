@@ -44,6 +44,7 @@ static bool write_file(Str path, Str data) {
 // Compile (parse + check) a root file. Returns the module root or NULL after
 // printing diagnostics.
 static Decl *compile_root(Str path) {
+  check_reset(); // fresh module registry per compilation unit
   clear_diags();
   prelude_init();
   Str src = read_file_or_die(path);

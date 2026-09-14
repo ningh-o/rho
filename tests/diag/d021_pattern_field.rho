@@ -1,0 +1,13 @@
+enum E {
+  A { x: i32 },
+}
+
+fn f(e: E) -> i32 {
+  return match e {
+    E.A { y } => y,
+  };
+}
+
+fn main() -> i32 {
+  return 0;
+}

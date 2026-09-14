@@ -750,8 +750,6 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
   case EX_CALL:
     if (is_make_call(e))
       return lower_make(c, e, NULL);
-    if (t && ty_is_aggregate(t))
-      return compute_addr(c, e);
     return compute_call_value(c, e);
   case EX_NEW:
     return lower_new(c, e);
@@ -841,6 +839,30 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
         emit_cbr(c, is, body, next);
       }
       use_block(c, body);
+      bool bind_scope = arm->bind_syms.n > 0;
+      if (bind_scope) {
+        // payload bindings: slots copied out of the scrutinee's payload area
+        scope_push(c);
+        for (size_t b = 0; b < arm->bind_syms.n; b++) {
+          Sym *bs = arm->bind_syms.items[b];
+          if (!bs)
+            continue;
+          Type *ft = bs->type;
+          int64_t off = variant_field_offset(scrut_t, arm->variant_index, (int)b);
+          IRVreg *faddr = v_addi(c, scrut, off);
+          IRSlot *slot = new_slot(c, type_size(ft), type_align(ft), str_to_c(bs->name));
+          bind(c, bs->name, slot);
+          IRVreg *saddr = v_slotaddr(c, slot);
+          if (ty_is_aggregate(ft)) {
+            IRIns *cp = emit(c, IR_COPYMEM);
+            cp->addr = saddr;
+            cp->a = faddr;
+            cp->size = type_size(ft);
+          } else {
+            v_store(c, saddr, v_load(c, faddr, ir_type_of(ft)));
+          }
+        }
+      }
       IRVreg *val;
       if (arm->body->kind == EX_BLOCK) {
         scope_push(c);
@@ -850,6 +872,8 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
       } else {
         val = lv_expr(c, arm->body);
       }
+      if (bind_scope)
+        scope_pop(c);
       emit_br(c, join);
       phi_add(phi, c->fn->cur, val);
       if (i + 1 < n)
@@ -1068,6 +1092,60 @@ static Expr *method_receiver(Expr *callee) {
   return csym->decl->is_method ? callee->a : NULL;
 }
 
+static bool is_variant_ctor(Expr *e) {
+  return e->kind == EX_CALL && e->a->kind == EX_FIELD && e->a->sym &&
+         ((Sym *)e->a->sym)->kind == SY_VARIANT;
+}
+
+// enum variant construction: write {tag, payload fields} into dest (fresh
+// temp when dest is NULL); returns the value's address
+static IRVreg *lower_enum_ctor(LCtx *c, Expr *e, IRVreg *dest) {
+  Sym *vs = e->a->sym;
+  Type *et = e->typed;
+  VariantAst *v = ((Decl *)vs->decl)->variants.items[vs->variant_index];
+  if (!dest) {
+    IRSlot *tmp = new_slot(c, type_size(et), type_align(et), "enumval");
+    dest = v_slotaddr(c, tmp);
+  }
+  IRVreg *tagv = v_const(c, v->disc, IT_I32);
+  IRIns *tag = emit(c, IR_STORE);
+  tag->addr = dest;
+  tag->a = tagv;
+  tag->size = 4;
+  int64_t size = type_size(et);
+  if (size > 4) {
+    IRVreg *rest = v_addi(c, dest, 4);
+    IRIns *z = emit(c, IR_ZERO);
+    z->addr = rest;
+    z->size = size - 4;
+  }
+  size_t nfields =
+      v->vkind == VAR_TUPLE ? v->types.n : v->vkind == VAR_STRUCT ? v->fields.n : 0;
+  for (size_t i = 0; i < e->args.n && i < nfields; i++) {
+    Expr *arg = e->args.items[i];
+    int fidx = (int)i;
+    if (v->vkind == VAR_STRUCT) {
+      char *nm = e->arg_names.n > i ? e->arg_names.items[i] : NULL;
+      fidx = -1;
+      for (size_t j = 0; j < v->fields.n; j++)
+        if (nm && str_eq_c(((FieldAst *)v->fields.items[j])->name, nm)) {
+          fidx = (int)j;
+          break;
+        }
+      if (fidx < 0)
+        continue;
+    }
+    int64_t off = variant_field_offset(et, vs->variant_index, fidx);
+    Type *ft = arg->typed;
+    IRVreg *faddr = v_addi(c, dest, off);
+    if (ft && ty_is_aggregate(ft))
+      lv_agg(c, arg, faddr);
+    else
+      v_store(c, faddr, lv_expr(c, arg));
+  }
+  return dest;
+}
+
 static IRVreg *compute_call_value(LCtx *c, Expr *e) {
   // builtins
   if (e->a->kind == EX_NAME && str_eq_c(e->a->sv, "len")) {
@@ -1077,6 +1155,11 @@ static IRVreg *compute_call_value(LCtx *c, Expr *e) {
       return v_const(c, at->len, IT_USIZE);
     IRVreg *addr = lv_expr(c, arg); // slice/string aggregate address
     return v_load(c, v_addi(c, addr, 16), IT_USIZE);
+  }
+  if (is_variant_ctor(e)) {
+    Type *et = e->typed;
+    IRSlot *tmp = new_slot(c, type_size(et), type_align(et), "enumval");
+    return lower_enum_ctor(c, e, v_slotaddr(c, tmp));
   }
   // normal call: callee sym stashed by the checker
   Sym *fn = e->a->sym;
@@ -1119,6 +1202,10 @@ static void lv_agg(LCtx *c, Expr *e, IRVreg *dest) {
   case EX_CALL: {
     if (is_make_call(e)) {
       lower_make(c, e, dest);
+      return;
+    }
+    if (is_variant_ctor(e)) {
+      lower_enum_ctor(c, e, dest);
       return;
     }
     Sym *fn = e->a->sym;

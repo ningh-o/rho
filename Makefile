@@ -1,6 +1,9 @@
 CC ?= cc
 CFLAGS ?= -std=c11 -O2 -Wall -Wextra -Wno-unused-parameter
-BOOT_SRC := $(wildcard boot/src/*.c)
+# prelude_data.c is listed explicitly: after `make clean` the wildcard cannot
+# see it, and the explicit entry forces generation before compiling; sort
+# dedupes once the generated file shows up in the wildcard too
+BOOT_SRC := $(sort $(wildcard boot/src/*.c) boot/src/prelude_data.c)
 BOOT_OBJ := $(BOOT_SRC:.c=.o)
 
 build/rho-boot: $(BOOT_OBJ)

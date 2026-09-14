@@ -1,0 +1,4 @@
+tests/diag/d021_pattern_field.rho:7:11: error: variant `A` has no field `y`
+tests/diag/d021_pattern_field.rho:7:5: error: pattern `A { .. }` must bind every field
+tests/diag/d021_pattern_field.rho:7:18: error: unknown name `y`
+tests/diag/d021_pattern_field.rho:6:10: error: return value: expected `i32`, found `<error>`

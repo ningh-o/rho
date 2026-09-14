@@ -813,8 +813,8 @@ static Type *check_expr(Expr *e, Type *expected) {
              (l->kind == TY_STRING && r->kind == TY_STRING);
         if ((l->kind == TY_STRUCT || r->kind == TY_STRUCT || l->kind == TY_ARRAY) ||
             (l->kind == TY_ENUM && l == r)) {
-          // enum tag compare is only sound for payload-free enums — allow it,
-          // payloadful enums get elementwise == in 0.0.5
+          // enum tag compare is only sound for payload-free enums; payloadful
+          // enums need generated equality glue — use `match` for now
           if (l->kind == TY_ENUM && l == r) {
             Decl *d = l->rec->decl;
             bool payloadful = false;
@@ -1165,7 +1165,13 @@ static CallTarget resolve_callee(Expr *callee) {
             ct.variant = (int)i;
             ct.enum_type = base->type;
             ct.is_ctor = v->vkind == VAR_STRUCT;
-            callee->sym = base;
+            Sym *vs = arena_alloc_zeroed(sizeof(Sym));
+            vs->kind = SY_VARIANT;
+            vs->name = callee->sv;
+            vs->type = base->type;
+            vs->decl = d;
+            vs->variant_index = (int)i;
+            callee->sym = vs;
             return ct;
           }
         }
@@ -1399,27 +1405,79 @@ static Type *check_match(Expr *e, Type *expected) {
     if (ed) {
       if (arm->pk == PAT_WILDCARD) {
         wildcard = true;
-      } else if (arm->pk == PAT_UNIT) {
+      } else if (arm->pk == PAT_UNIT || arm->pk == PAT_TUPLE || arm->pk == PAT_STRUCT) {
         Str vn = str_from(arm->pat_path.items[arm->pat_path.n - 1]);
         bool found = false;
         for (size_t j = 0; j < ed->variants.n; j++) {
           VariantAst *v = ed->variants.items[j];
-          if (str_eq(v->name, vn)) {
-            if (v->vkind != VAR_UNIT) {
-              ERR(arm, "payload patterns arrive in 0.0.5");
-              found = true; // keep going
+          if (!str_eq(v->name, vn))
+            continue;
+          if (arm->pk == PAT_UNIT && v->vkind != VAR_UNIT) {
+            ERR(arm, "variant `%s` carries a payload; bind it: `%s(..)`", str_to_c(vn),
+                str_to_c(vn));
+          } else if (arm->pk != PAT_UNIT && v->vkind == VAR_UNIT) {
+            ERR(arm, "variant `%s` has no payload to bind", str_to_c(vn));
+          }
+          covered[j] = true;
+          arm->variant_index = (int)j;
+          arm->disc = v->disc;
+          found = true;
+          break;
+        }
+        if (!found) {
+          ERR(arm, "no variant `%s` on `%s`", str_to_c(vn), ty_name(scrut));
+        } else {
+          VariantAst *v = ed->variants.items[arm->variant_index];
+          size_t nfields =
+              v->vkind == VAR_TUPLE ? v->types.n : v->vkind == VAR_STRUCT ? v->fields.n : 0;
+          size_t nbinds = arm->pk == PAT_TUPLE ? arm->pat_names.n
+                          : arm->pk == PAT_STRUCT ? arm->pat_fields.n : 0;
+          if (arm->pk != PAT_UNIT && nbinds != nfields) {
+            ERR(arm, "pattern `%s` binds %zu values, variant has %zu", str_to_c(vn), nbinds,
+                nfields);
+          } else if (arm->pk == PAT_TUPLE && v->vkind == VAR_TUPLE) {
+            for (size_t b = 0; b < nbinds && b < nfields; b++) {
+              char *nm = arm->pat_names.items[b];
+              Sym *bs = NULL;
+              if (!str_eq_c(str_from(nm), "_")) {
+                bs = arena_alloc_zeroed(sizeof(Sym));
+                bs->kind = SY_LOCAL;
+                bs->name = str_from(nm);
+                bs->type = resolve_type_in_module(cur_module, v->types.items[b]);
+                bs->local_id = next_local_id++;
+              }
+              vec_push(&arm->bind_syms, bs);
             }
-            covered[j] = true;
-            arm->variant_index = (int)j;
-            arm->disc = v->disc;
-            found = true;
-            break;
+          } else if (arm->pk == PAT_STRUCT && v->vkind == VAR_STRUCT) {
+            // every pattern field must exist on the variant; bindings in
+            // pattern order, types from the matched variant field
+            for (size_t b = 0; b < nbinds; b++) {
+              FieldAst *fa = arm->pat_fields.items[b];
+              bool hit = false;
+              for (size_t j2 = 0; j2 < v->fields.n; j2++) {
+                FieldAst *vf = v->fields.items[j2];
+                if (str_eq(vf->name, fa->name)) {
+                  hit = true;
+                  char *nm = arm->pat_names.items[b];
+                  Sym *bs = NULL;
+                  if (!str_eq_c(str_from(nm), "_")) {
+                    bs = arena_alloc_zeroed(sizeof(Sym));
+                    bs->kind = SY_LOCAL;
+                    bs->name = str_from(nm);
+                    bs->type = resolve_type_in_module(cur_module, vf->ty);
+                    bs->local_id = next_local_id++;
+                  }
+                  vec_push(&arm->bind_syms, bs);
+                  break;
+                }
+              }
+              if (!hit)
+                ERR(fa, "variant `%s` has no field `%s`", str_to_c(vn), str_to_c(fa->name));
+            }
+            if (nbinds != 0 && arm->bind_syms.n != v->fields.n)
+              ERR(arm, "pattern `%s { .. }` must bind every field", str_to_c(vn));
           }
         }
-        if (!found)
-          ERR(arm, "no variant `%s` on `%s`", str_to_c(vn), ty_name(scrut));
-      } else if (arm->pk == PAT_TUPLE || arm->pk == PAT_STRUCT) {
-        ERR(arm, "payload patterns arrive in 0.0.5");
       } else {
         ERR(arm, "this pattern does not match an enum");
       }
@@ -1431,7 +1489,19 @@ static Type *check_match(Expr *e, Type *expected) {
       else
         ERR(arm, "integer match arms must be literals or `_`");
     }
+    scope_push();
+    for (size_t b = 0; b < arm->bind_syms.n; b++) {
+      Sym *bs = arm->bind_syms.items[b];
+      if (!bs)
+        continue;
+      if (scope_lookup(bs->name)) {
+        err_at(arm->file, arm->line, arm->col, "`%s` shadows an existing binding",
+               str_to_c(bs->name));
+      }
+      scope_decl(bs->name, bs);
+    }
     Type *bt = check_expr(arm->body, expected);
+    scope_pop();
     if (!result)
       result = bt;
     else {
@@ -1984,24 +2054,27 @@ static void layout_rec(RecType *rec) {
     size = 4; // tag
     for (size_t i = 0; i < d->variants.n; i++) {
       VariantAst *v = d->variants.items[i];
-      if (v->vkind == VAR_TUPLE) {
-        for (size_t j = 0; j < v->types.n; j++) {
-          Type *vt = resolve_type_in_module(rec->owner, v->types.items[j]);
-          int64_t va = type_align(vt);
-          align = align > va ? align : va;
-          int64_t vs = type_size(vt);
-          size = size > vs ? size : vs;
-        }
-      } else if (v->vkind == VAR_STRUCT) {
-        for (size_t j = 0; j < v->fields.n; j++) {
-          Type *vt = resolve_type_in_module(
-              rec->owner, ((FieldAst *)v->fields.items[j])->ty);
-          int64_t va = type_align(vt);
-          align = align > va ? align : va;
-          int64_t vs = type_size(vt);
-          size = size > vs ? size : vs;
-        }
+      Vec *foff = arena_alloc(sizeof(Vec));
+      *foff = (Vec){0};
+      vec_push(&rec->var_offsets, foff);
+      if (v->vkind == VAR_UNIT) {
+        vec_push(&rec->var_poff, (void *)(long)4);
+        continue;
       }
+      size_t nfields = v->vkind == VAR_TUPLE ? v->types.n : v->fields.n;
+      int64_t off = 4; // payload starts after the tag, per-field aligned
+      for (size_t j = 0; j < nfields; j++) {
+        TypeAst *fta = v->vkind == VAR_TUPLE ? v->types.items[j]
+                                            : ((FieldAst *)v->fields.items[j])->ty;
+        Type *vt = resolve_type_in_module(rec->owner, fta);
+        int64_t va = type_align(vt);
+        align = align > va ? align : va;
+        off = round_up_i64(off, va);
+        vec_push(foff, (void *)(long)off);
+        off += type_size(vt);
+      }
+      vec_push(&rec->var_poff, (void *)(long)(foff->n ? (long)foff->items[0] : 4));
+      size = size > off ? size : off;
     }
   }
   cur_module = saved;
@@ -2016,8 +2089,21 @@ int64_t struct_field_offset(RecType *rec, size_t i) {
   return 0;
 }
 
-int64_t variant_payload_offset(Type *enum_t) {
-  return 4; // tag is 4 bytes; payload starts after it (no packing)
+int64_t variant_payload_offset(Type *enum_t, int variant) {
+  layout_rec(enum_t->rec);
+  if ((size_t)variant < enum_t->rec->var_poff.n)
+    return (long)enum_t->rec->var_poff.items[variant];
+  return 4;
+}
+
+int64_t variant_field_offset(Type *enum_t, int variant, int field) {
+  layout_rec(enum_t->rec);
+  if ((size_t)variant < enum_t->rec->var_offsets.n) {
+    Vec *foff = enum_t->rec->var_offsets.items[variant];
+    if ((size_t)field < foff->n)
+      return (long)foff->items[field];
+  }
+  return 4;
 }
 
 const char *prelude_symbol(const char *name) {

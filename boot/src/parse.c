@@ -313,7 +313,7 @@ static Expr *parse_primary(Parser *p) {
           Token *seg = expect_ident(p, "variant name");
           vec_push(&arm->pat_path, str_to_c(seg->text));
         }
-        if (arm->pat_path.n == 1 && accept(p, P_LPAREN)) {
+        if (accept(p, P_LPAREN)) {
           arm->pk = PAT_TUPLE;
           if (!at(p, P_RPAREN)) {
             do {

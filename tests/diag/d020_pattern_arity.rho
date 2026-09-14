@@ -1,0 +1,15 @@
+enum E {
+  A(i32, i32),
+  B,
+}
+
+fn f(e: E) -> i32 {
+  return match e {
+    E.A(x) => x,
+    E.B => 0,
+  };
+}
+
+fn main() -> i32 {
+  return f(E.A(1, 2));
+}
