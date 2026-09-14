@@ -15,9 +15,16 @@ static Module *g_root_module;
 void lower_set_root(Module *m) { g_root_module = m; }
 
 // per-function lowering context
+typedef struct OwnedBind {
+  IRSlot *slot;
+  Type *ty;
+} OwnedBind;
+
 typedef struct LScope {
   Map bindings;        // Str name -> IRSlot*
   Vec defers;          // Vec of Vec<Stmt*> (defer payloads, in order)
+  Vec owned;           // OwnedBind*: bindings holding a +1 that must be
+                       // released when this scope dies
   struct LScope *parent;
   IRBlock *break_to, *continue_to;
 } LScope;
@@ -32,6 +39,11 @@ static IRVreg *lv_expr(LCtx *c, Expr *e);
 static IRVreg *fconst(LCtx *c, double v, IRType ty);
 static IRVreg *compute_call_value(LCtx *c, Expr *e);
 static IRVreg *call_prelude1(LCtx *c, const char *name, IRVreg *arg0, IRType ret);
+static const char *value_fn_for(Type *t, bool retain);
+static void rc_call1(LCtx *c, const char *helper, IRVreg *arg);
+static void rc_inc_v(LCtx *c, IRVreg *p);
+static void rc_dec_v(LCtx *c, IRVreg *p);
+static void rc_runtime_build(void);
 static IRVreg *block_value(LCtx *c, Vec *stmts, Type *t);
 static int field_index_of(Expr *e, RecType *rec);
 bool ty_is_signed_int(IRType t);
@@ -47,6 +59,7 @@ static IRVreg *lower_new(LCtx *c, Expr *e);
 static bool is_make_call(Expr *e);
 static Sym *prelude_fn(const char *name);
 Type *struct_field_type(RecType *rec, size_t i);
+Type *variant_field_type(Type *enum_t, int variant, int field);
 
 // ------------------------------------------------------------- builders ----
 
@@ -257,6 +270,7 @@ static IRVreg *ret_dest(LCtx *c) {
   return v_load(c, v_slotaddr(c, c->fn->out_slot), IT_PTR);
 }
 
+
 // ------------------------------------------------------------ scopes -------
 
 static void scope_push(LCtx *c) {
@@ -294,7 +308,8 @@ static void panic_call(LCtx *c, const char *msg) {
   la->dst = new_vreg(c, IT_PTR);
   la->lit = lit;
   IRVreg *ptrv = la->dst;
-  // slice temp: {buf, ptr, len}
+  // slice temp: {buf=header, bytes, len}
+  IRVreg *bytes = v_addi(c, ptrv, 24);
   IRVreg *addr8 = v_addi(c, addr, 8);
   IRVreg *addr16 = v_addi(c, addr, 16);
   IRVreg *lenv = v_const(c, (uint64_t)m.n, IT_USIZE);
@@ -304,7 +319,7 @@ static void panic_call(LCtx *c, const char *msg) {
   st1->size = 8;
   IRIns *st2 = emit(c, IR_STORE);
   st2->addr = addr8;
-  st2->a = ptrv;
+  st2->a = bytes;
   st2->size = 8;
   IRIns *st3 = emit(c, IR_STORE);
   st3->addr = addr16;
@@ -465,6 +480,97 @@ static bool ty_is_aggregate(Type *t) {
   }
 }
 
+// ---------------------------------------------------- ownership rules ----
+//
+// An owning rvalue carries its +1 (new/make/call/closure, and match/if
+// results which normalize their arms); everything else borrows. Bindings
+// own: a let either takes the +1 or retains a borrowed value; scopes
+// release what they own, innermost first, on every exit path.
+
+static bool expr_owned(Expr *e) {
+  if (!e || !e->typed)
+    return false;
+  switch (e->kind) {
+  case EX_NEW:
+  case EX_CLOSURE:
+    return true;
+  case EX_CALL:
+    return ty_is_managed(e->typed);
+  case EX_MAKE:
+  case EX_MATCH:
+  case EX_IF:
+    return ty_is_managed(e->typed);
+  default:
+    return false;
+  }
+}
+
+static void own_slot(LCtx *c, IRSlot *slot, Type *t) {
+  OwnedBind *ob = arena_alloc(sizeof(OwnedBind));
+  ob->slot = slot;
+  ob->ty = t;
+  vec_push(&c->scope->owned, ob);
+}
+
+// retain/release the value living at addr through the per-type walkers
+static void retain_addr(LCtx *c, Type *t, IRVreg *addr) {
+  const char *fn = value_fn_for(t, true);
+  if (fn)
+    rc_call1(c, fn, addr);
+}
+static void release_addr(LCtx *c, Type *t, IRVreg *addr) {
+  const char *fn = value_fn_for(t, false);
+  if (fn)
+    rc_call1(c, fn, addr);
+}
+
+static void release_scope_only(LCtx *c) {
+  for (size_t i = c->scope->owned.n; i > 0; i--) {
+    OwnedBind *ob = c->scope->owned.items[i - 1];
+    release_addr(c, ob->ty, v_slotaddr(c, ob->slot));
+  }
+}
+
+// scope exit: release owned bindings, then pop
+static void scope_pop_release(LCtx *c) {
+  release_scope_only(c);
+  scope_pop(c);
+}
+
+// release every owned binding from the current scope down to (exclusive)
+// `stop` — the rc twin of run_defers
+static void release_scopes_to(LCtx *c, LScope *stop) {
+  for (LScope *s = c->scope; s && s != stop; s = s->parent) {
+    for (size_t i = s->owned.n; i > 0; i--) {
+      OwnedBind *ob = s->owned.items[i - 1];
+      release_addr(c, ob->ty, v_slotaddr(c, ob->slot));
+    }
+  }
+}
+
+// retain a produced rvalue: aggregates are value addresses, scalars are
+// plain pointer vregs
+static void retain_or_inc(LCtx *c, Type *t, IRVreg *v) {
+  if (ty_is_aggregate(t)) {
+    retain_addr(c, t, v);
+  } else if (t->kind == TY_PTR) {
+    rc_inc_v(c, v);
+  } else if (t->kind == TY_WEAK) {
+    rc_call1(c, "rho__rc_winc", v);
+  }
+}
+
+// a block arm's value is pre-owned when its trailing expression is an
+// owning producer (or a nested if, which normalizes itself)
+static bool arm_value_owned(Vec *stmts) {
+  if (!stmts->n)
+    return true; // void-ish; nothing to normalize
+  Stmt *last = stmts->items[stmts->n - 1];
+  if (last->kind != ST_EXPR || !last->tail || !last->a)
+    return true;
+  return last->a->kind == EX_IF || expr_owned(last->a);
+}
+
 // ------------------------------------------------------------ closures ----
 //
 // A closure value is {code: *fn, env: *u8}. Calling one always passes env as
@@ -555,13 +661,407 @@ static IRVreg *closure_value_for_sym(LCtx *c, Sym *fn) {
   return addr;
 }
 
-// lift a checked closure literal into its own IRFn (env is the last param);
-// returns its symbol
-static const char *lift_closure(LCtx *c, Expr *e) {
+// ------------------------------------------------------ rc runtime -------
+//
+// Every heap object carries {rc: usize, wrc: usize, drop: fn} 24 bytes
+// before its data; references point at the data. rc with the top bit set
+// marks immortal static data. The helpers are synthesized as IR functions
+// (rho itself has no pointer arithmetic); per-type retain/release functions
+// walk values field by field, so a binding's worth of count traffic is one
+// call regardless of shape.
+
+static Map g_rel_fns;  // mangled type name -> symbol
+static Map g_ret_fns;
+
+static const char *rel_fn_for(Type *t);
+
+static IRFn *rc_new_fn(const char *name) {
+  IRFn *lf = arena_alloc_zeroed(sizeof(IRFn));
+  lf->symbol = name;
+  lf->ret = NULL;
+  LCtx cc = {0};
+  cc.fn = lf;
+  lf->entry = new_block(&cc);
+  use_block(&cc, lf->entry);
+  return lf;
+}
+
+static void rc_finish(Vec *into, IRFn *lf) {
+  if (!lf->cur->sealed)
+    emit_ret(&(LCtx){.fn = lf}, NULL);
+  vec_push(into, lf);
+}
+
+// scratch context accessor for the builders below
+static LCtx *rc_ctx(IRFn *lf) {
+  LCtx *cc = arena_alloc(sizeof(LCtx));
+  cc->fn = lf;
+  cc->fn->cur = lf->cur;
+  return cc;
+}
+
+static void rc_runtime_build(void) {
+  // __rc_inc(p: *u8)
+  {
+    IRFn *lf = rc_new_fn("rho__rc_inc");
+    LCtx *c = rc_ctx(lf);
+    IRSlot *ps = new_slot(c, 8, 8, "p");
+    vec_push(&lf->params, ps);
+    vec_push(&lf->param_types, NULL);
+    IRVreg *p = v_load(c, v_slotaddr(c, ps), IT_PTR);
+    IRVreg *isnull = v_cmp(c, CC_EQ, p, v_const(c, 0, IT_PTR), false);
+    IRBlock *cont = new_block(c), *done = new_block(c);
+    emit_cbr(c, isnull, done, cont);
+    use_block(c, cont);
+    IRVreg *h = v_addi(c, p, -24);
+    IRVreg *rc = v_load(c, h, IT_USIZE);
+    IRVreg *top = v_binop(c, IR_SHR, rc, v_const(c, 63, IT_USIZE), IT_USIZE, false);
+    IRVreg *immortal = v_cmp(c, CC_NE, top, v_const(c, 0, IT_USIZE), false);
+    IRBlock *bump = new_block(c);
+    emit_cbr(c, immortal, done, bump);
+    use_block(c, bump);
+    IRVreg *rc2 = v_binop(c, IR_ADD, rc, v_const(c, 1, IT_USIZE), IT_USIZE, true);
+    v_store(c, h, rc2);
+    emit_br(c, done);
+    use_block(c, done);
+    rc_finish(&g_ir_fns, lf);
+  }
+  // __rc_dec(p: *u8): on zero, run header.drop and free unless weak refs hold it
+  {
+    IRFn *lf = rc_new_fn("rho__rc_dec");
+    LCtx *c = rc_ctx(lf);
+    IRSlot *ps = new_slot(c, 8, 8, "p");
+    vec_push(&lf->params, ps);
+    vec_push(&lf->param_types, NULL);
+    IRVreg *p = v_load(c, v_slotaddr(c, ps), IT_PTR);
+    IRVreg *isnull = v_cmp(c, CC_EQ, p, v_const(c, 0, IT_PTR), false);
+    IRBlock *cont = new_block(c), *done = new_block(c);
+    emit_cbr(c, isnull, done, cont);
+    use_block(c, cont);
+    IRVreg *h = v_addi(c, p, -24);
+    IRVreg *rc = v_load(c, h, IT_USIZE);
+    IRVreg *top = v_binop(c, IR_SHR, rc, v_const(c, 63, IT_USIZE), IT_USIZE, false);
+    IRVreg *immortal = v_cmp(c, CC_NE, top, v_const(c, 0, IT_USIZE), false);
+    IRBlock *live = new_block(c);
+    emit_cbr(c, immortal, done, live);
+    use_block(c, live);
+    IRVreg *rc2 = v_binop(c, IR_SUB, rc, v_const(c, 1, IT_USIZE), IT_USIZE, true);
+    v_store(c, h, rc2);
+    IRVreg *dead = v_cmp(c, CC_EQ, rc2, v_const(c, 0, IT_USIZE), false);
+    IRBlock *maybe_drop = new_block(c);
+    emit_cbr(c, dead, maybe_drop, done);
+    use_block(c, maybe_drop);
+    IRVreg *dropf = v_load(c, v_addi(c, h, 16), IT_PTR);
+    IRVreg *nod = v_cmp(c, CC_EQ, dropf, v_const(c, 0, IT_PTR), false);
+    IRBlock *run_drop = new_block(c), *maybe_free = new_block(c);
+    emit_cbr(c, nod, maybe_free, run_drop);
+    use_block(c, run_drop);
+    Vec dargs = {0};
+    IRArg *da = arena_alloc(sizeof(IRArg));
+    da->vreg = p;
+    da->ty = NULL;
+    vec_push(&dargs, da);
+    IRIns *dc = emit(c, IR_CALL);
+    dc->callee_vreg = dropf;
+    dc->args = dargs;
+    emit_br(c, maybe_free);
+    use_block(c, maybe_free);
+    IRVreg *wrc = v_load(c, v_addi(c, h, 8), IT_USIZE);
+    IRVreg *noweak = v_cmp(c, CC_EQ, wrc, v_const(c, 0, IT_USIZE), false);
+    IRBlock *freeh = new_block(c);
+    emit_cbr(c, noweak, freeh, done);
+    use_block(c, freeh);
+    Sym *fr = prelude_fn("__free");
+    Vec fargs = {0};
+    IRArg *fa = arena_alloc(sizeof(IRArg));
+    fa->vreg = h;
+    fa->ty = NULL;
+    vec_push(&fargs, fa);
+    IRIns *fc = emit(c, IR_CALL);
+    fc->callee = sym_symbol(fr);
+    fc->args = fargs;
+    emit_br(c, done);
+    use_block(c, done);
+    rc_finish(&g_ir_fns, lf);
+  }
+  // __rc_winc(h) / __rc_wdec(h): weak count up/down; last weak of a dead
+  // object frees the storage
+  {
+    IRFn *lf = rc_new_fn("rho__rc_winc");
+    LCtx *c = rc_ctx(lf);
+    IRSlot *hs = new_slot(c, 8, 8, "h");
+    vec_push(&lf->params, hs);
+    vec_push(&lf->param_types, NULL);
+    IRVreg *h = v_load(c, v_slotaddr(c, hs), IT_PTR);
+    IRVreg *isnull = v_cmp(c, CC_EQ, h, v_const(c, 0, IT_PTR), false);
+    IRBlock *cont = new_block(c), *done = new_block(c);
+    emit_cbr(c, isnull, done, cont);
+    use_block(c, cont);
+    IRVreg *w = v_load(c, v_addi(c, h, 8), IT_USIZE);
+    IRVreg *w2 = v_binop(c, IR_ADD, w, v_const(c, 1, IT_USIZE), IT_USIZE, true);
+    v_store(c, v_addi(c, h, 8), w2);
+    emit_br(c, done);
+    use_block(c, done);
+    rc_finish(&g_ir_fns, lf);
+  }
+  {
+    IRFn *lf = rc_new_fn("rho__rc_wdec");
+    LCtx *c = rc_ctx(lf);
+    IRSlot *hs = new_slot(c, 8, 8, "h");
+    vec_push(&lf->params, hs);
+    vec_push(&lf->param_types, NULL);
+    IRVreg *h = v_load(c, v_slotaddr(c, hs), IT_PTR);
+    IRVreg *isnull = v_cmp(c, CC_EQ, h, v_const(c, 0, IT_PTR), false);
+    IRBlock *cont = new_block(c), *done = new_block(c);
+    emit_cbr(c, isnull, done, cont);
+    use_block(c, cont);
+    IRVreg *w = v_load(c, v_addi(c, h, 8), IT_USIZE);
+    IRVreg *w2 = v_binop(c, IR_SUB, w, v_const(c, 1, IT_USIZE), IT_USIZE, true);
+    v_store(c, v_addi(c, h, 8), w2);
+    IRVreg *last = v_cmp(c, CC_EQ, w2, v_const(c, 0, IT_USIZE), false);
+    IRBlock *chk = new_block(c);
+    emit_cbr(c, last, chk, done);
+    use_block(c, chk);
+    IRVreg *rc = v_load(c, h, IT_USIZE);
+    IRVreg *deadc = v_cmp(c, CC_EQ, rc, v_const(c, 0, IT_USIZE), false);
+    IRBlock *freeh = new_block(c);
+    emit_cbr(c, deadc, freeh, done);
+    use_block(c, freeh);
+    Sym *fr = prelude_fn("__free");
+    Vec fargs = {0};
+    IRArg *fa = arena_alloc(sizeof(IRArg));
+    fa->vreg = h;
+    fa->ty = NULL;
+    vec_push(&fargs, fa);
+    IRIns *fc = emit(c, IR_CALL);
+    fc->callee = sym_symbol(fr);
+    fc->args = fargs;
+    emit_br(c, done);
+    use_block(c, done);
+    rc_finish(&g_ir_fns, lf);
+  }
+  // __rc_wref(p) -> header: weak.from on a data pointer
+  {
+    IRFn *lf = rc_new_fn("rho__rc_wref");
+    LCtx *c = rc_ctx(lf);
+    lf->ret = NULL;
+    IRSlot *ps = new_slot(c, 8, 8, "p");
+    vec_push(&lf->params, ps);
+    vec_push(&lf->param_types, NULL);
+    IRVreg *p = v_load(c, v_slotaddr(c, ps), IT_PTR);
+    IRVreg *isnull = v_cmp(c, CC_EQ, p, v_const(c, 0, IT_PTR), false);
+    IRBlock *cont = new_block(c), *done = new_block(c);
+    IRVreg *res = NULL;
+    emit_cbr(c, isnull, done, cont);
+    use_block(c, cont);
+    IRVreg *h = v_addi(c, p, -24);
+    IRVreg *w = v_load(c, v_addi(c, h, 8), IT_USIZE);
+    IRVreg *w2 = v_binop(c, IR_ADD, w, v_const(c, 1, IT_USIZE), IT_USIZE, true);
+    v_store(c, v_addi(c, h, 8), w2);
+    emit_br(c, done);
+    use_block(c, done);
+    // phi: null path -> 0, cont path -> h
+    IRPhi *phi = emit_phi_in(c, done, IT_PTR);
+    phi_add(phi, lf->entry, v_const(c, 0, IT_PTR));
+    phi_add(phi, cont, h);
+    res = phi->dst;
+    emit_ret(c, res);
+    vec_push(&g_ir_fns, lf);
+  }
+  // __rc_wget(h) -> data pointer or null when dead
+  {
+    IRFn *lf = rc_new_fn("rho__rc_wget");
+    LCtx *c = rc_ctx(lf);
+    IRSlot *hs = new_slot(c, 8, 8, "h");
+    vec_push(&lf->params, hs);
+    vec_push(&lf->param_types, NULL);
+    IRVreg *h = v_load(c, v_slotaddr(c, hs), IT_PTR);
+    IRVreg *isnull = v_cmp(c, CC_EQ, h, v_const(c, 0, IT_PTR), false);
+    IRBlock *live = new_block(c), *done = new_block(c);
+    emit_cbr(c, isnull, done, live);
+    use_block(c, live);
+    IRVreg *rc = v_load(c, h, IT_USIZE);
+    IRVreg *top = v_binop(c, IR_SHR, rc, v_const(c, 63, IT_USIZE), IT_USIZE, false);
+    IRVreg *immortal = v_cmp(c, CC_NE, top, v_const(c, 0, IT_USIZE), false);
+    IRVreg *alive2 = v_cmp(c, CC_NE, rc, v_const(c, 0, IT_USIZE), false);
+    IRVreg *alive = v_binop(c, IR_OR, immortal, alive2, IT_U8, false);
+    IRBlock *yes = new_block(c);
+    emit_cbr(c, alive, yes, done);
+    use_block(c, yes);
+    IRVreg *data = v_addi(c, h, 24);
+    emit_br(c, done);
+    use_block(c, done);
+    IRPhi *phi = emit_phi_in(c, done, IT_PTR);
+    phi_add(phi, lf->entry, v_const(c, 0, IT_PTR));
+    phi_add(phi, live, v_const(c, 0, IT_PTR));
+    phi_add(phi, yes, data);
+    emit_ret(c, phi->dst);
+    vec_push(&g_ir_fns, lf);
+  }
+}
+
+// emit a call to a one-pointer-argument rc helper
+static void rc_call1(LCtx *c, const char *helper, IRVreg *arg) {
+  IRIns *call = emit(c, IR_CALL);
+  call->callee = helper;
+  IRArg *a = arena_alloc(sizeof(IRArg));
+  a->vreg = arg;
+  a->ty = NULL;
+  vec_push(&call->args, a);
+}
+
+static void rc_inc_v(LCtx *c, IRVreg *p) { rc_call1(c, "rho__rc_inc", p); }
+static void rc_dec_v(LCtx *c, IRVreg *p) { rc_call1(c, "rho__rc_dec", p); }
+
+static void value_walk(LCtx *c, Type *t, IRVreg *addr, bool retain);
+
+// lazily synthesize rho__rel$<t> / rho__ret$<t>: walk the value of type t at
+// the sole pointer parameter. Returns NULL for unmanaged types.
+static const char *value_fn_for(Type *t, bool retain) {
+  if (!t || !ty_is_managed(t))
+    return NULL;
+  Map *cache = retain ? &g_ret_fns : &g_rel_fns;
+  if (map_has(cache, str_from(t->mangled)))
+    return map_get(cache, str_from(t->mangled));
+  char *sym = arena_printf("rho__%s$%s", retain ? "ret" : "rel", t->mangled);
+  map_put(cache, str_from(t->mangled), sym);
+  IRFn *lf = rc_new_fn(sym);
+  LCtx *c = rc_ctx(lf);
+  IRSlot *as_ = new_slot(c, 8, 8, "addr");
+  vec_push(&lf->params, as_);
+  vec_push(&lf->param_types, NULL);
+  IRVreg *addr = v_load(c, v_slotaddr(c, as_), IT_PTR);
+  value_walk(c, t, addr, retain);
+  rc_finish(&g_ir_fns, lf);
+  return sym;
+}
+
+static void value_walk_call(LCtx *c, Type *t, IRVreg *addr, bool retain) {
+  const char *fn = value_fn_for(t, retain);
+  if (!fn)
+    return;
+  rc_call1(c, fn, addr);
+}
+
+static void value_walk(LCtx *c, Type *t, IRVreg *addr, bool retain) {
+  switch (t->kind) {
+  case TY_PTR: {
+    IRVreg *p = v_load(c, addr, IT_PTR);
+    if (retain)
+      rc_inc_v(c, p);
+    else
+      rc_dec_v(c, p);
+    return;
+  }
+  case TY_WEAK: {
+    IRVreg *h = v_load(c, addr, IT_PTR);
+    rc_call1(c, retain ? "rho__rc_winc" : "rho__rc_wdec", h);
+    return;
+  }
+  case TY_FN: {
+    IRVreg *e = v_load(c, v_addi(c, addr, 8), IT_PTR);
+    if (retain)
+      rc_inc_v(c, e);
+    else
+      rc_dec_v(c, e);
+    return;
+  }
+  case TY_SLICE:
+  case TY_STRING: {
+    if (ty_is_managed(t->elem)) {
+      IRVreg *ptr = v_load(c, v_addi(c, addr, 8), IT_PTR);
+      IRVreg *n = v_load(c, v_addi(c, addr, 16), IT_USIZE);
+      int64_t esz = t->kind == TY_STRING ? 1 : type_size(t->elem);
+      IRSlot *is = new_slot(c, 8, 8, "i");
+      v_store(c, v_slotaddr(c, is), v_const(c, 0, IT_USIZE));
+      IRBlock *hdr = new_block(c), *body = new_block(c), *done = new_block(c);
+      emit_br(c, hdr);
+      use_block(c, hdr);
+      IRVreg *i = v_load(c, v_slotaddr(c, is), IT_USIZE);
+      IRVreg *more = v_cmp(c, CC_LT, i, n, false);
+      emit_cbr(c, more, body, done);
+      use_block(c, body);
+      IRVreg *scaled = v_binop(c, IR_MUL, i, v_const(c, (uint64_t)esz, IT_USIZE),
+                               IT_USIZE, false);
+      IRVreg *ep = v_binop(c, IR_ADD, ptr, scaled, IT_PTR, false);
+      value_walk_call(c, t->elem, ep, retain);
+      IRVreg *i2 = v_binop(c, IR_ADD, i, v_const(c, 1, IT_USIZE), IT_USIZE, true);
+      v_store(c, v_slotaddr(c, is), i2);
+      emit_br(c, hdr);
+      use_block(c, done);
+    }
+    IRVreg *buf = v_load(c, addr, IT_PTR);
+    if (retain)
+      rc_inc_v(c, buf);
+    else
+      rc_dec_v(c, buf);
+    return;
+  }
+  case TY_ARRAY: {
+    if (!ty_is_managed(t->elem))
+      return;
+    int64_t esz = type_size(t->elem);
+    for (uint64_t i = 0; i < t->len; i++)
+      value_walk_call(c, t->elem, v_addi(c, addr, (int64_t)i * esz), retain);
+    return;
+  }
+  case TY_STRUCT: {
+    RecType *rec = t->rec;
+    for (size_t i = 0; i < rec->decl->fields.n; i++) {
+      Type *ft = struct_field_type(rec, i);
+      if (!ty_is_managed(ft))
+        continue;
+      value_walk_call(c, ft, v_addi(c, addr, struct_field_offset(rec, i)), retain);
+    }
+    return;
+  }
+  case TY_ENUM: {
+    Decl *d = t->rec->decl;
+    IRVreg *tag = v_load(c, addr, IT_I32);
+    IRBlock *done = new_block(c);
+    bool any = false;
+    for (size_t vi = 0; vi < d->variants.n; vi++) {
+      VariantAst *v = d->variants.items[vi];
+      size_t nf = v->vkind == VAR_TUPLE ? v->types.n
+                  : v->vkind == VAR_STRUCT ? v->fields.n : 0;
+      bool managed = false;
+      for (size_t fi = 0; fi < nf && !managed; fi++)
+        managed = ty_is_managed(variant_field_type(t, (int)vi, (int)fi));
+      if (!managed)
+        continue;
+      IRBlock *body = new_block(c);
+      IRBlock *next = new_block(c);
+      IRVreg *is = v_cmp(c, CC_EQ, tag, v_const(c, v->disc, IT_I32), false);
+      emit_cbr(c, is, body, next);
+      use_block(c, body);
+      for (size_t fi = 0; fi < nf; fi++) {
+        Type *ft = variant_field_type(t, (int)vi, (int)fi);
+        if (!ty_is_managed(ft))
+          continue;
+        value_walk_call(c, ft,
+                        v_addi(c, addr, variant_field_offset(t, (int)vi, (int)fi)),
+                        retain);
+      }
+      emit_br(c, done);
+      use_block(c, next);
+      any = true;
+    }
+    if (any) {
+      emit_br(c, done);
+      use_block(c, done);
+    }
+    return;
+  }
+  default:
+    return;
+  }
+}
+static const char *lift_closure(LCtx *c, Expr *e, const char **envdrop_out) {
   Type *ft = e->typed;
   Type *ret = ft->ret;
   bool agg_ret = ret && ty_is_aggregate(ret);
-  const char *sym_name = arena_printf("%s__clo%d", c->fn->symbol, g_closure_counter++);
+  int clo_id = g_closure_counter++;
+  const char *sym_name = arena_printf("%s__clo%d", c->fn->symbol, clo_id);
   IRFn *lf = arena_alloc_zeroed(sizeof(IRFn));
   lf->symbol = sym_name;
   lf->ret = ret;
@@ -631,6 +1131,27 @@ static const char *lift_closure(LCtx *c, Expr *e) {
   }
   scope_pop(&cc);
   vec_push(&g_ir_fns, lf);
+
+  // env drop glue: releases every captured value when the env object dies
+  const char *envdrop = arena_printf("rho__envdrop$%d", clo_id);
+  IRFn *df = rc_new_fn(envdrop);
+  LCtx *dc = rc_ctx(df);
+  IRSlot *das = new_slot(dc, 8, 8, "addr");
+  vec_push(&df->params, das);
+  vec_push(&df->param_types, NULL);
+  IRVreg *daddr = v_load(dc, v_slotaddr(dc, das), IT_PTR);
+  int64_t doff = 0;
+  for (size_t i = 0; i < e->caps.n; i++) {
+    Sym *cap = e->caps.items[i];
+    Type *ct = cap->type;
+    int64_t al = type_align(ct);
+    doff = (doff + al - 1) / al * al;
+    value_walk_call(dc, ct, v_addi(dc, daddr, doff), false);
+    doff += type_size(ct);
+  }
+  rc_finish(&g_ir_fns, df);
+  if (envdrop_out)
+    *envdrop_out = envdrop;
   return sym_name;
 }
 
@@ -770,13 +1291,15 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
     return v_load(c, v_slotaddr(c, slot), ir_type_of(t));
   }
   case EX_STR: {
-    // slice value: temp {lit, lit, len}
+    // slice value: {lit(header), lit+24(bytes), len} — the literal carries
+    // an immortal 24-byte rc header, so count traffic on it is a no-op
     IRSlot *tmp = new_slot(c, 24, 8, "strlit");
     IRVreg *addr = v_slotaddr(c, tmp);
     int lit = lit_bytes(c, e->sv);
     IRIns *la = emit(c, IR_LITADDR);
     la->dst = new_vreg(c, IT_PTR);
     la->lit = lit;
+    IRVreg *bytes = v_addi(c, la->dst, 24);
     IRVreg *a8 = v_addi(c, addr, 8);
     IRVreg *a16 = v_addi(c, addr, 16);
     IRVreg *lenv = v_const(c, (uint64_t)e->sv.n, IT_USIZE);
@@ -786,7 +1309,7 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
     s1->size = 8;
     IRIns *s2 = emit(c, IR_STORE);
     s2->addr = a8;
-    s2->a = la->dst;
+    s2->a = bytes;
     s2->size = 8;
     IRIns *s3 = emit(c, IR_STORE);
     s3->addr = a16;
@@ -935,7 +1458,8 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
   case EX_NEW:
     return lower_new(c, e);
   case EX_CLOSURE: {
-    const char *sym_name = lift_closure(c, e);
+    const char *envdrop = NULL;
+    const char *sym_name = lift_closure(c, e, &envdrop);
     // env object: header + snapshot of every capture
     int64_t esz = 0;
     for (size_t i = 0; i < e->caps.n; i++) {
@@ -957,10 +1481,17 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
     wrc->addr = obj8;
     wrc->a = zero;
     wrc->size = 8;
-    IRVreg *nullp = v_const(c, 0, IT_PTR);
+    IRVreg *dropv = v_const(c, 0, IT_PTR);
+    if (e->caps.n) {
+      IRIns *ga = emit(c, IR_ADDRC);
+      ga->dst = new_vreg(c, IT_PTR);
+      ga->callee = envdrop;
+      ga->lit = -1;
+      dropv = ga->dst;
+    }
     IRIns *dr = emit(c, IR_STORE);
     dr->addr = obj16;
-    dr->a = nullp;
+    dr->a = dropv;
     dr->size = 8;
     int64_t off = 0;
     for (size_t i = 0; i < e->caps.n; i++) {
@@ -979,6 +1510,8 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
         IRVreg *v = v_load(c, srcaddr, ir_type_of(ct));
         v_store(c, daddr, v);
       }
+      if (ty_is_managed(ct))
+        retain_addr(c, ct, daddr); // the env owns its snapshot
       off += type_size(ct);
     }
     // the value: {code, env=data pointer}
@@ -1038,6 +1571,8 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
     use_block(c, then_b);
     Vec *then_stmts = &((Stmt *)e->items.items[0])->stmts;
     IRVreg *tv = block_value(c, then_stmts, t);
+    if (ty_is_managed(t) && !arm_value_owned(then_stmts))
+      retain_or_inc(c, t, tv);
     IRBlock *then_end = c->fn->cur;
     emit_br(c, join);
     IRVreg *ev = NULL;
@@ -1046,10 +1581,14 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
       use_block(c, false_b);
       void *els = e->items.items[1];
       Expr *else_if = els;
-      if (else_if->kind == EX_IF)
-        ev = lv_expr(c, else_if);
-      else
-        ev = block_value(c, &((Stmt *)els)->stmts, t);
+      if (else_if->kind == EX_IF) {
+        ev = lv_expr(c, else_if); // nested ifs normalize their own arms
+      } else {
+        Vec *es = &((Stmt *)els)->stmts;
+        ev = block_value(c, es, t);
+        if (ty_is_managed(t) && !arm_value_owned(es))
+          retain_or_inc(c, t, ev);
+      }
       else_end = c->fn->cur;
       emit_br(c, join);
       use_block(c, join);
@@ -1109,6 +1648,10 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
           } else {
             v_store(c, saddr, v_load(c, faddr, ir_type_of(ft)));
           }
+          if (ty_is_managed(ft)) {
+            retain_addr(c, ft, saddr);
+            own_slot(c, slot, ft);
+          }
         }
       }
       IRVreg *val;
@@ -1116,12 +1659,14 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
         scope_push(c);
         val = block_value(c, &arm->body->items, t);
         run_defers(c, c->scope->parent);
-        scope_pop(c);
+        scope_pop_release(c);
       } else {
         val = lv_expr(c, arm->body);
       }
+      if (t && ty_is_managed(t) && !expr_owned(arm->body))
+        retain_or_inc(c, t, val);
       if (bind_scope)
-        scope_pop(c);
+        scope_pop_release(c);
       emit_br(c, join);
       phi_add(phi, c->fn->cur, val);
       if (i + 1 < n)
@@ -1149,11 +1694,16 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
     cp->addr = dst;
     cp->a = val;
     cp->size = type_size(et);
+    if (ty_is_managed(et) && !expr_owned(e->a))
+      retain_addr(c, et, dst);
+    release_scopes_to(c, NULL);
     emit_ret(c, NULL);
     IRBlock *dead = new_block(c);
     use_block(c, dead);
     emit_br(c, cont); // unreachable; keeps the CFG well-formed
     use_block(c, cont);
+    if (ty_is_managed(et) && expr_owned(e->a))
+      release_addr(c, et, val);
     Type *pt = e->typed;
     int64_t off = variant_field_offset(et, e->q_ok, 0);
     if (pt && ty_is_aggregate(pt))
@@ -1192,6 +1742,7 @@ static void build_call(LCtx *c, Sym *fn, Expr *receiver, Vec *args_exprs, IRVreg
   // args: vregs for scalars, addresses for aggregates; the method receiver,
   // when present, is argument 0
   Vec call_args = {0};
+  Vec owned_args = {0}; // Expr* of owned rvalues needing a post-call release
   Type *ret = fn->type->ret;
   bool agg_ret = ret && ty_is_aggregate(ret);
   if (agg_ret) {
@@ -1204,12 +1755,11 @@ static void build_call(LCtx *c, Sym *fn, Expr *receiver, Vec *args_exprs, IRVreg
   if (receiver) {
     Type *self_t = fn->type->params.items[0];
     IRArg *a = arena_alloc(sizeof(IRArg));
-    if (ty_is_aggregate(self_t))
-      a->vreg = lv_expr(c, receiver);
-    else
-      a->vreg = lv_expr(c, receiver);
+    a->vreg = lv_expr(c, receiver);
     a->ty = self_t;
     vec_push(&call_args, a);
+    if (ty_is_managed(self_t) && expr_owned(receiver))
+      vec_push(&owned_args, receiver);
     param_index = 1;
   }
   for (size_t i = 0; i < args_exprs->n; i++) {
@@ -1218,18 +1768,27 @@ static void build_call(LCtx *c, Sym *fn, Expr *receiver, Vec *args_exprs, IRVreg
                    ? fn->type->params.items[param_index + i]
                    : (arg->typed ? arg->typed : NULL);
     IRArg *a = arena_alloc(sizeof(IRArg));
-    if (pt && ty_is_aggregate(pt))
-      a->vreg = lv_expr(c, arg); // aggregate rvalue = address of temp
-    else
-      a->vreg = lv_expr(c, arg);
+    a->vreg = lv_expr(c, arg); // aggregate rvalue = address of temp
     a->ty = pt;
     vec_push(&call_args, a);
+    if (pt && ty_is_managed(pt) && expr_owned(arg))
+      vec_push(&owned_args, arg);
   }
   IRIns *call = emit(c, IR_CALL);
   call->callee = sym_symbol(fn);
   call->args = call_args;
   if (ret && !agg_ret && ret->kind != TY_VOID)
     call->dst = new_vreg(c, ir_type_of(ret));
+  // owned arguments handed their +1 to the callee's param copies
+  for (size_t i = 0; i < owned_args.n; i++) {
+    Expr *arg = owned_args.items[i];
+    Type *at = arg->typed;
+    IRVreg *pv = ((IRArg *)call_args.items[agg_ret ? i + 2 : i + 1])->vreg;
+    if (ty_is_aggregate(at))
+      release_addr(c, at, pv);
+    else
+      rc_dec_v(c, pv);
+  }
   *scalar_dst = call->dst;
 }
 
@@ -1329,10 +1888,18 @@ static IRVreg *lower_new(LCtx *c, Expr *e) {
   wrc->addr = obj8;
   wrc->a = zero;
   wrc->size = 8;
-  IRVreg *nullp = v_const(c, 0, IT_PTR);
+  IRVreg *dropv = v_const(c, 0, IT_PTR);
+  const char *glue = value_fn_for(struct_t, false);
+  if (glue) {
+    IRIns *ga = emit(c, IR_ADDRC);
+    ga->dst = new_vreg(c, IT_PTR);
+    ga->callee = glue;
+    ga->lit = -1;
+    dropv = ga->dst;
+  }
   IRIns *dr = emit(c, IR_STORE);
   dr->addr = obj16;
-  dr->a = nullp;
+  dr->a = dropv;
   dr->size = 8;
   // the returned reference points at the DATA, 24 bytes past the header
   IRVreg *data = v_addi(c, obj, 24);
@@ -1601,7 +2168,7 @@ static IRVreg *block_value(LCtx *c, Vec *stmts, Type *t) {
         tail = lv_expr(c, s->a);
     }
   }
-  scope_pop(c);
+  scope_pop_release(c);
   (void)t;
   return tail;
 }
@@ -1610,8 +2177,16 @@ static IRVreg *block_value(LCtx *c, Vec *stmts, Type *t) {
 
 static void lv_expr_discard(LCtx *c, Expr *e) {
   Type *t = e->typed;
+  if (t && ty_is_managed(t) && expr_owned(e)) {
+    IRVreg *v = lv_expr(c, e);
+    if (ty_is_aggregate(t))
+      release_addr(c, t, v);
+    else
+      rc_dec_v(c, v);
+    return;
+  }
   if (t && ty_is_aggregate(t))
-    lv_expr(c, e); // address materialized; value dropped (RC lands in 0.0.5)
+    lv_expr(c, e);
   else
     lv_expr(c, e);
 }
@@ -1629,12 +2204,42 @@ static void lv_stmt(LCtx *c, Stmt *s) {
       IRVreg *v = lv_expr(c, s->a);
       v_store(c, addr, v);
     }
+    if (ty_is_managed(t)) {
+      if (!expr_owned(s->a))
+        retain_addr(c, t, addr);
+      own_slot(c, slot, t);
+    }
     break;
   }
   case ST_ASSIGN: {
     Type *t = s->a->typed;
     IRVreg *addr = compute_addr(c, s->a);
     if (s->assign_op == P_ASSIGN) {
+      if (ty_is_managed(t)) {
+        // save the old value before the store overwrites it
+        IRSlot *old = new_slot(c, type_size(t), type_align(t), "oldval");
+        IRVreg *olda = v_slotaddr(c, old);
+        if (ty_is_aggregate(t)) {
+          IRIns *cp = emit(c, IR_COPYMEM);
+          cp->addr = olda;
+          cp->a = addr;
+          cp->size = type_size(t);
+        } else {
+          v_store(c, olda, v_load(c, addr, ir_type_of(t)));
+        }
+        if (ty_is_aggregate(t)) {
+          lv_agg(c, s->b, addr);
+          if (!expr_owned(s->b))
+            retain_addr(c, t, addr);
+        } else {
+          IRVreg *v = lv_expr(c, s->b);
+          v_store(c, addr, v);
+          if (!expr_owned(s->b))
+            rc_inc_v(c, v);
+        }
+        release_addr(c, t, olda);
+        break;
+      }
       if (ty_is_aggregate(t)) {
         lv_agg(c, s->b, addr);
       } else {
@@ -1677,8 +2282,18 @@ static void lv_stmt(LCtx *c, Stmt *s) {
       cp->addr = dst;
       cp->a = src;
       cp->size = type_size(t);
+      if (ty_is_managed(t) && !expr_owned(s->a))
+        retain_addr(c, t, dst);
+      release_scopes_to(c, NULL);
       emit_ret(c, NULL);
+    } else if (s->a && ty_is_managed(t)) {
+      IRVreg *v = lv_expr(c, s->a);
+      if (!expr_owned(s->a))
+        rc_inc_v(c, v);
+      release_scopes_to(c, NULL);
+      emit_ret(c, v);
     } else {
+      release_scopes_to(c, NULL);
       emit_ret(c, s->a ? lv_expr(c, s->a) : NULL);
     }
     // continuation block for unreachable code after return
@@ -1696,6 +2311,7 @@ static void lv_stmt(LCtx *c, Stmt *s) {
       }
     }
     run_defers(c, loop); // defers inside the loop body, not the loop scope's own
+    release_scopes_to(c, loop);
     emit_br(c, s->kind == ST_BREAK ? loop->break_to : loop->continue_to);
     IRBlock *dead = new_block(c);
     use_block(c, dead);
@@ -1720,7 +2336,7 @@ static void lv_stmt(LCtx *c, Stmt *s) {
     for (size_t i = 0; i < s->body.n; i++)
       lv_stmt(c, s->body.items[i]);
     run_defers(c, c->scope->parent);
-    scope_pop(c);
+    scope_pop_release(c);
     emit_br(c, header);
     use_block(c, done);
     break;
@@ -1736,7 +2352,7 @@ static void lv_stmt(LCtx *c, Stmt *s) {
     for (size_t i = 0; i < s->body.n; i++)
       lv_stmt(c, s->body.items[i]);
     run_defers(c, c->scope->parent);
-    scope_pop(c);
+    scope_pop_release(c);
     emit_br(c, body);
     use_block(c, done);
     break;
@@ -1746,7 +2362,7 @@ static void lv_stmt(LCtx *c, Stmt *s) {
     for (size_t i = 0; i < s->stmts.n; i++)
       lv_stmt(c, s->stmts.items[i]);
     run_defers(c, c->scope->parent);
-    scope_pop(c);
+    scope_pop_release(c);
     break;
   }
   }
@@ -1807,8 +2423,16 @@ static IRFn *lower_fn(Sym *sym) {
       cp->addr = dst;
       cp->a = src;
       cp->size = type_size(pt);
+      if (ty_is_managed(pt)) {
+        retain_addr(&ctx, pt, dst);
+        own_slot(&ctx, local, pt);
+      }
     } else {
       bind(&ctx, pa->name, slot);
+      if (ty_is_managed(pt)) {
+        retain_addr(&ctx, pt, v_slotaddr(&ctx, slot));
+        own_slot(&ctx, slot, pt);
+      }
     }
   }
   if (sym->owner == g_root_module && str_eq_c(sym->name, "main"))
@@ -1819,6 +2443,7 @@ static IRFn *lower_fn(Sym *sym) {
 
   if (!fn->cur->sealed) {
     run_defers(&ctx, NULL);
+    release_scopes_to(&ctx, NULL);
     emit_ret(&ctx, NULL);
   }
   scope_pop(&ctx);
@@ -1841,9 +2466,10 @@ static void lower_static(Sym *sym) {
     for (size_t i = 0; i < sv.n; i++)
       vec_push(&l->bytes, (void *)(long)(unsigned char)sv.p[i]);
     vec_push(&l->bytes, (void *)0L);
+    char *bytes_label = arena_printf("%s_b", label);
     g->relocs = arena_alloc(3 * sizeof(char *));
-    g->relocs[0] = label;
-    g->relocs[1] = label;
+    g->relocs[0] = label;      // buf: the immortal header block
+    g->relocs[1] = bytes_label; // ptr: the bytes
     g->relocs[2] = NULL;
     int64_t len = (int64_t)sv.n;
     for (int w = 0; w < 3; w++) {
@@ -1871,6 +2497,7 @@ static void lower_static(Sym *sym) {
 void lower_program(void) {
   g_ir_fns = (Vec){0};
   g_ir_globals = (Vec){0};
+  rc_runtime_build(); // __rc_inc/dec/w* helpers every managed program needs
   for (size_t i = 0; i < g_module_order.n; i++) {
     Module *m = g_module_order.items[i];
     for (size_t k = 0; k < m->syms.keys.n; k++) {

@@ -606,14 +606,16 @@ void emit_amd64(Target target, SB *out) {
   for (size_t i = 0; i < g_ir_fns.n; i++)
     emit_fn(&e, g_ir_fns.items[i]);
 
-  // string literals + float consts in rodata
+  // string literals + float consts in rodata; every literal carries an
+  // immortal rc header {sentinel, 0, null} so slice traffic no-ops on it
   sb_append_c(out, is_mac ? ".section __TEXT,__cstring,cstring_literals\n"
                           : ".section .rodata\n");
   for (size_t i = 0; i < g_ir_fns.n; i++) {
     IRFn *fn = g_ir_fns.items[i];
     for (size_t j = 0; j < fn->literals.n; j++) {
       IRLiteral *l = fn->literals.items[j];
-      sb_printf(out, "%s:\n  .ascii \"", lit_label(&e, l->label));
+      sb_printf(out, "  .p2align 3\n%s:\n  .quad 0x8000000000000000\n  .quad 0\n  .quad 0\n%s_b:\n  .ascii \"",
+                lit_label(&e, l->label), lit_label(&e, l->label));
       for (size_t k = 0; k < l->bytes.n; k++) {
         unsigned char ch = (unsigned char)(long)l->bytes.items[k];
         if (ch >= 0x20 && ch < 0x7F && ch != '"' && ch != '\\')

@@ -536,7 +536,8 @@ void emit_arm64(Target target, SB *out) {
     IRFn *fn = g_ir_fns.items[i];
     for (size_t j = 0; j < fn->literals.n; j++) {
       IRLiteral *l = fn->literals.items[j];
-      sb_printf(out, "L%s:\n  .ascii \"", l->label);
+      sb_printf(out, "  .p2align 3\nL%s:\n  .quad 0x8000000000000000\n  .quad 0\n  .quad 0\nL%s_b:\n  .ascii \"",
+                l->label, l->label);
       for (size_t k = 0; k < l->bytes.n; k++) {
         unsigned char ch = (unsigned char)(long)l->bytes.items[k];
         if (ch >= 0x20 && ch < 0x7F && ch != '"' && ch != '\\')
