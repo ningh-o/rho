@@ -1,0 +1,28 @@
+// exit: 79
+fn neg1(x: i32) -> i32 {
+  return 0 - x;
+}
+
+fn apply_twice(f: fn(i32) -> i32, v: i32) -> i32 {
+  return f(f(v));
+}
+
+fn main() -> i32 {
+  let base: i32 = 10;
+  let add_base: fn(i32) -> i32 = fn(x: i32) -> i32 {
+    return x + base;
+  };
+  let a: i32 = add_base(5);
+  let b: i32 = apply_twice(add_base, 1);
+  let c: i32 = apply_twice(neg1, 3);
+  let scale: i32 = 3;
+  let mul: fn(i32) -> i32 = fn(x: i32) -> i32 {
+    let k: i32 = scale + 1;
+    return x * k;
+  };
+  let d: i32 = mul(6);
+  let e: i32 = apply_twice(fn(x: i32) -> i32 {
+    return x - 2;
+  }, 20);
+  return a + b + c + d + e;
+}

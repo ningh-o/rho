@@ -1,0 +1,7 @@
+fn main() -> i32 {
+  let mut n: i32 = 0;
+  let f: fn() -> i32 = fn() -> i32 {
+    return n;
+  };
+  return f();
+}

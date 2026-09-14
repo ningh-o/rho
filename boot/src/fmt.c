@@ -228,7 +228,12 @@ static void f_expr(SB *sb, Expr *e, int parent_bp) {
       sb_append_c(sb, " -> ");
       f_type(sb, e->ret);
     }
-    sb_append_c(sb, " { ... }");
+    sb_append_c(sb, " {");
+    f_indent++;
+    f_stmts(sb, &e->items);
+    f_indent--;
+    f_line(sb);
+    sb_push(sb, '}');
     self_bp = 13;
     break;
   case EX_MATCH:

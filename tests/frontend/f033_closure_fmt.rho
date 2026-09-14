@@ -1,0 +1,11 @@
+fn apply(f: fn(i32) -> i32, v: i32) -> i32 {
+  return f(v);
+}
+
+fn main() -> i32 {
+  let k: i32 = 5;
+  let g: fn(i32) -> i32 = fn(x: i32) -> i32 {
+    return x * k;
+  };
+  return apply(g, 3);
+}

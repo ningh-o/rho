@@ -31,6 +31,7 @@ typedef struct LCtx {
 static IRVreg *lv_expr(LCtx *c, Expr *e);
 static IRVreg *fconst(LCtx *c, double v, IRType ty);
 static IRVreg *compute_call_value(LCtx *c, Expr *e);
+static IRVreg *call_prelude1(LCtx *c, const char *name, IRVreg *arg0, IRType ret);
 static IRVreg *block_value(LCtx *c, Vec *stmts, Type *t);
 static int field_index_of(Expr *e, RecType *rec);
 bool ty_is_signed_int(IRType t);
@@ -457,10 +458,180 @@ static IRVreg *call_str_cmp(LCtx *c, Expr *e, bool want_eq) {
 static bool ty_is_aggregate(Type *t) {
   switch (t->kind) {
   case TY_STRUCT: case TY_ENUM: case TY_ARRAY: case TY_SLICE: case TY_STRING:
+  case TY_FN: // closure pair {code, env}
     return true;
   default:
     return false;
   }
+}
+
+// ------------------------------------------------------------ closures ----
+//
+// A closure value is {code: *fn, env: *u8}. Calling one always passes env as
+// the final hidden argument, so closure bodies and shims share one ABI.
+// Static fn references materialize as {shim, null}: the shim drops env and
+// forwards. Boot-era captures are copies — immutable snapshots.
+
+static int g_closure_counter;
+static Map g_shims; // shim symbol -> built marker
+
+static const char *shim_for(Sym *fn) {
+  const char *shim_name = arena_printf("rho__shim_%s", sym_symbol(fn));
+  if (map_has(&g_shims, str_from(shim_name)))
+    return shim_name;
+  map_put(&g_shims, str_from(shim_name), (void *)1);
+  Type *ft = fn->type;
+  Type *ret = ft->ret;
+  bool agg_ret = ret && ty_is_aggregate(ret);
+
+  IRFn *lf = arena_alloc_zeroed(sizeof(IRFn));
+  lf->symbol = shim_name;
+  lf->ret = ret;
+  LCtx cc = {0};
+  cc.fn = lf;
+  if (agg_ret) {
+    lf->returns_aggregate = true;
+    lf->out_slot = new_slot(&cc, type_size(ret), type_align(ret), "out");
+  }
+  lf->entry = new_block(&cc);
+  use_block(&cc, lf->entry);
+
+  Vec args = {0};
+  if (agg_ret) {
+    IRVreg *outp = v_load(&cc, v_slotaddr(&cc, lf->out_slot), IT_PTR);
+    IRArg *a = arena_alloc(sizeof(IRArg));
+    a->vreg = outp;
+    a->ty = NULL;
+    vec_push(&args, a);
+  }
+  for (size_t i = 0; i < ft->params.n; i++) {
+    Type *pt = ft->params.items[i];
+    IRSlot *sl = new_slot(&cc, type_size(pt), type_align(pt), "p");
+    vec_push(&lf->params, sl);
+    vec_push(&lf->param_types, pt);
+    IRVreg *pv = v_load(&cc, v_slotaddr(&cc, sl), ty_is_aggregate(pt) ? IT_PTR : ir_type_of(pt));
+    IRArg *a = arena_alloc(sizeof(IRArg));
+    a->vreg = pv;
+    a->ty = pt;
+    vec_push(&args, a);
+  }
+  // the closure-ABI env parameter arrives last and is dropped here
+  IRSlot *env = new_slot(&cc, 8, 8, "env");
+  vec_push(&lf->params, env);
+  vec_push(&lf->param_types, NULL);
+
+  IRIns *call = emit(&cc, IR_CALL);
+  call->callee = sym_symbol(fn);
+  call->args = args;
+  IRVreg *rv = NULL;
+  if (ret && !agg_ret && ret->kind != TY_VOID) {
+    call->dst = new_vreg(&cc, ir_type_of(ret));
+    rv = call->dst;
+  }
+  emit_ret(&cc, rv);
+  vec_push(&g_ir_fns, lf);
+  return shim_name;
+}
+
+// a fn value for a named function: {shim, null env}
+static IRVreg *closure_value_for_sym(LCtx *c, Sym *fn) {
+  const char *shim = shim_for(fn);
+  IRIns *la = emit(c, IR_ADDRC);
+  la->dst = new_vreg(c, IT_PTR);
+  la->callee = shim;
+  la->lit = -1; // global/fn address form
+  IRVreg *zero = v_const(c, 0, IT_PTR);
+  IRSlot *tmp = new_slot(c, 16, 8, "fnval");
+  IRVreg *addr = v_slotaddr(c, tmp);
+  IRVreg *a8 = v_addi(c, addr, 8);
+  IRIns *s1 = emit(c, IR_STORE);
+  s1->addr = addr;
+  s1->a = la->dst;
+  s1->size = 8;
+  IRIns *s2 = emit(c, IR_STORE);
+  s2->addr = a8;
+  s2->a = zero;
+  s2->size = 8;
+  return addr;
+}
+
+// lift a checked closure literal into its own IRFn (env is the last param);
+// returns its symbol
+static const char *lift_closure(LCtx *c, Expr *e) {
+  Type *ft = e->typed;
+  Type *ret = ft->ret;
+  bool agg_ret = ret && ty_is_aggregate(ret);
+  const char *sym_name = arena_printf("%s__clo%d", c->fn->symbol, g_closure_counter++);
+  IRFn *lf = arena_alloc_zeroed(sizeof(IRFn));
+  lf->symbol = sym_name;
+  lf->ret = ret;
+  LCtx cc = {0};
+  cc.fn = lf;
+  if (agg_ret) {
+    lf->returns_aggregate = true;
+    lf->out_slot = new_slot(&cc, type_size(ret), type_align(ret), "out");
+  }
+  lf->entry = new_block(&cc);
+  use_block(&cc, lf->entry);
+  scope_push(&cc);
+
+  for (size_t i = 0; i < e->params.n; i++) {
+    Param *pa = e->params.items[i];
+    Type *pt = ft->params.items[i];
+    IRSlot *slot = new_slot(&cc, type_size(pt), type_align(pt), str_to_c(pa->name));
+    vec_push(&lf->params, slot);
+    vec_push(&lf->param_types, pt);
+    if (ty_is_aggregate_t(pt)) {
+      IRSlot *local = new_slot(&cc, type_size(pt), type_align(pt), str_to_c(pa->name));
+      IRVreg *src_addr = v_slotaddr(&cc, slot);
+      IRVreg *src = v_load(&cc, src_addr, IT_PTR);
+      IRVreg *dst = v_slotaddr(&cc, local);
+      IRIns *cp = emit(&cc, IR_COPYMEM);
+      cp->addr = dst;
+      cp->a = src;
+      cp->size = type_size(pt);
+      bind(&cc, pa->name, local);
+    } else {
+      bind(&cc, pa->name, slot);
+    }
+  }
+  IRSlot *env = new_slot(&cc, 8, 8, "env");
+  vec_push(&lf->params, env);
+  vec_push(&lf->param_types, NULL);
+
+  // captures materialize into plain slots from the env data pointer
+  int64_t off = 0;
+  for (size_t i = 0; i < e->caps.n; i++) {
+    Sym *cap = e->caps.items[i];
+    Type *ct = cap->type;
+    int64_t al = type_align(ct);
+    off = (off + al - 1) / al * al;
+    IRVreg *envp = v_load(&cc, v_slotaddr(&cc, env), IT_PTR);
+    IRVreg *srcaddr = v_addi(&cc, envp, off);
+    IRSlot *slot = new_slot(&cc, type_size(ct), type_align(ct), str_to_c(cap->name));
+    IRVreg *dst = v_slotaddr(&cc, slot);
+    if (ty_is_aggregate(ct)) {
+      IRIns *cp = emit(&cc, IR_COPYMEM);
+      cp->addr = dst;
+      cp->a = srcaddr;
+      cp->size = type_size(ct);
+    } else {
+      IRVreg *v = v_load(&cc, srcaddr, ir_type_of(ct));
+      v_store(&cc, dst, v);
+    }
+    bind(&cc, cap->name, slot);
+    off += type_size(ct);
+  }
+
+  for (size_t i = 0; i < e->items.n; i++)
+    lv_stmt(&cc, e->items.items[i]);
+  if (!lf->cur->sealed) {
+    run_defers(&cc, NULL);
+    emit_ret(&cc, NULL);
+  }
+  scope_pop(&cc);
+  vec_push(&g_ir_fns, lf);
+  return sym_name;
 }
 
 // ------------------------------------------------------------- lvalues -----
@@ -581,6 +752,8 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
         return compute_addr(c, e);
       return v_const(c, 0, ir_type_of(t));
     }
+    if (e->fnval && sym && (sym->kind == SY_FN || sym->kind == SY_EXTERN))
+      return closure_value_for_sym(c, sym);
     if (t && ty_is_aggregate(t))
       return compute_addr(c, e);
     IRSlot *slot = lookup_slot(c, e->sv);
@@ -725,6 +898,9 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
   }
   case EX_FIELD: {
     Type *t2 = e->typed;
+    Sym *fsym = e->sym;
+    if (e->fnval && fsym && (fsym->kind == SY_FN || fsym->kind == SY_EXTERN))
+      return closure_value_for_sym(c, fsym);
     // unit enum variant used as a value: materialize {tag, zeros}
     if (e->sym && ((Sym *)e->sym)->kind == SY_VARIANT) {
       Sym *vs = (Sym *)e->sym;
@@ -758,6 +934,72 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
     return compute_call_value(c, e);
   case EX_NEW:
     return lower_new(c, e);
+  case EX_CLOSURE: {
+    const char *sym_name = lift_closure(c, e);
+    // env object: header + snapshot of every capture
+    int64_t esz = 0;
+    for (size_t i = 0; i < e->caps.n; i++) {
+      Type *ct = ((Sym *)e->caps.items[i])->type;
+      int64_t al = type_align(ct);
+      esz = (esz + al - 1) / al * al + type_size(ct);
+    }
+    IRVreg *sz = v_const(c, (uint64_t)esz + 24, IT_USIZE);
+    IRVreg *obj = call_prelude1(c, "__alloc", sz, IT_PTR);
+    IRVreg *obj8 = v_addi(c, obj, 8);
+    IRVreg *obj16 = v_addi(c, obj, 16);
+    IRVreg *rc1 = v_const(c, 1, IT_USIZE);
+    IRIns *rc = emit(c, IR_STORE);
+    rc->addr = obj;
+    rc->a = rc1;
+    rc->size = 8;
+    IRVreg *zero = v_const(c, 0, IT_USIZE);
+    IRIns *wrc = emit(c, IR_STORE);
+    wrc->addr = obj8;
+    wrc->a = zero;
+    wrc->size = 8;
+    IRVreg *nullp = v_const(c, 0, IT_PTR);
+    IRIns *dr = emit(c, IR_STORE);
+    dr->addr = obj16;
+    dr->a = nullp;
+    dr->size = 8;
+    int64_t off = 0;
+    for (size_t i = 0; i < e->caps.n; i++) {
+      Sym *cap = e->caps.items[i];
+      Type *ct = cap->type;
+      int64_t al = type_align(ct);
+      off = (off + al - 1) / al * al;
+      IRVreg *daddr = v_addi(c, obj, 24 + off);
+      IRVreg *srcaddr = v_slotaddr(c, lookup_slot(c, cap->name));
+      if (ty_is_aggregate(ct)) {
+        IRIns *cp = emit(c, IR_COPYMEM);
+        cp->addr = daddr;
+        cp->a = srcaddr;
+        cp->size = type_size(ct);
+      } else {
+        IRVreg *v = v_load(c, srcaddr, ir_type_of(ct));
+        v_store(c, daddr, v);
+      }
+      off += type_size(ct);
+    }
+    // the value: {code, env=data pointer}
+    IRIns *la = emit(c, IR_ADDRC);
+    la->dst = new_vreg(c, IT_PTR);
+    la->callee = sym_name;
+    la->lit = -1;
+    IRVreg *envp = v_addi(c, obj, 24);
+    IRSlot *tmp = new_slot(c, 16, 8, "cloval");
+    IRVreg *addr = v_slotaddr(c, tmp);
+    IRVreg *a8 = v_addi(c, addr, 8);
+    IRIns *s1 = emit(c, IR_STORE);
+    s1->addr = addr;
+    s1->a = la->dst;
+    s1->size = 8;
+    IRIns *s2 = emit(c, IR_STORE);
+    s2->addr = a8;
+    s2->a = envp;
+    s2->size = 8;
+    return addr;
+  }
   case EX_MAKE:
     if (t && ty_is_aggregate(t))
       return compute_addr(c, e);
@@ -1199,6 +1441,51 @@ static IRVreg *compute_call_value(LCtx *c, Expr *e) {
     Type *et = e->typed;
     IRSlot *tmp = new_slot(c, type_size(et), type_align(et), "enumval");
     return lower_enum_ctor(c, e, v_slotaddr(c, tmp));
+  }
+  // closure-value call: load {code, env} and call code(args..., env)
+  Type *callee_t = e->a->typed;
+  Sym *csym = e->a->sym;
+  bool direct = csym && (csym->kind == SY_FN || csym->kind == SY_EXTERN ||
+                         csym->kind == SY_VARIANT);
+  if (callee_t && callee_t->kind == TY_FN && !direct) {
+    IRVreg *val = lv_expr(c, e->a); // 16-byte value address
+    IRVreg *code = v_load(c, val, IT_PTR);
+    IRVreg *env = v_load(c, v_addi(c, val, 8), IT_PTR);
+    Type *ft = callee_t;
+    Type *ret = ft->ret;
+    bool agg = ret && ty_is_aggregate(ret);
+    Vec args = {0};
+    IRVreg *out = NULL;
+    if (agg) {
+      IRSlot *tmp = new_slot(c, type_size(ret), type_align(ret), "out");
+      out = v_slotaddr(c, tmp);
+      IRArg *a = arena_alloc(sizeof(IRArg));
+      a->vreg = out;
+      a->ty = NULL;
+      vec_push(&args, a);
+    }
+    for (size_t i = 0; i < e->args.n && i < ft->params.n; i++) {
+      Expr *arg = e->args.items[i];
+      Type *pt = ft->params.items[i];
+      IRArg *a = arena_alloc(sizeof(IRArg));
+      a->vreg = lv_expr(c, arg);
+      a->ty = pt;
+      vec_push(&args, a);
+    }
+    IRArg *ea = arena_alloc(sizeof(IRArg));
+    ea->vreg = env;
+    ea->ty = NULL;
+    vec_push(&args, ea);
+    IRIns *call = emit(c, IR_CALL);
+    call->callee_vreg = code;
+    call->args = args;
+    if (agg)
+      return out;
+    if (ret && ret->kind != TY_VOID) {
+      call->dst = new_vreg(c, ir_type_of(ret));
+      return call->dst;
+    }
+    return v_const(c, 0, IT_PTR);
   }
   // normal call: callee sym stashed by the checker
   Sym *fn = e->a->sym;

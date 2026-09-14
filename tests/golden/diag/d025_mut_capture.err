@@ -1,0 +1,1 @@
+tests/diag/d025_mut_capture.rho:3:24: error: cannot capture mutable `n` (boot-era closures copy; box it in a struct instead)

@@ -273,6 +273,8 @@ static void emit_call(Emitter *e, IRIns *i) {
   // classify args: int-class regs rdi..r9, float xmm0..7
   const char *intregs[] = {RDI, RSI, RDX, RCX, "%r8", "%r9"};
   int ri = 0, fi = 0;
+  if (i->callee_vreg) // indirect target rides in r10, outside the arg regs
+    sb_printf(e->out, "  movq %lld(%%rbp), %%r10\n", vreg_off(e, i->callee_vreg));
   for (size_t k = 0; k < i->args.n; k++) {
     IRArg *a = i->args.items[k];
     bool is_float_arg = a->ty && (a->ty->kind == TY_F32 || a->ty->kind == TY_F64);
@@ -286,7 +288,10 @@ static void emit_call(Emitter *e, IRIns *i) {
       sb_printf(e->out, "  movq %lld(%%rbp), %%rax\n  pushq %%rax\n", off);
     }
   }
-  sb_printf(e->out, "  call %s\n", sym(e, i->callee));
+  if (i->callee_vreg)
+    sb_printf(e->out, "  call *%%r10\n");
+  else
+    sb_printf(e->out, "  call %s\n", sym(e, i->callee));
   if (i->dst) {
     bool f = ir_is_float(i->dst->ty);
     mov_reg_slot(e, vreg_off(e, i->dst), f ? (i->dst->ty == IT_F32 ? 4 : 8) : 8, f, f ? XMM0 : RAX);

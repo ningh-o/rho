@@ -206,6 +206,10 @@ static void emit_call64(Emitter64 *e, IRIns *i) {
   const char *regs[] = {"x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"};
   const char *fregs[] = {"d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7"};
   int ri = 0, fi = 0;
+  if (i->callee_vreg) { // indirect target in x17, outside the arg regs
+    addr_into(e, vreg_off(e, i->callee_vreg));
+    sb_printf(e->out, "  ldr x17, [x12]\n");
+  }
   for (size_t k = 0; k < i->args.n; k++) {
     IRArg *a = i->args.items[k];
     bool isf = a->ty && (a->ty->kind == TY_F32 || a->ty->kind == TY_F64);
@@ -221,7 +225,10 @@ static void emit_call64(Emitter64 *e, IRIns *i) {
       sb_printf(e->out, "  ldr x10, [x12]\n  str x10, [sp, #%d]\n", ri * 8);
     }
   }
-  sb_printf(e->out, "  bl _%s\n", i->callee);
+  if (i->callee_vreg)
+    sb_printf(e->out, "  blr x17\n");
+  else
+    sb_printf(e->out, "  bl _%s\n", i->callee);
   if (i->dst) {
     bool f = ir_is_float(i->dst->ty);
     if (f)

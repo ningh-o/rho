@@ -20,6 +20,11 @@ static Type *cur_ret;
 static bool in_defer;
 static int loop_depth;
 
+// active closure-capture collection: locals with ids below the boundary
+// belong to enclosing scopes and are copy-captured when referenced
+static Vec *g_cap_list;
+static int g_cap_boundary;
+
 static Type *ty_err_;
 static Type *ty_void_;
 static Sym *cur_fn;
@@ -66,7 +71,8 @@ bool ty_is_signed(Type *t) {
 
 bool ty_is_managed(Type *t) {
   switch (t->kind) {
-  case TY_PTR: case TY_WEAK: case TY_SLICE: case TY_STRING: return true;
+  case TY_PTR: case TY_WEAK: case TY_SLICE: case TY_STRING: case TY_FN:
+    return true;
   case TY_ARRAY: return ty_is_managed(t->elem);
   case TY_STRUCT:
     for (size_t i = 0; i < t->rec->field_types.n; i++)
@@ -541,6 +547,7 @@ static Type *check_expr(Expr *e, Type *expected);
 Type *struct_field_type(RecType *rec, size_t i);
 Type *variant_field_type(Type *enum_t, int variant, int field);
 static void check_fn_body(Decl *d, Sym *sym);
+static bool block_returns(Vec *stmts);
 
 static Str dir_of(Str path) {
   size_t cut = 0;
@@ -1150,6 +1157,17 @@ static Type *check_expr(Expr *e, Type *expected) {
     e->typed = sym->kind == SY_MODULE
                    ? map_get(&interned_types, str_from("<module>"))
                    : sym->type;
+    if (sym->kind == SY_FN || sym->kind == SY_EXTERN)
+      e->fnval = true; // a fn name in value position makes a closure value
+    if (g_cap_list && (sym->kind == SY_LOCAL || sym->kind == SY_PARAM) &&
+        sym->local_id < g_cap_boundary) {
+      bool dup = false;
+      for (size_t i = 0; i < g_cap_list->n; i++)
+        if (str_eq(((Sym *)g_cap_list->items[i])->name, sym->name))
+          dup = true;
+      if (!dup)
+        vec_push(g_cap_list, sym);
+    }
     return e->typed;
   }
   case EX_TYPE:
@@ -1377,10 +1395,66 @@ static Type *check_expr(Expr *e, Type *expected) {
   }
   case EX_MATCH:
     return check_match(e, expected);
-  case EX_CLOSURE:
-    ERR(e, "closures arrive in 0.0.5");
-    e->typed = ty_err_;
+  case EX_CLOSURE: {
+    // copy-capture closures: the body is checked here against its own
+    // signature; outer locals it names are snapshotted into the environment
+    Vec *saved_caps = g_cap_list;
+    int saved_boundary = g_cap_boundary;
+    Type *saved_ret = cur_ret;
+    bool saved_defer = in_defer;
+    int saved_loop = loop_depth;
+    Vec *caps = arena_alloc_zeroed(sizeof(Vec));
+    g_cap_list = caps;
+    g_cap_boundary = next_local_id;
+
+    Vec ps = {0};
+    scope_push();
+    for (size_t i = 0; i < e->params.n; i++) {
+      Param *pa = e->params.items[i];
+      Type *pt = resolve_type_in_module(cur_module, pa->ty);
+      vec_push(&ps, pt);
+      Sym *psym = arena_alloc_zeroed(sizeof(Sym));
+      psym->kind = SY_PARAM;
+      psym->name = pa->name;
+      psym->type = pt;
+      psym->mutable = true; // parameters are mutable local copies
+      psym->local_id = next_local_id++;
+      if (map_has(&cur_scope->syms, pa->name))
+        err_at(pa->file, pa->line, pa->col, "duplicate parameter `%s`",
+               str_to_c(pa->name));
+      else
+        map_put(&cur_scope->syms, pa->name, psym);
+    }
+    Type *ret = e->ret ? resolve_type_in_module(cur_module, e->ret) : ty_void_;
+    Type *sig = ty_fn(ps, ret);
+
+    cur_ret = ret;
+    in_defer = false;
+    loop_depth = 0;
+    for (size_t i = 0; i < e->items.n; i++)
+      check_stmt(e->items.items[i]);
+    if (ret->kind != TY_VOID && !block_returns(&e->items)) {
+      ERR(e, "missing return: closure body must produce `%s`", ty_name(ret));
+    }
+
+    scope_pop();
+    g_cap_list = saved_caps;
+    g_cap_boundary = saved_boundary;
+    cur_ret = saved_ret;
+    in_defer = saved_defer;
+    loop_depth = saved_loop;
+
+    for (size_t i = 0; i < caps->n; i++) {
+      Sym *cap = caps->items[i];
+      if (cap->kind == SY_LOCAL && cap->mutable)
+        ERR(e, "cannot capture mutable `%s` (boot-era closures copy; box it "
+               "in a struct instead)",
+            str_to_c(cap->name));
+    }
+    e->caps = *caps;
+    e->typed = sig;
     return e->typed;
+  }
   case EX_QMARK: {
     Type *operand = check_expr(e->a, NULL);
     if (operand->kind != TY_ENUM) {
@@ -1479,8 +1553,9 @@ static Type *check_field_access(Expr *e, Type *expected) {
       return e->typed;
     }
     if (item->kind == SY_FN || item->kind == SY_EXTERN) {
-      ERR(e, "function references arrive in 0.0.5");
-      e->typed = ty_err_;
+      e->sym = item;
+      e->typed = item->type;
+      e->fnval = true;
       return e->typed;
     }
     ERR(e, "`%s.%s` is a type; types are not values", str_to_c(e->a->sv), str_to_c(e->sv));
@@ -1612,6 +1687,14 @@ static CallTarget resolve_callee(Expr *callee) {
       ct.sym = sym;
       ct.fn_type = sym->type;
       callee->sym = sym;
+      return ct;
+    }
+    if (sym->type && sym->type->kind == TY_FN) {
+      // fn-typed local/param: indirect call through the closure value
+      ct.kind = CT_INDIRECT;
+      ct.fn_type = sym->type;
+      callee->sym = sym;
+      callee->typed = sym->type;
       return ct;
     }
     ERR(callee, "`%s` is not a function", str_to_c(callee->sv));
@@ -2664,7 +2747,8 @@ int64_t type_align(Type *t) {
   case TY_I32: case TY_U32: case TY_F32: return 4;
   case TY_I64: case TY_U64: case TY_F64: case TY_ISIZE: case TY_USIZE:
     return 8;
-  case TY_PTR: case TY_WEAK: case TY_SLICE: case TY_STRING: return 8;
+  case TY_PTR: case TY_WEAK: case TY_SLICE: case TY_STRING: case TY_FN:
+    return 8;
   case TY_ARRAY: return type_align(t->elem);
   case TY_STRUCT: case TY_ENUM:
     layout_rec(t->rec);
@@ -2685,6 +2769,7 @@ int64_t type_size(Type *t) {
     return 8;
   case TY_PTR: case TY_WEAK: return 8;
   case TY_SLICE: case TY_STRING: return 24; // {buf, ptr, len}
+  case TY_FN: return 16;                    // {code, env}
   case TY_ARRAY: return (int64_t)t->len * type_size(t->elem);
   case TY_STRUCT: case TY_ENUM:
     layout_rec(t->rec);
@@ -2794,6 +2879,7 @@ const char *prelude_symbol(const char *name) {
 bool ty_is_aggregate_t(Type *t) {
   switch (t->kind) {
   case TY_STRUCT: case TY_ENUM: case TY_ARRAY: case TY_SLICE: case TY_STRING:
+  case TY_FN: // {code, env} closure pair
     return true;
   default:
     return false;

@@ -1,0 +1,1 @@
+(module (fn apply (params (f fn(i32) -> i32) (v i32)) (ret i32) (return (call (name f) (name v)))) (fn main (params) (ret i32) (let k i32 (int 5)) (let g fn(i32) -> i32 (closure (params (x i32)) -> i32 (return (bin * (name x) (name k))))) (return (call (name apply) (name g) (int 3)))))

@@ -232,6 +232,9 @@ typedef struct Expr {
   Vec params;      // CLOSURE: Param*
   TypeAst *ret;    // CLOSURE
   int q_ok, q_err; // QMARK: success/failure variant indices (checker)
+  Vec caps;        // CLOSURE: checker — Sym* of captured outer locals, in
+                   // first-use order (copy captures)
+  bool fnval;      // checker: a fn reference materialized as a value
 
   // filled by checker
   void *typed;     // Type* — computed type of this expression
