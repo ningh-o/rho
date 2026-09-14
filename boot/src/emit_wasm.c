@@ -177,6 +177,10 @@ static bool fn_returns_value(IRFn *fn) {
 
 static int w_type_of_fn(IRFn *fn) {
   Vec params = {0};
+  // agg returns: the hidden out pointer is the FIRST signature param —
+  // the caller's IR arg list already carries it at position 0
+  if (fn->returns_aggregate)
+    vec_push(&params, (void *)(long)IT_PTR);
   for (size_t i = 0; i < fn->params.n; i++) {
     Type *pt = fn->param_types.n > i ? fn->param_types.items[i] : NULL;
     // synth (rc) fns carry NULL param types: their params are pointers
@@ -367,7 +371,7 @@ static unsigned char arith_op(IROp op, IRType ty, bool sgn, bool flt) {
   bool is64 = w_is64(ty);
   switch (op) {
   case IR_ADD: return flt ? (ty == IT_F32 ? 0x92 : 0xA0) : (is64 ? 0x7C : 0x6A);
-  case IR_SUB: return flt ? (ty == IT_F32 ? 0x91 : 0xA1) : (is64 ? 0x7D : 0x6B);
+  case IR_SUB: return flt ? (ty == IT_F32 ? 0x93 : 0xA1) : (is64 ? 0x7D : 0x6B);
   case IR_MUL: return flt ? (ty == IT_F32 ? 0x94 : 0xA2) : (is64 ? 0x7E : 0x6C);
   case IR_DIV:
     if (flt)
@@ -623,10 +627,12 @@ static void emit_ins(WFnCtx *c, IRIns *i) {
         w8(c->body, 0xAD);
       break;
     case CAST_I2F:
+      // f32.convert_i32_s/u=0xB2/B3, f32.convert_i64_s/u=0xB4/B5,
+      // f64.convert_i32_s/u=0xB7/B8, f64.convert_i64_s/u=0xB9/0xBA
       if (to == IT_F32)
-        w8(c->body, w_is64(from) ? (sgn ? 0xBE : 0xBF) : (sgn ? 0xB4 : 0xB5));
+        w8(c->body, w_is64(from) ? (sgn ? 0xB4 : 0xB5) : (sgn ? 0xB2 : 0xB3));
       else
-        w8(c->body, w_is64(from) ? (sgn ? 0xC0 : 0xC1) : (sgn ? 0xB7 : 0xB8));
+        w8(c->body, w_is64(from) ? (sgn ? 0xB9 : 0xBA) : (sgn ? 0xB7 : 0xB8));
       break;
     case CAST_F2I: {
       // saturating truncation (spec: out-of-range saturates)
@@ -641,7 +647,7 @@ static void emit_ins(WFnCtx *c, IRIns *i) {
       break;
     }
     case CAST_F32_F64:
-      w8(c->body, 0xB9); // f64.promote_f32
+      w8(c->body, 0xBB); // f64.promote_f32
       break;
     case CAST_F64_F32:
       w8(c->body, 0xB6); // f32.demote_f64
@@ -649,14 +655,16 @@ static void emit_ins(WFnCtx *c, IRIns *i) {
     case CAST_BITCOPY:
       // same-memory-size reinterpretations; across the wasm32 split the
       // pointer half is i32, so 64-bit ints need a width hop
+      // i32.reinterpret_f32=0xBC, i64.reinterpret_f64=0xBD,
+      // f32.reinterpret_i32=0xBE, f64.reinterpret_i64=0xBF
       if (from == IT_F32 && to == IT_I32)
-        w8(c->body, 0xBA);
-      else if (from == IT_F64 && (to == IT_I64 || to == IT_USIZE))
-        w8(c->body, 0xBB);
-      else if (from == IT_I32 && to == IT_F32)
         w8(c->body, 0xBC);
-      else if ((from == IT_I64 || from == IT_USIZE) && to == IT_F64)
+      else if (from == IT_F64 && (to == IT_I64 || to == IT_USIZE))
         w8(c->body, 0xBD);
+      else if (from == IT_I32 && to == IT_F32)
+        w8(c->body, 0xBE);
+      else if ((from == IT_I64 || from == IT_USIZE) && to == IT_F64)
+        w8(c->body, 0xBF);
       else if (from == IT_PTR && w_is64(to))
         w8(c->body, 0xAD); // i64.extend_i32_u
       else if (w_is64(from) && to == IT_PTR)
@@ -847,6 +855,20 @@ static void emit_br(WFnCtx *c, IRBlock *from, IRBlock *t) {
 // emits blocks from `b` (reached from `from`) until the region branches
 // out or returns; returns the block the region branched to, or NULL.
 // `from` is the phi-edge predecessor for the first block.
+static IRBlock *emit_region(WFnCtx *c, IRBlock *b, IRBlock *from);
+
+// emit_region plus continuation: when a region breaks out to code that
+// nobody else will emit (a loop break at this nesting level), the exit's
+// code must follow right here — keep walking while the returned block is
+// fresh, stop the moment it was already emitted or someone owns it
+static void emit_region_run(WFnCtx *c, IRBlock *b, IRBlock *from) {
+  int guard = 0;
+  while (b && !b->emitted && !has_target(c, b) && guard++ < 4096) {
+    IRBlock *next = emit_region(c, b, from);
+    from = b;
+    b = next;
+  }
+}
 static IRBlock *emit_region(WFnCtx *c, IRBlock *b, IRBlock *from) {
   int started_loop = 0; // this invocation opened the loop labels
   IRBlock *my_header = NULL, *my_exit = NULL;
@@ -921,9 +943,12 @@ static IRBlock *emit_region(WFnCtx *c, IRBlock *b, IRBlock *from) {
       return t;
     }
     if (b->term->op == (IROp)OP_RET) {
-      // restore the shadow stack, then return (value stays on the stack)
+      // restore the shadow stack to the caller's base ($fb + frame), then
+      // return (value stays on the stack)
       w8(c->body, 0x20);
       wuleb(c->body, fb_local(c)); // local.get $fb
+      i32c(c, c->frame);
+      w8(c->body, 0x6A);           // i32.add — $fb + frame = caller's base
       w8(c->body, 0x24);           // global.set 0 ($sp)
       wuleb(c->body, 0);
       if (b->term->a)
@@ -938,17 +963,24 @@ static IRBlock *emit_region(WFnCtx *c, IRBlock *b, IRBlock *from) {
       return NULL;
     }
     // cbr: if { then } else { else }; both arms land on the join via br,
-    // whose label/code lives with the first diamond that claimed it
+    // whose label/code lives with the first diamond that claimed it.
+    // The lowering records the join it built; the heuristic below only
+    // covers cbrs emitted without one.
     IRBlock *t = (IRBlock *)b->term->dst;
     IRBlock *f = (IRBlock *)b->term->b;
-    IRBlock *join = chain_terminal(c, t);
-    IRBlock *join2 = chain_terminal(c, f);
-    if (join != join2) {
-      // the true join is the deeper terminal the other side reaches
-      if (join && join2 && reaches(c, join, join2, 0))
-        join = join2;
-      else
-        join = join ? join : join2; // one arm may return outright
+    IRBlock *join;
+    if (b->term->join_hint) {
+      join = (IRBlock *)b->term->join_hint;
+    } else {
+      join = chain_terminal(c, t);
+      IRBlock *join2 = chain_terminal(c, f);
+      if (join != join2) {
+        // the true join is the deeper terminal the other side reaches
+        if (join && join2 && reaches(c, join, join2, 0))
+          join = join2;
+        else
+          join = join ? join : join2; // one arm may return outright
+      }
     }
     bool claimed = false;
     if (join && !has_target(c, join) && !join->emitted) {
@@ -962,9 +994,9 @@ static IRBlock *emit_region(WFnCtx *c, IRBlock *b, IRBlock *from) {
     lget(c, b->term->a);
     w8(c->body, 0x04); // if
     w8(c->body, 0x40); // void blocktype
-    emit_region(c, t, b);
+    emit_region_run(c, t, b);
     w8(c->body, 0x05); // else
-    emit_region(c, f, b);
+    emit_region_run(c, f, b);
     w8(c->body, 0x0B); // end if
     pop_label(c);      // drop the if placeholder
     if (!join) {
@@ -1026,23 +1058,26 @@ static SB *emit_fn_body(WFn *wf) {
   for (size_t i = 0; i < fn->slots.n; i++)
     slot_offset(&c, fn->slots.items[i]);
 
+  c.hidden = fn->returns_aggregate ? 1 : 0;
   // prologue: $sp -= frame; $fb = $sp — slots live at $fb + off inside
   // [fb, fb+frame), safely below every live caller frame
-  w8(c.body, 0x23); // global.get 0
+  w8(c.body, 0x23); // global.get 0 ($sp)
   wuleb(c.body, 0);
   i32c(&c, c.frame);
   w8(c.body, 0x6B); // i32.sub
-  w8(c.body, 0x24); // global.set 0
+  w8(c.body, 0x22); // local.tee $fb — set it AND keep the value for $sp
+  wuleb(c.body, (uint64_t)(fn->params.n + c.hidden));
+  w8(c.body, 0x24); // global.set 0 ($sp)
   wuleb(c.body, 0);
-  c.hidden = fn->returns_aggregate ? 1 : 0;
-  // the hidden out pointer (agg returns): local 0 -> the out slot
+  // the hidden out pointer (agg returns): save signature local 0 (the out
+  // ptr) into the frame's out slot — wasm stores take address FIRST
   if (c.hidden) {
-    w8(c.body, 0x20); // local.get 0 (out ptr)
-    wuleb(c.body, 0);
     w8(c.body, 0x20); // local.get $fb
-    wuleb(c.body, (uint64_t)fn->params.n);
+    wuleb(c.body, (uint64_t)(fn->params.n + c.hidden));
     i32c(&c, slot_offset(&c, fn->out_slot));
-    w8(c.body, 0x6A); // i32.add
+    w8(c.body, 0x6A); // i32.add — address = $fb + off
+    w8(c.body, 0x20); // local.get 0 (out ptr) — value second
+    wuleb(c.body, 0);
     w8(c.body, 0x36); // i32.store
     wuleb(c.body, 2);
     wuleb(c.body, 0);
@@ -1059,7 +1094,7 @@ static SB *emit_fn_body(WFn *wf) {
     i32c(&c, slot_offset(&c, ps));
     w8(c.body, 0x6A); // i32.add — address = $fb + off
     w8(c.body, 0x20);
-    wuleb(c.body, i); // local.get <param i>
+    wuleb(c.body, i + c.hidden); // local.get <param i> (after hidden out)
     if (agg || true) {
       // the pointer/aggregate handle itself lives in the slot
       IRType it = agg ? IT_PTR : w_ir_type(pt);
@@ -1085,7 +1120,7 @@ static SB *emit_fn_body(WFn *wf) {
               blk->term ? (int)blk->term->op : -1);
     }
   }
-  emit_region(&c, fn->entry, fn->entry);
+  emit_region_run(&c, fn->entry, fn->entry);
   w8(c.body, 0x0B); // end function body
   return c.body;
 }
@@ -1298,16 +1333,12 @@ void emit_wasm(Target target, SB *out) {
       WFn *wf = W.fns.items[i];
       IRFn *fn = wf->fn;
       SB *code = emit_fn_body(wf);
-      // locals: one group per local so indices stay params, [out], $fb,
-      // then vregs in id order. Params occupy locals 0..n-1 via the
-      // SIGNATURE; an agg-returning fn has the hidden out ptr at local
-      // params.n; the decl covers [out], $fb and the vregs.
+      // locals: one group per local so indices stay params, $fb, then
+      // vregs in id order. The signature carries the declared params (plus
+      // the hidden out ptr FIRST for agg returns); this decl covers $fb
+      // and the vregs only.
       SB entry = {0};
-      wuleb(&entry, (fn->returns_aggregate ? 1 : 0) + 1 + fn->next_vreg);
-      if (fn->returns_aggregate) {
-        wuleb(&entry, 1);
-        w8(&entry, 0x7F); // hidden out ptr
-      }
+      wuleb(&entry, 1 + fn->next_vreg);
       wuleb(&entry, 1);
       w8(&entry, 0x7F); // $fb
       for (int v = 0; v < fn->next_vreg; v++) {
@@ -1320,13 +1351,18 @@ void emit_wasm(Target target, SB *out) {
       wuleb(&body, e.n);
       sb_append(&body, e);
     }
-    // _start: call main; call proc_exit
+    // _start: call main; exit status & 0xFF (POSIX truncation, so main
+    // returning 1111 exits 87 exactly like a native process); proc_exit
     {
       SB entry = {0};
       wuleb(&entry, 0); // no locals
       WFn *mainf = map_get(&W.fn_by_symbol, str_from(g_main_symbol));
       w8(&entry, 0x10);
       wuleb(&entry, mainf ? (uint64_t)mainf->index : 0);
+      w8(&entry, 0x41); // i32.const 255
+      w8(&entry, 0xFF);
+      w8(&entry, 0x01);
+      w8(&entry, 0x71); // i32.and
       w8(&entry, 0x10);
       wuleb(&entry, 1); // proc_exit
       w8(&entry, 0x0B); // (unreachable after proc_exit, but valid)

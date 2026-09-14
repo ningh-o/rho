@@ -77,6 +77,7 @@ struct IRIns {
   Vec args;                // IRArg*
   IRVreg *addr;            // LOAD/STORE/COPYMEM dst/ZERO
   int lit;                 // LITADDR: literal index
+  void *join_hint;         // CBR term: the join block, known at lowering
   int line;
 };
 

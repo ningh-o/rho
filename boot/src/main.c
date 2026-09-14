@@ -353,7 +353,12 @@ static int cmd_build_run_test(const char *cmd, int argc, char **argv) {
       // use a fixed temp name for determinism
       const char *tmpout = arena_printf("/tmp/rho_out_%s", name);
       SB rc = {0};
-      sb_printf(&rc, "%s > %s", built, tmpout);
+      if (tt == TGT_WASM32_WASI) {
+        // wasmtime prints stdout to fd 1; panic exit 101 propagates
+        sb_printf(&rc, "wasmtime run %s > %s 2>/dev/null", built, tmpout);
+      } else {
+        sb_printf(&rc, "%s > %s", built, tmpout);
+      }
       int status = system(str_to_c(sb_finish(&rc)));
       int code = WEXITSTATUS(status);
       // expected exit

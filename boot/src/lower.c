@@ -129,12 +129,16 @@ static void emit_br(LCtx *c, IRBlock *to) {
   c->fn->cur->sealed = true;
 }
 
-static void emit_cbr(LCtx *c, IRVreg *cond, IRBlock *t, IRBlock *f) {
+// join: the block whose code follows the if (NULL where the join is only
+// discoverable heuristically — the wasm emitter falls back then)
+static void emit_cbr(LCtx *c, IRVreg *cond, IRBlock *t, IRBlock *f,
+                     IRBlock *join) {
   IRIns *i = arena_alloc_zeroed(sizeof(IRIns));
   i->op = (IROp)OP_CBR;
   i->a = cond;
   i->dst = (IRVreg *)t;
   i->b = (IRVreg *)f;
+  i->join_hint = join;
   vec_push(&c->fn->cur->ins, i);
   c->fn->cur->term = i;
   c->fn->cur->sealed = true;
@@ -345,7 +349,7 @@ static IRVreg *null_check(LCtx *c, IRVreg *ptr) {
   IRBlock *ok = new_block(c);
   IRBlock *bad = new_block(c);
   IRVreg *isnull = v_cmp(c, CC_EQ, ptr, v_const(c, 0, IT_PTR), false);
-  emit_cbr(c, isnull, bad, ok);
+  emit_cbr(c, isnull, bad, ok, ok);
   use_block(c, bad);
   panic_call(c, "null dereference");
   emit_br(c, ok); // unreachable, keeps the CFG well-formed
@@ -358,7 +362,7 @@ static void bounds_check(LCtx *c, IRVreg *idx, IRVreg *len) {
   IRBlock *ok = new_block(c);
   IRBlock *bad = new_block(c);
   IRVreg *oob = v_cmp(c, CC_GE, idx, len, false); // unsigned via emitter flag
-  emit_cbr(c, oob, bad, ok);
+  emit_cbr(c, oob, bad, ok, ok);
   use_block(c, bad);
   panic_call(c, "index out of bounds");
   emit_br(c, ok);
@@ -370,7 +374,7 @@ static void bounds_check_hi(LCtx *c, IRVreg *hi, IRVreg *len) {
   IRBlock *ok = new_block(c);
   IRBlock *bad = new_block(c);
   IRVreg *oob = v_cmp(c, CC_GT, hi, len, false);
-  emit_cbr(c, oob, bad, ok);
+  emit_cbr(c, oob, bad, ok, ok);
   use_block(c, bad);
   panic_call(c, "index out of bounds");
   emit_br(c, ok);
@@ -721,7 +725,7 @@ static void rc_runtime_build(void) {
     IRVreg *p = v_load(c, v_slotaddr(c, ps), IT_PTR);
     IRVreg *isnull = v_cmp(c, CC_EQ, p, v_const(c, 0, IT_PTR), false);
     IRBlock *cont = new_block(c), *done = new_block(c);
-    emit_cbr(c, isnull, done, cont);
+    emit_cbr(c, isnull, done, cont, done);
     use_block(c, cont);
     IRVreg *h = from_data ? v_addi(c, p, -24) : p;
     IRVreg *rc = v_load(c, h, IT_USIZE);
@@ -729,7 +733,7 @@ static void rc_runtime_build(void) {
     IRVreg *immortal = v_cmp(c, CC_NE, top, v_const(c, 0, IT_USIZE), false);
     if (retain) {
       IRBlock *bump = new_block(c);
-      emit_cbr(c, immortal, done, bump);
+      emit_cbr(c, immortal, done, bump, done);
       use_block(c, bump);
       IRVreg *rc2 = v_binop(c, IR_ADD, rc, v_const(c, 1, IT_USIZE), IT_USIZE, true);
       v_store(c, h, rc2);
@@ -741,18 +745,18 @@ static void rc_runtime_build(void) {
     // release: on zero, run header.drop (with the data pointer) and free
     // unless weak refs hold it
     IRBlock *live = new_block(c);
-    emit_cbr(c, immortal, done, live);
+    emit_cbr(c, immortal, done, live, done);
     use_block(c, live);
     IRVreg *rc2 = v_binop(c, IR_SUB, rc, v_const(c, 1, IT_USIZE), IT_USIZE, true);
     v_store(c, h, rc2);
     IRVreg *dead = v_cmp(c, CC_EQ, rc2, v_const(c, 0, IT_USIZE), false);
     IRBlock *maybe_drop = new_block(c);
-    emit_cbr(c, dead, maybe_drop, done);
+    emit_cbr(c, dead, maybe_drop, done, done);
     use_block(c, maybe_drop);
     IRVreg *dropf = v_load(c, v_addi(c, h, 16), IT_PTR);
     IRVreg *nod = v_cmp(c, CC_EQ, dropf, v_const(c, 0, IT_PTR), false);
     IRBlock *run_drop = new_block(c), *maybe_free = new_block(c);
-    emit_cbr(c, nod, maybe_free, run_drop);
+    emit_cbr(c, nod, maybe_free, run_drop, done);
     use_block(c, run_drop);
     Vec dargs = {0};
     IRArg *da = arena_alloc(sizeof(IRArg));
@@ -767,7 +771,7 @@ static void rc_runtime_build(void) {
     IRVreg *wrc = v_load(c, v_addi(c, h, 8), IT_USIZE);
     IRVreg *noweak = v_cmp(c, CC_EQ, wrc, v_const(c, 0, IT_USIZE), false);
     IRBlock *freeh = new_block(c);
-    emit_cbr(c, noweak, freeh, done);
+    emit_cbr(c, noweak, freeh, done, done);
     use_block(c, freeh);
     Sym *fr = prelude_fn("__free");
     Vec fargs = {0};
@@ -793,7 +797,7 @@ static void rc_runtime_build(void) {
     IRVreg *h = v_load(c, v_slotaddr(c, hs), IT_PTR);
     IRVreg *isnull = v_cmp(c, CC_EQ, h, v_const(c, 0, IT_PTR), false);
     IRBlock *cont = new_block(c), *done = new_block(c);
-    emit_cbr(c, isnull, done, cont);
+    emit_cbr(c, isnull, done, cont, done);
     use_block(c, cont);
     IRVreg *w = v_load(c, v_addi(c, h, 8), IT_USIZE);
     IRVreg *w2 = v_binop(c, IR_ADD, w, v_const(c, 1, IT_USIZE), IT_USIZE, true);
@@ -811,19 +815,19 @@ static void rc_runtime_build(void) {
     IRVreg *h = v_load(c, v_slotaddr(c, hs), IT_PTR);
     IRVreg *isnull = v_cmp(c, CC_EQ, h, v_const(c, 0, IT_PTR), false);
     IRBlock *cont = new_block(c), *done = new_block(c);
-    emit_cbr(c, isnull, done, cont);
+    emit_cbr(c, isnull, done, cont, done);
     use_block(c, cont);
     IRVreg *w = v_load(c, v_addi(c, h, 8), IT_USIZE);
     IRVreg *w2 = v_binop(c, IR_SUB, w, v_const(c, 1, IT_USIZE), IT_USIZE, true);
     v_store(c, v_addi(c, h, 8), w2);
     IRVreg *last = v_cmp(c, CC_EQ, w2, v_const(c, 0, IT_USIZE), false);
     IRBlock *chk = new_block(c);
-    emit_cbr(c, last, chk, done);
+    emit_cbr(c, last, chk, done, done);
     use_block(c, chk);
     IRVreg *rc = v_load(c, h, IT_USIZE);
     IRVreg *deadc = v_cmp(c, CC_EQ, rc, v_const(c, 0, IT_USIZE), false);
     IRBlock *freeh = new_block(c);
-    emit_cbr(c, deadc, freeh, done);
+    emit_cbr(c, deadc, freeh, done, done);
     use_block(c, freeh);
     Sym *fr = prelude_fn("__free");
     Vec fargs = {0};
@@ -851,7 +855,7 @@ static void rc_runtime_build(void) {
     IRVreg *isnull = v_cmp(c, CC_EQ, p, nullv, false);
     IRBlock *cont = new_block(c), *done = new_block(c);
     IRVreg *res = NULL;
-    emit_cbr(c, isnull, done, cont);
+    emit_cbr(c, isnull, done, cont, done);
     use_block(c, cont);
     IRVreg *h = v_addi(c, p, -24);
     IRVreg *w = v_load(c, v_addi(c, h, 8), IT_USIZE);
@@ -878,7 +882,7 @@ static void rc_runtime_build(void) {
     IRVreg *nullv = v_const(c, 0, IT_PTR); // before the branch: phi edges read it
     IRVreg *isnull = v_cmp(c, CC_EQ, h, nullv, false);
     IRBlock *live = new_block(c), *done = new_block(c);
-    emit_cbr(c, isnull, done, live);
+    emit_cbr(c, isnull, done, live, done);
     use_block(c, live);
     IRVreg *rc = v_load(c, h, IT_USIZE);
     IRVreg *top = v_binop(c, IR_SHR, rc, v_const(c, 63, IT_USIZE), IT_USIZE, false);
@@ -886,7 +890,7 @@ static void rc_runtime_build(void) {
     IRVreg *alive2 = v_cmp(c, CC_NE, rc, v_const(c, 0, IT_USIZE), false);
     IRVreg *alive = v_binop(c, IR_OR, immortal, alive2, IT_U8, false);
     IRBlock *yes = new_block(c);
-    emit_cbr(c, alive, yes, done);
+    emit_cbr(c, alive, yes, done, done);
     use_block(c, yes);
     IRVreg *data = v_addi(c, h, 24);
     emit_br(c, done);
@@ -982,7 +986,7 @@ static void value_walk(LCtx *c, Type *t, IRVreg *addr, bool retain) {
       use_block(c, hdr);
       IRVreg *i = v_load(c, v_slotaddr(c, is), IT_USIZE);
       IRVreg *more = v_cmp(c, CC_LT, i, n, false);
-      emit_cbr(c, more, body, done);
+      emit_cbr(c, more, body, done, done);
       use_block(c, body);
       IRVreg *scaled = v_binop(c, IR_MUL, i, v_const(c, (uint64_t)esz, IT_USIZE),
                                IT_USIZE, false);
@@ -1034,7 +1038,7 @@ static void value_walk(LCtx *c, Type *t, IRVreg *addr, bool retain) {
       IRBlock *body = new_block(c);
       IRBlock *next = new_block(c);
       IRVreg *is = v_cmp(c, CC_EQ, tag, v_const(c, v->disc, IT_I32), false);
-      emit_cbr(c, is, body, next);
+      emit_cbr(c, is, body, next, done);
       use_block(c, body);
       for (size_t fi = 0; fi < nf; fi++) {
         Type *ft = variant_field_type(t, (int)vi, (int)fi);
@@ -1133,7 +1137,7 @@ static void eq_walk(LCtx *c, Type *t, IRVreg *pa, IRVreg *pb, IRSlot *rs) {
       IRVreg *tag_b = v_load(c, pb, IT_I32);
       IRVreg *same_tag = v_cmp(c, CC_EQ, tag_a, tag_b, false);
       IRBlock *body = new_block(c), *no = new_block(c), *done = new_block(c);
-      emit_cbr(c, same_tag, body, no);
+      emit_cbr(c, same_tag, body, no, done);
       use_block(c, no);
       v_store(c, v_slotaddr(c, rs), v_const(c, 0, IT_U8));
       emit_br(c, done);
@@ -1147,7 +1151,7 @@ static void eq_walk(LCtx *c, Type *t, IRVreg *pa, IRVreg *pb, IRSlot *rs) {
           continue;
         IRBlock *mine = new_block(c), *next = new_block(c);
         IRVreg *is = v_cmp(c, CC_EQ, tag_a, v_const(c, v->disc, IT_I32), false);
-        emit_cbr(c, is, mine, next);
+        emit_cbr(c, is, mine, next, done);
         use_block(c, mine);
         for (size_t fi = 0; fi < nf; fi++) {
           Type *ft = variant_field_type(t, (int)vi, (int)fi);
@@ -1485,9 +1489,9 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
       IRVreg *sc_zero = v_const(c, 0, IT_U8);
       IRVreg *sc_one = v_const(c, 1, IT_U8);
       if (op == P_ANDAND)
-        emit_cbr(c, l, rhs, join);
+        emit_cbr(c, l, rhs, join, join);
       else
-        emit_cbr(c, l, join, rhs);
+        emit_cbr(c, l, join, rhs, join);
       use_block(c, rhs);
       IRVreg *r = lv_expr(c, e->b);
       IRVreg *r_as_u8 = v_cast(c, r, IT_U8);
@@ -1691,7 +1695,7 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
       IRBlock *join = new_block(c);
       IRBlock *false_b = e->items.n > 1 ? new_block(c) : join;
       IRVreg *cond = lv_expr(c, e->a);
-      emit_cbr(c, cond, then_b, false_b);
+      emit_cbr(c, cond, then_b, false_b, join);
       use_block(c, then_b);
       lv_stmts(c, &((Stmt *)e->items.items[0])->stmts);
       emit_br(c, join);
@@ -1714,7 +1718,7 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
     IRPhi *phi = emit_phi_in(c, join, ir_type_of(t));
     IRBlock *cond_block = c->fn->cur;
     IRVreg *cond = lv_expr(c, e->a);
-    emit_cbr(c, cond, then_b, false_b);
+    emit_cbr(c, cond, then_b, false_b, join);
     use_block(c, then_b);
     Vec *then_stmts = &((Stmt *)e->items.items[0])->stmts;
     IRVreg *tv = block_value(c, then_stmts, t);
@@ -1766,10 +1770,10 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
         emit_br(c, body);
       } else if (scrut_t->kind == TY_ENUM) {
         IRVreg *is = v_cmp(c, CC_EQ, disc, v_const(c, arm->disc, IT_I32), false);
-        emit_cbr(c, is, body, next);
+        emit_cbr(c, is, body, next, join);
       } else {
         IRVreg *is = v_cmp(c, CC_EQ, scrut, v_const(c, arm->pat_int, scrut->ty), false);
-        emit_cbr(c, is, body, next);
+        emit_cbr(c, is, body, next, join);
       }
       use_block(c, body);
       bool bind_scope = arm->bind_syms.n > 0;
@@ -1833,7 +1837,7 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
     IRVreg *is_ok = v_cmp(c, CC_EQ, tag, v_const(c, okv->disc, IT_I32), false);
     IRBlock *cont = new_block(c);
     IRBlock *prop = new_block(c);
-    emit_cbr(c, is_ok, cont, prop);
+    emit_cbr(c, is_ok, cont, prop, cont);
     use_block(c, prop);
     run_defers(c, NULL);
     IRVreg *dst = ret_dest(c);
@@ -2543,7 +2547,7 @@ static void lv_stmt(LCtx *c, Stmt *s) {
     emit_br(c, header);
     use_block(c, header);
     IRVreg *cond = lv_expr(c, s->cond);
-    emit_cbr(c, cond, body, done);
+    emit_cbr(c, cond, body, done, done);
     use_block(c, body);
     scope_push(c);
     c->scope->break_to = done;
