@@ -88,10 +88,13 @@ struct IRPhi {
 
 struct IRBlock {
   int id;
-  Vec phis; // IRPhi*
-  Vec ins;  // IRIns*
+  Vec phis;  // IRPhi*
+  Vec ins;   // IRIns*
   IRIns *term;
   bool sealed;
+  bool emitted;      // wasm: control-flow re-nesting marks blocks as it goes
+  bool loop_header;  // wasm: while/loop headers (set by the lowering)
+  void *loop_exit;   // IRBlock* — the break target of that loop
 };
 
 typedef struct IRLiteral {

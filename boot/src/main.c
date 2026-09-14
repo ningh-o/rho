@@ -271,6 +271,8 @@ static const char *target_cc(Target t) {
 // full pipeline: check -> lower -> emit -> assemble+link. Returns the path to
 // the built artifact (arena). On any failure prints diagnostics, returns NULL.
 static const char *build_to(const char *file, Target target, const char *out_path) {
+  extern bool g_prelude_wasm;
+  g_prelude_wasm = target == TGT_WASM32_WASI;
   Decl *root = compile_root(str_from(file));
   if (!root)
     return NULL;
@@ -292,8 +294,15 @@ static const char *build_to(const char *file, Target target, const char *out_pat
     lower_dump_ir_if_requested();
     emit_arm64(target, &asm);
   } else {
-    fprintf(stderr, "rho: wasm32-wasi arrives in 0.0.4\n");
-    return NULL;
+    // wasm: emit the binary module directly, no assembler step
+    lower_dump_ir_if_requested();
+    emit_wasm(target, &asm);
+    if (!write_file(str_from(out_path), sb_finish(&asm))) {
+      fprintf(stderr, "rho: cannot write %s\n", out_path);
+      return NULL;
+    }
+    printf("built %s\n", out_path);
+    return out_path;
   }
   const char *s_path = arena_printf("%s.s", out_path);
   if (!write_file(str_from(s_path), sb_finish(&asm))) {

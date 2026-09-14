@@ -672,13 +672,16 @@ void check_reset(void) {
   g_instantiation_depth = 0;
 }
 
+bool g_prelude_wasm = false; // wasm32-wasi targets use the fd_write prelude
+
 void prelude_init(void) {
   if (prelude_loaded)
     return;
   prelude_loaded = true;
   extern const char PRELUDE_SOURCE[];
+  extern const char PRELUDE_WASI_SOURCE[];
   Str path = str_from("<prelude>");
-  Str src = str_from(PRELUDE_SOURCE);
+  Str src = str_from(g_prelude_wasm ? PRELUDE_WASI_SOURCE : PRELUDE_SOURCE);
   Decl *root = parse_file(path, src);
   Module *m = arena_alloc_zeroed(sizeof(Module));
   m->path = path;

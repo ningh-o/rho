@@ -1286,8 +1286,8 @@ static IRVreg *compute_addr(LCtx *c, Expr *e) {
     if (sym && (sym->kind == SY_STATIC)) {
       IRIns *i = emit(c, IR_ADDRC);
       i->dst = new_vreg(c, IT_PTR);
-      i->callee = sym->symbol; // reuse: global symbol address
-      i->lit = -1;             // marks global-address form
+      i->callee = sym_symbol(sym); // on demand: lower order is map order
+      i->lit = -1;                 // marks global-address form
       return i->dst;
     }
     if (sym && sym->kind == SY_CONST) {
@@ -1398,7 +1398,7 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
       if (sym && sym->kind == SY_STATIC) {
         IRIns *i = emit(c, IR_ADDRC);
         i->dst = new_vreg(c, IT_PTR);
-        i->callee = sym->symbol;
+        i->callee = sym_symbol(sym);
         i->lit = -1;
         return v_load(c, i->dst, ir_type_of(t));
       }
@@ -2538,6 +2538,8 @@ static void lv_stmt(LCtx *c, Stmt *s) {
     IRBlock *header = new_block(c);
     IRBlock *body = new_block(c);
     IRBlock *done = new_block(c);
+    header->loop_header = true;
+    header->loop_exit = done;
     emit_br(c, header);
     use_block(c, header);
     IRVreg *cond = lv_expr(c, s->cond);
@@ -2557,6 +2559,8 @@ static void lv_stmt(LCtx *c, Stmt *s) {
   case ST_LOOP: {
     IRBlock *body = new_block(c);
     IRBlock *done = new_block(c);
+    body->loop_header = true;
+    body->loop_exit = done;
     emit_br(c, body);
     use_block(c, body);
     scope_push(c);
