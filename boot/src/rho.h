@@ -132,6 +132,7 @@ typedef struct Token {
   double fv;
   Str file;
   int line, col;
+  Vec pre;    // line comments that preceded this token (fmt roundtrips them)
 } Token;
 
 void lex_file(Str file, Str src, Vec *out_tokens);
@@ -251,6 +252,7 @@ typedef struct Stmt {
   StmtKind kind;
   Str file;
   int line, col;
+  Vec pre;          // leading line comments (fmt re-emits them)
 
   bool mut;          // LET
   bool tail;         // EXPR: trailing expression (the block's value)
@@ -294,6 +296,7 @@ typedef struct Decl {
   enum { DK_FN, DK_STRUCT, DK_ENUM, DK_STATIC, DK_CONST, DK_USE, DK_EXTERN } kind;
   Str file;
   int line, col;
+  Vec pre;           // leading line comments (fmt re-emits them)
 
   bool pub_, is_mut;
   Str name;          // FN/STRUCT/ENUM/STATIC/CONST

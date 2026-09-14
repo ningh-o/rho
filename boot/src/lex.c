@@ -6,6 +6,7 @@ typedef struct Lexer {
   const char *p, *end;
   int line, col;
   Vec *out;
+  Vec pending; // char* line comments waiting for the next token
 } Lexer;
 
 static const struct {
@@ -31,12 +32,14 @@ static Tok ident_or_keyword(Str s) {
 }
 
 static Token *tok_new(Lexer *lx, Tok kind, const char *start) {
-  Token *t = arena_alloc(sizeof(Token));
+  Token *t = arena_alloc_zeroed(sizeof(Token));
   t->kind = kind;
   t->text = str_from_len(start, lx->p - start);
   t->file = lx->file;
   t->line = lx->line;
   t->col = lx->col;
+  t->pre = lx->pending;
+  lx->pending = (Vec){0};
   vec_push(lx->out, t);
   return t;
 }
@@ -68,7 +71,7 @@ static int digit_val(char c, uint64_t base) {
 }
 
 void lex_file(Str file, Str src, Vec *out_tokens) {
-  Lexer lx = {file, src.p, src.p + src.n, 1, 1, out_tokens};
+  Lexer lx = {file, src.p, src.p + src.n, 1, 1, out_tokens, {0}};
   while (lx.p < lx.end) {
     char c = *lx.p;
     const char *start = lx.p;
@@ -86,8 +89,12 @@ void lex_file(Str file, Str src, Vec *out_tokens) {
       continue;
     }
     if (c == '/' && lx.p + 1 < lx.end && lx.p[1] == '/') {
+      // keep line comments as trivia on the next token so fmt can re-emit
+      lx.p += 2;
+      const char *cs = lx.p;
       while (lx.p < lx.end && *lx.p != '\n')
         lx.p++;
+      vec_push(&lx.pending, arena_strndup(cs, lx.p - cs));
       continue;
     }
 
@@ -292,9 +299,10 @@ void lex_file(Str file, Str src, Vec *out_tokens) {
     lx.col++;
     tok_new(&lx, kind, start);
   }
-  Token *eof = arena_alloc(sizeof(Token));
+  Token *eof = arena_alloc_zeroed(sizeof(Token));
   eof->kind = TK_EOF;
   eof->text = str_from("");
+  eof->pre = lx.pending;
   eof->file = file;
   eof->line = lx.line;
   eof->col = lx.col;

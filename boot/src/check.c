@@ -1263,19 +1263,10 @@ static Type *check_expr(Expr *e, Type *expected) {
              ((l->kind == TY_PTR || l->kind == TY_NULL) && (r->kind == TY_PTR || r->kind == TY_NULL)) ||
              ((l->kind == TY_WEAK) && (r->kind == TY_WEAK || r->kind == TY_NULL)) ||
              (l->kind == TY_STRING && r->kind == TY_STRING);
-        if ((l->kind == TY_STRUCT || r->kind == TY_STRUCT || l->kind == TY_ARRAY) ||
-            (l->kind == TY_ENUM && l == r)) {
-          // enum tag compare is only sound for payload-free enums; payloadful
-          // enums need generated equality glue — use `match` for now
-          if (l->kind == TY_ENUM && l == r) {
-            Decl *d = l->rec->decl;
-            bool payloadful = false;
-            for (size_t i = 0; i < d->variants.n; i++)
-              if (((VariantAst *)d->variants.items[i])->vkind != VAR_UNIT)
-                payloadful = true;
-            ok = !payloadful;
-          }
-        }
+        if (l->kind == TY_ENUM && l == r)
+          ok = true; // tags, or the synthesized field-by-field eq glue
+        else if ((l->kind == TY_STRUCT || r->kind == TY_STRUCT || l->kind == TY_ARRAY))
+          ok = false;
       } else {
         ok = (ty_is_int(l) && ty_is_int(r)) || (ty_is_float(l) && ty_is_float(r));
       }

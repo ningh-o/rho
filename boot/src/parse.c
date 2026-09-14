@@ -586,7 +586,15 @@ static bool at_assign_start(Parser *p) {
   }
 }
 
+static Stmt *parse_stmt_raw(Parser *p);
 static Stmt *parse_stmt(Parser *p) {
+  Token *start = peek(p);
+  Stmt *s = parse_stmt_raw(p);
+  if (s)
+    s->pre = start->pre;
+  return s;
+}
+static Stmt *parse_stmt_raw(Parser *p) {
   Token *start = peek(p);
   switch (start->kind) {
   case KW_LET: {
@@ -716,6 +724,7 @@ Decl *parse_file(Str path, Str src) {
     d->line = start->line;
     d->col = start->col;
     d->pub_ = is_pub;
+    d->pre = start->pre;
     if (accept(&p, KW_USE)) {
       d->kind = DK_USE;
       do {
@@ -860,5 +869,6 @@ Decl *parse_file(Str path, Str src) {
     }
     vec_push(&module->decls, d);
   }
+  module->pre = p.toks[p.n - 1]->pre; // trailing comments ride the EOF token
   return module;
 }

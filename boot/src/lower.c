@@ -1058,6 +1058,120 @@ static void value_walk(LCtx *c, Type *t, IRVreg *addr, bool retain) {
     return;
   }
 }
+
+// ---- structural equality glue -------------------------------------------------
+// rho__eq$<t>(a, b) compares two enum/struct values field by field through a
+// result slot (no phis): tags first for enums, then payload/field pairs.
+
+static Map g_eq_fns; // mangled type name -> symbol
+
+static void eq_walk(LCtx *c, Type *t, IRVreg *pa, IRVreg *pb, IRSlot *rs);
+
+static const char *eq_fn_for(Type *t) {
+  if (!t || (t->kind != TY_ENUM && t->kind != TY_STRUCT))
+    return NULL;
+  if (map_has(&g_eq_fns, str_from(t->mangled)))
+    return map_get(&g_eq_fns, str_from(t->mangled));
+  const char *sym = arena_printf("rho__eq$%s", rho_sanitize(t->mangled));
+  map_put(&g_eq_fns, str_from(t->mangled), sym);
+  IRFn *lf = rc_new_fn(sym);
+  LCtx *c = rc_ctx(lf);
+  IRSlot *as = new_slot(c, 8, 8, "a");
+  IRSlot *bs = new_slot(c, 8, 8, "b");
+  vec_push(&lf->params, as);
+  vec_push(&lf->param_types, NULL);
+  vec_push(&lf->params, bs);
+  vec_push(&lf->param_types, NULL);
+  IRVreg *pa = v_load(c, v_slotaddr(c, as), IT_PTR);
+  IRVreg *pb = v_load(c, v_slotaddr(c, bs), IT_PTR);
+  IRSlot *rs = new_slot(c, 8, 8, "eq");
+  v_store(c, v_slotaddr(c, rs), v_const(c, 1, IT_U8));
+  eq_walk(c, t, pa, pb, rs);
+  emit_ret(c, v_load(c, v_slotaddr(c, rs), IT_U8));
+  rc_finish(&g_ir_fns, lf);
+  return sym;
+}
+
+// AND one field/variant comparison into the result slot
+static void eq_and(LCtx *c, IRSlot *rs, IRVreg *v) {
+  IRVreg *cur = v_load(c, v_slotaddr(c, rs), IT_U8);
+  IRVreg *both = v_binop(c, IR_AND, cur, v, IT_U8, false);
+  v_store(c, v_slotaddr(c, rs), both);
+}
+
+// compare a single non-aggregate field at pa/pb (same offset)
+static void eq_field(LCtx *c, Type *ft, IRVreg *fa, IRVreg *fb, IRSlot *rs) {
+  if (ft->kind == TY_ENUM || ft->kind == TY_STRUCT) {
+    const char *fn = eq_fn_for(ft);
+    IRIns *call = emit(c, IR_CALL);
+    call->callee = fn;
+    IRArg *x = arena_alloc(sizeof(IRArg));
+    x->vreg = fa;
+    x->ty = NULL;
+    vec_push(&call->args, x);
+    IRArg *y = arena_alloc(sizeof(IRArg));
+    y->vreg = fb;
+    y->ty = NULL;
+    vec_push(&call->args, y);
+    call->dst = new_vreg(c, IT_U8);
+    eq_and(c, rs, call->dst);
+    return;
+  }
+  IRType irt = ir_type_of(ft);
+  IRVreg *va = v_load(c, fa, irt);
+  IRVreg *vb = v_load(c, fb, irt);
+  IRVreg *same = v_cmp(c, CC_EQ, va, vb, ir_is_float(irt));
+  eq_and(c, rs, same);
+}
+
+static void eq_walk(LCtx *c, Type *t, IRVreg *pa, IRVreg *pb, IRSlot *rs) {
+  if (t->kind == TY_ENUM) {
+    Decl *d = t->rec->decl;
+    IRVreg *tag_a = v_load(c, pa, IT_I32);
+    // tags differ -> false
+    {
+      IRVreg *tag_b = v_load(c, pb, IT_I32);
+      IRVreg *same_tag = v_cmp(c, CC_EQ, tag_a, tag_b, false);
+      IRBlock *body = new_block(c), *no = new_block(c), *done = new_block(c);
+      emit_cbr(c, same_tag, body, no);
+      use_block(c, no);
+      v_store(c, v_slotaddr(c, rs), v_const(c, 0, IT_U8));
+      emit_br(c, done);
+      use_block(c, body);
+      // per variant: only its own fields, gated on the tag
+      for (size_t vi = 0; vi < d->variants.n; vi++) {
+        VariantAst *v = d->variants.items[vi];
+        size_t nf = v->vkind == VAR_TUPLE ? v->types.n
+                    : v->vkind == VAR_STRUCT ? v->fields.n : 0;
+        if (!nf)
+          continue;
+        IRBlock *mine = new_block(c), *next = new_block(c);
+        IRVreg *is = v_cmp(c, CC_EQ, tag_a, v_const(c, v->disc, IT_I32), false);
+        emit_cbr(c, is, mine, next);
+        use_block(c, mine);
+        for (size_t fi = 0; fi < nf; fi++) {
+          Type *ft = variant_field_type(t, (int)vi, (int)fi);
+          int64_t off = variant_field_offset(t, (int)vi, (int)fi);
+          eq_field(c, ft, v_addi(c, pa, off), v_addi(c, pb, off), rs);
+        }
+        emit_br(c, next);
+        use_block(c, next);
+      }
+      emit_br(c, done);
+      use_block(c, done);
+    }
+    return;
+  }
+  // struct: straight field walk
+  RecType *rec = t->rec;
+  Decl *sd = rec->decl;
+  for (size_t i = 0; i < sd->fields.n; i++) {
+    Type *ft = struct_field_type(rec, i);
+    int64_t off = struct_field_offset(rec, i);
+    eq_field(c, ft, v_addi(c, pa, off), v_addi(c, pb, off), rs);
+  }
+}
+
 static const char *lift_closure(LCtx *c, Expr *e, const char **envdrop_out) {
   Type *ft = e->typed;
   Type *ret = ft->ret;
@@ -1401,13 +1515,41 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
     case P_SHL: return v_binop(c, IR_SHL, a, b, a->ty, false);
     case P_SHR: return v_binop(c, IR_SHR, a, b, a->ty, ty_is_signed_int(a->ty));
     case P_EQ:
-      if (e->a->typed && ((Type *)e->a->typed)->kind == TY_STRING)
-        return call_str_cmp(c, e, true);
-      return v_cmp(c, CC_EQ, a, b, flt);
-    case P_NE:
-      if (e->a->typed && ((Type *)e->a->typed)->kind == TY_STRING)
-        return call_str_cmp(c, e, false);
-      return v_cmp(c, CC_NE, a, b, flt);
+    case P_NE: {
+      bool want_eq = e->binop == P_EQ;
+      Type *lt = e->a->typed;
+      if (lt && lt->kind == TY_STRING)
+        return call_str_cmp(c, e, want_eq);
+      if (lt && lt->kind == TY_ENUM) {
+        // a and b are aggregate addresses: compare through tags/glue
+        bool payloadful = false;
+        Decl *d = lt->rec->decl;
+        for (size_t vi = 0; vi < d->variants.n; vi++)
+          if (((VariantAst *)d->variants.items[vi])->vkind != VAR_UNIT)
+            payloadful = true;
+        if (!payloadful) {
+          IRVreg *ta = v_load(c, a, IT_I32);
+          IRVreg *tb = v_load(c, b, IT_I32);
+          return v_cmp(c, want_eq ? CC_EQ : CC_NE, ta, tb, false);
+        }
+        const char *fn = eq_fn_for(lt);
+        IRIns *call = emit(c, IR_CALL);
+        call->callee = fn;
+        IRArg *x = arena_alloc(sizeof(IRArg));
+        x->vreg = a;
+        x->ty = NULL;
+        vec_push(&call->args, x);
+        IRArg *y = arena_alloc(sizeof(IRArg));
+        y->vreg = b;
+        y->ty = NULL;
+        vec_push(&call->args, y);
+        call->dst = new_vreg(c, IT_U8);
+        if (want_eq)
+          return call->dst;
+        return v_cmp(c, CC_EQ, call->dst, v_const(c, 0, IT_U8), false);
+      }
+      return v_cmp(c, want_eq ? CC_EQ : CC_NE, a, b, flt);
+    }
     case P_LT: return v_cmp(c, CC_LT, a, b, flt);
     case P_LE: return v_cmp(c, CC_LE, a, b, flt);
     case P_GT: return v_cmp(c, CC_GT, a, b, flt);

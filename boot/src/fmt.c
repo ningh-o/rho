@@ -15,6 +15,7 @@ static void f_type(SB *sb, TypeAst *t);
 static void f_expr(SB *sb, Expr *e, int parent_bp);
 static void f_stmts(SB *sb, Vec *stmts);
 static void f_stmt(SB *sb, Stmt *s);
+static void f_pre(SB *sb, Vec *pre);
 static void f_if_full(SB *sb, Expr *e);
 static void f_match_full(SB *sb, Expr *e);
 
@@ -371,6 +372,7 @@ static void f_expr_full(SB *sb, Expr *e) {
 }
 
 static void f_stmt(SB *sb, Stmt *s) {
+  f_pre(sb, &s->pre);
   switch (s->kind) {
   case ST_LET:
     sb_append_c(sb, "let ");
@@ -458,6 +460,16 @@ static void f_stmts(SB *sb, Vec *stmts) {
   }
 }
 
+// leading line comments, re-emitted at the current indent
+static void f_pre(SB *sb, Vec *pre) {
+  for (size_t i = 0; pre && i < pre->n; i++) {
+    const char *c = pre->items[i];
+    sb_append_c(sb, "//");
+    sb_append_c(sb, c);
+    f_line(sb);
+  }
+}
+
 static void f_tparams(SB *sb, Vec *tparams) {
   if (!tparams || tparams->n == 0)
     return;
@@ -484,6 +496,7 @@ static void f_params(SB *sb, Vec *params) {
 }
 
 static void f_decl(SB *sb, Decl *d) {
+  f_pre(sb, &d->pre);
   switch (d->kind) {
   case DK_USE:
     sb_append_c(sb, "use ");
@@ -624,6 +637,11 @@ Str fmt_module(Decl *module) {
     f_decl(&sb, d);
     sb_push(&sb, '\n');
     first = false;
+  }
+  if (module->pre.n) {
+    f_pre(&sb, &module->pre);
+    // f_pre leaves the cursor on a fresh line; close it
+    sb_push(&sb, '\n');
   }
   return sb_finish(&sb);
 }
