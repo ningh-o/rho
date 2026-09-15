@@ -2075,9 +2075,9 @@ fn parse_file(path: string, src: string) -> *Decl {
       advance(p);
       continue;
     }
-    module.decls.push(d);
+      module.decls.push(d);
   }
-  module.pre = p.toks[len(p.toks) - 1].pre;
+  module.pre = p.toks[toks.n - 1].pre;
   return module;
 }
 

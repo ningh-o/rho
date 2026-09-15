@@ -27,6 +27,9 @@ typedef struct LScope {
                        // released when this scope dies
   struct LScope *parent;
   IRBlock *break_to, *continue_to;
+  bool is_loop;        // loop body scope: its owned bindings release only at
+                       // the back edge; unwinding past an interrupted
+                       // iteration must not release stale or unwritten slots
 } LScope;
 
 typedef struct LCtx {
@@ -303,8 +306,14 @@ static void run_defers(LCtx *c, LScope *stop);
 
 // ------------------------------------------------------- panic plumbing ----
 
+static int g_panic_site = 0;
 static void panic_call(LCtx *c, const char *msg) {
-  Str m = str_from(msg);
+  // stamp the function name + a per-site counter into the message: runtime
+  // panics from generated checks are otherwise indistinguishable
+  int site = g_panic_site++;
+  if (getenv("RHO_PANIC_MAP"))
+    fprintf(stderr, "SITE %d in %s: %s\n", site, c->fn->symbol, msg);
+  Str m = str_from(arena_printf("[%s#%d] %s", c->fn->symbol, site, msg));
   int lit = lit_bytes(c, m);
   IRSlot *tmp = new_slot(c, 24, 8, "panicstr");
   IRVreg *addr = v_slotaddr(c, tmp);
@@ -549,6 +558,9 @@ static void scope_pop_release(LCtx *c) {
 // `stop` — the rc twin of run_defers
 static void release_scopes_to(LCtx *c, LScope *stop) {
   for (LScope *s = c->scope; s && s != stop; s = s->parent) {
+    if (s->is_loop)
+      continue; // loop bindings release only at the back edge; unwinding an
+                // interrupted iteration would double-release or release junk
     for (size_t i = s->owned.n; i > 0; i--) {
       OwnedBind *ob = s->owned.items[i - 1];
       release_addr(c, ob->ty, v_slotaddr(c, ob->slot));
@@ -927,8 +939,22 @@ static const char *value_fn_for(Type *t, bool retain) {
   Map *cache = retain ? &g_ret_fns : &g_rel_fns;
   if (map_has(cache, str_from(t->mangled)))
     return map_get(cache, str_from(t->mangled));
-  char *sym = arena_printf("rho__%s$%s", retain ? "ret" : "rel",
-                         rho_sanitize(t->mangled));
+  // kind prefix keeps the symbol unique: `[]*T` and `*[]T` would otherwise
+  // sanitize to the same name and the second glue would clobber the first
+  const char *kindp = "";
+  switch (t->kind) {
+  case TY_PTR: kindp = "p_"; break;
+  case TY_SLICE: kindp = "s_"; break;
+  case TY_STRING: kindp = "g_"; break;
+  case TY_ARRAY: kindp = "a_"; break;
+  case TY_ENUM: kindp = "e_"; break;
+  case TY_STRUCT: kindp = "r_"; break;
+  case TY_FN: kindp = "f_"; break;
+  case TY_WEAK: kindp = "w_"; break;
+  default: kindp = "x_"; break;
+  }
+  char *sym = arena_printf("rho__%s$%s%s", retain ? "ret" : "rel", kindp,
+                           rho_sanitize(t->mangled));
   map_put(cache, str_from(t->mangled), sym);
   IRFn *lf = rc_new_fn(sym);
   LCtx *c = rc_ctx(lf);
@@ -1482,12 +1508,14 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
     if (op == P_ANDAND || op == P_OROR) {
       IRBlock *rhs = new_block(c), *join = new_block(c);
       IRPhi *phi = emit_phi_in(c, join, IT_U8);
-      IRBlock *lhs_block = c->fn->cur;
       IRVreg *l = lv_expr(c, e->a);
       IRVreg *l_as_u8 = v_cast(c, l, IT_U8);
       // short-circuit consts must precede the branch: phi edges read them
       IRVreg *sc_zero = v_const(c, 0, IT_U8);
       IRVreg *sc_one = v_const(c, 1, IT_U8);
+      // the phi's lhs edge is the block the cbr actually branches from; a
+      // nested `||`/`&&` lhs ends in its own join block, not where we started
+      IRBlock *lhs_block = c->fn->cur;
       if (op == P_ANDAND)
         emit_cbr(c, l, rhs, join, join);
       else
@@ -2637,6 +2665,7 @@ static void lv_stmt(LCtx *c, Stmt *s) {
     emit_cbr(c, cond, body, done, done);
     use_block(c, body);
     scope_push(c);
+    c->scope->is_loop = true;
     c->scope->break_to = done;
     c->scope->continue_to = header;
     for (size_t i = 0; i < s->body.n; i++)
@@ -2655,6 +2684,7 @@ static void lv_stmt(LCtx *c, Stmt *s) {
     emit_br(c, body);
     use_block(c, body);
     scope_push(c);
+    c->scope->is_loop = true;
     c->scope->break_to = done;
     c->scope->continue_to = body;
     for (size_t i = 0; i < s->body.n; i++)
@@ -2831,6 +2861,12 @@ void lower_dump_ir(void) {
   for (size_t i = 0; i < g_ir_fns.n; i++) {
     IRFn *fn = g_ir_fns.items[i];
     printf("fn %s\n", fn->symbol);
+    printf("  frame_slots:\n");
+    for (size_t si = 0; si < fn->slots.n; si++) {
+      IRSlot *s = fn->slots.items[si];
+      printf("    slot %d size=%lld name=%s\n", s->id, (long long)s->size,
+             s->name ? s->name : "-");
+    }
     for (size_t bi = 0; bi < fn->blocks.n; bi++) {
       IRBlock *b = fn->blocks.items[bi];
       printf("  block %d\n", b->id);

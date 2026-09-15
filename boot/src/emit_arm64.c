@@ -1,4 +1,7 @@
 #include "ir.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 // arm64 (Apple Silicon) emitter — spill-everything, mirrors emit_amd64.
 // Scratch registers are free between instructions; every vreg lives in a
@@ -232,10 +235,24 @@ static void emit_call64(Emitter64 *e, IRIns *i) {
       sb_printf(e->out, "  ldr x10, [x12]\n  str x10, [sp, #%d]\n", ri * 8);
     }
   }
-  if (i->callee_vreg)
+  if (i->callee_vreg) {
     sb_printf(e->out, "  blr x17\n");
-  else
+  } else {
+    // debugging aid: trap at the exact call site when an rc helper receives
+    // a small non-null value (a discriminant or clobbered slot, never a
+    // pointer). Removed by leaving RHO_RC_GUARD unset at emitter build time.
+    if (getenv("RHO_RC_GUARD") && i->callee &&
+        (!strncmp(i->callee, "rho__rc_dec", 11) ||
+         !strncmp(i->callee, "rho__rc_inc", 11))) {
+      int gl = g_label64++;
+      sb_printf(e->out, "  cbz x0, Lgok%d\n", gl);
+      sb_printf(e->out, "  cmp x0, #65536\n");
+      sb_printf(e->out, "  b.hs Lgok%d\n", gl);
+      sb_printf(e->out, "  brk #3\n");
+      sb_printf(e->out, "Lgok%d:\n", gl);
+    }
     sb_printf(e->out, "  bl _%s\n", i->callee);
+  }
   if (i->dst) {
     bool f = ir_is_float(i->dst->ty);
     if (f)
@@ -447,8 +464,10 @@ static void emit_ins64(Emitter64 *e, IRIns *i) {
 static void emit_edge64(Emitter64 *e, IRBlock *succ) {
   for (size_t p = 0; p < succ->phis.n; p++) {
     IRPhi *phi = succ->phis.items[p];
+    bool found = false;
     for (size_t k = 0; k < phi->preds.n; k++) {
       if (phi->preds.items[k] == e->cur) {
+        found = true;
         IRVreg *val = phi->args.items[k];
         if (!val || !phi->dst)
           continue; // never-returning arm; control cannot reach the join here
@@ -458,6 +477,9 @@ static void emit_edge64(Emitter64 *e, IRBlock *succ) {
         break;
       }
     }
+    if (!found && getenv("RHO_PHI_DEBUG"))
+      fprintf(stderr, "PHI EDGE MISSING: fn %s phi dst v%d pred block %d\n",
+              e->fn->symbol, phi->dst ? phi->dst->id : -1, e->cur->id);
   }
 }
 
