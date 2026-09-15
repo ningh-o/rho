@@ -981,6 +981,1102 @@ fn op2(lx: *Lexer, c: u8, a: u8, b: u8, kind: Tok) -> bool {
   return true;
 }
 
+
+// ---------------------------------------------------------------- ast -----
+
+enum ExprKind {
+  ExInt, ExFloat, ExStr, ExBool, ExNull, ExName, ExType,
+  ExBin, ExUn, ExCall, ExIndex, ExSlice, ExField, ExMethod,
+  ExCast, ExNew, ExMake, ExClosure, ExMatch, ExQmark, ExEnumCtor,
+  ExIf, ExBlock,
+}
+
+enum PatKind {
+  PatWildcard, PatInt, PatStr, PatUnit, PatTuple, PatStruct,
+}
+
+enum VarKind {
+  VarUnit, VarTuple, VarStruct,
+}
+
+enum StmtKind {
+  StLet, StAssign, StExpr, StReturn, StBreak, StContinue, StDefer,
+  StWhile, StLoop, StBlock,
+}
+
+enum DeclKind {
+  DkFn, DkStruct, DkEnum, DkStatic, DkConst, DkUse, DkExtern,
+}
+
+enum TypeAstKind {
+  TaPrim, TaNamed, TaPtr, TaWeak, TaArray, TaFn,
+}
+
+struct TypeAst {
+  kind: TypeAstKind,
+  prim: i32,           // TaPrim: index into the primitive name table
+  path: *Vec[string],   // TaNamed: segments
+  targs: *Vec[*TypeAst],// TaNamed: type arguments
+  elem: *TypeAst,      // Ptr/Weak/Array
+  params: *Vec[*TypeAst], // Fn
+  ret: *TypeAst,       // Fn
+  size: *Expr,         // Array: constant length expression
+}
+
+struct Param {
+  name: string,
+  ty: *TypeAst,
+  is_self: bool,
+  file: string,
+  line: i32,
+  col: i32,
+}
+
+struct FieldAst {
+  name: string,
+  ty: *TypeAst,
+  file: string,
+  line: i32,
+  col: i32,
+}
+
+struct VariantAst {
+  name: string,
+  vkind: VarKind,
+  types: *Vec[*TypeAst],  // VarTuple
+  fields: *Vec[*FieldAst],// VarStruct
+  has_disc: bool,
+  disc: u64,
+  file: string,
+  line: i32,
+  col: i32,
+}
+
+struct MatchArm {
+  pk: PatKind,
+  pat_path: *Vec[string],
+  pat_int: u64,
+  variant_index: i32,
+  disc: u64,
+  pat_str: string,
+  pat_names: *Vec[string],
+  pat_fields: *Vec[*FieldAst],
+  body: *Expr,
+  file: string,
+  line: i32,
+  col: i32,
+}
+
+struct Expr {
+  kind: ExprKind,
+  file: string,
+  line: i32,
+  col: i32,
+  iv: u64,
+  fv: f64,
+  sv: string,
+  bv: bool,
+  a: *Expr,
+  b: *Expr,
+  c: *Expr,
+  binop: Tok,
+  unop: Tok,
+  args: *Vec[*Expr],
+  arg_names: *Vec[string], // "" = positional
+  items: *Vec[*Stmt],      // Block stmts / If arms / New field names unused
+  ty: *TypeAst,
+  arms: *Vec[*MatchArm],
+  params: *Vec[*Param],    // Closure
+  ret: *TypeAst,          // Closure
+  q_ok: i32,
+  q_err: i32,
+  else_if: *Expr, // ExIf: the else-if chain (null = else is items[1] or none)
+  fnval: bool,
+}
+
+struct Stmt {
+  kind: StmtKind,
+  file: string,
+  line: i32,
+  col: i32,
+  pre: *Vec[string],
+  mut_: bool,
+  tail: bool,
+  name: string,
+  ty: *TypeAst,
+  a: *Expr,
+  b: *Expr,
+  assign_op: Tok,
+  stmts: *Vec[*Stmt],
+  cond: *Expr,
+  body: *Vec[*Stmt],
+}
+
+struct Decl {
+  kind: DeclKind,
+  file: string,
+  line: i32,
+  col: i32,
+  pre: *Vec[string],
+  pub_: bool,
+  is_mut: bool,
+  name: string,
+  path: *Vec[string],      // Use
+  params: *Vec[*Param],    // Fn/Extern
+  ret: *TypeAst,
+  fields: *Vec[*FieldAst], // Struct
+  variants: *Vec[*VariantAst], // Enum
+  init: *Expr,            // Static/Const
+  body: *Vec[*Stmt],       // Fn
+  tparams: *Vec[string],
+  is_method: bool,
+  recv: string,
+  decls: *Vec[*Decl],      // module root
+}
+
+// ------------------------------------------------------------- parser -----
+
+struct Parser {
+  toks: []*Token,
+  i: usize,
+}
+
+fn pk(p: *Parser) -> *Token {
+  return p.toks[p.i];
+}
+
+fn peek2(p: *Parser) -> *Token {
+  if p.i + 1 < len(p.toks) {
+    return p.toks[p.i + 1];
+  }
+  return p.toks[p.i];
+}
+
+fn at(p: *Parser, k: Tok) -> bool {
+  return pk(p).kind == k;
+}
+
+fn at_eof(p: *Parser) -> bool {
+  return pk(p).kind == Tok.TkEof;
+}
+
+fn advance(p: *Parser) -> *Token {
+  let t: *Token = pk(p);
+  if p.i + 1 < len(p.toks) {
+    p.i += 1;
+  }
+  return t;
+}
+
+fn accept(p: *Parser, k: Tok) -> bool {
+  if at(p, k) {
+    advance(p);
+    return true;
+  }
+  return false;
+}
+
+fn expect_tok(p: *Parser, k: Tok, what: string) -> *Token {
+  if at(p, k) {
+    return advance(p);
+  }
+  let t: *Token = pk(p);
+  err_at(t.file, t.line, t.col, cat3("expected ", what, cat3(", found ", tok_name(t.kind), "")));
+  return t;
+}
+
+fn at_ident(p: *Parser, s: string) -> bool {
+  return at(p, Tok.TkIdent) && streq(pk(p).text, s);
+}
+
+fn expect_ident(p: *Parser, what: string) -> *Token {
+  if at(p, Tok.TkIdent) {
+    return advance(p);
+  }
+  let t: *Token = pk(p);
+  err_at(t.file, t.line, t.col, cat3("expected ", what, cat3(", found ", tok_name(t.kind), "")));
+  return t;
+}
+
+fn prim_from_name(s: string) -> i32 {
+  if streq(s, "bool") { return 0; }
+  if streq(s, "i8") { return 1; }
+  if streq(s, "i16") { return 2; }
+  if streq(s, "i32") { return 3; }
+  if streq(s, "i64") { return 4; }
+  if streq(s, "u8") { return 5; }
+  if streq(s, "u16") { return 6; }
+  if streq(s, "u32") { return 7; }
+  if streq(s, "u64") { return 8; }
+  if streq(s, "f32") { return 9; }
+  if streq(s, "f64") { return 10; }
+  if streq(s, "string") { return 11; }
+  if streq(s, "usize") { return 12; }
+  if streq(s, "isize") { return 13; }
+  if streq(s, "void") { return 14; }
+  return 0 - 1;
+}
+
+// ---- type grammar
+
+fn parse_type(p: *Parser) -> *TypeAst {
+  let start: *Token = pk(p);
+  let mut t: *TypeAst = null;
+  if accept(p, Tok.PLbracket) {
+    // []T slice or [N]T array — `[*` can only start the element type
+    t = new TypeAst { kind: TypeAstKind.TaArray, prim: 0, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null };
+    if !at(p, Tok.PRbracket) && !at(p, Tok.PStar) {
+      t.size = parse_expr(p);
+    }
+    expect_tok(p, Tok.PRbracket, "`]`");
+    t.elem = parse_type(p);
+    return t;
+  }
+  if accept(p, Tok.PStar) {
+    t = new TypeAst { kind: TypeAstKind.TaPtr, prim: 0, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null };
+    t.elem = parse_type(p);
+    return t;
+  }
+  if at(p, Tok.KwWeak) {
+    advance(p);
+    t = new TypeAst { kind: TypeAstKind.TaWeak, prim: 0, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null };
+    expect_tok(p, Tok.PLbracket, "`[`");
+    t.elem = parse_type(p);
+    expect_tok(p, Tok.PRbracket, "`]`");
+    return t;
+  }
+  if at(p, Tok.KwFn) {
+    advance(p);
+    t = new TypeAst { kind: TypeAstKind.TaFn, prim: 0, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null };
+    expect_tok(p, Tok.PLparen, "`(`");
+    if !at(p, Tok.PRparen) {
+      loop {
+        t.params.push(parse_type(p));
+        if !accept(p, Tok.PComma) {
+          break;
+        }
+      }
+    }
+    expect_tok(p, Tok.PRparen, "`)`");
+    if accept(p, Tok.PArrow) {
+      t.ret = parse_type(p);
+    }
+    return t;
+  }
+  if at(p, Tok.TkIdent) {
+    let id: *Token = advance(p);
+    let prim: i32 = prim_from_name(id.text);
+    if prim >= 0 {
+      t = new TypeAst { kind: TypeAstKind.TaPrim, prim: prim, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null };
+      return t;
+    }
+    t = new TypeAst { kind: TypeAstKind.TaNamed, prim: 0, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null };
+    t.path.push(id.text);
+    while accept(p, Tok.PDot) {
+      let seg: *Token = expect_ident(p, "type name");
+      t.path.push(seg.text);
+    }
+    if accept(p, Tok.PLbracket) {
+      if !at(p, Tok.PRbracket) {
+        loop {
+          t.targs.push(parse_type(p));
+          if !accept(p, Tok.PComma) {
+            break;
+          }
+        }
+      }
+      expect_tok(p, Tok.PRbracket, "`]`");
+    }
+    return t;
+  }
+  err_at(start.file, start.line, start.col, cat3("expected a type, found ", tok_name(start.kind), ""));
+  t = new TypeAst { kind: TypeAstKind.TaPrim, prim: 0, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null };
+  return t;
+}
+
+fn type_as_expr(p: *Parser) -> *Expr {
+  let start: *Token = pk(p);
+  let e: *Expr = new Expr {
+    kind: ExprKind.ExType, file: start.file, line: start.line, col: start.col,
+    iv: 0, fv: 0.0, sv: "", bv: false, a: null, b: null, c: null,
+    binop: Tok.TkEof, unop: Tok.TkEof,
+    args: fresh_expr_vec(), arg_names: fresh_str_vec(), items: fresh_stmt_vec(),
+    ty: parse_type(p), arms: fresh_arm_vec(), params: fresh_param_vec(), ret: null,
+    q_ok: 0, q_err: 0, else_if: null, fnval: false,
+  };
+  return e;
+}
+
+// fresh empty containers (no zero values in rho)
+fn fresh_str_vec() -> *Vec[string] {
+  return new Vec[string] { items: make([]string, 4), n: 0 };
+}
+fn fresh_expr_vec() -> *Vec[*Expr] {
+  return new Vec[*Expr] { items: make([*Expr], 4), n: 0 };
+}
+fn fresh_stmt_vec() -> *Vec[*Stmt] {
+  return new Vec[*Stmt] { items: make([*Stmt], 4), n: 0 };
+}
+fn fresh_type_vec() -> *Vec[*TypeAst] {
+  return new Vec[*TypeAst] { items: make([*TypeAst], 4), n: 0 };
+}
+fn fresh_param_vec() -> *Vec[*Param] {
+  return new Vec[*Param] { items: make([*Param], 4), n: 0 };
+}
+fn fresh_arm_vec() -> *Vec[*MatchArm] {
+  return new Vec[*MatchArm] { items: make([*MatchArm], 4), n: 0 };
+}
+fn fresh_field_vec() -> *Vec[*FieldAst] {
+  return new Vec[*FieldAst] { items: make([*FieldAst], 4), n: 0 };
+}
+fn fresh_variant_vec() -> *Vec[*VariantAst] {
+  return new Vec[*VariantAst] { items: make([*VariantAst], 4), n: 0 };
+}
+fn fresh_decl_vec() -> *Vec[*Decl] {
+  return new Vec[*Decl] { items: make([*Decl], 16), n: 0 };
+}
+fn fresh_token_vec() -> *Vec[*Token] {
+  return new Vec[*Token] { items: make([*Token], 256), n: 0 };
+}
+
+
+
+fn mkexpr(kind: ExprKind, file: string, line: i32, col: i32) -> *Expr {
+  return new Expr {
+    kind: kind, file: file, line: line, col: col,
+    iv: 0, fv: 0.0, sv: "", bv: false, a: null, b: null, c: null,
+    binop: Tok.TkEof, unop: Tok.TkEof,
+    args: fresh_expr_vec(), arg_names: fresh_str_vec(), items: fresh_stmt_vec(),
+    ty: null, arms: fresh_arm_vec(), params: fresh_param_vec(), ret: null,
+    q_ok: 0, q_err: 0, else_if: null, fnval: false,
+  };
+}
+
+fn parse_param(p: *Parser) -> *Param {
+  let start: *Token = pk(p);
+  let pa: *Param = new Param { name: "", ty: null, is_self: false, file: start.file, line: start.line, col: start.col };
+  if at(p, Tok.KwSelf) {
+    advance(p);
+    pa.is_self = true;
+    pa.name = "self";
+  } else {
+    let id: *Token = expect_ident(p, "parameter name");
+    pa.name = id.text;
+  }
+  expect_tok(p, Tok.PColon, "`:`");
+  pa.ty = parse_type(p);
+  return pa;
+}
+
+fn parse_tparams(p: *Parser, out: *Vec[string]) {
+  if !accept(p, Tok.PLbracket) {
+    return;
+  }
+  if !at(p, Tok.PRbracket) {
+    loop {
+      let id: *Token = expect_ident(p, "type parameter name");
+      out.push(id.text);
+      if !accept(p, Tok.PComma) {
+        break;
+      }
+    }
+  }
+  expect_tok(p, Tok.PRbracket, "`]`");
+}
+
+fn parse_block_stmts(p: *Parser, end: Tok) -> *Stmt {
+  let start: *Token = pk(p);
+  let s: *Stmt = mkstmt(StmtKind.StBlock, start.file, start.line, start.col);
+  while !at(p, end) && !at_eof(p) {
+    let before: usize = p.i;
+    let inner: *Stmt = parse_stmt(p);
+    if inner != null {
+      s.stmts.push(inner);
+    }
+    if p.i == before {
+      advance(p);
+    }
+  }
+  return s;
+}
+
+fn parse_block(p: *Parser) -> *Vec[*Stmt] {
+  expect_tok(p, Tok.PLbrace, "`{`");
+  let s: *Stmt = parse_block_stmts(p, Tok.PRbrace);
+  expect_tok(p, Tok.PRbrace, "`}`");
+  return s.stmts;
+}
+
+fn level_of(k: Tok) -> i32 {
+  if k == Tok.POror { return 2; }
+  if k == Tok.PAndand { return 3; }
+  if k == Tok.PEq { return 4; }
+  if k == Tok.PNe { return 4; }
+  if k == Tok.PLt { return 5; }
+  if k == Tok.PGt { return 5; }
+  if k == Tok.PLe { return 5; }
+  if k == Tok.PGe { return 5; }
+  if k == Tok.PPipe { return 6; }
+  if k == Tok.PCaret { return 7; }
+  if k == Tok.PAmp { return 8; }
+  if k == Tok.PShl { return 9; }
+  if k == Tok.PShr { return 9; }
+  if k == Tok.PPlus { return 10; }
+  if k == Tok.PMinus { return 10; }
+  if k == Tok.PStar { return 11; }
+  if k == Tok.PSlash { return 11; }
+  if k == Tok.PPercent { return 11; }
+  return 0 - 1;
+}
+
+fn parse_if_body(p: *Parser) -> *Expr {
+  let start: *Token = pk(p);
+  let e: *Expr = mkexpr(ExprKind.ExIf, start.file, start.line, start.col);
+  e.a = parse_expr_bp(p, 0);
+  expect_tok(p, Tok.PLbrace, "`{`");
+  let then: *Stmt = parse_block_stmts(p, Tok.PRbrace);
+  expect_tok(p, Tok.PRbrace, "`}`");
+  e.items.push(then);
+  if accept(p, Tok.KwElse) {
+    if at(p, Tok.KwIf) {
+      advance(p);
+      e.else_if = parse_if_body(p);
+    } else {
+      expect_tok(p, Tok.PLbrace, "`{`");
+      let els: *Stmt = parse_block_stmts(p, Tok.PRbrace);
+      expect_tok(p, Tok.PRbrace, "`}`");
+      e.items.push(els);
+    }
+  }
+  return e;
+}
+
+fn parse_primary(p: *Parser) -> *Expr {
+  let start: *Token = pk(p);
+  let k: Tok = start.kind;
+  if k == Tok.TkInt {
+    advance(p);
+    let e: *Expr = mkexpr(ExprKind.ExInt, start.file, start.line, start.col);
+    e.iv = start.iv;
+    return e;
+  }
+  if k == Tok.TkFloat {
+    advance(p);
+    let e: *Expr = mkexpr(ExprKind.ExFloat, start.file, start.line, start.col);
+    e.fv = start.fv;
+    return e;
+  }
+  if k == Tok.TkStr {
+    advance(p);
+    let e: *Expr = mkexpr(ExprKind.ExStr, start.file, start.line, start.col);
+    e.sv = start.text;
+    return e;
+  }
+  if k == Tok.KwTrue || k == Tok.KwFalse {
+    advance(p);
+    let e: *Expr = mkexpr(ExprKind.ExBool, start.file, start.line, start.col);
+    e.bv = k == Tok.KwTrue;
+    return e;
+  }
+  if k == Tok.KwNull {
+    advance(p);
+    return mkexpr(ExprKind.ExNull, start.file, start.line, start.col);
+  }
+  if k == Tok.KwSelf {
+    advance(p);
+    let e: *Expr = mkexpr(ExprKind.ExName, start.file, start.line, start.col);
+    e.sv = start.text;
+    return e;
+  }
+  if k == Tok.KwWeak {
+    advance(p);
+    let e: *Expr = mkexpr(ExprKind.ExName, start.file, start.line, start.col);
+    e.sv = "weak";
+    return e;
+  }
+  if k == Tok.TkIdent {
+    advance(p);
+    let e: *Expr = mkexpr(ExprKind.ExName, start.file, start.line, start.col);
+    e.sv = start.text;
+    return e;
+  }
+  if k == Tok.PLparen {
+    advance(p);
+    let e: *Expr = parse_expr(p);
+    expect_tok(p, Tok.PRparen, "`)`");
+    return e;
+  }
+  if k == Tok.KwIf {
+    advance(p);
+    return parse_if_body(p);
+  }
+  if k == Tok.KwMatch {
+    advance(p);
+    let e: *Expr = mkexpr(ExprKind.ExMatch, start.file, start.line, start.col);
+    e.a = parse_expr_bp(p, 0);
+    expect_tok(p, Tok.PLbrace, "`{`");
+    while !at(p, Tok.PRbrace) && !at_eof(p) {
+      let pt: *Token = pk(p);
+      let arm: *MatchArm = new MatchArm {
+        pk: PatKind.PatWildcard, pat_path: fresh_str_vec(), pat_int: 0,
+        variant_index: 0, disc: 0, pat_str: "", pat_names: fresh_str_vec(),
+        pat_fields: fresh_field_vec(), body: null,
+        file: pt.file, line: pt.line, col: pt.col,
+      };
+      if at(p, Tok.TkInt) {
+        advance(p);
+        arm.pk = PatKind.PatInt;
+        arm.pat_int = pt.iv;
+      } else if at(p, Tok.TkStr) {
+        advance(p);
+        arm.pk = PatKind.PatStr;
+        arm.pat_str = pt.text;
+      } else if at_ident(p, "_") {
+        advance(p);
+        arm.pk = PatKind.PatWildcard;
+      } else if at(p, Tok.TkIdent) {
+        advance(p);
+        arm.pat_path.push(pt.text);
+        while accept(p, Tok.PDot) {
+          let seg: *Token = expect_ident(p, "variant name");
+          arm.pat_path.push(seg.text);
+        }
+        if accept(p, Tok.PLparen) {
+          arm.pk = PatKind.PatTuple;
+          if !at(p, Tok.PRparen) {
+            loop {
+              let b: *Token = pk(p);
+              if at(p, Tok.TkIdent) {
+                advance(p);
+                arm.pat_names.push(b.text);
+              } else {
+                err_at(b.file, b.line, b.col, "expected binding name");
+                advance(p);
+                arm.pat_names.push("_");
+              }
+              if !accept(p, Tok.PComma) {
+                break;
+              }
+            }
+          }
+          expect_tok(p, Tok.PRparen, "`)`");
+        } else if accept(p, Tok.PLbrace) {
+          arm.pk = PatKind.PatStruct;
+          while !at(p, Tok.PRbrace) && !at_eof(p) {
+            let fn_tok: *Token = expect_ident(p, "field name");
+            let fa: *FieldAst = new FieldAst { name: fn_tok.text, ty: null, file: fn_tok.file, line: fn_tok.line, col: fn_tok.col };
+            if accept(p, Tok.PColon) {
+              let b: *Token = expect_ident(p, "binding name");
+              arm.pat_names.push(b.text);
+            } else {
+              arm.pat_names.push(fn_tok.text);
+            }
+            arm.pat_fields.push(fa);
+            if !accept(p, Tok.PComma) {
+              break;
+            }
+          }
+          expect_tok(p, Tok.PRbrace, "`}`");
+        } else {
+          arm.pk = PatKind.PatUnit;
+        }
+      } else {
+        err_at(pt.file, pt.line, pt.col, cat3("expected a pattern, found ", tok_name(pt.kind), ""));
+        advance(p);
+        continue;
+      }
+      expect_tok(p, Tok.PFatarrow, "`=>`");
+      if at(p, Tok.PLbrace) {
+        advance(p);
+        let blk: *Expr = mkexpr(ExprKind.ExBlock, pt.file, pt.line, pt.col);
+        let body: *Stmt = parse_block_stmts(p, Tok.PRbrace);
+        expect_tok(p, Tok.PRbrace, "`}`");
+        blk.items = body.stmts;
+        arm.body = blk;
+      } else {
+        arm.body = parse_expr(p);
+      }
+      e.arms.push(arm);
+      if !accept(p, Tok.PComma) {
+        break;
+      }
+    }
+    expect_tok(p, Tok.PRbrace, "`}`");
+    return e;
+  }
+  if k == Tok.KwNew {
+    advance(p);
+    let e: *Expr = mkexpr(ExprKind.ExNew, start.file, start.line, start.col);
+    e.ty = parse_type(p);
+    expect_tok(p, Tok.PLbrace, "`{`");
+    while !at(p, Tok.PRbrace) && !at_eof(p) {
+      let fn_tok: *Token = expect_ident(p, "field name");
+      expect_tok(p, Tok.PColon, "`:`");
+      let fa: *FieldAst = new FieldAst { name: fn_tok.text, ty: null, file: fn_tok.file, line: fn_tok.line, col: fn_tok.col };
+      e.args.push(parse_expr(p));
+      let name_entry: *Stmt = mkstmt(StmtKind.StBlock, fa.file, fa.line, fa.col);
+      name_entry.name = fa.name;
+      e.items.push(name_entry);
+      if !accept(p, Tok.PComma) {
+        break;
+      }
+    }
+    expect_tok(p, Tok.PRbrace, "`}`");
+    return e;
+  }
+  if k == Tok.KwFn {
+    advance(p);
+    let e: *Expr = mkexpr(ExprKind.ExClosure, start.file, start.line, start.col);
+    expect_tok(p, Tok.PLparen, "`(`");
+    if !at(p, Tok.PRparen) {
+      loop {
+        e.params.push(parse_param(p));
+        if !accept(p, Tok.PComma) {
+          break;
+        }
+      }
+    }
+    expect_tok(p, Tok.PRparen, "`)`");
+    if accept(p, Tok.PArrow) {
+      e.ret = parse_type(p);
+    }
+    e.items = parse_block(p);
+    return e;
+  }
+  err_at(start.file, start.line, start.col, cat3("expected an expression, found ", tok_name(start.kind), ""));
+  advance(p);
+  return mkexpr(ExprKind.ExInt, start.file, start.line, start.col);
+}
+
+fn parse_postfix(p: *Parser) -> *Expr {
+  let mut e: *Expr = parse_primary(p);
+  loop {
+    let start: *Token = pk(p);
+    if accept(p, Tok.PLparen) {
+      let call: *Expr = mkexpr(ExprKind.ExCall, start.file, start.line, start.col);
+      call.a = e;
+      if !at(p, Tok.PRparen) {
+        if at(p, Tok.TkIdent) && peek2(p).kind == Tok.PColon {
+          let nm: *Token = advance(p);
+          advance(p);
+          call.arg_names.push(nm.text);
+          call.args.push(parse_expr(p));
+        } else if e.kind == ExprKind.ExName && streq(e.sv, "make") && at(p, Tok.PLbracket) {
+          call.arg_names.push("");
+          call.args.push(type_as_expr(p));
+        } else {
+          call.arg_names.push("");
+          call.args.push(parse_expr(p));
+        }
+        while accept(p, Tok.PComma) {
+          if at(p, Tok.TkIdent) && peek2(p).kind == Tok.PColon {
+            let nm: *Token = advance(p);
+            advance(p);
+            call.arg_names.push(nm.text);
+            call.args.push(parse_expr(p));
+          } else if e.kind == ExprKind.ExName && streq(e.sv, "make") && at(p, Tok.PLbracket) {
+            call.arg_names.push("");
+            call.args.push(type_as_expr(p));
+          } else {
+            call.arg_names.push("");
+            call.args.push(parse_expr(p));
+          }
+        }
+      }
+      expect_tok(p, Tok.PRparen, "`)`");
+      e = call;
+      continue;
+    }
+    if accept(p, Tok.PLbracket) {
+      if at(p, Tok.PEllipsis2) {
+        err_at(start.file, start.line, start.col, "slice needs a start");
+        advance(p);
+        parse_expr(p);
+        expect_tok(p, Tok.PRbracket, "`]`");
+        continue;
+      }
+      let idx: *Expr = parse_expr(p);
+      if accept(p, Tok.PEllipsis2) {
+        let sl: *Expr = mkexpr(ExprKind.ExSlice, start.file, start.line, start.col);
+        sl.a = e;
+        sl.b = idx;
+        sl.c = parse_expr(p);
+        expect_tok(p, Tok.PRbracket, "`]`");
+        e = sl;
+        continue;
+      }
+      expect_tok(p, Tok.PRbracket, "`]`");
+      let ix: *Expr = mkexpr(ExprKind.ExIndex, start.file, start.line, start.col);
+      ix.a = e;
+      ix.b = idx;
+      e = ix;
+      continue;
+    }
+    if accept(p, Tok.PDot) {
+      let name: *Token = expect_ident(p, "field or method name");
+      let f: *Expr = mkexpr(ExprKind.ExField, start.file, start.line, start.col);
+      f.a = e;
+      f.sv = name.text;
+      e = f;
+      continue;
+    }
+    if accept(p, Tok.PQmark) {
+      let q: *Expr = mkexpr(ExprKind.ExQmark, start.file, start.line, start.col);
+      q.a = e;
+      e = q;
+      continue;
+    }
+    if at(p, Tok.KwAs) {
+      advance(p);
+      let c: *Expr = mkexpr(ExprKind.ExCast, start.file, start.line, start.col);
+      c.a = e;
+      c.ty = parse_type(p);
+      e = c;
+      continue;
+    }
+    break;
+  }
+  return e;
+}
+
+fn parse_expr_bp(p: *Parser, min_bp: i32) -> *Expr {
+  let start: *Token = pk(p);
+  let mut left: *Expr = null;
+  let unary_bp: i32 = 12;
+  if min_bp <= unary_bp && (at(p, Tok.PBang) || at(p, Tok.PMinus) || at(p, Tok.PTilde) || at(p, Tok.PStar)) {
+    let op: *Token = advance(p);
+    let operand: *Expr = parse_expr_bp(p, unary_bp);
+    let u: *Expr = mkexpr(ExprKind.ExUn, start.file, start.line, start.col);
+    u.unop = op.kind;
+    u.a = operand;
+    left = u;
+  } else {
+    left = parse_postfix(p);
+  }
+  loop {
+    let bp: i32 = level_of(pk(p).kind);
+    if bp < 0 || bp < min_bp {
+      break;
+    }
+    let op: *Token = advance(p);
+    let right: *Expr = parse_expr_bp(p, bp + 1);
+    let bin: *Expr = mkexpr(ExprKind.ExBin, start.file, start.line, start.col);
+    bin.binop = op.kind;
+    bin.a = left;
+    bin.b = right;
+    left = bin;
+  }
+  return left;
+}
+
+fn parse_expr(p: *Parser) -> *Expr {
+  return parse_expr_bp(p, 0);
+}
+
+fn at_assign_start(p: *Parser) -> bool {
+  let k: Tok = pk(p).kind;
+  return k == Tok.PAssign || k == Tok.PPluseq || k == Tok.PMinuseq || k == Tok.PStareq
+      || k == Tok.PSlasheq || k == Tok.PPercenteq || k == Tok.PAmpeq
+      || k == Tok.PPipeeq || k == Tok.PCareteq || k == Tok.PShleq || k == Tok.PShreq;
+}
+
+fn mkstmt(kind: StmtKind, file: string, line: i32, col: i32) -> *Stmt {
+  return new Stmt {
+    kind: kind, file: file, line: line, col: col,
+    pre: fresh_str_vec(), mut_: false, tail: false, name: "", ty: null,
+    a: null, b: null, assign_op: Tok.TkEof, stmts: fresh_stmt_vec(),
+    cond: null, body: fresh_stmt_vec(),
+  };
+}
+
+fn parse_stmt(p: *Parser) -> *Stmt {
+  let start: *Token = pk(p);
+  let s: *Stmt = parse_stmt_raw(p);
+  if s != null {
+    s.pre = start.pre;
+  }
+  return s;
+}
+
+fn parse_stmt_raw(p: *Parser) -> *Stmt {
+  let start: *Token = pk(p);
+  let k: Tok = start.kind;
+  if k == Tok.KwLet {
+    advance(p);
+    let s: *Stmt = mkstmt(StmtKind.StLet, start.file, start.line, start.col);
+    s.mut_ = accept(p, Tok.KwMut);
+    let id: *Token = expect_ident(p, "binding name");
+    s.name = id.text;
+    if accept(p, Tok.PColon) {
+      s.ty = parse_type(p);
+    }
+    expect_tok(p, Tok.PAssign, "`=` (bindings need an initializer)");
+    s.a = parse_expr(p);
+    expect_tok(p, Tok.PSemi, "`;`");
+    return s;
+  }
+  if k == Tok.KwReturn {
+    advance(p);
+    let s: *Stmt = mkstmt(StmtKind.StReturn, start.file, start.line, start.col);
+    if !at(p, Tok.PSemi) {
+      s.a = parse_expr(p);
+    }
+    expect_tok(p, Tok.PSemi, "`;`");
+    return s;
+  }
+  if k == Tok.KwBreak {
+    advance(p);
+    let s: *Stmt = mkstmt(StmtKind.StBreak, start.file, start.line, start.col);
+    expect_tok(p, Tok.PSemi, "`;`");
+    return s;
+  }
+  if k == Tok.KwContinue {
+    advance(p);
+    let s: *Stmt = mkstmt(StmtKind.StContinue, start.file, start.line, start.col);
+    expect_tok(p, Tok.PSemi, "`;`");
+    return s;
+  }
+  if k == Tok.KwDefer {
+    advance(p);
+    let s: *Stmt = mkstmt(StmtKind.StDefer, start.file, start.line, start.col);
+    if at(p, Tok.PLbrace) {
+      let blk: *Stmt = mkstmt(StmtKind.StBlock, start.file, start.line, start.col);
+      blk.stmts = parse_block(p);
+      s.stmts.push(blk);
+    } else {
+      let one: *Stmt = parse_stmt(p);
+      s.stmts.push(one);
+    }
+    return s;
+  }
+  if k == Tok.KwWhile {
+    advance(p);
+    let s: *Stmt = mkstmt(StmtKind.StWhile, start.file, start.line, start.col);
+    s.cond = parse_expr(p);
+    s.body = parse_block(p);
+    return s;
+  }
+  if k == Tok.KwLoop {
+    advance(p);
+    let s: *Stmt = mkstmt(StmtKind.StLoop, start.file, start.line, start.col);
+    s.body = parse_block(p);
+    return s;
+  }
+  if k == Tok.PLbrace {
+    advance(p);
+    let s: *Stmt = mkstmt(StmtKind.StBlock, start.file, start.line, start.col);
+    s.stmts = parse_block_stmts(p, Tok.PRbrace).stmts;
+    expect_tok(p, Tok.PRbrace, "`}`");
+    return s;
+  }
+  let e: *Expr = parse_expr(p);
+  if at_assign_start(p) {
+    let op: *Token = advance(p);
+    let s: *Stmt = mkstmt(StmtKind.StAssign, start.file, start.line, start.col);
+    s.assign_op = op.kind;
+    s.a = e;
+    s.b = parse_expr(p);
+    expect_tok(p, Tok.PSemi, "`;`");
+    return s;
+  }
+  let s: *Stmt = mkstmt(StmtKind.StExpr, start.file, start.line, start.col);
+  s.a = e;
+  let blocky: bool = e.kind == ExprKind.ExIf || e.kind == ExprKind.ExMatch || e.kind == ExprKind.ExBlock;
+  if accept(p, Tok.PSemi) {
+    s.tail = false;
+  } else if at(p, Tok.PRbrace) {
+    s.tail = true;
+  } else if blocky {
+    s.tail = false;
+  } else {
+    s.tail = false;
+    let t: *Token = pk(p);
+    err_at(t.file, t.line, t.col, cat3("expected `;`, found ", tok_name(t.kind), ""));
+  }
+  return s;
+}
+
+fn parse_file(path: string, src: string) -> *Decl {
+  let toks: *Vec[*Token] = fresh_token_vec();
+  lex_file(path, src, toks);
+  let p: *Parser = new Parser { toks: toks.items, i: 0 };
+  let module: *Decl = new Decl {
+    kind: DeclKind.DkFn, file: path, line: 0, col: 0, pre: fresh_str_vec(),
+    pub_: false, is_mut: false, name: "", path: fresh_str_vec(),
+    params: fresh_param_vec(), ret: null, fields: fresh_field_vec(),
+    variants: fresh_variant_vec(), init: null, body: fresh_stmt_vec(),
+    tparams: fresh_str_vec(), is_method: false, recv: "", decls: fresh_decl_vec(),
+  };
+  while !at_eof(p) {
+    let start: *Token = pk(p);
+    let is_pub: bool = accept(p, Tok.KwPub);
+    let d: *Decl = new Decl {
+      kind: DeclKind.DkFn, file: start.file, line: start.line, col: start.col,
+      pre: start.pre, pub_: is_pub, is_mut: false, name: "",
+      path: fresh_str_vec(), params: fresh_param_vec(), ret: null,
+      fields: fresh_field_vec(), variants: fresh_variant_vec(), init: null,
+      body: fresh_stmt_vec(), tparams: fresh_str_vec(), is_method: false,
+      recv: "", decls: fresh_decl_vec(),
+    };
+    if accept(p, Tok.KwUse) {
+      d.kind = DeclKind.DkUse;
+      loop {
+        let seg: *Token = expect_ident(p, "module path segment");
+        d.path.push(seg.text);
+        if !accept(p, Tok.PSlash) {
+          break;
+        }
+      }
+      expect_tok(p, Tok.PSemi, "`;`");
+    } else if accept(p, Tok.KwExtern) {
+      d.kind = DeclKind.DkExtern;
+      if at(p, Tok.TkStr) {
+        advance(p);
+      }
+      expect_tok(p, Tok.KwFn, "`fn`");
+      let id: *Token = expect_ident(p, "function name");
+      d.name = id.text;
+      expect_tok(p, Tok.PLparen, "`(`");
+      if !at(p, Tok.PRparen) {
+        loop {
+          d.params.push(parse_param(p));
+          if !accept(p, Tok.PComma) {
+            break;
+          }
+        }
+      }
+      expect_tok(p, Tok.PRparen, "`)`");
+      if accept(p, Tok.PArrow) {
+        d.ret = parse_type(p);
+      }
+      expect_tok(p, Tok.PSemi, "`;`");
+    } else if accept(p, Tok.KwFn) {
+      d.kind = DeclKind.DkFn;
+      let id: *Token = expect_ident(p, "function name");
+      d.name = id.text;
+      if accept(p, Tok.PDot) {
+        d.recv = id.text;
+        let m: *Token = expect_ident(p, "method name");
+        d.name = m.text;
+      }
+      parse_tparams(p, d.tparams);
+      expect_tok(p, Tok.PLparen, "`(`");
+      if !at(p, Tok.PRparen) {
+        loop {
+          d.params.push(parse_param(p));
+          if !accept(p, Tok.PComma) {
+            break;
+          }
+        }
+      }
+      expect_tok(p, Tok.PRparen, "`)`");
+      if accept(p, Tok.PArrow) {
+        d.ret = parse_type(p);
+      }
+      if d.params.n > 0 {
+        if (*d.params.items[0]).is_self {
+          d.is_method = true;
+        }
+      }
+      d.body = parse_block(p);
+    } else if accept(p, Tok.KwStruct) {
+      d.kind = DeclKind.DkStruct;
+      let id: *Token = expect_ident(p, "struct name");
+      d.name = id.text;
+      parse_tparams(p, d.tparams);
+      expect_tok(p, Tok.PLbrace, "`{`");
+      while !at(p, Tok.PRbrace) && !at_eof(p) {
+        let fn_tok: *Token = expect_ident(p, "field name");
+        expect_tok(p, Tok.PColon, "`:`");
+        let fa: *FieldAst = new FieldAst { name: fn_tok.text, ty: parse_type(p), file: fn_tok.file, line: fn_tok.line, col: fn_tok.col };
+        d.fields.push(fa);
+        if !accept(p, Tok.PComma) {
+          break;
+        }
+      }
+      expect_tok(p, Tok.PRbrace, "`}`");
+    } else if accept(p, Tok.KwEnum) {
+      d.kind = DeclKind.DkEnum;
+      let id: *Token = expect_ident(p, "enum name");
+      d.name = id.text;
+      parse_tparams(p, d.tparams);
+      expect_tok(p, Tok.PLbrace, "`{`");
+      let mut next_disc: u64 = 0;
+      while !at(p, Tok.PRbrace) && !at_eof(p) {
+        let vn: *Token = expect_ident(p, "variant name");
+        let v: *VariantAst = new VariantAst { name: vn.text, vkind: VarKind.VarUnit, types: fresh_type_vec(), fields: fresh_field_vec(), has_disc: false, disc: 0, file: vn.file, line: vn.line, col: vn.col };
+        if accept(p, Tok.PLparen) {
+          v.vkind = VarKind.VarTuple;
+          if !at(p, Tok.PRparen) {
+            loop {
+              v.types.push(parse_type(p));
+              if !accept(p, Tok.PComma) {
+                break;
+              }
+            }
+          }
+          expect_tok(p, Tok.PRparen, "`)`");
+        } else if accept(p, Tok.PLbrace) {
+          v.vkind = VarKind.VarStruct;
+          while !at(p, Tok.PRbrace) && !at_eof(p) {
+            let fn_tok: *Token = expect_ident(p, "field name");
+            expect_tok(p, Tok.PColon, "`:`");
+            let fa: *FieldAst = new FieldAst { name: fn_tok.text, ty: parse_type(p), file: fn_tok.file, line: fn_tok.line, col: fn_tok.col };
+            v.fields.push(fa);
+            if !accept(p, Tok.PComma) {
+              break;
+            }
+          }
+          expect_tok(p, Tok.PRbrace, "`}`");
+        } else {
+          v.vkind = VarKind.VarUnit;
+        }
+        if accept(p, Tok.PAssign) {
+          if v.vkind != VarKind.VarUnit {
+            err_at(vn.file, vn.line, vn.col, "only unit variants take explicit discriminants");
+          }
+          let iv: *Token = expect_tok(p, Tok.TkInt, "discriminant");
+          v.has_disc = true;
+          v.disc = iv.iv;
+          next_disc = iv.iv + 1;
+        } else {
+          v.disc = next_disc;
+          next_disc += 1;
+        }
+        d.variants.push(v);
+        if !accept(p, Tok.PComma) {
+          break;
+        }
+      }
+      expect_tok(p, Tok.PRbrace, "`}`");
+    } else if at(p, Tok.KwStatic) || at(p, Tok.KwConst) {
+      let is_static: bool = at(p, Tok.KwStatic);
+      advance(p);
+      if is_static {
+        d.kind = DeclKind.DkStatic;
+      } else {
+        d.kind = DeclKind.DkConst;
+      }
+      d.is_mut = is_static && accept(p, Tok.KwMut);
+      let id: *Token = expect_ident(p, "name");
+      d.name = id.text;
+      expect_tok(p, Tok.PColon, "`:`");
+      d.ret = parse_type(p);
+      expect_tok(p, Tok.PAssign, "`=`");
+      d.init = parse_expr(p);
+      expect_tok(p, Tok.PSemi, "`;`");
+    } else {
+      err_at(start.file, start.line, start.col, cat3("expected a declaration (fn/struct/enum/static/const/use), found ", tok_name(start.kind), ""));
+      advance(p);
+      continue;
+    }
+    module.decls.push(d);
+  }
+  module.pre = p.toks[len(p.toks) - 1].pre;
+  return module;
+}
+
+
 // ---------------------------------------------------------------- driver ---
 
 struct Diag {
@@ -1026,26 +2122,35 @@ fn main() -> i32 {
     eprint(cat3("rho: ", src_result.get_err(), "\n"));
     return 2;
   }
-  let tokens: *Vec[*Token] = new Vec[*Token] { items: make([*Token], 256), n: 0 };
+  let tokens: *Vec[*Token] = fresh_token_vec();
   lex_file(args[2], src_result.get_ok(), tokens);
   if diag_count() > 0 {
-    let mut i: usize = 0;
-    while i < diags.n {
-      let d: *Diag = diags.items[i];
-      eprint(d.file);
-      eprint(":");
-      eprint(itoa(d.line as i64));
-      eprint(":");
-      eprint(itoa(d.col as i64));
-      eprint(": error: ");
-      eprint(d.msg);
-      eprint("\n");
-      i += 1;
-    }
+    print_diags();
     return 1;
   }
-  eprint("lexed ");
-  eprint(itoa(tokens.n as i64));
-  eprint(" tokens\n");
+  let module: *Decl = parse_file(args[2], src_result.get_ok());
+  if diag_count() > 0 {
+    print_diags();
+    return 1;
+  }
+  eprint("parsed ");
+  eprint(itoa(module.decls.n as i64));
+  eprint(" declarations\n");
   return 0;
+}
+
+fn print_diags() {
+  let mut i: usize = 0;
+  while i < diags.n {
+    let d: *Diag = diags.items[i];
+    eprint(d.file);
+    eprint(":");
+    eprint(itoa(d.line as i64));
+    eprint(":");
+    eprint(itoa(d.col as i64));
+    eprint(": error: ");
+    eprint(d.msg);
+    eprint("\n");
+    i += 1;
+  }
 }

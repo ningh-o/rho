@@ -351,8 +351,10 @@ static void emit_ins64(Emitter64 *e, IRIns *i) {
     if (i->lit == -1)
       sb_printf(e->out, "  adrp x8, _%s@PAGE\n  add x8, x8, _%s@PAGEOFF\n", i->callee,
                 i->callee);
-    else
-      sb_printf(e->out, "  add x8, x29, #%lld\n", slot_off(e, i->slot));
+    else {
+      addr_into(e, slot_off(e, i->slot));
+      sb_printf(e->out, "  mov x8, x12\n");
+    }
     st_(e, dof, 8, false, "x8");
     break;
   }
