@@ -1814,6 +1814,11 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
       } else {
         val = lv_expr(c, arm->body);
       }
+      if (!val) {
+        // a never-returning arm (panic call): the phi still needs an arg,
+        // but control never reaches the join from here
+        val = v_const(c, 0, ir_type_of(t));
+      }
       if (t && ty_is_managed(t) && !expr_owned(arm->body))
         retain_or_inc(c, t, val);
       if (bind_scope)

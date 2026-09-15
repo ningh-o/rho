@@ -1,0 +1,62 @@
+// exit: 0
+struct Vec[T] {
+  items: []T,
+  n: usize,
+}
+fn Vec.init(self: *Vec) {
+  self.items = make([]T, 8);
+  self.n = 0;
+}
+fn Vec.push(self: *Vec, v: T) {
+  if self.n == len(self.items) {
+    let grown: []T = make([]T, len(self.items) * 2);
+    let mut i: usize = 0;
+    while i < self.n {
+      grown[i] = self.items[i];
+      i += 1;
+    }
+    self.items = grown;
+  }
+  self.items[self.n] = v;
+  self.n += 1;
+}
+fn Vec.last(self: *Vec) -> T {
+  return self.items[self.n - 1];
+}
+struct MapEnt[V] {
+  key: string,
+  val: V,
+  used: bool,
+}
+struct Map[V] {
+  slots: []*MapEnt[V],
+  cap: usize,
+  n: usize,
+  keys: *Vec[string],
+}
+fn Map.get(self: *Map, key: string) -> V {
+  assert(self.has(key));
+  return self.slots[0].val;
+}
+fn Map.has(self: *Map, key: string) -> bool {
+  return false;
+}
+fn Map.put(self: *Map, key: string, val: V) {
+}
+struct Box2 { v: i32 }
+struct Token {
+  kind: i32,
+  text: string,
+  line: i32,
+}
+fn lex_it() {
+  let a: *Vec[*Token] = new Vec[*Token] { items: make([*Token], 4), n: 0 };
+  a.push(new Token { kind: 1, text: "x", line: 1 });
+  a.last().line = 2;
+}
+struct Box { v: i32 }
+fn main() -> i32 {
+  let a: *Vec[*Box] = new Vec[*Box] { items: make([*Box], 4), n: 0 };
+  a.push(new Box { v: 7 });
+  return a.items[0].v + a.last().v;
+}

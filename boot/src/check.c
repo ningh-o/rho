@@ -810,14 +810,12 @@ static Type *named_type(Sym *sym, Module *owner, TypeAst *ta) {
     if (all_bound && !any_param)
       return inst_from_targs(sym, owner, targs);
     if (all_bound && any_param) {
-      if (getenv("RHO_DBG_M"))
-        fprintf(stderr, "[bare] %s -> template of %s (owner %s)\n",
-                sym->name.p ? sym->name.p : "?",
-                d->name.p ? d->name.p : "?",
-                ((Module *)owner)->path.p ? ((Module *)owner)->path.p : "?");
+      // intern by the rec's own mangled name: an un-mangled type would make
+      // every ty_ptr<T-template> intern under the same key and alias
+      RecType *rt = ensure_template(d, owner);
       Type *t = ty_newk(sym->kind == SY_STRUCT ? TY_STRUCT : TY_ENUM);
-      t->rec = ensure_template(d, owner);
-      return t; // template reference (self position in a template signature)
+      t->rec = rt;
+      return ty_intern2(rt->mangled, t); // template reference (self position)
     }
     if (ta)
       err_at(ta->file, ta->line, ta->col, "generic type `%s` needs type arguments",
@@ -1546,10 +1544,34 @@ static Type *check_expr(Expr *e, Type *expected) {
   return ty_err_;
 }
 
+static bool is_panic_call(Expr *e) {
+  if (!e || e->kind != EX_CALL || !e->a || !e->a->sym)
+    return false;
+  Sym *s = (Sym *)e->a->sym;
+  // the prelude's panic — imported syms can carry the importer as owner
+  if (!str_eq_c(s->name, "panic") || !s->owner)
+    return false;
+  Module *om = (Module *)s->owner;
+  return om == prelude_module || om->is_prelude;
+}
+
 static Type *unify2(Type *a, Type *b, Expr *at) {
   if (!a || a->kind == TY_ERR)
     return b;
   if (!b || b->kind == TY_ERR)
+    return a;
+  // panic never returns: its arm coerces to the other branch's type
+  if (getenv("RHO_DBG_U") && at && at->kind == EX_CALL) {
+    Sym *s2 = at->a && at->a->sym ? (Sym *)at->a->sym : NULL;
+    fprintf(stderr, "[unify] a=%s b=%s name=%.*s owner_is_prelude=%s prelude=%p owner=%p\n",
+            ty_name(a), ty_name(b),
+            s2 ? (int)s2->name.n : 0, s2 && s2->name.p ? s2->name.p : "?",
+            s2 && s2->owner == prelude_module ? "yes" : "NO",
+            (void *)prelude_module, s2 ? s2->owner : NULL);
+  }
+  if (a->kind == TY_VOID && b->kind != TY_VOID && is_panic_call(at))
+    return b;
+  if (b->kind == TY_VOID && a->kind != TY_VOID && is_panic_call(at))
     return a;
   Type *u = adapt_literal(a, b);
   Type *v = adapt_literal(b, a);
@@ -2215,6 +2237,14 @@ static Type *check_call(Expr *e, Type *expected) {
     require(check_expr(e->args.items[ai], pt), pt, (Expr *)e->args.items[ai], "argument");
   }
   e->typed = fn_t->ret;
+  // never coercion: panic never returns, so a call to it is compatible with
+  // any expected type (match arms like `Result.Err(_) => panic("...")`)
+  if (expected && expected->kind != TY_ERR && expected->kind != TY_VOID &&
+      fn_t->ret && fn_t->ret->kind == TY_VOID && ct.sym && ct.sym->owner &&
+      str_eq_c(ct.sym->name, "panic") &&
+      (((Module *)ct.sym->owner) == prelude_module ||
+       ((Module *)ct.sym->owner)->is_prelude))
+    e->typed = expected;
   return e->typed;
 }
 

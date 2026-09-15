@@ -55,12 +55,19 @@ static void layout_frame64(Emitter64 *e) {
 }
 
 // x12 is the dedicated address scratch for slot access
+// imm12 caps at 4095; for big frames walk the offset in 4080-sized steps,
+// chaining through x12 (x29 stays intact — the epilogue restores sp from it)
 static void addr_into(Emitter64 *e, int64_t off) {
   (void)e;
-  if (off < 0)
-    sb_printf(e->out, "  sub x12, x29, #%lld\n", -off);
-  else
-    sb_printf(e->out, "  add x12, x29, #%lld\n", off);
+  int64_t left = off < 0 ? -off : off;
+  const char *op = off < 0 ? "sub" : "add";
+  const char *base = "x29";
+  while (left > 4095) {
+    sb_printf(e->out, "  %s x12, %s, #4080\n", op, base);
+    base = "x12";
+    left -= 4080;
+  }
+  sb_printf(e->out, "  %s x12, %s, #%lld\n", op, base, (long long)left);
 }
 
 static void ld(Emitter64 *e, int64_t off, int64_t size, bool flt, const char *reg) {
@@ -441,6 +448,8 @@ static void emit_edge64(Emitter64 *e, IRBlock *succ) {
     for (size_t k = 0; k < phi->preds.n; k++) {
       if (phi->preds.items[k] == e->cur) {
         IRVreg *val = phi->args.items[k];
+        if (!val || !phi->dst)
+          continue; // never-returning arm; control cannot reach the join here
         int64_t d = vreg_off(e, phi->dst), s = vreg_off(e, val);
         ld(e, s, 8, false, "x8");
         st_(e, d, 8, false, "x8");
@@ -487,8 +496,16 @@ static void emit_fn64(Emitter64 *e, IRFn *fn) {
   layout_frame64(e);
   sb_printf(e->out, "\n  .globl _%s\n_%s:\n", fn->symbol, fn->symbol);
   sb_printf(e->out, "  stp x29, x30, [sp, #-16]!\n  mov x29, sp\n");
-  if (e->frame)
-    sb_printf(e->out, "  sub sp, sp, #%lld\n", (long long)e->frame);
+  if (e->frame) {
+    // the sub sp immediate is 12 bits; the epilogue restores sp from x29,
+    // so big frames just reserve in chunks
+    int64_t left = e->frame;
+    while (left > 0) {
+      int64_t chunk = left > 4080 ? 4080 : left;
+      sb_printf(e->out, "  sub sp, sp, #%lld\n", (long long)chunk);
+      left -= chunk;
+    }
+  }
 
   const char *regs[] = {"x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"};
   const char *fregs[] = {"d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7"};

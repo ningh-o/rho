@@ -6,8 +6,6 @@
 
 extern fn malloc(n: usize) -> *u8;
 extern fn free(p: *u8);
-extern fn exit(code: i32) -> void;
-extern fn write(fd: i32, buf: *u8, n: usize) -> isize;
 extern fn open(path: *u8, flags: i32, mode: i32) -> i32;
 extern fn read(fd: i32, buf: *u8, n: usize) -> isize;
 extern fn close(fd: i32) -> i32;
@@ -48,31 +46,11 @@ fn str_from_c(p: *u8) -> string {
   return intrinsics.slice_string(buf);
 }
 
-fn print(s: string) {
-  write(1, s.ptr, s.len);
-}
-
-fn eprint(s: string) {
-  write(2, s.ptr, s.len);
-}
-
-fn panic(msg: string) {
-  eprint("panic: ");
-  eprint(msg);
-  eprint("\n");
-  exit(101);
-}
-
-fn assert(cond: bool) {
-  if !cond {
-    panic("assertion failed");
-  }
-}
-
 // ---------------------------------------------------------------- bytes ---
 
-fn cstr(s: string) -> *u8 {
-  // NUL-terminated copy for extern calls (open)
+// NUL-terminated copy for extern calls; returns the owning slice so the
+// buffer outlives the call — a raw *u8 would dangle the moment this returns
+fn cstr(s: string) -> []u8 {
   let buf: []u8 = make([]u8, len(s) + 1);
   let mut i: usize = 0;
   while i < len(s) {
@@ -80,7 +58,7 @@ fn cstr(s: string) -> *u8 {
     i += 1;
   }
   buf[len(s)] = 0;
-  return buf.ptr;
+  return buf;
 }
 
 fn itoa(v: i64) -> string {
@@ -118,15 +96,21 @@ fn Vec.init(self: *Vec) {
   self.n = 0;
 }
 
+// growth through a helper: ownership transfers at the call boundary, which
+// the rc machinery accounts cleanly
+fn grow_to[T](items: []T) -> []T {
+  let grown: []T = make([]T, len(items) * 2);
+  let mut i: usize = 0;
+  while i < len(items) {
+    grown[i] = items[i];
+    i += 1;
+  }
+  return grown;
+}
+
 fn Vec.push(self: *Vec, v: T) {
   if self.n == len(self.items) {
-    let grown: []T = make([]T, len(self.items) * 2);
-    let mut i: usize = 0;
-    while i < self.n {
-      grown[i] = self.items[i];
-      i += 1;
-    }
-    self.items = grown;
+    self.items = grow_to(self.items);
   }
   self.items[self.n] = v;
   self.n += 1;
@@ -263,8 +247,21 @@ fn cat3(a: string, b: string, c: string) -> string {
 
 // ---------------------------------------------------------------- file io --
 
+// grow in a helper: ownership transfers at the call boundary, which the
+// rc machinery accounts cleanly (an in-loop let + reassignment does not)
+fn grow(buf: []u8, cap: usize) -> []u8 {
+  let grown: []u8 = make([]u8, cap * 2);
+  let mut i: usize = 0;
+  while i < cap {
+    grown[i] = buf[i];
+    i += 1;
+  }
+  return grown;
+}
+
 fn read_file(path: string) -> Result[string, string] {
-  let fd: i32 = open(cstr(path), 0, 0); // O_RDONLY
+  let pathz: []u8 = cstr(path);
+  let fd: i32 = open(pathz.ptr, 0, 0); // O_RDONLY
   if fd < 0 {
     return Result.Err(cat3("cannot open ", path, ""));
   }
@@ -273,13 +270,7 @@ fn read_file(path: string) -> Result[string, string] {
   let mut n: usize = 0;
   loop {
     if n == cap {
-      let grown: []u8 = make([]u8, cap * 2);
-      let mut i: usize = 0;
-      while i < cap {
-        grown[i] = buf[i];
-        i += 1;
-      }
-      buf = grown;
+      buf = grow(buf, cap);
       cap *= 2;
     }
     let got: isize = read(fd, (buf.ptr as usize + n) as *u8, cap - n);
@@ -296,7 +287,8 @@ fn write_file(path: string, data: string) -> bool {
   // O_WRONLY|O_CREAT|O_TRUNC = 1|64|512 on linux; 1|0x0200|0x0400 on mac.
   // The bootstrap targets arm64-mac first; keep the mac constants and let
   // the linux port adjust.
-  let fd: i32 = open(cstr(path), 1 | 0x0200 | 0x0400, 420);
+  let pathz: []u8 = cstr(path);
+  let fd: i32 = open(pathz.ptr, 1 | 0x0200 | 0x0400, 420);
   if fd < 0 {
     return false;
   }
