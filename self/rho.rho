@@ -943,7 +943,7 @@ fn lex_file(file: string, src: string, out: *Vec[*Token]) {
     else if c == 61 { kind = Tok.PAssign; }
     else if c == 63 { kind = Tok.PQmark; }
     else {
-      lex_error(lx, cat("unexpected character ", itoa(c as i64)));
+      lex_error(lx, "unexpected character");
       lx.t.pos += 1;
       lx.t.col2 += 1;
       continue;
