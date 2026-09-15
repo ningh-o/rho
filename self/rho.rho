@@ -674,6 +674,61 @@ fn parse_float(s: string) -> f64 {
   return v;
 }
 
+// scan a string literal (the opening quote is at lx.t.pos)
+fn lex_string(lx: *Lexer, start: usize) {
+  lx.t.pos += 1;
+  let sb: *Vec[u8] = new Vec[u8] { items: make([]u8, 32), n: 0 };
+  loop {
+    if lx.t.pos >= len(lx.src) || lx.src[lx.t.pos] == 10 {
+      lex_error(lx, "unterminated string literal");
+      break;
+    }
+    let d: u8 = lx.src[lx.t.pos];
+    if d == 34 {
+      lx.t.pos += 1;
+      break;
+    }
+    if d == 92 {
+      lx.t.pos += 1;
+      if lx.t.pos >= len(lx.src) {
+        lex_error(lx, "unterminated escape");
+        break;
+      }
+      let e: u8 = lx.src[lx.t.pos];
+      lx.t.pos += 1;
+      if e == 110 {
+        sb.push(10);
+      } else if e == 116 {
+        sb.push(9);
+      } else if e == 114 {
+        sb.push(13);
+      } else if e == 92 {
+        sb.push(92);
+      } else if e == 34 {
+        sb.push(34);
+      } else if e == 48 {
+        sb.push(0);
+      } else if e == 120 {
+        if is_hex(ch_at(lx, 0)) && is_hex(ch_at(lx, 1)) {
+          sb.push((hex_val(ch_at(lx, 0)) * 16 + hex_val(ch_at(lx, 1))) as u8);
+          lx.t.pos += 2;
+        } else {
+          lex_error(lx, "malformed \\x escape");
+        }
+      } else {
+        lex_error(lx, "unknown escape");
+        sb.push(e);
+      }
+      continue;
+    }
+    sb.push(d);
+    lx.t.pos += 1;
+  }
+  emit_tok(lx, Tok.TkStr, start);
+  lx.out.last().text = intrinsics.slice_string(sb.items[0..sb.n]);
+  lx.t.col2 += (lx.t.pos - start) as i32;
+}
+
 fn lex_file(file: string, src: string, out: *Vec[*Token]) {
   let lx: *Lexer = new Lexer {
     file: file,
@@ -841,57 +896,7 @@ fn lex_file(file: string, src: string, out: *Vec[*Token]) {
 
     // strings
     if c == 34 {
-      lx.t.pos += 1;
-      let sb: *Vec[u8] = new Vec[u8] { items: make([]u8, 32), n: 0 };
-      loop {
-        if lx.t.pos >= len(src) || src[lx.t.pos] == 10 {
-          lex_error(lx, "unterminated string literal");
-          break;
-        }
-        let d: u8 = src[lx.t.pos];
-        if d == 34 {
-          lx.t.pos += 1;
-          break;
-        }
-        if d == 92 {
-          lx.t.pos += 1;
-          if lx.t.pos >= len(src) {
-            lex_error(lx, "unterminated escape");
-            break;
-          }
-          let e: u8 = src[lx.t.pos];
-          lx.t.pos += 1;
-          if e == 110 {
-            sb.push(10);
-          } else if e == 116 {
-            sb.push(9);
-          } else if e == 114 {
-            sb.push(13);
-          } else if e == 92 {
-            sb.push(92);
-          } else if e == 34 {
-            sb.push(34);
-          } else if e == 48 {
-            sb.push(0);
-          } else if e == 120 {
-            if is_hex(ch_at(lx, 0)) && is_hex(ch_at(lx, 1)) {
-              sb.push((hex_val(ch_at(lx, 0)) * 16 + hex_val(ch_at(lx, 1))) as u8);
-              lx.t.pos += 2;
-            } else {
-              lex_error(lx, "malformed \\x escape");
-            }
-          } else {
-            lex_error(lx, "unknown escape");
-            sb.push(e);
-          }
-          continue;
-        }
-        sb.push(d);
-        lx.t.pos += 1;
-      }
-      emit_tok(lx, Tok.TkStr, start);
-      lx.out.last().text = intrinsics.slice_string(sb.items[0..sb.n]);
-      lx.t.col2 += (lx.t.pos - start) as i32;
+      lex_string(lx, start);
       continue;
     }
 
