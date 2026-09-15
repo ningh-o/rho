@@ -146,7 +146,8 @@ static void emit_cmp(Emitter *e, IRIns *i) {
     mov_slot_reg(e, bo, i->size, false, RCX);
     sb_printf(e->out, "  cmpq %s, %s\n", RCX, RAX);
     sb_printf(e->out, "  set%s %%al\n", cc_suffix(i->cc, false, u));
-    sb_printf(e->out, "  movb %%al, %lld(%%rbp)\n", dof);
+    sb_printf(e->out, "  movzbq %%al, %%rax\n");
+    sb_printf(e->out, "  movq %%rax, %lld(%%rbp)\n", dof);
     return;
   }
   // floats: NaN-safe comparisons
@@ -173,7 +174,8 @@ static void emit_cmp(Emitter *e, IRIns *i) {
     sb_printf(e->out, "  setae %%al\n  setnp %%cl\n  andb %%cl, %%al\n");
   }
   (void)lbl;
-  sb_printf(e->out, "  movb %%al, %lld(%%rbp)\n", dof);
+  sb_printf(e->out, "  movzbq %%al, %%rax\n");
+  sb_printf(e->out, "  movq %%rax, %lld(%%rbp)\n", dof);
 }
 
 static void emit_divmod(Emitter *e, IRIns *i, bool is_mod) {

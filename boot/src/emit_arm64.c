@@ -148,7 +148,9 @@ static void emit_cmp64(Emitter64 *e, IRIns *i) {
     ld(e, bo, 8, false, "x9");
     sb_printf(e->out, "  cmp x8, x9\n  cset x8, %s\n", cc);
     addr_into(e, dof);
-    sb_printf(e->out, "  strb w8, [x12]\n");
+    // full-width store: cmp results flow through 8-byte spill moves and
+    // returns, and stale high bytes would poison them
+    sb_printf(e->out, "  str x8, [x12]\n");
     return;
   }
   bool s64 = i->size == 8;
