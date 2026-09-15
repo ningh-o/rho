@@ -529,8 +529,18 @@ fn ident_or_keyword(s: string) -> Tok {
   return Tok.TkIdent;
 }
 
+
+fn is_ws(c: u8) -> bool {
+  return c == 32 || c == 9 || c == 13;
+}
 fn is_ident_start(c: u8) -> bool {
-  return (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c == 95;
+  if c >= 97 && c <= 122 {
+    return true;
+  }
+  if c >= 65 && c <= 90 {
+    return true;
+  }
+  return c == 95;
 }
 
 fn is_ident_char(c: u8) -> bool {
@@ -542,7 +552,13 @@ fn is_digit(c: u8) -> bool {
 }
 
 fn is_hex(c: u8) -> bool {
-  return is_digit(c) || (c >= 97 && c <= 102) || (c >= 65 && c <= 70);
+  if is_digit(c) {
+    return true;
+  }
+  if c >= 97 && c <= 102 {
+    return true;
+  }
+  return c >= 65 && c <= 70;
 }
 
 fn hex_val(c: u8) -> i32 {
@@ -694,7 +710,7 @@ fn lex_file(file: string, src: string, out: *Vec[*Token]) {
       lx.t.col2 = 1;
       continue;
     }
-    if c == 32 || c == 9 || c == 13 {
+    if is_ws(c) {
       lx.t.pos += 1;
       lx.t.col2 += 1;
       continue;
@@ -927,7 +943,7 @@ fn lex_file(file: string, src: string, out: *Vec[*Token]) {
     else if c == 61 { kind = Tok.PAssign; }
     else if c == 63 { kind = Tok.PQmark; }
     else {
-      lex_error(lx, "unexpected character");
+      lex_error(lx, cat("unexpected character ", itoa(c as i64)));
       lx.t.pos += 1;
       lx.t.col2 += 1;
       continue;
@@ -1016,13 +1032,20 @@ fn main() -> i32 {
     let mut i: usize = 0;
     while i < diags.n {
       let d: *Diag = diags.items[i];
-      eprint(cat3(d.file, ": ", itoa(d.line as i64)));
-      eprint(cat3(":", itoa(d.col as i64), ": error: "));
-      eprint(cat3(d.msg, "\n", ""));
+      eprint(d.file);
+      eprint(":");
+      eprint(itoa(d.line as i64));
+      eprint(":");
+      eprint(itoa(d.col as i64));
+      eprint(": error: ");
+      eprint(d.msg);
+      eprint("\n");
       i += 1;
     }
     return 1;
   }
-  eprint(cat3("lexed ", itoa(tokens.n as i64), " tokens\n"));
+  eprint("lexed ");
+  eprint(itoa(tokens.n as i64));
+  eprint(" tokens\n");
   return 0;
 }

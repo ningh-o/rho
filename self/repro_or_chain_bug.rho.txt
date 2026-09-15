@@ -1,0 +1,33 @@
+// exit: 0
+fn s3(s: string) -> i32 {
+  let mut i: usize = 0;
+  let mut spaces: i32 = 0;
+  while i < len(s) {
+    let c: u8 = s[i];
+    if c == 32 || c == 9 || c == 13 {
+      spaces += 1;
+      i += 1;
+      continue;
+    }
+    i += 1;
+  }
+  return spaces;
+}
+fn s4(s: string) -> i32 {
+  let mut i: usize = 0;
+  let mut spaces: i32 = 0;
+  while i < len(s) {
+    let c: u8 = s[i];
+    if c == 32 || c == 9 || c == 13 {
+      spaces += 1;
+    }
+    i += 1;
+  }
+  return spaces;
+}
+fn main() -> i32 {
+  print_int(s3("a b c") as i64);
+  print_int(s4("a b c") as i64);
+  print("\n");
+  return 0;
+}
