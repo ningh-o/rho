@@ -2232,9 +2232,42 @@ fn main() -> i32 {
     print_diags();
     return 1;
   }
+  let m: *Module = new Module {
+    path: args[2], ns: "m", root: module, syms: sm_new(),
+    is_prelude: false, checked: false,
+  };
+  let prelude_r: Result[string, string] = read_file("boot/prelude/hosted.rho");
+  if !prelude_r.is_err() {
+    let pparse: *Decl = parse_file("hosted.rho", prelude_r.get_ok());
+    eprint("[prelude decls=");
+    eprint(itoa(pparse.decls.n as i64));
+    eprint(" parse-diags=");
+    eprint(itoa(diag_count() as i64));
+    eprint("]\n");
+    let pmod: *Module = new Module {
+      path: "prelude", ns: "prelude", root: pparse,
+      syms: sm_new(), is_prelude: true, checked: false,
+    };
+    check_all(pmod);
+    prelude_module = pmod;
+    m.syms = sm_new();
+    check_module(m);
+  }
+  eprint("[prelude diags=");
+  eprint(itoa(diag_count() as i64));
+  eprint("]\n");
+  let diags_before: i32 = diag_count();
+  let nd: i32 = check_all(m);
+  eprint("[user diags=");
+  eprint(itoa((nd - diags_before) as i64));
+  eprint("]\n");
+  if nd > diags_before {
+    print_diags();
+    return 1;
+  }
   eprint("parsed ");
   eprint(itoa(module.decls.n as i64));
-  eprint(" declarations\n");
+  eprint(" declarations, type-checked\n");
   return 0;
 }
 
@@ -2366,6 +2399,13 @@ fn ty_array(elem: *Type, len: u64) -> *Type {
 }
 
 fn ty_fn(params: []*Type, ret: *Type) -> *Type {
+  eprint("[tyfn ret=");
+  if ret == null {
+    eprint("NULL");
+  } else {
+    eprint(ret.mangled);
+  }
+  eprint("]\n");
   let mut key: string = "fn(";
   let mut i: usize = 0;
   while i < len(params) {
@@ -2398,7 +2438,7 @@ fn ty_param_(name: string) -> *Type {
 }
 
 fn fresh_type_vec2() -> []*Type {
-  return make([]*Type, 4);
+  return make([]*Type, 0); // empty: push_type appends
 }
 
 
@@ -3204,7 +3244,24 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
     }
     return e.typed;
   }
-  // L6b pending: FIELD / CALL / NEW / MATCH / QMARK arms
+  if e.kind == ExprKind.ExIf {
+    return check_if_expr(e, expected);
+  }
+  if e.kind == ExprKind.ExField {
+    return check_field_access(e, expected);
+  }
+  if e.kind == ExprKind.ExCall {
+    return check_call(e, expected);
+  }
+  if e.kind == ExprKind.ExNew {
+    return check_new(e);
+  }
+  if e.kind == ExprKind.ExMatch {
+    return check_match(e, expected);
+  }
+  eprint("[unhandled expr kind=");
+  eprint(itoa(e.kind as i64));
+  eprint("]\n");
   err_at("", 0, 0, "internal: expression kind not yet checked");
   e.typed = ty_err();
   return e.typed;
@@ -3655,6 +3712,15 @@ fn resolve_callee(callee: *Expr) -> *CallTarget {
 // ============== check_call: builtins (check.c port L6d-2) =================
 
 fn check_call(e: *Expr, expected: *Type) -> *Type {
+  eprint("[call kind=");
+  eprint(itoa(e.a.kind as i64));
+  eprint(" name=");
+  if e.a.kind == ExprKind.ExName {
+    eprint(e.a.sv);
+  } else if e.a.kind == ExprKind.ExField {
+    eprint(e.a.sv);
+  }
+  eprint("]\n");
   // make(T, n)
   if e.a.kind == ExprKind.ExName && streq(e.a.sv, "make") {
     if e.args.n != 2 {
@@ -4095,9 +4161,36 @@ fn wire_method(m: *Module, d: *Decl) -> *Type {
 }
 
 // full semantic check of a parsed module; returns the diag count
+fn scope_decl_module(m: *Module) {
+  let d: *Decl = m.root;
+  let mut i: usize = 0;
+  while i < d.decls.n {
+    let decl: *Decl = d.decls.items[i];
+    let sym: *Sym = sm_get(m.syms, decl.name);
+    if sym != null {
+      scope_decl(decl.name, sym);
+    }
+    i += 1;
+  }
+}
+
 fn check_all(m: *Module) -> i32 {
   cur_module = m;
   check_module(m);
+  scope_push();
+  scope_decl_module(m);
+  if prelude_module != null && prelude_module != m {
+    let pd: *Decl = prelude_module.root;
+    let mut pi: usize = 0;
+    while pi < pd.decls.n {
+      let pdecl: *Decl = pd.decls.items[pi];
+      let psym: *Sym = sm_get(prelude_module.syms, pdecl.name);
+      if psym != null {
+        scope_decl(pdecl.name, psym);
+      }
+      pi += 1;
+    }
+  }
   let d: *Decl = m.root;
   // pass 1: resolve signatures and wire methods
   let mut i: usize = 0;
@@ -4115,6 +4208,9 @@ fn check_all(m: *Module) -> i32 {
   while i < d.decls.n {
     let decl: *Decl = d.decls.items[i];
     if decl.kind == DeclKind.DkFn {
+      eprint("[sig ");
+      eprint(decl.name);
+      eprint("]\n");
       // build the fn symbol's signature type on the fly
       let nparams: usize = decl.params.n;
       let mut ps: []*Type = fresh_type_vec2();
@@ -4125,12 +4221,29 @@ fn check_all(m: *Module) -> i32 {
       }
       let ret: *Type = resolve_type_in_module(m, decl.ret);
       let ft: *Type = ty_fn(ps, ret);
+      let tsym: *Sym = sm_get(m.syms, decl.name);
+      if tsym != null {
+        tsym.type = ft;
+      }
       let fsym: *Sym = new Sym {
         kind: SymKind.SyFn, name: decl.name, type: ft, decl: decl,
         mutable: false, variant_index: 0, local_id: 0, symbol: "",
       };
       cur_fn_sym = fsym;
       check_fn_body(decl, fsym);
+    }
+    if decl.kind == DeclKind.DkExtern {
+      // resolve the extern signature into its symbol
+      let esym: *Sym = sm_get(m.syms, decl.name);
+      if esym != null && esym.type == null {
+        let mut ps: []*Type = fresh_type_vec2();
+        let mut j: usize = 0;
+        while j < decl.params.n {
+          ps = push_type(ps, resolve_type_in_module(m, decl.params.items[j].ty));
+          j += 1;
+        }
+        esym.type = ty_fn(ps, resolve_type_in_module(m, decl.ret));
+      }
     }
     if decl.kind == DeclKind.DkStatic || decl.kind == DeclKind.DkConst {
       if decl.init != null {
@@ -4140,5 +4253,77 @@ fn check_all(m: *Module) -> i32 {
     }
     i += 1;
   }
+  scope_pop();
   return diag_count();
+}
+
+
+// ============== if-expressions (check.c port L6f-b) =======================
+
+fn check_block_value2(stmts: *Vec[*Stmt]) -> *Type {
+  scope_push();
+  let mut result: *Type = ty_prim(14);
+  let mut i: usize = 0;
+  while i < stmts.n {
+    let s: *Stmt = stmts.items[i];
+    if i + 1 == stmts.n && s.kind == StmtKind.StExpr && s.tail {
+      result = check_expr(s.a, null);
+    } else {
+      check_stmt(s);
+    }
+    i += 1;
+  }
+  scope_pop();
+  return result;
+}
+
+fn unify2(a: *Type, b: *Type) -> *Type {
+  if a == b {
+    return a;
+  }
+  if a.kind == TypeKind.TyErr {
+    return b;
+  }
+  if b.kind == TypeKind.TyErr {
+    return a;
+  }
+  if a.kind == TypeKind.TyIntLit && ty_is_int(b) {
+    return b;
+  }
+  if b.kind == TypeKind.TyIntLit && ty_is_int(a) {
+    return a;
+  }
+  if a.kind == TypeKind.TyFloatLit && ty_is_flt(b) {
+    return b;
+  }
+  if b.kind == TypeKind.TyFloatLit && ty_is_flt(a) {
+    return a;
+  }
+  err_at("", 0, 0, "if arms have different types");
+  return ty_err();
+}
+
+fn check_if_expr(e: *Expr, expected: *Type) -> *Type {
+  let cond: *Type = check_expr(e.a, null);
+  if cond.kind != TypeKind.TyBool {
+    err_at("", 0, 0, "if condition must be bool");
+  }
+  let then_blk: *Stmt = (e.items.items[0] as usize) as *Stmt;
+  let t: *Type = check_block_value2(then_blk.stmts);
+  let mut result: *Type = ty_prim(14);
+  if e.items.n > 1 {
+    let els: *Expr = (e.items.items[1] as usize) as *Expr;
+    if els.kind == ExprKind.ExIf {
+      let et: *Type = check_expr(els, expected);
+      result = unify2(t, et);
+    } else {
+      let else_blk: *Stmt = (e.items.items[1] as usize) as *Stmt;
+      let et: *Type = check_block_value2(else_blk.stmts);
+      result = unify2(t, et);
+    }
+  } else {
+    result = ty_prim(14);
+  }
+  e.typed = result;
+  return result;
 }

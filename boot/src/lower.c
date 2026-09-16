@@ -324,7 +324,8 @@ static void panic_call(LCtx *c, const char *msg) {
   // panics from generated checks are otherwise indistinguishable
   int site = g_panic_site++;
   if (getenv("RHO_PANIC_MAP"))
-    fprintf(stderr, "SITE %d in %s: %s\n", site, c->fn->symbol, msg);
+    fprintf(stderr, "SITE %d in %s: %s (frame slot base now %d vregs %d)\n", site, c->fn->symbol,
+            msg, c->fn->next_slot, c->fn->next_vreg);
   Str m = str_from(arena_printf("[%s#%d] %s", c->fn->symbol, site, msg));
   int lit = lit_bytes(c, m);
   IRSlot *tmp = new_slot(c, 24, 8, "panicstr");
