@@ -2637,9 +2637,9 @@ fn rec_intern(decl: *Decl, owner: *Module, mangled: string) -> *RecType {
   let r: *RecType = new RecType {
     decl: decl, is_prelude: owner.is_prelude, targs: fresh_type_vec2(),
     mangled: mangled, field_types: fresh_type_vec2(), fields_done: false,
-    resolving: false, is_template: false, offsets: make([]i64, 8),
+    resolving: false, is_template: false, offsets: make([]i64, 0),
     size: 0, align: 0, env_tenv: null, owner_mod: owner,
-    methods: make([]*Sym, 8),
+    methods: make([]*Sym, 0),
   };
   tm_intern(rec_map(), mangled, new Type {
     kind: TypeKind.TyStruct, elem: null, len: 0, rec: r,
@@ -4276,6 +4276,9 @@ fn check_fn_body(d: *Decl, sym: *Sym, m: *Module) {
 // attach a method to its receiver struct's RecType and build the fn type
 fn wire_method(m: *Module, d: *Decl) -> *Type {
   let mut struct_sym: *Sym = sm_get(m.syms, d.recv);
+  if struct_sym == null && prelude_module != null && prelude_module != m {
+    struct_sym = sm_get(prelude_module.syms, d.recv);
+  }
   if struct_sym == null || (struct_sym.kind != SymKind.SyStruct && struct_sym.kind != SymKind.SyEnum) {
     err_at("", 0, 0, "method receiver type not found");
     return ty_err();
