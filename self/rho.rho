@@ -5194,7 +5194,135 @@ fn value_fn_for(t: *Type, retain: bool) -> string {
   let sym: string = cat3("rho__", cat3(retain_which(retain), cat3("$", kindp, ""), ""),
                          rho_sanitize(t.mangled));
   tm2_put(cache, t.mangled, sym);
+  // synthesize the walker body
+  let lf: *IRFn = rc_new_fn(sym);
+  let c: *LCtx = rc_ctx(lf);
+  let as_: *IRSlot = new_slot(c, 8, 8, "addr");
+  lf.params = push_islot(lf.params, as_);
+  let addr: *IRVreg = v_load(c, v_slotaddr(c, as_), IRType.ItPtr);
+  value_walk(c, t, addr, retain);
+  finish_fn_c(c);
   return sym;
+}
+
+fn push_islot(items: []*IRSlot, s: *IRSlot) -> []*IRSlot {
+  let out: []*IRSlot = make([]*IRSlot, len(items) + 1);
+  let mut i: usize = 0;
+  while i < len(items) {
+    out[i] = items[i];
+    i += 1;
+  }
+  out[len(items)] = s;
+  return out;
+}
+
+// zero the drop glue for now: the walkers release via explicit calls
+fn finish_fn_c(c: *LCtx) {
+  let b: *IRBlock = c.f.cur;
+  if b.term_op == 0 {
+    emit_ret(c, null);
+  }
+}
+
+fn value_walk(c: *LCtx, t: *Type, addr: *IRVreg, retain: bool) {
+  if t == null {
+    return;
+  }
+  if t.kind == TypeKind.TyPtr {
+    let p: *IRVreg = v_load(c, addr, IRType.ItPtr);
+    if retain {
+      rc_inc_v(c, p);
+    } else {
+      rc_dec_v(c, p);
+    }
+    return;
+  }
+  if t.kind == TypeKind.TyWeak {
+    let h: *IRVreg = v_load(c, addr, IRType.ItPtr);
+    if retain {
+      rc_call1(c, "rho__rc_winc", h);
+    } else {
+      rc_call1(c, "rho__rc_wdec", h);
+    }
+    return;
+  }
+  if t.kind == TypeKind.TyFn {
+    let e2: *IRVreg = v_load(c, v_addi(c, addr, 8), IRType.ItPtr);
+    if retain {
+      rc_inc_v(c, e2);
+    } else {
+      rc_dec_v(c, e2);
+    }
+    return;
+  }
+  if t.kind == TypeKind.TySlice || t.kind == TypeKind.TyStringK {
+    if t.kind == TypeKind.TySlice && ty_is_managed(t.elem) {
+      // walk elements: buf at +8, elem stride at +8, count at +16
+      let ptr: *IRVreg = v_load(c, v_addi(c, addr, 8), IRType.ItPtr);
+      let n: *IRVreg = v_load(c, v_addi(c, addr, 16), IRType.ItUsize);
+      let esz: i64 = elem_size(t.elem);
+      let islot: *IRSlot = new_slot(c, 8, 8, "i");
+      v_store(c, v_slotaddr(c, islot), v_const(c, 0, IRType.ItUsize));
+      let hdr: *IRBlock = new_block(c);
+      let bodyb: *IRBlock = new_block(c);
+      let done: *IRBlock = new_block(c);
+      emit_br(c, hdr);
+      use_block(c, hdr);
+      let i: *IRVreg = v_load(c, v_slotaddr(c, islot), IRType.ItUsize);
+      let more: *IRVreg = v_cmp(c, IRCC.CcLt, i, n);
+      emit_cbr(c, more, bodyb, done, done);
+      use_block(c, bodyb);
+      let scaled: *IRVreg = v_binop(c, IROp.IrMul, i, v_const(c, esz, IRType.ItUsize), IRType.ItUsize);
+      let ep: *IRVreg = v_binop(c, IROp.IrAdd, ptr, scaled, IRType.ItPtr);
+      let efnn: string = value_fn_for(t.elem, retain);
+      if efnn != "" {
+        rc_call1(c, efnn, ep);
+      }
+      let i2: *IRVreg = v_binop(c, IROp.IrAdd, i, v_const(c, 1, IRType.ItUsize), IRType.ItUsize);
+      v_store(c, v_slotaddr(c, islot), i2);
+      emit_br(c, hdr);
+      use_block(c, done);
+    }
+    let buf: *IRVreg = v_load(c, addr, IRType.ItPtr);
+    if retain {
+      rc_call1(c, "rho__rc_inch", buf);
+    } else {
+      rc_call1(c, "rho__rc_dech", buf);
+    }
+    return;
+  }
+  if t.kind == TypeKind.TyArray {
+    if !ty_is_managed(t.elem) {
+      return;
+    }
+    let esz: i64 = elem_size(t.elem);
+    let mut i: u64 = 0;
+    while i < t.len {
+      let efnn: string = value_fn_for(t.elem, retain);
+      if efnn != "" {
+        rc_call1(c, efnn, v_addi(c, addr, (esz * i as i64)));
+      }
+      i += 1;
+    }
+    return;
+  }
+  if t.kind == TypeKind.TyStruct {
+    let rec: *RecType = t.rec;
+    let dcl: *Decl = rec.decl;
+    let mut i: usize = 0;
+    while i < dcl.fields.n {
+      let off: i64 = struct_field_offset(rec, i);
+      let ft: *Type = struct_field_type(rec, i);
+      if ty_is_managed(ft) {
+        let efnn: string = value_fn_for(ft, retain);
+        if efnn != "" {
+          rc_call1(c, efnn, v_addi(c, addr, off));
+        }
+      }
+      i += 1;
+    }
+    return;
+  }
 }
 
 fn retain_which(retain: bool) -> string {
@@ -5217,4 +5345,147 @@ fn rel_cache() -> *TypeMap2 {
     g_rel_fns = tm2_new();
   }
   return g_rel_fns;
+}
+
+
+fn elem_size(t: *Type) -> i64 {
+  if t == null {
+    return 8;
+  }
+  if t.kind == TypeKind.TyI8 || t.kind == TypeKind.TyU8 || t.kind == TypeKind.TyBool {
+    return 1;
+  }
+  if t.kind == TypeKind.TyI16 || t.kind == TypeKind.TyU16 {
+    return 2;
+  }
+  if t.kind == TypeKind.TyI32 || t.kind == TypeKind.TyU32 || t.kind == TypeKind.TyF32 {
+    return 4;
+  }
+  return 8;
+}
+
+// ================= layout (LOW-7) ==========================================
+
+fn round_up_i64(v: i64, a: i64) -> i64 {
+  return (v + a - 1) / a * a;
+}
+
+fn type_align(t: *Type) -> i64 {
+  if t == null {
+    return 1;
+  }
+  if t.kind == TypeKind.TyI8 || t.kind == TypeKind.TyU8 || t.kind == TypeKind.TyBool {
+    return 1;
+  }
+  if t.kind == TypeKind.TyI16 || t.kind == TypeKind.TyU16 {
+    return 2;
+  }
+  if t.kind == TypeKind.TyI32 || t.kind == TypeKind.TyU32 || t.kind == TypeKind.TyF32 {
+    return 4;
+  }
+  if t.kind == TypeKind.TyStruct || t.kind == TypeKind.TyEnum {
+    layout_rec(t.rec);
+    if t.rec.align > 0 {
+      return t.rec.align;
+    }
+    return 8;
+  }
+  return 8;
+}
+
+fn type_size(t: *Type) -> i64 {
+  if t == null {
+    return 0;
+  }
+  if t.kind == TypeKind.TyI8 || t.kind == TypeKind.TyU8 || t.kind == TypeKind.TyBool {
+    return 1;
+  }
+  if t.kind == TypeKind.TyI16 || t.kind == TypeKind.TyU16 {
+    return 2;
+  }
+  if t.kind == TypeKind.TyI32 || t.kind == TypeKind.TyU32 || t.kind == TypeKind.TyF32 {
+    return 4;
+  }
+  if t.kind == TypeKind.TyStringK || t.kind == TypeKind.TySlice {
+    return 24;
+  }
+  if t.kind == TypeKind.TyStruct || t.kind == TypeKind.TyEnum {
+    layout_rec(t.rec);
+    return t.rec.size;
+  }
+  return 8;
+}
+
+fn layout_rec(rec: *RecType) {
+  if rec.align != 0 {
+    return;
+  }
+  rec.align = (0 - 1) as i64;
+  let d: *Decl = rec.decl;
+  let mut size: i64 = 0;
+  let mut align: i64 = 1;
+  if d.kind == DeclKind.DkStruct {
+    struct_field_type(rec, 0);
+    let mut i: usize = 0;
+    while i < d.fields.n {
+      let ft: *Type = rec.field_types[i];
+      let fa: i64 = type_align(ft);
+      if fa > align {
+        align = fa;
+      }
+      let off: i64 = round_up_i64(size, fa);
+      rec.offsets = push_i64(rec.offsets, off);
+      size = off + type_size(ft);
+      i += 1;
+    }
+  } else {
+    align = 4;
+    size = 4;
+    let saved_env: *TypeMap = g_tenv;
+    g_tenv = rec.env_tenv;
+    let mut i: usize = 0;
+    while i < d.variants.n {
+      let v: *VariantAst = d.variants.items[i];
+      let nfields: usize = v.types.n;
+      let mut off: i64 = 4;
+      let mut j: usize = 0;
+      while j < nfields {
+        let fta: *TypeAst = v.types.items[j];
+        let vt: *Type = resolve_type_in_module(cur_module, fta);
+        let va: i64 = type_align(vt);
+        if va > align {
+          align = va;
+        }
+        off = round_up_i64(off, va);
+        off = off + type_size(vt);
+        j += 1;
+      }
+      if off > size {
+        size = off;
+      }
+      i += 1;
+    }
+    g_tenv = saved_env;
+  }
+  rec.align = align;
+  rec.size = round_up_i64(size, align);
+}
+
+fn push_i64(items: []i64, v: i64) -> []i64 {
+  let out: []i64 = make([]i64, len(items) + 1);
+  let mut i: usize = 0;
+  while i < len(items) {
+    out[i] = items[i];
+    i += 1;
+  }
+  out[len(items)] = v;
+  return out;
+}
+
+fn struct_field_offset(rec: *RecType, i: usize) -> i64 {
+  layout_rec(rec);
+  if len(rec.offsets) > i {
+    return rec.offsets[i];
+  }
+  return 0;
 }
