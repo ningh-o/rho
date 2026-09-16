@@ -1100,6 +1100,8 @@ struct Expr {
   q_err: i32,
   else_if: *Expr, // ExIf: the else-if chain (null = else is items[1] or none)
   fnval: bool,
+  typed: *Type, // semantic type (check)
+  sym: *Sym, // resolved name (check)
 }
 
 struct Stmt {
@@ -1393,7 +1395,7 @@ fn type_as_expr(p: *Parser) -> *Expr {
     binop: Tok.TkEof, unop: Tok.TkEof,
     args: fresh_expr_vec(), arg_names: fresh_str_vec(), items: fresh_stmt_vec(),
     ty: parse_type(p), arms: fresh_arm_vec(), params: fresh_param_vec(), ret: null,
-    q_ok: 0, q_err: 0, else_if: null, fnval: false,
+    q_ok: 0, q_err: 0, else_if: null, fnval: false, typed: null, sym: null,
   };
   return e;
 }
@@ -1439,7 +1441,7 @@ fn mkexpr(kind: ExprKind, file: string, line: i32, col: i32) -> *Expr {
     binop: Tok.TkEof, unop: Tok.TkEof,
     args: fresh_expr_vec(), arg_names: fresh_str_vec(), items: fresh_stmt_vec(),
     ty: null, arms: fresh_arm_vec(), params: fresh_param_vec(), ret: null,
-    q_ok: 0, q_err: 0, else_if: null, fnval: false,
+    q_ok: 0, q_err: 0, else_if: null, fnval: false, typed: null, sym: null,
   };
 }
 
@@ -2930,4 +2932,274 @@ fn named_type_full(sym: *Sym, owner: *Module, ta: *TypeAst) -> *Type {
     i += 1;
   }
   return inst_from_targs(sym, owner, targs);
+}
+
+
+// ============== expression checking (check.c port L6a) ====================
+
+fn ty_is_int(t: *Type) -> bool {
+  return t.kind == TypeKind.TyI8 || t.kind == TypeKind.TyI16 ||
+         t.kind == TypeKind.TyI32 || t.kind == TypeKind.TyI64 ||
+         t.kind == TypeKind.TyU8 || t.kind == TypeKind.TyU16 ||
+         t.kind == TypeKind.TyU32 || t.kind == TypeKind.TyU64 ||
+         t.kind == TypeKind.TyUsize || t.kind == TypeKind.TyIsize ||
+         t.kind == TypeKind.TyIntLit;
+}
+
+fn ty_is_flt(t: *Type) -> bool {
+  return t.kind == TypeKind.TyF32 || t.kind == TypeKind.TyF64 ||
+         t.kind == TypeKind.TyFloatLit;
+}
+
+fn adapt_literal(got: *Type, expected: *Type) -> *Type {
+  if got == null {
+    return got;
+  }
+  if got.kind == TypeKind.TyIntLit && expected != null && ty_is_int(expected) &&
+     expected.kind != TypeKind.TyIntLit {
+    return expected;
+  }
+  if got.kind == TypeKind.TyFloatLit && expected != null &&
+     (expected.kind == TypeKind.TyF32 || expected.kind == TypeKind.TyF64) {
+    return expected;
+  }
+  return got;
+}
+
+fn check_expr(e: *Expr, expected: *Type) -> *Type {
+  if e.kind == ExprKind.ExInt {
+    if expected != null && ty_is_int(expected) && expected.kind != TypeKind.TyIntLit {
+      e.typed = expected;
+    } else {
+      e.typed = new Type { kind: TypeKind.TyIntLit, elem: null, len: 0, rec: null, params: fresh_type_vec2(), ret: null, mangled: "int_lit" };
+    }
+    return e.typed;
+  }
+  if e.kind == ExprKind.ExFloat {
+    if expected != null && (expected.kind == TypeKind.TyF32 || expected.kind == TypeKind.TyF64) {
+      e.typed = expected;
+    } else {
+      e.typed = new Type { kind: TypeKind.TyFloatLit, elem: null, len: 0, rec: null, params: fresh_type_vec2(), ret: null, mangled: "float_lit" };
+    }
+    return e.typed;
+  }
+  if e.kind == ExprKind.ExStr {
+    e.typed = ty_prim(11);
+    return e.typed;
+  }
+  if e.kind == ExprKind.ExBool {
+    e.typed = ty_prim(0);
+    return e.typed;
+  }
+  if e.kind == ExprKind.ExNull {
+    if expected != null && (expected.kind == TypeKind.TyPtr || expected.kind == TypeKind.TyWeak) {
+      e.typed = expected;
+    } else {
+      e.typed = new Type { kind: TypeKind.TyNull, elem: null, len: 0, rec: null, params: fresh_type_vec2(), ret: null, mangled: "null" };
+    }
+    return e.typed;
+  }
+  if e.kind == ExprKind.ExName {
+    let sym: *Sym = lookup(e.sv);
+    if sym == null {
+      err_at("", 0, 0, cat("unknown name `", cat(e.sv, "`")));
+      e.typed = ty_err();
+      return e.typed;
+    }
+    e.typed = sym.type;
+    return e.typed;
+  }
+  if e.kind == ExprKind.ExUn {
+    let a: *Type = check_expr(e.a, null);
+    if e.unop == Tok.PBang {
+      if a.kind != TypeKind.TyBool {
+        err_at("", 0, 0, "`!` needs a bool");
+      }
+      e.typed = ty_prim(0);
+      return e.typed;
+    }
+    if e.unop == Tok.PTilde {
+      if !ty_is_int(a) {
+        err_at("", 0, 0, "`~` needs an integer");
+      }
+      e.typed = a;
+      return e.typed;
+    }
+    if e.unop == Tok.PMinus {
+      if !ty_is_int(a) && !ty_is_flt(a) {
+        err_at("", 0, 0, "`-` needs a number");
+      }
+      e.typed = a;
+      return e.typed;
+    }
+    if e.unop == Tok.PStar {
+      if a.kind != TypeKind.TyPtr {
+        err_at("", 0, 0, "`*` dereference needs a pointer");
+        e.typed = ty_err();
+      } else {
+        e.typed = a.elem;
+      }
+      return e.typed;
+    }
+    e.typed = ty_err();
+    return e.typed;
+  }
+  if e.kind == ExprKind.ExCast {
+    check_expr(e.a, null);
+    let target: *Type = resolve_type_in_module(cur_module, e.ty);
+    let srct: *Type = e.a.typed;
+    let mut ok: bool = (ty_is_int(target) || ty_is_flt(target)) &&
+        (ty_is_int(srct) || ty_is_flt(srct) || srct.kind == TypeKind.TyEnum ||
+         srct.kind == TypeKind.TyIntLit || srct.kind == TypeKind.TyFloatLit);
+    if srct.kind == TypeKind.TyBool || target.kind == TypeKind.TyBool {
+      ok = false;
+    }
+    if (srct.kind == TypeKind.TyPtr || target.kind == TypeKind.TyPtr) &&
+       (target.kind == TypeKind.TyUsize || target.kind == TypeKind.TyI64 ||
+        srct.kind == TypeKind.TyUsize || srct.kind == TypeKind.TyI64) {
+      ok = true;
+    }
+    if !ok {
+      err_at("", 0, 0, "cannot cast to the requested type");
+    }
+    e.typed = target;
+    return e.typed;
+  }
+  if e.kind == ExprKind.ExBin {
+    let op: Tok = e.binop;
+    let mut l: *Type = check_expr(e.a, null);
+    let mut r: *Type = null;
+    if op == Tok.PAndand || op == Tok.POror {
+      if l.kind != TypeKind.TyBool {
+        err_at("", 0, 0, "short-circuit operand must be bool");
+      }
+      r = check_expr(e.b, ty_prim(0));
+      if r.kind != TypeKind.TyBool {
+        err_at("", 0, 0, "short-circuit operand must be bool");
+      }
+      e.typed = ty_prim(0);
+      return e.typed;
+    }
+    if l.kind == TypeKind.TyIntLit || l.kind == TypeKind.TyFloatLit || l.kind == TypeKind.TyNull {
+      let r2: *Type = check_expr(e.b, null);
+      l = adapt_literal(l, r2);
+      e.a.typed = l;
+      r = r2;
+    } else {
+      r = adapt_literal(check_expr(e.b, l), l);
+      e.b.typed = r;
+    }
+    let cmp: bool = op == Tok.PEq || op == Tok.PNe || op == Tok.PLt ||
+                    op == Tok.PGt || op == Tok.PLe || op == Tok.PGe;
+    if cmp {
+      let mut ok: bool = false;
+      if op == Tok.PEq || op == Tok.PNe {
+        ok = (ty_is_int(l) && ty_is_int(r)) || (ty_is_flt(l) && ty_is_flt(r)) ||
+             (l.kind == TypeKind.TyBool && r.kind == TypeKind.TyBool) ||
+             ((l.kind == TypeKind.TyPtr || l.kind == TypeKind.TyNull) && (r.kind == TypeKind.TyPtr || r.kind == TypeKind.TyNull)) ||
+             (l.kind == TypeKind.TyWeak && (r.kind == TypeKind.TyWeak || r.kind == TypeKind.TyNull)) ||
+             (l.kind == TypeKind.TyStringK && r.kind == TypeKind.TyStringK);
+        if l.kind == TypeKind.TyEnum && l == r {
+          ok = true;
+        } else if l.kind == TypeKind.TyStruct || r.kind == TypeKind.TyStruct || l.kind == TypeKind.TyArray {
+          ok = false;
+        }
+      } else {
+        ok = (ty_is_int(l) && ty_is_int(r)) || (ty_is_flt(l) && ty_is_flt(r));
+      }
+      if !ok {
+        err_at("", 0, 0, "cannot compare these types");
+        return ty_err();
+      }
+      e.typed = ty_prim(0);
+      return e.typed;
+    }
+    if op == Tok.PShl || op == Tok.PShr {
+      if !ty_is_int(l) {
+        err_at("", 0, 0, "shift needs an integer left side");
+      }
+      if !ty_is_int(r) {
+        err_at("", 0, 0, "shift needs an integer right side");
+      }
+      e.typed = l;
+      return e.typed;
+    }
+    if l != r {
+      err_at("", 0, 0, "type mismatch in binary operator");
+      e.typed = ty_err();
+      return e.typed;
+    }
+    if op == Tok.PPlus || op == Tok.PMinus || op == Tok.PStar || op == Tok.PSlash || op == Tok.PPercent {
+      if !ty_is_int(l) && !ty_is_flt(l) {
+        err_at("", 0, 0, "arithmetic needs numbers");
+      }
+    } else if op == Tok.PAmp || op == Tok.PPipe || op == Tok.PCaret {
+      if !ty_is_int(l) {
+        err_at("", 0, 0, "bitwise needs integers");
+      }
+    }
+    if l.kind == TypeKind.TyIntLit {
+      l = ty_prim(3);
+    }
+    if l.kind == TypeKind.TyFloatLit {
+      l = ty_prim(10);
+      if e.a.typed.kind == TypeKind.TyFloatLit {
+        e.a.typed = l;
+      }
+      if e.b.typed.kind == TypeKind.TyFloatLit {
+        e.b.typed = l;
+      }
+    }
+    e.typed = l;
+    return e.typed;
+  }
+  if e.kind == ExprKind.ExIndex {
+    let base: *Type = check_expr(e.a, null);
+    let mut idx: *Type = check_expr(e.b, null);
+    if idx.kind == TypeKind.TyIntLit {
+      idx = ty_prim(12);
+      e.b.typed = idx;
+    }
+    if !ty_is_int(idx) {
+      err_at("", 0, 0, "index must be an integer");
+    }
+    if base.kind == TypeKind.TyArray || base.kind == TypeKind.TySlice {
+      e.typed = base.elem;
+    } else if base.kind == TypeKind.TyStringK {
+      e.typed = ty_prim(5);
+    } else {
+      err_at("", 0, 0, "cannot index this type");
+      e.typed = ty_err();
+    }
+    return e.typed;
+  }
+  if e.kind == ExprKind.ExSlice {
+    let base: *Type = check_expr(e.a, null);
+    let mut lo: *Type = check_expr(e.b, null);
+    let mut hi: *Type = check_expr(e.c, null);
+    if lo.kind == TypeKind.TyIntLit {
+      lo = ty_prim(12);
+      e.b.typed = lo;
+    }
+    if hi.kind == TypeKind.TyIntLit {
+      hi = ty_prim(12);
+      e.c.typed = hi;
+    }
+    if !ty_is_int(lo) || !ty_is_int(hi) {
+      err_at("", 0, 0, "slice bounds must be integers");
+    }
+    if base.kind == TypeKind.TyArray || base.kind == TypeKind.TySlice {
+      e.typed = ty_slice(base.elem);
+    } else if base.kind == TypeKind.TyStringK {
+      e.typed = ty_prim(11);
+    } else {
+      err_at("", 0, 0, "cannot slice this type");
+      e.typed = ty_err();
+    }
+    return e.typed;
+  }
+  // L6b pending: FIELD / CALL / NEW / MATCH / QMARK arms
+  err_at("", 0, 0, "internal: expression kind not yet checked");
+  e.typed = ty_err();
+  return e.typed;
 }
