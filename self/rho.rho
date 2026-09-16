@@ -2168,3 +2168,207 @@ fn print_diags() {
     i += 1;
   }
 }
+
+
+// ======================== semantic types (check.c port L1) =================
+//
+// Types are interned by their mangled name: identical types are pointer-
+// identical, which is what `ty_eq` (pointer ==) relies on everywhere.
+
+enum TypeKind {
+  TyVoid, TyBool, TyI8, TyI16, TyI32, TyI64, TyU8, TyU16, TyU32,
+  TyU64, TyF32, TyF64, TyStringK, TyUsize, TyIsize,
+  TyIntLit, TyFloatLit, TyNull,
+  TyArray, TySlice, TyPtr, TyWeak, TyFn, TyStruct, TyEnum, TyErr,
+  TyModule, TyParam,
+}
+
+struct RecType {
+  decl: *Decl,
+  is_prelude: bool,
+  targs: []*Type,
+  mangled: string,
+  field_types: []*Type,
+  fields_done: bool,
+  resolving: bool,
+  is_template: bool,
+  offsets: []i64,
+  size: i64,
+  align: i64,
+}
+
+struct Type {
+  kind: TypeKind,
+  elem: *Type,
+  len: u64,
+  rec: *RecType,
+  params: []*Type,
+  ret: *Type,
+  mangled: string,
+}
+
+struct TypeEnt { key: string, val: *Type }
+struct TypeMap { items: []*TypeEnt, n: usize }
+
+fn tm_new() -> *TypeMap {
+  return new TypeMap { items: make([]*TypeEnt, 65536), n: 0 };
+}
+
+// interning: same mangled key always yields the identical *Type
+fn tm_intern(m: *TypeMap, key: string, val: *Type) -> *Type {
+  let mut i: usize = 0;
+  while i < m.n {
+    if streq(m.items[i].key, key) {
+      return m.items[i].val;
+    }
+    i += 1;
+  }
+  let e: *TypeEnt = new TypeEnt { key: key, val: val };
+  m.items[m.n] = e;
+  m.n += 1;
+  return val;
+}
+
+fn tm_lookup(m: *TypeMap, key: string) -> *Type {
+  let mut i: usize = 0;
+  while i < m.n {
+    if streq(m.items[i].key, key) {
+      return m.items[i].val;
+    }
+    i += 1;
+  }
+  return null;
+}
+
+static mut g_types: *TypeMap = 0 as *TypeMap;
+static mut g_recs: *TypeMap = 0 as *TypeMap;
+
+fn type_map() -> *TypeMap {
+  if g_types == null {
+    g_types = tm_new();
+  }
+  return g_types;
+}
+
+fn rec_map() -> *TypeMap {
+  if g_recs == null {
+    g_recs = tm_new();
+  }
+  return g_recs;
+}
+
+fn ty_intern2(key: string, t: *Type) -> *Type {
+  let found: *Type = tm_lookup(type_map(), key);
+  if found != null {
+    return found;
+  }
+  t.mangled = key;
+  return tm_intern(type_map(), key, t);
+}
+
+fn prim_kind(prim: i32) -> TypeKind {
+  if prim == 0 { return TypeKind.TyBool; }
+  if prim == 1 { return TypeKind.TyI8; }
+  if prim == 2 { return TypeKind.TyI16; }
+  if prim == 3 { return TypeKind.TyI32; }
+  if prim == 4 { return TypeKind.TyI64; }
+  if prim == 5 { return TypeKind.TyU8; }
+  if prim == 6 { return TypeKind.TyU16; }
+  if prim == 7 { return TypeKind.TyU32; }
+  if prim == 8 { return TypeKind.TyU64; }
+  if prim == 9 { return TypeKind.TyF32; }
+  if prim == 10 { return TypeKind.TyF64; }
+  if prim == 11 { return TypeKind.TyStringK; }
+  if prim == 12 { return TypeKind.TyUsize; }
+  if prim == 13 { return TypeKind.TyIsize; }
+  return TypeKind.TyVoid;
+}
+
+fn prim_name(prim: i32) -> string {
+  if prim == 0 { return "bool"; }
+  if prim == 1 { return "i8"; }
+  if prim == 2 { return "i16"; }
+  if prim == 3 { return "i32"; }
+  if prim == 4 { return "i64"; }
+  if prim == 5 { return "u8"; }
+  if prim == 6 { return "u16"; }
+  if prim == 7 { return "u32"; }
+  if prim == 8 { return "u64"; }
+  if prim == 9 { return "f32"; }
+  if prim == 10 { return "f64"; }
+  if prim == 11 { return "string"; }
+  if prim == 12 { return "usize"; }
+  if prim == 13 { return "isize"; }
+  return "void";
+}
+
+fn ty_prim(prim: i32) -> *Type {
+  return ty_intern2(prim_name(prim), new Type {
+    kind: prim_kind(prim), elem: null, len: 0, rec: null,
+    params: fresh_type_vec2(), ret: null, mangled: "",
+  });
+}
+
+fn ty_ptr(elem: *Type) -> *Type {
+  return ty_intern2(cat("*", elem.mangled), new Type {
+    kind: TypeKind.TyPtr, elem: elem, len: 0, rec: null,
+    params: fresh_type_vec2(), ret: null, mangled: "",
+  });
+}
+
+fn ty_weak(elem: *Type) -> *Type {
+  return ty_intern2(cat3("weak[", elem.mangled, "]"), new Type {
+    kind: TypeKind.TyWeak, elem: elem, len: 0, rec: null,
+    params: fresh_type_vec2(), ret: null, mangled: "",
+  });
+}
+
+fn ty_slice(elem: *Type) -> *Type {
+  return ty_intern2(cat("[]", elem.mangled), new Type {
+    kind: TypeKind.TySlice, elem: elem, len: 0, rec: null,
+    params: fresh_type_vec2(), ret: null, mangled: "",
+  });
+}
+
+fn ty_array(elem: *Type, len: u64) -> *Type {
+  return ty_intern2(cat3(cat3("[", itoa(len as i64), "]"), elem.mangled, ""), new Type {
+    kind: TypeKind.TyArray, elem: elem, len: len, rec: null,
+    params: fresh_type_vec2(), ret: null, mangled: "",
+  });
+}
+
+fn ty_fn(params: []*Type, ret: *Type) -> *Type {
+  let mut key: string = "fn(";
+  let mut i: usize = 0;
+  while i < len(params) {
+    if i > 0 {
+      key = cat(key, ";");
+    }
+    key = cat(key, params[i].mangled);
+    i += 1;
+  }
+  key = cat3(key, ")->", ret.mangled);
+  return ty_intern2(key, new Type {
+    kind: TypeKind.TyFn, elem: null, len: 0, rec: null,
+    params: params, ret: ret, mangled: "",
+  });
+}
+
+fn ty_err() -> *Type {
+  return ty_intern2("<error>", new Type {
+    kind: TypeKind.TyErr, elem: null, len: 0, rec: null,
+    params: fresh_type_vec2(), ret: null, mangled: "<error>",
+  });
+}
+
+fn ty_param_(name: string) -> *Type {
+  let t: *Type = new Type {
+    kind: TypeKind.TyParam, elem: null, len: 0, rec: null,
+    params: fresh_type_vec2(), ret: null, mangled: name,
+  };
+  return t;
+}
+
+fn fresh_type_vec2() -> []*Type {
+  return make([]*Type, 4);
+}
