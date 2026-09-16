@@ -1073,6 +1073,8 @@ struct MatchArm {
   file: string,
   line: i32,
   col: i32,
+  bind_syms: []*Sym,   // pattern bindings (check)
+  bind_fidx: []i64,    // variant field index per binding (check)
 }
 
 struct Expr {
@@ -1616,7 +1618,8 @@ fn parse_primary(p: *Parser) -> *Expr {
         variant_index: 0, disc: 0, pat_str: "", pat_names: fresh_str_vec(),
         pat_fields: fresh_field_vec(), body: null,
         file: pt.file, line: pt.line, col: pt.col,
-      };
+       bind_syms: make([]*Sym, 4), bind_fidx: make([]i64, 4),
+  };
       if at(p, Tok.TkInt) {
         advance(p);
         arm.pk = PatKind.PatInt;
@@ -3379,4 +3382,117 @@ fn check_new(e: *Expr) -> *Type {
   }
   e.typed = ty_ptr(t);
   return e.typed;
+}
+
+
+// ============== match checking (check.c port L6c, compact) ===============
+
+
+
+// resolve a payload field type of an enum variant against the enum's own
+// tparam environment (simplified variant_field_type: no layout needed for
+// checking, only for lowering — the layout port arrives with L6d)
+fn variant_field_type(enum_t: *Type, variant: i32, field: i32) -> *Type {
+  let rec: *RecType = enum_t.rec;
+  let d: *Decl = rec.decl;
+  if variant < 0 || variant >= d.variants.n as i32 {
+    return ty_err();
+  }
+  let v: *VariantAst = d.variants.items[variant];
+  if field < 0 || field >= v.types.n as i32 {
+    return ty_err();
+  }
+  let saved: *Module = cur_module;
+  let saved_env: *TypeMap = g_tenv;
+  if rec.is_prelude && prelude_module != null {
+    cur_module = prelude_module;
+  }
+  g_tenv = rec.env_tenv;
+  let t: *Type = resolve_type_in_module(cur_module, v.types.items[field]);
+  g_tenv = saved_env;
+  cur_module = saved;
+  return t;
+}
+
+fn check_match(e: *Expr, expected: *Type) -> *Type {
+  let scrut: *Type = check_expr(e.a, null);
+  let mut ed: *Decl = null;
+  let int_match: bool = ty_is_int(scrut) || scrut.kind == TypeKind.TyIntLit;
+  if scrut.kind == TypeKind.TyEnum {
+    ed = scrut.rec.decl;
+  } else if !int_match {
+    err_at("", 0, 0, "match scrutinee must be an enum or integer");
+    e.typed = ty_err();
+    return e.typed;
+  }
+  let mut result: *Type = null;
+  let mut i: usize = 0;
+  while i < e.arms.n {
+    let arm: *MatchArm = e.arms.items[i];
+    if ed != null && arm.pk != PatKind.PatWildcard {
+      let vn: string = arm.pat_path.items[arm.pat_path.n - 1];
+      let mut found: bool = false;
+      let mut j: usize = 0;
+      while j < ed.variants.n {
+        let v: *VariantAst = ed.variants.items[j];
+        if streq(v.name, vn) {
+          found = true;
+          arm.variant_index = j as i32;
+          arm.disc = v.disc;
+          let nfields: usize = v.types.n;
+          let nbinds: usize = arm.pat_names.n;
+          if arm.pk != PatKind.PatUnit && nbinds != nfields {
+            err_at("", 0, 0, "pattern binds the wrong number of values");
+          } else if arm.pk == PatKind.PatTuple {
+            let mut b: usize = 0;
+            while b < nbinds && b < nfields {
+              let nm: string = arm.pat_names.items[b];
+              if !streq(nm, "_") {
+                let bs: *Sym = new Sym {
+                  kind: SymKind.SyLocal, name: nm,
+                  type: variant_field_type(scrut, arm.variant_index, b as i32),
+                  decl: null, mutable: false, variant_index: 0,
+                  local_id: next_local_id, symbol: "",
+                };
+                next_local_id += 1;
+                arm.bind_syms = push_sym(arm.bind_syms, bs);
+              } else {
+                arm.bind_syms = push_sym(arm.bind_syms, null);
+              }
+              b += 1;
+            }
+          }
+          break;
+        }
+        j += 1;
+      }
+      if !found {
+        err_at("", 0, 0, "no such variant on this enum");
+      }
+    }
+    let arm_t: *Type = check_expr(arm.body, expected);
+    if result == null {
+      result = arm_t;
+    } else if arm_t != result && arm_t.kind != TypeKind.TyErr && result.kind != TypeKind.TyErr {
+      err_at("", 0, 0, "match arms have inconsistent types");
+      result = ty_err();
+    }
+    i += 1;
+  }
+  if result == null {
+    result = ty_prim(14);
+  }
+  e.typed = result;
+  return e.typed;
+}
+
+fn push_sym(items: []*Sym, s: *Sym) -> []*Sym {
+  let out: []*Sym = make([]*Sym, len(items) + 1);
+  let mut i: usize = 0;
+  while i < len(items) {
+    out[i] = items[i];
+    i += 1;
+  }
+  out[len(items)] = s;
+  return out;
 }
