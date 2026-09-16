@@ -3205,7 +3205,7 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
       return e.typed;
     }
     if op == Tok.PPlus || op == Tok.PMinus || op == Tok.PStar || op == Tok.PSlash || op == Tok.PPercent {
-      if !ty_is_int(l) && !ty_is_flt(l) {
+      if (!ty_is_int(l) && !ty_is_flt(l)) && l.kind != TypeKind.TyParam {
         err_at("", 0, 0, "arithmetic needs numbers");
       }
     } else if op == Tok.PAmp || op == Tok.PPipe || op == Tok.PCaret {
@@ -3542,7 +3542,8 @@ fn check_new(e: *Expr) -> *Type {
         eprint("[init checked\n");
         if got != ft && got.kind != TypeKind.TyIntLit && got.kind != TypeKind.TyFloatLit &&
            got.kind != TypeKind.TyErr && ft.kind != TypeKind.TyErr &&
-           got.kind != TypeKind.TyParam && ft.kind != TypeKind.TyParam {
+           got.kind != TypeKind.TyParam && ft.kind != TypeKind.TyParam &&
+           !type_has_param(ft) {
           err_at("", 0, 0, "field initializer type mismatch");
         }
         found = true;
@@ -3614,10 +3615,58 @@ fn check_match(e: *Expr, expected: *Type) -> *Type {
           found = true;
           arm.variant_index = j as i32;
           arm.disc = v.disc;
-          let nfields: usize = v.types.n;
+          let nfields: usize = if v.vkind == VarKind.VarStruct { v.fields.n } else { v.types.n };
           let nbinds: usize = arm.pat_names.n;
           if arm.pk != PatKind.PatUnit && nbinds != nfields {
             err_at("", 0, 0, "pattern binds the wrong number of values");
+          } else if arm.pk == PatKind.PatTuple {
+            let mut b: usize = 0;
+            while b < nbinds && b < nfields {
+              let nm: string = arm.pat_names.items[b];
+              if !streq(nm, "_") {
+                let bs: *Sym = new Sym {
+                  kind: SymKind.SyLocal, name: nm,
+                  type: variant_field_type(scrut, arm.variant_index, b as i32),
+                  decl: null, mutable: false, variant_index: 0,
+                  local_id: next_local_id, symbol: "",
+                };
+                next_local_id += 1;
+                arm.bind_syms = push_sym(arm.bind_syms, bs);
+              } else {
+                arm.bind_syms = push_sym(arm.bind_syms, null);
+              }
+              b += 1;
+            }
+          } else if arm.pk == PatKind.PatStruct {
+            // named pattern fields: resolve each binding by field NAME
+            let mut b: usize = 0;
+            while b < nbinds && b < nfields {
+              let fa: *FieldAst = arm.pat_fields.items[b];
+              let nm: string = arm.pat_names.items[b];
+              let mut fidx: i64 = (0 - 1) as i64;
+              let mut j2: usize = 0;
+              while j2 < v.fields.n {
+                let vf: *FieldAst = v.fields.items[j2];
+                if streq(vf.name, fa.name) {
+                  fidx = j2 as i64;
+                  break;
+                }
+                j2 += 1;
+              }
+              if !streq(nm, "_") {
+                let bs: *Sym = new Sym {
+                  kind: SymKind.SyLocal, name: nm,
+                  type: variant_field_type(scrut, arm.variant_index, fidx as i32),
+                  decl: null, mutable: false, variant_index: 0,
+                  local_id: next_local_id, symbol: "",
+                };
+                next_local_id += 1;
+                arm.bind_syms = push_sym(arm.bind_syms, bs);
+              } else {
+                arm.bind_syms = push_sym(arm.bind_syms, null);
+              }
+              b += 1;
+            }
           } else if arm.pk == PatKind.PatTuple {
             let mut b: usize = 0;
             while b < nbinds && b < nfields {
@@ -3655,6 +3704,13 @@ fn check_match(e: *Expr, expected: *Type) -> *Type {
       bi += 1;
     }
     let arm_t: *Type = check_expr(arm.body, expected);
+    eprint("[arm t=");
+    if arm_t == null {
+      eprint("null");
+    } else {
+      eprint(arm_t.mangled);
+    }
+    eprint("\n");
     if result == null {
       result = arm_t;
     } else if arm_t != result && arm_t.kind != TypeKind.TyErr && result.kind != TypeKind.TyErr &&
@@ -3771,7 +3827,7 @@ fn resolve_callee(callee: *Expr) -> *CallTarget {
       }
       if base != null && (base.kind == SymKind.SyStruct || base.kind == SymKind.SyEnum) {
         // associated function `Type.make(...)` lives under `Type.make`
-        let fn_sym: *Sym = sm_get(cur_module.syms, cat3(base.name, ".", callee.sv));
+        let fn_sym: *Sym = sm_get(cur_module.syms, callee.sv);
         if fn_sym != null && fn_sym.kind == SymKind.SyFn && !fn_sym.decl.is_method {
           ct.kind = CtKind.CtFn;
           ct.sym = fn_sym;
@@ -4093,7 +4149,7 @@ fn check_call(e: *Expr, expected: *Type) -> *Type {
     if adapted != pt && adapted.kind != TypeKind.TyIntLit &&
        adapted.kind != TypeKind.TyFloatLit && adapted.kind != TypeKind.TyNull &&
        pt.kind != TypeKind.TyErr && got.kind != TypeKind.TyErr &&
-       pt.kind != TypeKind.TyParam {
+       pt.kind != TypeKind.TyParam && !type_has_param(pt) {
       err_at("", 0, 0, "argument type mismatch");
       e.typed = ty_err();
       return e.typed;
@@ -4168,7 +4224,12 @@ fn check_stmt(s: *Stmt) {
     if ann != null {
       if !ty_is_or_has_err(ann) && !ty_is_or_has_err(t) && t != ann &&
          t.kind != TypeKind.TyIntLit && t.kind != TypeKind.TyFloatLit &&
-         t.kind != TypeKind.TyNull && t.kind != TypeKind.TyErr {
+         t.kind != TypeKind.TyNull && t.kind != TypeKind.TyErr &&
+         ann.kind != TypeKind.TyParam && t.kind != TypeKind.TyParam &&
+         !type_has_param(ann) && !type_has_param(t) {
+        eprint("[letmis ");
+        eprint(s.name);
+        eprint("\n");
         err_at("", 0, 0, "initializer type mismatch");
       }
       t = ann;
