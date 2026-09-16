@@ -2372,3 +2372,67 @@ fn ty_param_(name: string) -> *Type {
 fn fresh_type_vec2() -> []*Type {
   return make([]*Type, 4);
 }
+
+
+// ============== symbols & scopes (check.c port L2) ========================
+
+enum SymKind {
+  SyLocal, SyParam, SyFn, SyStruct, SyEnum, SyStatic, SyConst,
+  SyModule, SyExtern, SyVariant,
+}
+
+struct Sym {
+  kind: SymKind,
+  name: string,
+  type: *Type,
+  decl: *Decl,
+  mutable: bool,
+  variant_index: i32,
+  local_id: i32,
+  symbol: string,
+}
+
+struct Binding { name: string, sym: *Sym, next: *Binding }
+struct CScope { bindings: *Binding, parent: *CScope }
+
+static mut cur_scope: *CScope = 0 as *CScope;
+static mut cur_ret: *Type = 0 as *Type;
+static mut cur_fn_sym: *Sym = 0 as *Sym;
+static mut next_local_id: i32 = 0;
+
+fn scope_push() {
+  let s: *CScope = new CScope { bindings: null, parent: cur_scope };
+  cur_scope = s;
+}
+
+fn scope_pop() {
+  cur_scope = cur_scope.parent;
+}
+
+fn scope_decl(name: string, sym: *Sym) {
+  let b: *Binding = new Binding { name: name, sym: sym, next: cur_scope.bindings };
+  cur_scope.bindings = b;
+}
+
+fn scope_lookup_local(s: *CScope, name: string) -> *Sym {
+  let mut b: *Binding = s.bindings;
+  while b != null {
+    if streq(b.name, name) {
+      return b.sym;
+    }
+    b = b.next;
+  }
+  return null;
+}
+
+fn lookup(name: string) -> *Sym {
+  let mut s: *CScope = cur_scope;
+  while s != null {
+    let sym: *Sym = scope_lookup_local(s, name);
+    if sym != null {
+      return sym;
+    }
+    s = s.parent;
+  }
+  return null;
+}
