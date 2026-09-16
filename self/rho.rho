@@ -3866,3 +3866,202 @@ fn check_call(e: *Expr, expected: *Type) -> *Type {
   e.typed = ft.ret;
   return e.typed;
 }
+
+
+// ============== statement checking (check.c port L6e) =====================
+
+static mut in_defer: bool = false;
+static mut loop_depth: i32 = 0;
+
+fn ty_is_or_has_err(t: *Type) -> bool {
+  if t == null {
+    return false;
+  }
+  if t.kind == TypeKind.TyErr {
+    return true;
+  }
+  if t.elem != null && ty_is_or_has_err(t.elem) {
+    return true;
+  }
+  if t.ret != null && ty_is_or_has_err(t.ret) {
+    return true;
+  }
+  return false;
+}
+
+fn lvalue_mutable(e: *Expr) -> bool {
+  if e.kind == ExprKind.ExName {
+    let sym: *Sym = e.sym;
+    if sym != null {
+      return sym.mutable || sym.kind == SymKind.SyFn || sym.kind == SymKind.SyExtern;
+    }
+    return false;
+  }
+  if e.kind == ExprKind.ExUn && e.unop == Tok.PStar {
+    return true; // *p — the pointer decides
+  }
+  if e.kind == ExprKind.ExField || e.kind == ExprKind.ExIndex {
+    return lvalue_mutable(e.a);
+  }
+  return false;
+}
+
+fn check_stmt(s: *Stmt) {
+  if s.kind == StmtKind.StLet {
+    let mut ann: *Type = null;
+    if s.ty != null {
+      ann = resolve_type_in_module(cur_module, s.ty);
+    }
+    let mut t: *Type = check_expr(s.a, ann);
+    if ann != null {
+      if !ty_is_or_has_err(ann) && !ty_is_or_has_err(t) && t != ann &&
+         t.kind != TypeKind.TyIntLit && t.kind != TypeKind.TyFloatLit &&
+         t.kind != TypeKind.TyNull && t.kind != TypeKind.TyErr {
+        err_at("", 0, 0, "initializer type mismatch");
+      }
+      t = ann;
+    } else {
+      if t.kind == TypeKind.TyIntLit {
+        t = ty_prim(3);
+      } else if t.kind == TypeKind.TyFloatLit {
+        t = ty_prim(10);
+      } else if t.kind == TypeKind.TyNull {
+        err_at("", 0, 0, "`null` needs a type annotation");
+        t = ty_err();
+      } else if t.kind == TypeKind.TyErr {
+        t = ty_err();
+      }
+    }
+    let sym: *Sym = new Sym {
+      kind: SymKind.SyLocal, name: s.name, type: t, decl: null,
+      mutable: s.mut_, variant_index: 0, local_id: next_local_id, symbol: "",
+    };
+    next_local_id += 1;
+    if lookup(s.name) != null {
+      err_at("", 0, 0, "shadowing is not allowed (spec §5)");
+    }
+    scope_decl(s.name, sym);
+    s.a.typed = t;
+    return;
+  }
+  if s.kind == StmtKind.StAssign {
+    let target: *Type = check_expr(s.a, null);
+    let value: *Type = adapt_literal(check_expr(s.b, target), target);
+    s.b.typed = value;
+    if target != value && !(ty_is_int(target) && ty_is_int(value)) &&
+       !(ty_is_flt(target) && ty_is_flt(value)) &&
+       target.kind != TypeKind.TyErr && value.kind != TypeKind.TyErr {
+      err_at("", 0, 0, "type mismatch in assignment");
+    }
+    if !lvalue_mutable(s.a) {
+      err_at("", 0, 0, "cannot assign to an immutable binding (declare it `let mut`)");
+    }
+    return;
+  }
+  if s.kind == StmtKind.StExpr {
+    check_expr(s.a, null);
+    return;
+  }
+  if s.kind == StmtKind.StReturn {
+    if cur_ret == null || cur_ret.kind == TypeKind.TyVoid {
+      if s.a != null {
+        err_at("", 0, 0, "this function returns nothing");
+      }
+    } else {
+      if s.a == null {
+        err_at("", 0, 0, "missing return value");
+      } else {
+        check_expr(s.a, cur_ret);
+      }
+    }
+    return;
+  }
+  if s.kind == StmtKind.StBreak || s.kind == StmtKind.StContinue {
+    if loop_depth == 0 {
+      err_at("", 0, 0, "break/continue outside of a loop");
+    }
+    return;
+  }
+  if s.kind == StmtKind.StDefer {
+    let saved: bool = in_defer;
+    in_defer = true;
+    scope_push();
+    let mut i: usize = 0;
+    while i < s.stmts.n {
+      check_stmt(s.stmts.items[i]);
+      i += 1;
+    }
+    scope_pop();
+    in_defer = saved;
+    return;
+  }
+  if s.kind == StmtKind.StWhile {
+    let saved_depth: i32 = loop_depth;
+    loop_depth += 1;
+    let cond: *Type = check_expr(s.cond, null);
+    if cond.kind != TypeKind.TyBool {
+      err_at("", 0, 0, "while condition must be bool");
+    }
+    scope_push();
+    let mut i: usize = 0;
+    while i < s.body.n {
+      check_stmt(s.body.items[i]);
+      i += 1;
+    }
+    scope_pop();
+    loop_depth = saved_depth;
+    return;
+  }
+  if s.kind == StmtKind.StLoop {
+    let saved_depth: i32 = loop_depth;
+    loop_depth += 1;
+    scope_push();
+    let mut i: usize = 0;
+    while i < s.body.n {
+      check_stmt(s.body.items[i]);
+      i += 1;
+    }
+    scope_pop();
+    loop_depth = saved_depth;
+    return;
+  }
+  if s.kind == StmtKind.StBlock {
+    scope_push();
+    let mut i: usize = 0;
+    while i < s.stmts.n {
+      check_stmt(s.stmts.items[i]);
+      i += 1;
+    }
+    scope_pop();
+    return;
+  }
+}
+
+fn check_fn_body(d: *Decl, sym: *Sym) {
+  if d.tparams.n > 0 {
+    // generic template: check once under TY_PARAM placeholders
+    let env: *TypeMap = template_env_of(d);
+    g_tenv = env;
+  }
+  cur_ret = sym.type.ret;
+  scope_push();
+  let mut i: usize = 0;
+  while i < d.params.n {
+    let p: *Param = d.params.items[i];
+    let pt: *Type = resolve_type_in_module(cur_module, p.ty);
+    let ps: *Sym = new Sym {
+      kind: SymKind.SyParam, name: p.name, type: pt, decl: null,
+      mutable: false, variant_index: 0, local_id: next_local_id, symbol: "",
+    };
+    next_local_id += 1;
+    scope_decl(p.name, ps);
+    i += 1;
+  }
+  let mut k: usize = 0;
+  while k < d.body.n {
+    check_stmt(d.body.items[k]);
+    k += 1;
+  }
+  scope_pop();
+  g_tenv = null;
+}
