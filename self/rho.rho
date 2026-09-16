@@ -5082,8 +5082,8 @@ fn retain_addr(c: *LCtx, t: *Type, addr: *IRVreg) {
 }
 
 fn release_scope_only(c: *LCtx) {
-  let owned: *Vec[*OwnedBind] = c.scope.owned;
-  let mut i: usize = owned.n;
+  let owned: []*OwnedBind = c.scope.owned;
+  let mut i: usize = len(owned);
   while i > 0 {
     let ob: *OwnedBind = owned.items[i - 1];
     release_addr(c, ob.ty, v_slotaddr(c, ob.slot));
@@ -5096,10 +5096,125 @@ fn scope_pop_release(c: *LCtx) {
   c.scope = c.scope.parent;
 }
 
+fn owned_empty() -> []*OwnedBind {
+  return make([]*OwnedBind, 0);
+}
+
 fn scope_push_l(c: *LCtx) {
   let s: *LScope = new LScope {
-    bindings: null, owned: make([]*OwnedBind, 0), parent: c.scope,
+    bindings: null, owned: owned_empty(), parent: c.scope,
     break_to: null, continue_to: null, is_loop: false,
   };
   c.scope = s;
+}
+
+
+// ================= glue synthesis (LOW-5) ==================================
+
+struct TypeEnt2 { key: string, val: string }
+struct TypeMap2 { items: []*TypeEnt2, n: usize }
+
+fn tm2_new() -> *TypeMap2 {
+  return new TypeMap2 { items: make([]*TypeEnt2, 4096), n: 0 };
+}
+
+static mut g_rel_fns: *TypeMap2 = 0 as *TypeMap2;
+static mut g_ret_fns: *TypeMap2 = 0 as *TypeMap2;
+
+fn ty_is_managed(t: *Type) -> bool {
+  if t == null {
+    return false;
+  }
+  if t.kind == TypeKind.TyPtr || t.kind == TypeKind.TyWeak ||
+     t.kind == TypeKind.TySlice || t.kind == TypeKind.TyStringK ||
+     t.kind == TypeKind.TyStruct || t.kind == TypeKind.TyEnum ||
+     t.kind == TypeKind.TyArray {
+    return true;
+  }
+  return false;
+}
+
+fn rho_sanitize(s: string) -> string {
+  let out: []u8 = make([]u8, len(s));
+  let mut i: usize = 0;
+  while i < len(s) {
+    let ch: u8 = s[i];
+    let ok: bool = (ch >= 97 && ch <= 122) || (ch >= 65 && ch <= 90) ||
+                   (ch >= 48 && ch <= 57) || ch == 95;
+    if ok {
+      out[i] = ch;
+    } else {
+      out[i] = 95;
+    }
+    i += 1;
+  }
+  return intrinsics.slice_string(out);
+}
+
+fn tm2_get(m: *TypeMap2, key: string) -> string {
+  let mut i: usize = 0;
+  while i < m.n {
+    if streq(m.items[i].key, key) {
+      return m.items[i].val;
+    }
+    i += 1;
+  }
+  return "";
+}
+
+fn tm2_put(m: *TypeMap2, key: string, val: string) {
+  let e: *TypeEnt2 = new TypeEnt2 { key: key, val: val };
+  m.items[m.n] = e;
+  m.n += 1;
+}
+
+// lazily synthesize rho__rel$<t> / rho__ret$<t>: walk the value of type t at
+// the sole pointer parameter. Returns "" for unmanaged types.
+fn value_fn_for(t: *Type, retain: bool) -> string {
+  if t == null || !ty_is_managed(t) {
+    return "";
+  }
+  let mut cache: *TypeMap2 = rel_cache();
+  if retain {
+    cache = ret_cache();
+  }
+  let found: string = tm2_get(cache, t.mangled);
+  if found != "" {
+    return found;
+  }
+  // kind prefix keeps the symbol unique: `[]*T` and `*[]T` would sanitize
+  // to the same name
+  let mut kindp: string = "x_";
+  if t.kind == TypeKind.TyPtr { kindp = "p_"; }
+  if t.kind == TypeKind.TySlice { kindp = "s_"; }
+  if t.kind == TypeKind.TyStringK { kindp = "g_"; }
+  if t.kind == TypeKind.TyArray { kindp = "a_"; }
+  if t.kind == TypeKind.TyEnum { kindp = "e_"; }
+  if t.kind == TypeKind.TyStruct { kindp = "r_"; }
+  let sym: string = cat3("rho__", cat3(retain_which(retain), cat3("$", kindp, ""), ""),
+                         rho_sanitize(t.mangled));
+  tm2_put(cache, t.mangled, sym);
+  return sym;
+}
+
+fn retain_which(retain: bool) -> string {
+  if retain {
+    return "ret";
+  }
+  return "rel";
+}
+
+
+fn ret_cache() -> *TypeMap2 {
+  if g_ret_fns == null {
+    g_ret_fns = tm2_new();
+  }
+  return g_ret_fns;
+}
+
+fn rel_cache() -> *TypeMap2 {
+  if g_rel_fns == null {
+    g_rel_fns = tm2_new();
+  }
+  return g_rel_fns;
 }
