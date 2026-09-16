@@ -2436,3 +2436,113 @@ fn lookup(name: string) -> *Sym {
   }
   return null;
 }
+
+
+// ============== module walk (check.c port L3) =============================
+
+struct SymMapEnt { key: string, val: *Sym }
+struct SymMap { items: []*SymMapEnt, n: usize }
+
+fn sm_new() -> *SymMap {
+  return new SymMap { items: make([]*SymMapEnt, 4096), n: 0 };
+}
+
+fn sm_put(m: *SymMap, key: string, val: *Sym) {
+  let mut i: usize = 0;
+  while i < m.n {
+    if streq(m.items[i].key, key) {
+      m.items[i].val = val;
+      return;
+    }
+    i += 1;
+  }
+  let e: *SymMapEnt = new SymMapEnt { key: key, val: val };
+  m.items[m.n] = e;
+  m.n += 1;
+}
+
+fn sm_get(m: *SymMap, key: string) -> *Sym {
+  let mut i: usize = 0;
+  while i < m.n {
+    if streq(m.items[i].key, key) {
+      return m.items[i].val;
+    }
+    i += 1;
+  }
+  return null;
+}
+
+struct Module {
+  path: string,
+  ns: string,
+  root: *Decl,
+  syms: *SymMap,
+  is_prelude: bool,
+  checked: bool,
+}
+
+static mut cur_module: *Module = 0 as *Module;
+static mut prelude_module: *Module = 0 as *Module;
+
+// register one declaration into the module's symbol table
+fn declare_sym(m: *Module, d: *Decl) {
+  let sym: *Sym = new Sym {
+    kind: SymKind.SyFn, name: d.name, type: null, decl: d,
+    mutable: false, variant_index: 0, local_id: 0, symbol: "",
+  };
+  if d.kind == DeclKind.DkFn {
+    if len(d.recv) > 0 {
+      return; // methods hang off their struct's RecType, not the module
+    }
+    sym.kind = SymKind.SyFn;
+    sm_put(m.syms, d.name, sym);
+    return;
+  }
+  if d.kind == DeclKind.DkStruct {
+    sym.kind = SymKind.SyStruct;
+    sm_put(m.syms, d.name, sym);
+    return;
+  }
+  if d.kind == DeclKind.DkEnum {
+    sym.kind = SymKind.SyEnum;
+    sm_put(m.syms, d.name, sym);
+    let mut vi: i32 = 0;
+    let mut viu: usize = 0;
+    while viu < d.variants.n {
+      let v: *VariantAst = d.variants.items[viu];
+      let vsym: *Sym = new Sym {
+        kind: SymKind.SyVariant, name: v.name, type: null, decl: d,
+        mutable: false, variant_index: vi, local_id: 0, symbol: "",
+      };
+      sm_put(m.syms, v.name, vsym);
+      vi += 1;
+      viu += 1;
+    }
+    return;
+  }
+  if d.kind == DeclKind.DkStatic || d.kind == DeclKind.DkConst {
+    sym.kind = SymKind.SyStatic;
+    if d.kind == DeclKind.DkConst {
+      sym.kind = SymKind.SyConst;
+    }
+    sym.mutable = d.is_mut;
+    sm_put(m.syms, d.name, sym);
+    return;
+  }
+  if d.kind == DeclKind.DkExtern {
+    sym.kind = SymKind.SyExtern;
+    sm_put(m.syms, d.name, sym);
+    return;
+  }
+}
+
+// walk all decls of a parsed module and populate its symbol table
+fn check_module(m: *Module) {
+  cur_module = m;
+  let d: *Decl = m.root;
+  let mut i: usize = 0;
+  while i < d.decls.n {
+    declare_sym(m, d.decls.items[i]);
+    i += 1;
+  }
+}
