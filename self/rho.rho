@@ -2918,6 +2918,17 @@ fn named_type_full(sym: *Sym, owner: *Module, ta: *TypeAst) -> *Type {
   let d: *Decl = sym.decl;
   let nparams: usize = d.tparams.n;
   let ntargs: usize = ta.targs.n;
+  eprint("[ntf ");
+  eprint(d.name);
+  eprint(" ntargs=");
+  eprint(itoa(ntargs as i64));
+  eprint(" tenv=");
+  if g_tenv == null {
+    eprint("null");
+  } else {
+    eprint("set");
+  }
+  eprint("\n");
   if nparams == 0 && ntargs == 0 {
     return named_type_simple(sym, owner);
   }
@@ -3325,6 +3336,9 @@ fn RecType.owner_module(self: *RecType) -> *Module {
 }
 
 fn check_field_access(e: *Expr, expected: *Type) -> *Type {
+  eprint("[fa ");
+  eprint(e.sv);
+  eprint("]\n");
   let base: *Type = check_expr(e.a, null);
   if base.kind == TypeKind.TySlice || base.kind == TypeKind.TyStringK {
     if streq(e.sv, "len") {
@@ -4267,16 +4281,29 @@ fn check_all(m: *Module) -> i32 {
     }
   }
   let d: *Decl = m.root;
-  // pass 1: resolve signatures and wire methods
+  // pass 1: resolve struct/enum types, wire methods
   let mut i: usize = 0;
   while i < d.decls.n {
     let decl: *Decl = d.decls.items[i];
+    if decl.kind == DeclKind.DkStruct || decl.kind == DeclKind.DkEnum {
+      let ssym: *Sym = sm_get(m.syms, decl.name);
+      if ssym != null && ssym.type == null {
+        if decl.tparams.n > 0 {
+          let tmpl: *RecType = ensure_template(decl, m);
+          let t: *Type = new Type {
+            kind: TypeKind.TyStruct, elem: null, len: 0, rec: tmpl,
+            params: fresh_type_vec2(), ret: null, mangled: tmpl.mangled,
+          };
+          if decl.kind == DeclKind.DkEnum {
+            t.kind = TypeKind.TyEnum;
+          }
+          ssym.type = t;
+        } else {
+          ssym.type = named_type_simple(ssym, m);
+        }
+      }
+    }
     if decl.kind == DeclKind.DkFn {
-      eprint("[p1 ");
-      eprint(decl.name);
-      eprint(" recv=");
-      eprint(decl.recv);
-      eprint("]\n");
       if len(decl.recv) > 0 {
         wire_method(m, decl);
       }
@@ -4294,9 +4321,9 @@ fn check_all(m: *Module) -> i32 {
       // build the fn symbol's signature type on the fly (methods resolve
       // under the receiver type's template env)
       if len(decl.recv) > 0 {
-        let mut rsym: *Sym = sm_get(m.syms, cat3(decl.recv, ".", decl.name));
+        let mut rsym: *Sym = sm_get(m.syms, decl.recv);
         if rsym == null && prelude_module != null && prelude_module != m {
-          rsym = sm_get(prelude_module.syms, cat3(decl.recv, ".", decl.name));
+          rsym = sm_get(prelude_module.syms, decl.recv);
         }
         if rsym != null && rsym.decl.tparams.n > 0 {
           let tmpl: *RecType = ensure_template(rsym.decl, m);
