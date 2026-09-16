@@ -868,6 +868,9 @@ fn lex_file(file: string, src: string, out: *Vec[*Token]) {
       } else {
         let mut v: u64 = 0;
         let mut overflow: bool = false;
+        if base != 10 {
+          i += 2; // skip the 0x/0b prefix: the value digits start after it
+        }
         while i < lx.t.pos {
           let d: u8 = src[i];
           i += 1;
@@ -1230,7 +1233,13 @@ fn parse_type(p: *Parser) -> *TypeAst {
   if accept(p, Tok.PLbracket) {
     // []T slice or [N]T array — `[*` can only start the element type
     t = new TypeAst { kind: TypeAstKind.TaArray, prim: 0, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null };
-    if !at(p, Tok.PRbracket) && !at(p, Tok.PStar) {
+    if at(p, Tok.PStar) {
+      // [*T] — slice of pointer: the `*` starts the element type
+      t.elem = parse_type(p);
+      expect_tok(p, Tok.PRbracket, "`]`");
+      return t;
+    }
+    if !at(p, Tok.PRbracket) {
       t.size = parse_expr(p);
     }
     expect_tok(p, Tok.PRbracket, "`]`");

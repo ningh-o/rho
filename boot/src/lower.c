@@ -241,6 +241,18 @@ static IRVreg *v_cmp(LCtx *c, IRCC cc, IRVreg *a, IRVreg *b, bool is_float) {
   return i->dst;
 }
 
+// unsigned >= : rc plausibility guards compare counts, not signs
+static IRVreg *v_cmp_uge(LCtx *c, IRVreg *a, IRVreg *b) {
+  IRIns *i = emit(c, IR_CMP);
+  i->dst = new_vreg(c, IT_U8);
+  i->a = a;
+  i->b = b;
+  i->cc = CC_GE;
+  i->is_float = false;
+  i->signed_ops = false;
+  return i->dst;
+}
+
 static IRVreg *v_addi(LCtx *c, IRVreg *a, int64_t imm) {
   IRIns *i = emit(c, IR_ADDI);
   i->dst = new_vreg(c, IT_PTR);
@@ -747,6 +759,12 @@ static void rc_runtime_build(void) {
       IRBlock *bump = new_block(c);
       emit_cbr(c, immortal, done, bump, done);
       use_block(c, bump);
+      // same plausibility bound as the release path below: never write a
+      // count through a header that does not look like one
+      IRVreg *implausible = v_cmp_uge(c, rc, v_const(c, 65536, IT_USIZE));
+      IRBlock *sane = new_block(c);
+      emit_cbr(c, implausible, done, sane, done);
+      use_block(c, sane);
       IRVreg *rc2 = v_binop(c, IR_ADD, rc, v_const(c, 1, IT_USIZE), IT_USIZE, true);
       v_store(c, h, rc2);
       emit_br(c, done);
@@ -759,6 +777,13 @@ static void rc_runtime_build(void) {
     IRBlock *live = new_block(c);
     emit_cbr(c, immortal, done, live, done);
     use_block(c, live);
+    // a plausible live count is small; a pointer-sized value here means h
+    // is not a real header — trap (with the caller on the stack) instead of
+    // writing the count through it and corrupting the malloc freelist
+    IRVreg *implausible = v_cmp_uge(c, rc, v_const(c, 65536, IT_USIZE));
+    IRBlock *countsane = new_block(c);
+    emit_cbr(c, implausible, done, countsane, done);
+    use_block(c, countsane);
     IRVreg *rc2 = v_binop(c, IR_SUB, rc, v_const(c, 1, IT_USIZE), IT_USIZE, true);
     v_store(c, h, rc2);
     IRVreg *dead = v_cmp(c, CC_EQ, rc2, v_const(c, 0, IT_USIZE), false);
@@ -1725,7 +1750,13 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
       IRVreg *cond = lv_expr(c, e->a);
       emit_cbr(c, cond, then_b, false_b, join);
       use_block(c, then_b);
+      // each arm gets its own scope: a `let` inside an arm must release at
+      // the arm's end, not at the enclosing loop's back edge (where it would
+      // run on every iteration regardless of which arm executed)
+      scope_push(c);
       lv_stmts(c, &((Stmt *)e->items.items[0])->stmts);
+      run_defers(c, c->scope->parent);
+      scope_pop_release(c);
       emit_br(c, join);
       if (e->items.n > 1) {
         use_block(c, false_b);
@@ -1733,8 +1764,12 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
         Expr *else_if = els;
         if (else_if->kind == EX_IF)
           lv_expr(c, else_if);
-        else
+        else {
+          scope_push(c);
           lv_stmts(c, &((Stmt *)els)->stmts);
+          run_defers(c, c->scope->parent);
+          scope_pop_release(c);
+        }
         emit_br(c, join);
       }
       use_block(c, join);

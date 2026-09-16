@@ -1,5 +1,7 @@
 extern fn malloc(n: usize) -> *u8;
 
+extern fn calloc(nm: usize, sz: usize) -> *u8;
+
 extern fn free(p: *u8);
 
 pub enum Option[T] {
@@ -41,7 +43,10 @@ fn Result.is_err(self: Result) -> bool {
 }
 
 fn __alloc(n: usize) -> *u8 {
-  return malloc(n);
+  // zeroed: fresh element slots read as null references, so the first
+  // assignment into a slot releases null (a no-op) instead of stale heap
+  // bytes reinterpreted as a reference count
+  return calloc(1, n);
 }
 
 fn __free(p: *u8) {
