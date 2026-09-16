@@ -3647,7 +3647,8 @@ fn check_match(e: *Expr, expected: *Type) -> *Type {
     let arm_t: *Type = check_expr(arm.body, expected);
     if result == null {
       result = arm_t;
-    } else if arm_t != result && arm_t.kind != TypeKind.TyErr && result.kind != TypeKind.TyErr {
+    } else if arm_t != result && arm_t.kind != TypeKind.TyErr && result.kind != TypeKind.TyErr &&
+              arm_t.kind != TypeKind.TyParam && result.kind != TypeKind.TyParam {
       err_at("", 0, 0, "match arms have inconsistent types");
       result = ty_err();
     }
@@ -3994,11 +3995,19 @@ fn check_call(e: *Expr, expected: *Type) -> *Type {
     return e.typed;
   }
   if ct.kind == CtKind.CtVariant {
-    // variant construction: check args against the variant payload types
+    // variant construction: if the context pins an instantiation of the same
+    // enum, use it; payloads resolve under the enum's template env
+    if expected != null && expected.kind == TypeKind.TyEnum &&
+       expected.rec != null && expected.rec.decl == ct.enum_type.rec.decl {
+      ct.enum_type = expected;
+    }
     let d: *Decl = ct.enum_type.rec.decl;
     let v: *VariantAst = d.variants.items[ct.variant];
+    let saved_env: *TypeMap = g_tenv;
+    if ct.enum_type.rec.env_tenv != null {
+      g_tenv = ct.enum_type.rec.env_tenv;
+    }
     if ct.is_ctor {
-      // named-args struct-variant construction
       let mut i: usize = 0;
       while i < e.args.n {
         let init: *Expr = e.args.items[i];
@@ -4016,28 +4025,32 @@ fn check_call(e: *Expr, expected: *Type) -> *Type {
         i += 1;
       }
     }
+    g_tenv = saved_env;
     e.typed = ct.enum_type;
     return e.typed;
   }
   // fn/extern/indirect: check args against the signature
   let ft: *Type = ct.fn_type;
   let nparams: usize = len(ft.params);
+  let mut arg_off: usize = 0;
   if ct.is_method {
-    // args[0] is the receiver; the callee's receiver expr was already checked
+    // ft.params[0] is self; the receiver expression supplies it
+    arg_off = 1;
   }
-  if e.args.n != nparams {
+  if e.args.n != nparams - arg_off {
     err_at("", 0, 0, "argument count mismatch");
     e.typed = ty_err();
     return e.typed;
   }
   let mut i: usize = 0;
   while i < e.args.n {
-    let pt: *Type = ft.params[i];
+    let pt: *Type = ft.params[i + arg_off];
     let got: *Type = check_expr(e.args.items[i], pt);
     let adapted: *Type = adapt_literal(got, pt);
     if adapted != pt && adapted.kind != TypeKind.TyIntLit &&
        adapted.kind != TypeKind.TyFloatLit && adapted.kind != TypeKind.TyNull &&
-       pt.kind != TypeKind.TyErr && got.kind != TypeKind.TyErr {
+       pt.kind != TypeKind.TyErr && got.kind != TypeKind.TyErr &&
+       pt.kind != TypeKind.TyParam {
       err_at("", 0, 0, "argument type mismatch");
       e.typed = ty_err();
       return e.typed;
@@ -4466,6 +4479,12 @@ fn check_block_value2(stmts: *Vec[*Stmt]) -> *Type {
 
 fn unify2(a: *Type, b: *Type) -> *Type {
   if a == b {
+    return a;
+  }
+  if a != null && a.kind == TypeKind.TyParam {
+    return b;
+  }
+  if b != null && b.kind == TypeKind.TyParam {
     return a;
   }
   if a.kind == TypeKind.TyErr {
