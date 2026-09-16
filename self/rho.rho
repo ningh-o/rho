@@ -3583,6 +3583,15 @@ fn check_match(e: *Expr, expected: *Type) -> *Type {
         err_at("", 0, 0, "no such variant on this enum");
       }
     }
+    scope_push();
+    let mut bi: usize = 0;
+    while bi < len(arm.bind_syms) {
+      let bs: *Sym = arm.bind_syms[bi];
+      if bs != null {
+        scope_decl(bs.name, bs);
+      }
+      bi += 1;
+    }
     let arm_t: *Type = check_expr(arm.body, expected);
     if result == null {
       result = arm_t;
@@ -3590,6 +3599,7 @@ fn check_match(e: *Expr, expected: *Type) -> *Type {
       err_at("", 0, 0, "match arms have inconsistent types");
       result = ty_err();
     }
+    scope_pop();
     i += 1;
   }
   if result == null {
@@ -3697,9 +3707,8 @@ fn resolve_callee(callee: *Expr) -> *CallTarget {
         }
       }
       if base != null && (base.kind == SymKind.SyStruct || base.kind == SymKind.SyEnum) {
-        // associated function `Type.make(...)` lives in the same module;
-        // the self compiler checks a single module, so scan its table
-        let fn_sym: *Sym = sm_get(cur_module.syms, callee.sv);
+        // associated function `Type.make(...)` lives under `Type.make`
+        let fn_sym: *Sym = sm_get(cur_module.syms, cat3(base.name, ".", callee.sv));
         if fn_sym != null && fn_sym.kind == SymKind.SyFn && !fn_sym.decl.is_method {
           ct.kind = CtKind.CtFn;
           ct.sym = fn_sym;
