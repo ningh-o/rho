@@ -1186,6 +1186,7 @@ struct RecType {
   size: i64,
   align: i64,
   env_tenv: *TypeMap,
+  owner_mod: *Module,
 }
 
 struct Type {
@@ -2591,7 +2592,7 @@ fn rec_intern(decl: *Decl, owner: *Module, mangled: string) -> *RecType {
     decl: decl, is_prelude: owner.is_prelude, targs: fresh_type_vec2(),
     mangled: mangled, field_types: fresh_type_vec2(), fields_done: false,
     resolving: false, is_template: false, offsets: make([]i64, 8),
-    size: 0, align: 0, env_tenv: null,
+    size: 0, align: 0, env_tenv: null, owner_mod: owner,
   };
   tm_intern(rec_map(), mangled, new Type {
     kind: TypeKind.TyStruct, elem: null, len: 0, rec: r,
@@ -3201,5 +3202,181 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
   // L6b pending: FIELD / CALL / NEW / MATCH / QMARK arms
   err_at("", 0, 0, "internal: expression kind not yet checked");
   e.typed = ty_err();
+  return e.typed;
+}
+
+
+// ============== field access & new (check.c port L6b) =====================
+
+fn struct_field_type(rec: *RecType, i: usize) -> *Type {
+  if !rec.fields_done {
+    if rec.resolving {
+      return ty_err(); // self-containing struct; layout phase reports it
+    }
+    rec.resolving = true;
+    let d: *Decl = rec.decl;
+    let saved: *Module = cur_module;
+    let saved_env: *TypeMap = g_tenv;
+    // owner module of the rec is approximated by cur_module's prelude flag:
+    // the self compiler checks one module at a time
+    if prelude_module != null && rec.is_prelude {
+      cur_module = prelude_module;
+    }
+    g_tenv = rec.env_tenv;
+    let mut j: usize = 0;
+    while j < d.fields.n {
+      let fa: *FieldAst = d.fields.items[j];
+      rec.field_types = push_type(rec.field_types, resolve_type_in_module(rec.owner_module(), fa.ty));
+      j += 1;
+    }
+    g_tenv = saved_env;
+    rec.resolving = false;
+    rec.fields_done = true;
+    cur_module = saved;
+  }
+  if len(rec.field_types) > i {
+    return rec.field_types[i];
+  }
+  return ty_err();
+}
+
+// RecType keeps the owning module (needed to resolve field types in the
+// right namespace); rho port stores it directly
+fn RecType.owner_module(self: *RecType) -> *Module {
+  if self.owner_mod != null {
+    return self.owner_mod;
+  }
+  return cur_module;
+}
+
+fn check_field_access(e: *Expr, expected: *Type) -> *Type {
+  let base: *Type = check_expr(e.a, null);
+  if base.kind == TypeKind.TySlice || base.kind == TypeKind.TyStringK {
+    if streq(e.sv, "len") {
+      e.typed = ty_prim(12);
+      return e.typed;
+    }
+    if streq(e.sv, "ptr") {
+      if base.kind == TypeKind.TyStringK {
+        e.typed = ty_ptr(ty_prim(5));
+      } else {
+        e.typed = ty_ptr(base.elem);
+      }
+      return e.typed;
+    }
+    err_at("", 0, 0, "slices have `len` and `ptr`");
+    e.typed = ty_err();
+    return e.typed;
+  }
+  if base.kind == TypeKind.TyPtr {
+    let deref: *Type = base.elem;
+    if deref.kind == TypeKind.TyStruct {
+      let rec: *RecType = deref.rec;
+      let d: *Decl = rec.decl;
+      let mut i: usize = 0;
+      while i < d.fields.n {
+        let fa: *FieldAst = d.fields.items[i];
+        if streq(fa.name, e.sv) {
+          e.typed = struct_field_type(rec, i);
+          return e.typed;
+        }
+        i += 1;
+      }
+      err_at("", 0, 0, "no field on this struct");
+      e.typed = ty_err();
+      return e.typed;
+    }
+    err_at("", 0, 0, "auto-deref only works on struct pointers");
+    e.typed = ty_err();
+    return e.typed;
+  }
+  if base.kind == TypeKind.TyStruct {
+    let rec: *RecType = base.rec;
+    let d: *Decl = rec.decl;
+    let mut i: usize = 0;
+    while i < d.fields.n {
+      let fa: *FieldAst = d.fields.items[i];
+      if streq(fa.name, e.sv) {
+        e.typed = struct_field_type(rec, i);
+        return e.typed;
+      }
+      i += 1;
+    }
+    err_at("", 0, 0, "no such field on struct");
+    e.typed = ty_err();
+    return e.typed;
+  }
+  if e.a.kind == ExprKind.ExName {
+    let sym: *Sym = e.a.sym;
+    if sym != null && sym.kind == SymKind.SyEnum {
+      let d: *Decl = sym.decl;
+      let mut i: usize = 0;
+      while i < d.variants.n {
+        let v: *VariantAst = d.variants.items[i];
+        if streq(v.name, e.sv) {
+          if v.vkind != VarKind.VarUnit {
+            err_at("", 0, 0, "variant carries a payload; call it to construct");
+            e.typed = ty_err();
+            return e.typed;
+          }
+          let vs: *Sym = new Sym {
+            kind: SymKind.SyVariant, name: e.sv, type: sym.type, decl: d,
+            mutable: false, variant_index: i as i32, local_id: 0, symbol: "",
+          };
+          e.sym = vs;
+          e.typed = vs.type;
+          return e.typed;
+        }
+        i += 1;
+      }
+      err_at("", 0, 0, "enum has no such variant");
+      e.typed = ty_err();
+      return e.typed;
+    }
+  }
+  err_at("", 0, 0, "cannot access field");
+  e.typed = ty_err();
+  return e.typed;
+}
+
+fn check_new(e: *Expr) -> *Type {
+  let t: *Type = resolve_type_in_module(cur_module, e.ty);
+  if t.kind != TypeKind.TyStruct {
+    err_at("", 0, 0, "`new` takes a struct type");
+    e.typed = ty_err();
+    return e.typed;
+  }
+  let rec: *RecType = t.rec;
+  let d: *Decl = rec.decl;
+  struct_field_type(rec, if d.fields.n > 0 { d.fields.n - 1 } else { 0 });
+  if e.items.n != d.fields.n {
+    err_at("", 0, 0, "struct initializer count mismatch");
+  }
+  let mut i: usize = 0;
+  while i < e.items.n {
+    let fa: *FieldAst = (e.items.items[i] as usize) as *FieldAst;
+    let init: *Expr = e.args.items[i];
+    let mut found: bool = false;
+    let mut j: usize = 0;
+    while j < d.fields.n {
+      let df: *FieldAst = d.fields.items[j];
+      if streq(df.name, fa.name) {
+        let ft: *Type = struct_field_type(rec, j);
+        let got: *Type = check_expr(init, ft);
+        if got != ft && got.kind != TypeKind.TyIntLit && got.kind != TypeKind.TyFloatLit &&
+           got.kind != TypeKind.TyErr && ft.kind != TypeKind.TyErr {
+          err_at("", 0, 0, "field initializer type mismatch");
+        }
+        found = true;
+        break;
+      }
+      j += 1;
+    }
+    if !found {
+      err_at("", 0, 0, "no such field on struct");
+    }
+    i += 1;
+  }
+  e.typed = ty_ptr(t);
   return e.typed;
 }
