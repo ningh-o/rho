@@ -3120,7 +3120,8 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
     let srct: *Type = e.a.typed;
     let mut ok: bool = (ty_is_int(target) || ty_is_flt(target)) &&
         (ty_is_int(srct) || ty_is_flt(srct) || srct.kind == TypeKind.TyEnum ||
-         srct.kind == TypeKind.TyIntLit || srct.kind == TypeKind.TyFloatLit);
+         srct.kind == TypeKind.TyIntLit || srct.kind == TypeKind.TyFloatLit ||
+         srct.kind == TypeKind.TyParam || target.kind == TypeKind.TyParam);
     if srct.kind == TypeKind.TyBool || target.kind == TypeKind.TyBool {
       ok = false;
     }
@@ -3540,7 +3541,8 @@ fn check_new(e: *Expr) -> *Type {
         let got: *Type = check_expr(argi, ft);
         eprint("[init checked\n");
         if got != ft && got.kind != TypeKind.TyIntLit && got.kind != TypeKind.TyFloatLit &&
-           got.kind != TypeKind.TyErr && ft.kind != TypeKind.TyErr {
+           got.kind != TypeKind.TyErr && ft.kind != TypeKind.TyErr &&
+           got.kind != TypeKind.TyParam && ft.kind != TypeKind.TyParam {
           err_at("", 0, 0, "field initializer type mismatch");
         }
         found = true;
@@ -4457,6 +4459,9 @@ fn check_all(m: *Module) -> i32 {
           g_tenv = tmpl.env_tenv;
         }
       }
+      if decl.tparams.n > 0 {
+        g_tenv = template_env_of(decl);
+      }
       let nparams: usize = decl.params.n;
       let mut ps: []*Type = fresh_type_vec2();
       let mut j: usize = 0;
@@ -4492,8 +4497,12 @@ fn check_all(m: *Module) -> i32 {
       }
     }
     if decl.kind == DeclKind.DkStatic || decl.kind == DeclKind.DkConst {
+      let ann: *Type = resolve_type_in_module(m, decl.ret);
+      let ssym: *Sym = sm_get(m.syms, decl.name);
+      if ssym != null {
+        ssym.type = ann;
+      }
       if decl.init != null {
-        let ann: *Type = resolve_type_in_module(m, decl.ret);
         check_expr(decl.init, ann);
       }
     }
