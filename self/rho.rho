@@ -5084,8 +5084,9 @@ fn retain_addr(c: *LCtx, t: *Type, addr: *IRVreg) {
 fn release_scope_only(c: *LCtx) {
   let owned: []*OwnedBind = c.scope.owned;
   let mut i: usize = len(owned);
+  let mut i: usize = len(owned);
   while i > 0 {
-    let ob: *OwnedBind = owned.items[i - 1];
+    let ob: *OwnedBind = owned[i - 1];
     release_addr(c, ob.ty, v_slotaddr(c, ob.slot));
     i -= 1;
   }
