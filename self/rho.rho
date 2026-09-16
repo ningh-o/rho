@@ -2073,7 +2073,7 @@ fn parse_file(path: string, src: string) -> *Decl {
         d.ret = parse_type(p);
       }
       if d.params.n > 0 {
-        if (*d.params.items[0]).is_self {
+        if d.params.items[0].is_self {
           d.is_method = true;
         }
       }
@@ -2559,10 +2559,12 @@ fn declare_sym(m: *Module, d: *Decl) {
     mutable: false, variant_index: 0, local_id: 0, symbol: "",
   };
   if d.kind == DeclKind.DkFn {
-    if len(d.recv) > 0 {
-      return; // methods hang off their struct's RecType, not the module
-    }
     sym.kind = SymKind.SyFn;
+    if d.is_method {
+      // methods live under `Recv.name`, mirroring the boot registration
+      sm_put(m.syms, cat3(d.recv, ".", d.name), sym);
+      return;
+    }
     sm_put(m.syms, d.name, sym);
     return;
   }
@@ -2928,6 +2930,15 @@ fn named_type_full(sym: *Sym, owner: *Module, ta: *TypeAst) -> *Type {
         tv = tm_get(g_tenv, d.tparams.items[i]);
       }
       if tv == null || tv.kind == TypeKind.TyErr {
+        eprint("[nta ");
+        eprint(d.name);
+        eprint(" tenv=");
+        if g_tenv == null {
+          eprint("null");
+        } else {
+          eprint("set");
+        }
+        eprint("]\n");
         err_at("", 0, 0, cat("generic type `", cat(d.name, "` needs type arguments")));
         return ty_err();
       }
@@ -3053,6 +3064,7 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
       e.typed = ty_err();
       return e.typed;
     }
+    e.sym = sym;
     e.typed = sym.type;
     return e.typed;
   }
@@ -3982,15 +3994,30 @@ fn ty_is_or_has_err(t: *Type) -> bool {
 fn lvalue_mutable(e: *Expr) -> bool {
   if e.kind == ExprKind.ExName {
     let sym: *Sym = e.sym;
-    if sym != null {
-      return sym.mutable || sym.kind == SymKind.SyFn || sym.kind == SymKind.SyExtern;
+    if sym == null {
+      return false;
+    }
+    if sym.kind == SymKind.SyLocal || sym.kind == SymKind.SyParam ||
+       sym.kind == SymKind.SyStatic {
+      return sym.mutable;
     }
     return false;
   }
   if e.kind == ExprKind.ExUn && e.unop == Tok.PStar {
     return true; // *p — the pointer decides
   }
-  if e.kind == ExprKind.ExField || e.kind == ExprKind.ExIndex {
+  if e.kind == ExprKind.ExField {
+    let bt: *Type = e.a.typed;
+    if bt != null && bt.kind == TypeKind.TyPtr {
+      return true; // heap object
+    }
+    return lvalue_mutable(e.a);
+  }
+  if e.kind == ExprKind.ExIndex {
+    let bt: *Type = e.a.typed;
+    if bt != null && bt.kind == TypeKind.TySlice {
+      return true; // heap buffer shared by reference
+    }
     return lvalue_mutable(e.a);
   }
   return false;
@@ -4181,7 +4208,6 @@ fn wire_method(m: *Module, d: *Decl) -> *Type {
     let tmpl: *RecType = ensure_template(struct_sym.decl, m);
     g_tenv = tmpl.env_tenv;
   }
-  let rec: *RecType = ensure_template(struct_sym.decl, m);
   let nparams: usize = d.params.n;
   let mut ps: []*Type = fresh_type_vec2();
   let mut i: usize = 0;
@@ -4195,7 +4221,16 @@ fn wire_method(m: *Module, d: *Decl) -> *Type {
     kind: SymKind.SyFn, name: d.name, type: ft, decl: d,
     mutable: false, variant_index: 0, local_id: 0, symbol: "",
   };
-  rec.methods = push_sym(rec.methods, msym);
+  // attach the method to the receiver's own rec (deref through *self)
+  if len(ps) > 0 {
+    let mut rec_t: *Type = ps[0];
+    if rec_t.kind == TypeKind.TyPtr {
+      rec_t = rec_t.elem;
+    }
+    if rec_t.rec != null {
+      rec_t.rec.methods = push_sym(rec_t.rec.methods, msym);
+    }
+  }
   g_tenv = saved_env;
   return ft;
 }
@@ -4237,6 +4272,11 @@ fn check_all(m: *Module) -> i32 {
   while i < d.decls.n {
     let decl: *Decl = d.decls.items[i];
     if decl.kind == DeclKind.DkFn {
+      eprint("[p1 ");
+      eprint(decl.name);
+      eprint(" recv=");
+      eprint(decl.recv);
+      eprint("]\n");
       if len(decl.recv) > 0 {
         wire_method(m, decl);
       }
@@ -4251,7 +4291,18 @@ fn check_all(m: *Module) -> i32 {
       eprint("[sig ");
       eprint(decl.name);
       eprint("]\n");
-      // build the fn symbol's signature type on the fly
+      // build the fn symbol's signature type on the fly (methods resolve
+      // under the receiver type's template env)
+      if len(decl.recv) > 0 {
+        let mut rsym: *Sym = sm_get(m.syms, cat3(decl.recv, ".", decl.name));
+        if rsym == null && prelude_module != null && prelude_module != m {
+          rsym = sm_get(prelude_module.syms, cat3(decl.recv, ".", decl.name));
+        }
+        if rsym != null && rsym.decl.tparams.n > 0 {
+          let tmpl: *RecType = ensure_template(rsym.decl, m);
+          g_tenv = tmpl.env_tenv;
+        }
+      }
       let nparams: usize = decl.params.n;
       let mut ps: []*Type = fresh_type_vec2();
       let mut j: usize = 0;
@@ -4261,6 +4312,7 @@ fn check_all(m: *Module) -> i32 {
       }
       let ret: *Type = resolve_type_in_module(m, decl.ret);
       let ft: *Type = ty_fn(ps, ret);
+      g_tenv = null;
       let tsym: *Sym = sm_get(m.syms, decl.name);
       if tsym != null {
         tsym.type = ft;
