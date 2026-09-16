@@ -4670,3 +4670,318 @@ fn check_if_expr(e: *Expr, expected: *Type) -> *Type {
   e.typed = result;
   return result;
 }
+
+
+// ================= IR structures (lower.c port LOW-1) ======================
+
+enum IRType {
+  ItI8, ItI16, ItI32, ItI64,
+  ItU8, ItU16, ItU32, ItU64, ItUsize,
+  ItF32, ItF64,
+  ItPtr,
+}
+
+struct IRSlot {
+  id: i32,
+  size: i64,
+  align: i64,
+  name: string,
+}
+
+struct IRVreg {
+  id: i32,
+  ty: IRType,
+}
+
+enum IROp {
+  IrConst, IrFconst,
+  IrAdd, IrSub, IrMul, IrDiv, IrMod, IrAnd, IrOr, IrXor, IrShl, IrShr,
+  IrCmp,
+  IrLoad,
+  IrStore,
+  IrAddrc,
+  IrAddi,
+  IrCall,
+  IrCast,
+  IrCopymem,
+  IrZero,
+  IrLitaddr,
+}
+
+enum IRCC { CcEq, CcNe, CcLt, CcLe, CcGt, CcGe }
+
+enum IRCastKind {
+  CastTrunc, CastSext, CastZext, CastI2f, CastF2i, CastF32F64,
+  CastF64F32, CastBitcopy,
+}
+
+struct IRArg {
+  vreg: *IRVreg,
+}
+
+struct IRPhi {
+  dst: *IRVreg,
+  args: []*IRVreg,
+  preds: []*IRBlock,
+}
+
+struct IRIns {
+  op: IROp,
+  dst: *IRVreg,
+  a: *IRVreg,
+  b: *IRVreg,
+  slot: *IRSlot,
+  imm: i64,
+  fimm: f64,
+  size: i64,
+  is_float: bool,
+  signed_ops: bool,
+  cc: IRCC,
+  cast: IRCastKind,
+  cast_from: IRType,
+  cast_to: IRType,
+  callee: string,
+  callee_vreg: *IRVreg,
+  args: []*IRVreg,
+  addr: *IRVreg,
+  lit: i32,
+  join_hint: *IRBlock,
+}
+
+struct IRBlock {
+  id: i32,
+  phis: []*IRPhi,
+  ins: []*IRIns,
+  term_op: i32,      // 0 = none, 100 = br, 101 = cbr, 102 = ret
+  br_true: *IRBlock,
+  br_false: *IRBlock,
+  ret_val: *IRVreg,
+  cbr_cond: *IRVreg,
+  join_hint: *IRBlock,
+  loop_header: bool,
+  loop_exit: *IRBlock,
+}
+
+struct IRLit {
+  label: string,
+  bytes: []u8,
+}
+
+struct IRFn {
+  uid: i32,
+  symbol: string,
+  ret_is_void: bool,
+  params: []*IRSlot,
+  out_slot: *IRSlot,
+  slots: []*IRSlot,
+  blocks: []*IRBlock,
+  entry: *IRBlock,
+  cur: *IRBlock,
+  literals: []*IRLit,
+  next_vreg: i32,
+  next_block: i32,
+  next_slot: i32,
+  vreg_base: i32, // vreg slot offset base = named slot count at layout
+}
+
+static mut g_ir_fns: *Vec[*IRFn] = 0 as *Vec[*IRFn];
+static mut g_ir_uid: i32 = 0;
+
+fn ir_size_of(t: IRType) -> i64 {
+  if t == IRType.ItI8 || t == IRType.ItU8 { return 1; }
+  if t == IRType.ItI16 || t == IRType.ItU16 { return 2; }
+  if t == IRType.ItI32 || t == IRType.ItU32 || t == IRType.ItF32 { return 4; }
+  return 8;
+}
+
+fn ir_is_float_t(t: IRType) -> bool {
+  return t == IRType.ItF32 || t == IRType.ItF64;
+}
+
+
+// ================= lowering context & builders (LOW-2) =====================
+
+struct OwnedBind { slot: *IRSlot, ty: *Type }
+struct BindEnt { name: string, slot: *IRSlot, next: *BindEnt }
+struct LScope {
+  bindings: *BindEnt,
+  owned: *Vec[*OwnedBind],
+  parent: *LScope,
+  break_to: *IRBlock,
+  continue_to: *IRBlock,
+  is_loop: bool,
+}
+struct LCtx {
+  f: *IRFn,
+  scope: *LScope,
+}
+
+fn rc_new_fn(symbol: string) -> *IRFn {
+  let f: *IRFn = new IRFn {
+    uid: 0, symbol: symbol, ret_is_void: true, params: make([]*IRSlot, 0),
+    out_slot: null, slots: make([]*IRSlot, 0), blocks: make([]*IRBlock, 0),
+    entry: null, cur: null, literals: make([]*IRLit, 0),
+    next_vreg: 0, next_block: 0, next_slot: 0, vreg_base: 0,
+  };
+  return f;
+}
+
+fn rc_ctx(f: *IRFn) -> *LCtx {
+  let c: *LCtx = new LCtx { f: f, scope: null };
+  return c;
+}
+
+fn new_block(c: *LCtx) -> *IRBlock {
+  let b: *IRBlock = new IRBlock {
+    id: c.f.next_block, phis: make([]*IRPhi, 0), ins: make([]*IRIns, 0),
+    term_op: 0, br_true: null, br_false: null, ret_val: null,
+    cbr_cond: null, join_hint: null, loop_header: false, loop_exit: null,
+  };
+  c.f.next_block += 1;
+  c.f.blocks = push_ptr(c.f.blocks, b);
+  return b;
+}
+
+fn push_ptr(items: []*IRBlock, b: *IRBlock) -> []*IRBlock {
+  let out: []*IRBlock = make([]*IRBlock, len(items) + 1);
+  let mut i: usize = 0;
+  while i < len(items) {
+    out[i] = items[i];
+    i += 1;
+  }
+  out[len(items)] = b;
+  return out;
+}
+
+fn use_block(c: *LCtx, b: *IRBlock) {
+  c.f.cur = b;
+}
+
+fn emit(c: *LCtx, op: IROp) -> *IRIns {
+  let i: *IRIns = new IRIns {
+    op: op, dst: null, a: null, b: null, slot: null, imm: 0, fimm: 0.0,
+    size: 0, is_float: false, signed_ops: true, cc: IRCC.CcEq,
+    cast: IRCastKind.CastBitcopy, cast_from: IRType.ItPtr,
+    cast_to: IRType.ItPtr, callee: "", callee_vreg: null,
+    args: make([]*IRVreg, 0), addr: null, lit: 0, join_hint: null,
+  };
+  c.f.cur.ins = push_ins(c.f.cur.ins, i);
+  return i;
+}
+
+fn push_ins(items: []*IRIns, i: *IRIns) -> []*IRIns {
+  let out: []*IRIns = make([]*IRIns, len(items) + 1);
+  let mut k: usize = 0;
+  while k < len(items) {
+    out[k] = items[k];
+    k += 1;
+  }
+  out[len(items)] = i;
+  return out;
+}
+
+fn new_vreg(c: *LCtx, ty: IRType) -> *IRVreg {
+  let v: *IRVreg = new IRVreg { id: c.f.next_vreg, ty: ty };
+  c.f.next_vreg += 1;
+  return v;
+}
+
+fn new_slot(c: *LCtx, size: i64, align: i64, name: string) -> *IRSlot {
+  let s: *IRSlot = new IRSlot { id: c.f.next_slot, size: size, align: align, name: name };
+  c.f.next_slot += 1;
+  c.f.slots = push_slot(c.f.slots, s);
+  return s;
+}
+
+fn push_slot(items: []*IRSlot, s: *IRSlot) -> []*IRSlot {
+  let out: []*IRSlot = make([]*IRSlot, len(items) + 1);
+  let mut k: usize = 0;
+  while k < len(items) {
+    out[k] = items[k];
+    k += 1;
+  }
+  out[len(items)] = s;
+  return out;
+}
+
+fn v_slotaddr(c: *LCtx, s: *IRSlot) -> *IRVreg {
+  let v: *IRVreg = new IRVreg { id: 0, ty: IRType.ItPtr };
+  c.f.next_vreg += 1;
+  let i: *IRIns = emit(c, IROp.IrAddrc);
+  i.dst = v;
+  i.slot = s;
+  return v;
+}
+
+fn v_const(c: *LCtx, val: i64, ty: IRType) -> *IRVreg {
+  let v: *IRVreg = new_vreg(c, ty);
+  let i: *IRIns = emit(c, IROp.IrConst);
+  i.dst = v;
+  i.imm = val;
+  return v;
+}
+
+fn v_load(c: *LCtx, addr: *IRVreg, ty: IRType) -> *IRVreg {
+  let v: *IRVreg = new_vreg(c, ty);
+  let i: *IRIns = emit(c, IROp.IrLoad);
+  i.dst = v;
+  i.addr = addr;
+  i.size = ir_size_of(ty);
+  return v;
+}
+
+fn v_store(c: *LCtx, addr: *IRVreg, val: *IRVreg) {
+  let i: *IRIns = emit(c, IROp.IrStore);
+  i.addr = addr;
+  i.a = val;
+  i.size = 8;
+}
+
+fn v_addi(c: *LCtx, a: *IRVreg, imm: i64) -> *IRVreg {
+  let v: *IRVreg = new_vreg(c, IRType.ItPtr);
+  let i: *IRIns = emit(c, IROp.IrAddi);
+  i.dst = v;
+  i.a = a;
+  i.imm = imm;
+  return v;
+}
+
+fn v_binop(c: *LCtx, op: IROp, a: *IRVreg, b: *IRVreg, ty: IRType) -> *IRVreg {
+  let v: *IRVreg = new_vreg(c, ty);
+  let i: *IRIns = emit(c, op);
+  i.dst = v;
+  i.a = a;
+  i.b = b;
+  return v;
+}
+
+fn v_cmp(c: *LCtx, cc: IRCC, a: *IRVreg, b: *IRVreg) -> *IRVreg {
+  let v: *IRVreg = new_vreg(c, IRType.ItU8);
+  let i: *IRIns = emit(c, IROp.IrCmp);
+  i.dst = v;
+  i.a = a;
+  i.b = b;
+  i.cc = cc;
+  return v;
+}
+
+fn emit_br(c: *LCtx, to: *IRBlock) {
+  let b: *IRBlock = c.f.cur;
+  b.term_op = 100;
+  b.br_true = to;
+}
+
+fn emit_cbr(c: *LCtx, cond: *IRVreg, tt: *IRBlock, ff: *IRBlock, join: *IRBlock) {
+  let b: *IRBlock = c.f.cur;
+  b.term_op = 101;
+  b.cbr_cond = cond;
+  b.br_true = tt;
+  b.br_false = ff;
+  b.join_hint = join;
+}
+
+fn emit_ret(c: *LCtx, v: *IRVreg) {
+  let b: *IRBlock = c.f.cur;
+  b.term_op = 102;
+  b.ret_val = v;
+}
