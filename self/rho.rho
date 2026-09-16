@@ -4805,7 +4805,7 @@ struct OwnedBind { slot: *IRSlot, ty: *Type }
 struct BindEnt { name: string, slot: *IRSlot, next: *BindEnt }
 struct LScope {
   bindings: *BindEnt,
-  owned: *Vec[*OwnedBind],
+  owned: []*OwnedBind,
   parent: *LScope,
   break_to: *IRBlock,
   continue_to: *IRBlock,
@@ -4984,4 +4984,122 @@ fn emit_ret(c: *LCtx, v: *IRVreg) {
   let b: *IRBlock = c.f.cur;
   b.term_op = 102;
   b.ret_val = v;
+}
+
+
+// ================= expression lowering (LOW-3) =============================
+
+fn fconst(c: *LCtx, v: f64, ty: IRType) -> *IRVreg {
+  let d: *IRVreg = new_vreg(c, ty);
+  let i: *IRIns = emit(c, IROp.IrFconst);
+  i.dst = d;
+  i.fimm = v;
+  return d;
+}
+
+fn rc_call1(c: *LCtx, helper: string, arg: *IRVreg) {
+  let i: *IRIns = emit(c, IROp.IrCall);
+  i.callee = helper;
+  let a: *IRVreg = arg;
+  i.args = push_vreg(i.args, a);
+}
+
+fn push_vreg(items: []*IRVreg, v: *IRVreg) -> []*IRVreg {
+  let out: []*IRVreg = make([]*IRVreg, len(items) + 1);
+  let mut k: usize = 0;
+  while k < len(items) {
+    out[k] = items[k];
+    k += 1;
+  }
+  out[len(items)] = v;
+  return out;
+}
+
+fn rc_inc_v(c: *LCtx, p: *IRVreg) { rc_call1(c, "rho__rc_inc", p); }
+fn rc_dec_v(c: *LCtx, p: *IRVreg) { rc_call1(c, "rho__rc_dec", p); }
+
+// bind a name to a slot in the current scope
+fn lbind(c: *LCtx, name: string, slot: *IRSlot) {
+  let b: *BindEnt = new BindEnt { name: name, slot: slot, next: c.scope.bindings };
+  c.scope.bindings = b;
+}
+
+fn lookup_slot(c: *LCtx, name: string) -> *IRSlot {
+  let mut s: *LScope = c.scope;
+  while s != null {
+    let mut b: *BindEnt = s.bindings;
+    while b != null {
+      if streq(b.name, name) {
+        return b.slot;
+      }
+      b = b.next;
+    }
+    s = s.parent;
+  }
+  return null;
+}
+
+// address of a name binding (slot address)
+fn addr_of_name(c: *LCtx, name: string) -> *IRVreg {
+  let slot: *IRSlot = lookup_slot(c, name);
+  if slot == null {
+    return null;
+  }
+  return v_slotaddr(c, slot);
+}
+
+
+// ================= scope/ownership (LOW-4) =================================
+
+fn own_slot(c: *LCtx, slot: *IRSlot, t: *Type) {
+  let ob: *OwnedBind = new OwnedBind { slot: slot, ty: t };
+  c.scope.owned = push_owned(c.scope.owned, ob);
+}
+
+fn push_owned(items: []*OwnedBind, ob: *OwnedBind) -> []*OwnedBind {
+  let out: []*OwnedBind = make([]*OwnedBind, len(items) + 1);
+  let mut i: usize = 0;
+  while i < len(items) {
+    out[i] = items[i];
+    i += 1;
+  }
+  out[len(items)] = ob;
+  return out;
+}
+
+fn release_addr(c: *LCtx, t: *Type, addr: *IRVreg) {
+  let fnn: string = value_fn_for(t, false);
+  if fnn != "" {
+    rc_call1(c, fnn, addr);
+  }
+}
+
+fn retain_addr(c: *LCtx, t: *Type, addr: *IRVreg) {
+  let fnn: string = value_fn_for(t, true);
+  if fnn != "" {
+    rc_call1(c, fnn, addr);
+  }
+}
+
+fn release_scope_only(c: *LCtx) {
+  let owned: *Vec[*OwnedBind] = c.scope.owned;
+  let mut i: usize = owned.n;
+  while i > 0 {
+    let ob: *OwnedBind = owned.items[i - 1];
+    release_addr(c, ob.ty, v_slotaddr(c, ob.slot));
+    i -= 1;
+  }
+}
+
+fn scope_pop_release(c: *LCtx) {
+  release_scope_only(c);
+  c.scope = c.scope.parent;
+}
+
+fn scope_push_l(c: *LCtx) {
+  let s: *LScope = new LScope {
+    bindings: null, owned: make([]*OwnedBind, 0), parent: c.scope,
+    break_to: null, continue_to: null, is_loop: false,
+  };
+  c.scope = s;
 }
