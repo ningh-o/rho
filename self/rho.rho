@@ -3575,7 +3575,18 @@ fn variant_field_type(enum_t: *Type, variant: i32, field: i32) -> *Type {
     return ty_err();
   }
   let v: *VariantAst = d.variants.items[variant];
-  if field < 0 || field >= v.types.n as i32 {
+  let mut ta: *TypeAst = null;
+  if v.vkind == VarKind.VarTuple {
+    if field < 0 || field >= v.types.n as i32 {
+      return ty_err();
+    }
+    ta = v.types.items[field];
+  } else if v.vkind == VarKind.VarStruct {
+    if field < 0 || field >= v.fields.n as i32 {
+      return ty_err();
+    }
+    ta = v.fields.items[field].ty;
+  } else {
     return ty_err();
   }
   let saved: *Module = cur_module;
@@ -3584,7 +3595,7 @@ fn variant_field_type(enum_t: *Type, variant: i32, field: i32) -> *Type {
     cur_module = prelude_module;
   }
   g_tenv = rec.env_tenv;
-  let t: *Type = resolve_type_in_module(cur_module, v.types.items[field]);
+  let t: *Type = resolve_type_in_module(cur_module, ta);
   g_tenv = saved_env;
   cur_module = saved;
   return t;
@@ -3620,6 +3631,11 @@ fn check_match(e: *Expr, expected: *Type) -> *Type {
           if arm.pk != PatKind.PatUnit && nbinds != nfields {
             err_at("", 0, 0, "pattern binds the wrong number of values");
           } else if arm.pk == PatKind.PatTuple {
+            eprint("[tuple bind nbinds=");
+            eprint(itoa(nbinds as i64));
+            eprint(" nfields=");
+            eprint(itoa(nfields as i64));
+            eprint("]\n");
             let mut b: usize = 0;
             while b < nbinds && b < nfields {
               let nm: string = arm.pat_names.items[b];
@@ -3630,6 +3646,11 @@ fn check_match(e: *Expr, expected: *Type) -> *Type {
                   decl: null, mutable: false, variant_index: 0,
                   local_id: next_local_id, symbol: "",
                 };
+                eprint("[bind ");
+                eprint(nm);
+                eprint(" t=");
+                eprint(bs.type.mangled);
+                eprint("\n");
                 next_local_id += 1;
                 arm.bind_syms = push_sym(arm.bind_syms, bs);
               } else {
