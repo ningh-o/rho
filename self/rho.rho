@@ -1189,6 +1189,7 @@ struct RecType {
   align: i64,
   env_tenv: *TypeMap,
   owner_mod: *Module,
+  methods: []*Sym,
 }
 
 struct Type {
@@ -2596,6 +2597,7 @@ fn rec_intern(decl: *Decl, owner: *Module, mangled: string) -> *RecType {
     mangled: mangled, field_types: fresh_type_vec2(), fields_done: false,
     resolving: false, is_template: false, offsets: make([]i64, 8),
     size: 0, align: 0, env_tenv: null, owner_mod: owner,
+    methods: make([]*Sym, 8),
   };
   tm_intern(rec_map(), mangled, new Type {
     kind: TypeKind.TyStruct, elem: null, len: 0, rec: r,
@@ -3495,4 +3497,156 @@ fn push_sym(items: []*Sym, s: *Sym) -> []*Sym {
   }
   out[len(items)] = s;
   return out;
+}
+
+
+// ============== callee resolution (check.c port L6d-1) ====================
+
+enum CtKind { CtNone, CtFn, CtExtern, CtVariant, CtIndirect }
+
+struct CallTarget {
+  kind: CtKind,
+  sym: *Sym,
+  fn_type: *Type,
+  variant: i32,
+  enum_type: *Type,
+  is_method: bool,
+  is_ctor: bool,
+  inst_rec: *RecType,
+}
+
+fn deref_to_struct(t: *Type) -> *Type {
+  let mut cur: *Type = t;
+  while cur != null && cur.kind == TypeKind.TyPtr {
+    cur = cur.elem;
+  }
+  if cur != null && (cur.kind == TypeKind.TyStruct || cur.kind == TypeKind.TyEnum) {
+    return cur;
+  }
+  return null;
+}
+
+fn resolve_callee(callee: *Expr) -> *CallTarget {
+  let ct: *CallTarget = new CallTarget {
+    kind: CtKind.CtNone, sym: null, fn_type: null, variant: 0,
+    enum_type: null, is_method: false, is_ctor: false, inst_rec: null,
+  };
+  if callee.kind == ExprKind.ExName {
+    let sym: *Sym = lookup(callee.sv);
+    if sym == null {
+      err_at("", 0, 0, cat("unknown function `", cat(callee.sv, "`")));
+      return ct;
+    }
+    if sym.kind == SymKind.SyFn || sym.kind == SymKind.SyExtern {
+      ct.kind = CtKind.CtFn;
+      if sym.kind == SymKind.SyExtern {
+        ct.kind = CtKind.CtExtern;
+      }
+      ct.sym = sym;
+      ct.fn_type = sym.type;
+      callee.sym = sym;
+      return ct;
+    }
+    if sym.type != null && sym.type.kind == TypeKind.TyFn {
+      ct.kind = CtKind.CtIndirect;
+      ct.fn_type = sym.type;
+      callee.sym = sym;
+      callee.typed = sym.type;
+      return ct;
+    }
+    err_at("", 0, 0, "this name is not a function");
+    return ct;
+  }
+  if callee.kind == ExprKind.ExField {
+    if callee.a.kind == ExprKind.ExName {
+      let base: *Sym = lookup(callee.a.sv);
+      if base != null && base.kind == SymKind.SyModule {
+        err_at("", 0, 0, "module-qualified calls pending multi-module check");
+        return ct;
+      }
+      if base != null && base.kind == SymKind.SyEnum {
+        let d: *Decl = base.decl;
+        let mut i: usize = 0;
+        while i < d.variants.n {
+          let v: *VariantAst = d.variants.items[i];
+          if streq(v.name, callee.sv) {
+            ct.kind = CtKind.CtVariant;
+            ct.variant = i as i32;
+            ct.enum_type = base.type;
+            ct.is_ctor = v.vkind == VarKind.VarStruct;
+            let vs: *Sym = new Sym {
+              kind: SymKind.SyVariant, name: callee.sv, type: base.type,
+              decl: d, mutable: false, variant_index: i as i32,
+              local_id: 0, symbol: "",
+            };
+            callee.sym = vs;
+            return ct;
+          }
+          i += 1;
+        }
+      }
+      if base != null && (base.kind == SymKind.SyStruct || base.kind == SymKind.SyEnum) {
+        // associated function `Type.make(...)` lives in the same module;
+        // the self compiler checks a single module, so scan its table
+        let fn_sym: *Sym = sm_get(cur_module.syms, callee.sv);
+        if fn_sym != null && fn_sym.kind == SymKind.SyFn && !fn_sym.decl.is_method {
+          ct.kind = CtKind.CtFn;
+          ct.sym = fn_sym;
+          ct.fn_type = fn_sym.type;
+          callee.sym = fn_sym;
+          return ct;
+        }
+        err_at("", 0, 0, "type has no such associated function");
+        return ct;
+      }
+    }
+    // method call: `receiver.name(...)`
+    let bt: *Type = check_expr(callee.a, null);
+    let rec_t: *Type = deref_to_struct(bt);
+    if rec_t != null {
+      let rec: *RecType = rec_t.rec;
+      let mut i: usize = 0;
+      while i < len(rec.methods) {
+        let m: *Sym = rec.methods[i];
+        if streq(m.name, callee.sv) {
+          ct.kind = CtKind.CtFn;
+          ct.sym = m;
+          ct.fn_type = m.type;
+          ct.is_method = true;
+          callee.sym = m;
+          callee.a.typed = bt;
+          return ct;
+        }
+        i += 1;
+      }
+      if !rec.is_template && rec.decl.templ != null {
+        let tmpl: *RecType = rec.decl.templ;
+        let mut j: usize = 0;
+        while j < len(tmpl.methods) {
+          let m: *Sym = tmpl.methods[j];
+          if streq(m.name, callee.sv) {
+            ct.kind = CtKind.CtFn;
+            ct.sym = m;
+            ct.fn_type = m.type;
+            ct.is_method = true;
+            ct.inst_rec = rec;
+            callee.sym = m;
+            callee.a.typed = bt;
+            return ct;
+          }
+          j += 1;
+        }
+      }
+    }
+    err_at("", 0, 0, "no such method for this receiver");
+    return ct;
+  }
+  let t: *Type = check_expr(callee, null);
+  if t.kind == TypeKind.TyFn {
+    ct.kind = CtKind.CtIndirect;
+    ct.fn_type = t;
+    return ct;
+  }
+  err_at("", 0, 0, "cannot call this expression");
+  return ct;
 }
