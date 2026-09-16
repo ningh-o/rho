@@ -1120,6 +1120,82 @@ struct Stmt {
   body: *Vec[*Stmt],
 }
 
+struct TypeEnt { key: string, val: *Type }
+struct TypeMap { items: []*TypeEnt, n: usize }
+
+fn tm_new() -> *TypeMap {
+  return new TypeMap { items: make([]*TypeEnt, 65536), n: 0 };
+}
+
+// interning: same mangled key always yields the identical *Type
+fn tm_intern(m: *TypeMap, key: string, val: *Type) -> *Type {
+  let mut i: usize = 0;
+  while i < m.n {
+    if streq(m.items[i].key, key) {
+      return m.items[i].val;
+    }
+    i += 1;
+  }
+  let e: *TypeEnt = new TypeEnt { key: key, val: val };
+  m.items[m.n] = e;
+  m.n += 1;
+  return val;
+}
+
+fn tm_lookup(m: *TypeMap, key: string) -> *Type {
+  let mut i: usize = 0;
+  while i < m.n {
+    if streq(m.items[i].key, key) {
+      return m.items[i].val;
+    }
+    i += 1;
+  }
+  return null;
+}
+
+fn tm_put(m: *TypeMap, key: string, val: *Type) {
+  let mut i: usize = 0;
+  while i < m.n {
+    if streq(m.items[i].key, key) {
+      m.items[i].val = val;
+      return;
+    }
+    i += 1;
+  }
+  let e: *TypeEnt = new TypeEnt { key: key, val: val };
+  m.items[m.n] = e;
+  m.n += 1;
+}
+
+fn tm_get(m: *TypeMap, key: string) -> *Type {
+  return tm_lookup(m, key);
+}
+
+struct RecType {
+  decl: *Decl,
+  is_prelude: bool,
+  targs: []*Type,
+  mangled: string,
+  field_types: []*Type,
+  fields_done: bool,
+  resolving: bool,
+  is_template: bool,
+  offsets: []i64,
+  size: i64,
+  align: i64,
+  env_tenv: *TypeMap,
+}
+
+struct Type {
+  kind: TypeKind,
+  elem: *Type,
+  len: u64,
+  rec: *RecType,
+  params: []*Type,
+  ret: *Type,
+  mangled: string,
+}
+
 struct Decl {
   kind: DeclKind,
   file: string,
@@ -1140,6 +1216,7 @@ struct Decl {
   is_method: bool,
   recv: string,
   decls: *Vec[*Decl],      // module root
+  templ: *RecType,         // generic definition's RecType (check)
 }
 
 // ------------------------------------------------------------- parser -----
@@ -1920,6 +1997,7 @@ fn parse_file(path: string, src: string) -> *Decl {
     params: fresh_param_vec(), ret: null, fields: fresh_field_vec(),
     variants: fresh_variant_vec(), init: null, body: fresh_stmt_vec(),
     tparams: fresh_str_vec(), is_method: false, recv: "", decls: fresh_decl_vec(),
+    templ: null,
   };
   while !at_eof(p) {
     let start: *Token = pk(p);
@@ -1930,7 +2008,7 @@ fn parse_file(path: string, src: string) -> *Decl {
       path: fresh_str_vec(), params: fresh_param_vec(), ret: null,
       fields: fresh_field_vec(), variants: fresh_variant_vec(), init: null,
       body: fresh_stmt_vec(), tparams: fresh_str_vec(), is_method: false,
-      recv: "", decls: fresh_decl_vec(),
+      recv: "", decls: fresh_decl_vec(), templ: null,
     };
     if accept(p, Tok.KwUse) {
       d.kind = DeclKind.DkUse;
@@ -2181,63 +2259,6 @@ enum TypeKind {
   TyIntLit, TyFloatLit, TyNull,
   TyArray, TySlice, TyPtr, TyWeak, TyFn, TyStruct, TyEnum, TyErr,
   TyModule, TyParam,
-}
-
-struct RecType {
-  decl: *Decl,
-  is_prelude: bool,
-  targs: []*Type,
-  mangled: string,
-  field_types: []*Type,
-  fields_done: bool,
-  resolving: bool,
-  is_template: bool,
-  offsets: []i64,
-  size: i64,
-  align: i64,
-}
-
-struct Type {
-  kind: TypeKind,
-  elem: *Type,
-  len: u64,
-  rec: *RecType,
-  params: []*Type,
-  ret: *Type,
-  mangled: string,
-}
-
-struct TypeEnt { key: string, val: *Type }
-struct TypeMap { items: []*TypeEnt, n: usize }
-
-fn tm_new() -> *TypeMap {
-  return new TypeMap { items: make([]*TypeEnt, 65536), n: 0 };
-}
-
-// interning: same mangled key always yields the identical *Type
-fn tm_intern(m: *TypeMap, key: string, val: *Type) -> *Type {
-  let mut i: usize = 0;
-  while i < m.n {
-    if streq(m.items[i].key, key) {
-      return m.items[i].val;
-    }
-    i += 1;
-  }
-  let e: *TypeEnt = new TypeEnt { key: key, val: val };
-  m.items[m.n] = e;
-  m.n += 1;
-  return val;
-}
-
-fn tm_lookup(m: *TypeMap, key: string) -> *Type {
-  let mut i: usize = 0;
-  while i < m.n {
-    if streq(m.items[i].key, key) {
-      return m.items[i].val;
-    }
-    i += 1;
-  }
-  return null;
 }
 
 static mut g_types: *TypeMap = 0 as *TypeMap;
@@ -2545,4 +2566,113 @@ fn check_module(m: *Module) {
     declare_sym(m, d.decls.items[i]);
     i += 1;
   }
+}
+
+
+// ============== generics core (check.c port L4) ===========================
+
+static mut g_tenv: *TypeMap = 0 as *TypeMap;
+
+fn tenv() -> *TypeMap {
+  if g_tenv == null {
+    g_tenv = tm_new();
+  }
+  return g_tenv;
+}
+
+fn rec_intern(decl: *Decl, owner: *Module, mangled: string) -> *RecType {
+  let t: *Type = tm_lookup(rec_map(), mangled);
+  if t != null {
+    return t.rec;
+  }
+  let r: *RecType = new RecType {
+    decl: decl, is_prelude: owner.is_prelude, targs: fresh_type_vec2(),
+    mangled: mangled, field_types: fresh_type_vec2(), fields_done: false,
+    resolving: false, is_template: false, offsets: make([]i64, 8),
+    size: 0, align: 0, env_tenv: null,
+  };
+  tm_intern(rec_map(), mangled, new Type {
+    kind: TypeKind.TyStruct, elem: null, len: 0, rec: r,
+    params: fresh_type_vec2(), ret: null, mangled: mangled,
+  });
+  return r;
+}
+
+fn template_env_of(d: *Decl) -> *TypeMap {
+  let env: *TypeMap = tm_new();
+  let mut i: usize = 0;
+  while i < d.tparams.n {
+    tm_put(env, d.tparams.items[i], ty_param_(d.tparams.items[i]));
+    i += 1;
+  }
+  return env;
+}
+
+fn push_type(items: []*Type, t: *Type) -> []*Type {
+  let out: []*Type = make([]*Type, len(items) + 1);
+  let mut i: usize = 0;
+  while i < len(items) {
+    out[i] = items[i];
+    i += 1;
+  }
+  out[len(items)] = t;
+  return out;
+}
+
+fn ensure_template(d: *Decl, owner: *Module) -> *RecType {
+  if d.templ != null {
+    return d.templ;
+  }
+  let base: string = cat3(owner.path, ".", d.name);
+  let rec: *RecType = rec_intern(d, owner, cat(base, "[]"));
+  rec.is_template = true;
+  rec.targs = fresh_type_vec2();
+  let env: *TypeMap = template_env_of(d);
+  let mut i: usize = 0;
+  while i < d.tparams.n {
+    let tv: *Type = tm_get(env, d.tparams.items[i]);
+    rec.targs = push_type(rec.targs, tv);
+    i += 1;
+  }
+  d.templ = rec;
+  return rec;
+}
+
+fn rec_type_env(rec: *RecType) -> *TypeMap {
+  if rec.env_tenv == null {
+    rec.env_tenv = tm_new();
+  }
+  return rec.env_tenv;
+}
+
+fn inst_from_targs(sym: *Sym, owner: *Module, targs: []*Type) -> *Type {
+  let d: *Decl = sym.decl;
+  let base: string = cat3(owner.path, ".", d.name);
+  let mut mangled: string = cat(base, "[");
+  let mut i: usize = 0;
+  while i < len(targs) {
+    if i > 0 {
+      mangled = cat(mangled, ",");
+    }
+    mangled = cat(mangled, targs[i].mangled);
+    i += 1;
+  }
+  mangled = cat(mangled, "]");
+  let rec: *RecType = rec_intern(d, owner, mangled);
+  if rec.targs.n == 0 && d.tparams.n > 0 {
+    let mut j: usize = 0;
+    while j < d.tparams.n {
+      tm_put(rec_type_env(rec), d.tparams.items[j], targs[j]);
+      j += 1;
+    }
+    rec.targs = targs;
+  }
+  let t: *Type = new Type {
+    kind: TypeKind.TyStruct, elem: null, len: 0, rec: rec,
+    params: fresh_type_vec2(), ret: null, mangled: mangled,
+  };
+  if sym.kind == SymKind.SyEnum {
+    t.kind = TypeKind.TyEnum;
+  }
+  return ty_intern2(mangled, t);
 }
