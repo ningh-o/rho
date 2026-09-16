@@ -3040,7 +3040,7 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
     if expected != null && ty_is_int(expected) && expected.kind != TypeKind.TyIntLit {
       e.typed = expected;
     } else {
-      e.typed = new Type { kind: TypeKind.TyIntLit, elem: null, len: 0, rec: null, params: fresh_type_vec2(), ret: null, mangled: "int_lit" };
+      e.typed = ty_intern2("int_lit", new Type { kind: TypeKind.TyIntLit, elem: null, len: 0, rec: null, params: fresh_type_vec2(), ret: null, mangled: "int_lit" });
     }
     return e.typed;
   }
@@ -3048,7 +3048,7 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
     if expected != null && (expected.kind == TypeKind.TyF32 || expected.kind == TypeKind.TyF64) {
       e.typed = expected;
     } else {
-      e.typed = new Type { kind: TypeKind.TyFloatLit, elem: null, len: 0, rec: null, params: fresh_type_vec2(), ret: null, mangled: "float_lit" };
+      e.typed = ty_intern2("float_lit", new Type { kind: TypeKind.TyFloatLit, elem: null, len: 0, rec: null, params: fresh_type_vec2(), ret: null, mangled: "float_lit" });
     }
     return e.typed;
   }
@@ -3064,7 +3064,7 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
     if expected != null && (expected.kind == TypeKind.TyPtr || expected.kind == TypeKind.TyWeak) {
       e.typed = expected;
     } else {
-      e.typed = new Type { kind: TypeKind.TyNull, elem: null, len: 0, rec: null, params: fresh_type_vec2(), ret: null, mangled: "null" };
+      e.typed = ty_intern2("null", new Type { kind: TypeKind.TyNull, elem: null, len: 0, rec: null, params: fresh_type_vec2(), ret: null, mangled: "null" });
     }
     return e.typed;
   }
@@ -3143,7 +3143,11 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
       if l.kind != TypeKind.TyBool {
         err_at("", 0, 0, "short-circuit operand must be bool");
       }
-      r = check_expr(e.b, ty_prim(0));
+      r = check_expr(e.b, null);
+      if r.kind == TypeKind.TyIntLit || r.kind == TypeKind.TyFloatLit {
+        r = ty_prim(0);
+        e.b.typed = r;
+      }
       if r.kind != TypeKind.TyBool {
         err_at("", 0, 0, "short-circuit operand must be bool");
       }
