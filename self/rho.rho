@@ -3403,6 +3403,11 @@ fn check_field_access(e: *Expr, expected: *Type) -> *Type {
 }
 
 fn check_new(e: *Expr) -> *Type {
+  eprint("[new enter items=");
+  eprint(itoa(e.items.n as i64));
+  eprint(" args=");
+  eprint(itoa(e.args.n as i64));
+  eprint("\n");
   let t: *Type = resolve_type_in_module(cur_module, e.ty);
   if t.kind != TypeKind.TyStruct {
     err_at("", 0, 0, "`new` takes a struct type");
@@ -3411,21 +3416,39 @@ fn check_new(e: *Expr) -> *Type {
   }
   let rec: *RecType = t.rec;
   let d: *Decl = rec.decl;
+  eprint("[new fields=");
+  eprint(itoa(d.fields.n as i64));
+  eprint("\n");
   struct_field_type(rec, if d.fields.n > 0 { d.fields.n - 1 } else { 0 });
   if e.items.n != d.fields.n {
     err_at("", 0, 0, "struct initializer count mismatch");
   }
   let mut i: usize = 0;
   while i < e.items.n {
-    let fa: *FieldAst = (e.items.items[i] as usize) as *FieldAst;
-    let init: *Expr = e.args.items[i];
+    eprint("[new field i=");
+    eprint(itoa(i as i64));
+    eprint("\n");
+    let entry: *Stmt = e.items.items[i];
+    let fname: string = entry.name;
+    let argi: *Expr = e.args.items[i];
+    eprint("[fa=");
+    eprint(fname);
+    eprint("]\n");
     let mut found: bool = false;
     let mut j: usize = 0;
     while j < d.fields.n {
       let df: *FieldAst = d.fields.items[j];
-      if streq(df.name, fa.name) {
+      eprint("[df=");
+      eprint(df.name);
+      eprint("]\n");
+      if streq(df.name, fname) {
+        eprint("[match j=");
+        eprint(itoa(j as i64));
+        eprint("\n");
         let ft: *Type = struct_field_type(rec, j);
-        let got: *Type = check_expr(init, ft);
+        eprint("[sft done\n");
+        let got: *Type = check_expr(argi, ft);
+        eprint("[init checked\n");
         if got != ft && got.kind != TypeKind.TyIntLit && got.kind != TypeKind.TyFloatLit &&
            got.kind != TypeKind.TyErr && ft.kind != TypeKind.TyErr {
           err_at("", 0, 0, "field initializer type mismatch");
