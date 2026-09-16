@@ -2676,6 +2676,7 @@ fn ensure_template(d: *Decl, owner: *Module) -> *RecType {
   rec.is_template = true;
   rec.targs = fresh_type_vec2();
   let env: *TypeMap = template_env_of(d);
+  rec.env_tenv = env;
   let mut i: usize = 0;
   while i < d.tparams.n {
     let tv: *Type = tm_get(env, d.tparams.items[i]);
@@ -4103,11 +4104,19 @@ fn check_stmt(s: *Stmt) {
   }
 }
 
-fn check_fn_body(d: *Decl, sym: *Sym) {
+fn check_fn_body(d: *Decl, sym: *Sym, m: *Module) {
   if d.tparams.n > 0 {
     // generic template: check once under TY_PARAM placeholders
-    let env: *TypeMap = template_env_of(d);
-    g_tenv = env;
+    g_tenv = template_env_of(d);
+  } else if len(d.recv) > 0 {
+    let mut struct_sym: *Sym = sm_get(m.syms, d.recv);
+    if struct_sym == null && prelude_module != null && prelude_module != m {
+      struct_sym = sm_get(prelude_module.syms, d.recv);
+    }
+    if struct_sym != null && struct_sym.decl.tparams.n > 0 {
+      let tmpl: *RecType = ensure_template(struct_sym.decl, m);
+      g_tenv = tmpl.env_tenv;
+    }
   }
   cur_ret = sym.type.ret;
   scope_push();
@@ -4142,6 +4151,13 @@ fn wire_method(m: *Module, d: *Decl) -> *Type {
     err_at("", 0, 0, "method receiver type not found");
     return ty_err();
   }
+  // resolve the signature under the RECEIVER type's template env, so bare
+  // generic references (`self: Option`) name the template
+  let saved_env: *TypeMap = g_tenv;
+  if struct_sym.decl.tparams.n > 0 {
+    let tmpl: *RecType = ensure_template(struct_sym.decl, m);
+    g_tenv = tmpl.env_tenv;
+  }
   let rec: *RecType = ensure_template(struct_sym.decl, m);
   let nparams: usize = d.params.n;
   let mut ps: []*Type = fresh_type_vec2();
@@ -4157,6 +4173,7 @@ fn wire_method(m: *Module, d: *Decl) -> *Type {
     mutable: false, variant_index: 0, local_id: 0, symbol: "",
   };
   rec.methods = push_sym(rec.methods, msym);
+  g_tenv = saved_env;
   return ft;
 }
 
@@ -4230,7 +4247,7 @@ fn check_all(m: *Module) -> i32 {
         mutable: false, variant_index: 0, local_id: 0, symbol: "",
       };
       cur_fn_sym = fsym;
-      check_fn_body(decl, fsym);
+      check_fn_body(decl, fsym, m);
     }
     if decl.kind == DeclKind.DkExtern {
       // resolve the extern signature into its symbol
