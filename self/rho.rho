@@ -2659,7 +2659,7 @@ fn inst_from_targs(sym: *Sym, owner: *Module, targs: []*Type) -> *Type {
   }
   mangled = cat(mangled, "]");
   let rec: *RecType = rec_intern(d, owner, mangled);
-  if rec.targs.n == 0 && d.tparams.n > 0 {
+  if len(rec.targs) == 0 && d.tparams.n > 0 {
     let mut j: usize = 0;
     while j < d.tparams.n {
       tm_put(rec_type_env(rec), d.tparams.items[j], targs[j]);
@@ -2675,4 +2675,259 @@ fn inst_from_targs(sym: *Sym, owner: *Module, targs: []*Type) -> *Type {
     t.kind = TypeKind.TyEnum;
   }
   return ty_intern2(mangled, t);
+}
+
+
+// ============== type substitution & resolution (check.c port L5) =========
+
+fn subst_type(t: *Type, env: *TypeMap) -> *Type {
+  if t == null {
+    return t;
+  }
+  if t.kind == TypeKind.TyParam {
+    let r: *Type = tm_get(env, t.mangled);
+    if r != null {
+      return r;
+    }
+    return t;
+  }
+  if t.kind == TypeKind.TyPtr {
+    return ty_ptr(subst_type(t.elem, env));
+  }
+  if t.kind == TypeKind.TyWeak {
+    return ty_weak(subst_type(t.elem, env));
+  }
+  if t.kind == TypeKind.TySlice {
+    return ty_slice(subst_type(t.elem, env));
+  }
+  if t.kind == TypeKind.TyArray {
+    return ty_array(subst_type(t.elem, env), t.len);
+  }
+  if t.kind == TypeKind.TyFn {
+    let mut ps: []*Type = fresh_type_vec2();
+    let mut i: usize = 0;
+    while i < len(t.params) {
+      ps = push_type(ps, subst_type(t.params[i], env));
+      i += 1;
+    }
+    return ty_fn(ps, subst_type(t.ret, env));
+  }
+  return t;
+}
+
+// bind type parameters by structural matching of a template type against
+// the argument's concrete type
+fn infer_targs(tmpl: *Type, arg: *Type, env: *TypeMap) {
+  if tmpl == null || arg == null {
+    return;
+  }
+  if tmpl.kind != TypeKind.TyParam {
+    if tmpl.kind == TypeKind.TyPtr && arg.kind == TypeKind.TyPtr {
+      infer_targs(tmpl.elem, arg.elem, env);
+      return;
+    }
+    if tmpl.kind == TypeKind.TyWeak && arg.kind == TypeKind.TyWeak {
+      infer_targs(tmpl.elem, arg.elem, env);
+      return;
+    }
+    if tmpl.kind == TypeKind.TySlice && arg.kind == TypeKind.TySlice {
+      infer_targs(tmpl.elem, arg.elem, env);
+      return;
+    }
+    if tmpl.kind == TypeKind.TyArray && arg.kind == TypeKind.TyArray {
+      infer_targs(tmpl.elem, arg.elem, env);
+      return;
+    }
+    return;
+  }
+  let existing: *Type = tm_get(env, tmpl.mangled);
+  if existing == null || existing.kind == TypeKind.TyParam {
+    tm_put(env, tmpl.mangled, arg);
+  }
+}
+
+fn type_has_param(t: *Type) -> bool {
+  if t == null {
+    return false;
+  }
+  if t.kind == TypeKind.TyParam {
+    return true;
+  }
+  if t.elem != null && type_has_param(t.elem) {
+    return true;
+  }
+  if t.kind == TypeKind.TyFn {
+    let mut i: usize = 0;
+    while i < len(t.params) {
+      if type_has_param(t.params[i]) {
+        return true;
+      }
+      i += 1;
+    }
+    if type_has_param(t.ret) {
+      return true;
+    }
+  }
+  if t.rec != null {
+    let mut i: usize = 0;
+    while i < len(t.rec.targs) {
+      if type_has_param(t.rec.targs[i]) {
+        return true;
+      }
+      i += 1;
+    }
+  }
+  return false;
+}
+
+// resolve a named struct/enum type (non-generic path; generics with explicit
+// targs arrive through inst_from_targs via resolve_named)
+fn named_type_simple(sym: *Sym, owner: *Module) -> *Type {
+  let d: *Decl = sym.decl;
+  let base: string = cat3(owner.path, ".", d.name);
+  let rec: *RecType = rec_intern(d, owner, base);
+  let t: *Type = new Type {
+    kind: TypeKind.TyStruct, elem: null, len: 0, rec: rec,
+    params: fresh_type_vec2(), ret: null, mangled: base,
+  };
+  if sym.kind == SymKind.SyEnum {
+    t.kind = TypeKind.TyEnum;
+  }
+  return ty_intern2(base, t);
+}
+
+// resolve a TypeAst into a semantic Type within a module
+fn resolve_type_in_module(m: *Module, ta: *TypeAst) -> *Type {
+  if ta == null {
+    return ty_prim(14); // void
+  }
+  let saved: *Module = cur_module;
+  cur_module = m;
+  let mut result: *Type = ty_err();
+  if ta.kind == TypeAstKind.TaPrim {
+    result = ty_prim(ta.prim);
+  } else if ta.kind == TypeAstKind.TaPtr {
+    result = ty_ptr(resolve_type_in_module(m, ta.elem));
+  } else if ta.kind == TypeAstKind.TaWeak {
+    result = ty_weak(resolve_type_in_module(m, ta.elem));
+  } else if ta.kind == TypeAstKind.TaArray {
+    let elem: *Type = resolve_type_in_module(m, ta.elem);
+    if ta.size == null {
+      result = ty_slice(elem);
+    } else {
+      // TODO(check L6): const-evaluated array sizes land with const_eval
+      result = ty_slice(elem);
+    }
+  } else if ta.kind == TypeAstKind.TaNamed {
+    let last: string = ta.path.items[ta.path.n - 1];
+    if ta.path.n == 1 {
+      if g_tenv != null && ta.targs.n == 0 {
+        let tv: *Type = tm_get(g_tenv, last);
+        if tv != null {
+          cur_module = saved;
+          return tv;
+        }
+      }
+      let mut sym: *Sym = sm_get(m.syms, last);
+      if sym == null || (sym.kind != SymKind.SyStruct && sym.kind != SymKind.SyEnum) {
+        if prelude_module != null && prelude_module != m {
+          sym = sm_get(prelude_module.syms, last);
+          if sym != null && (sym.kind == SymKind.SyStruct || sym.kind == SymKind.SyEnum) {
+            cur_module = saved;
+            return named_type_full(sym, prelude_module, ta);
+          }
+        }
+        err_at("", 0, 0, cat("unknown type `", cat(last, "`")));
+        cur_module = saved;
+        return ty_err();
+      }
+      cur_module = saved;
+      return named_type_full(sym, m, ta);
+    }
+    err_at("", 0, 0, "type paths are `module.Type` at most");
+    cur_module = saved;
+    return ty_err();
+  } else if ta.kind == TypeAstKind.TaFn {
+    let mut ps: []*Type = fresh_type_vec2();
+    let mut i: usize = 0;
+    while i < ta.params.n {
+      ps = push_type(ps, resolve_type_in_module(m, ta.params.items[i]));
+      i += 1;
+    }
+    let r: *Type = resolve_type_in_module(m, ta.ret);
+    result = ty_fn(ps, r);
+  }
+  cur_module = saved;
+  return result;
+}
+
+// full named-type resolution: non-generic, bare-generic (template or bound
+// instance), and explicit-targs paths
+fn named_type_full(sym: *Sym, owner: *Module, ta: *TypeAst) -> *Type {
+  let d: *Decl = sym.decl;
+  let nparams: usize = d.tparams.n;
+  let ntargs: usize = ta.targs.n;
+  if nparams == 0 && ntargs == 0 {
+    return named_type_simple(sym, owner);
+  }
+  if ntargs == 0 {
+    let mut targs: []*Type = fresh_type_vec2();
+    let mut i: usize = 0;
+    while i < nparams {
+      let mut tv: *Type = null;
+      if g_tenv != null {
+        tv = tm_get(g_tenv, d.tparams.items[i]);
+      }
+      if tv == null || tv.kind == TypeKind.TyErr {
+        err_at("", 0, 0, cat("generic type `", cat(d.name, "` needs type arguments")));
+        return ty_err();
+      }
+      targs = push_type(targs, tv);
+      i += 1;
+    }
+    let mut anyp: bool = false;
+    let mut k: usize = 0;
+    while k < len(targs) {
+      if targs[k].kind == TypeKind.TyParam {
+        anyp = true;
+      }
+      k += 1;
+    }
+    if !anyp {
+      return inst_from_targs(sym, owner, targs);
+    }
+    if anyp {
+      let rt: *RecType = ensure_template(d, owner);
+      let t: *Type = new Type {
+        kind: TypeKind.TyStruct, elem: null, len: 0, rec: rt,
+        params: fresh_type_vec2(), ret: null, mangled: rt.mangled,
+      };
+      if sym.kind == SymKind.SyEnum {
+        t.kind = TypeKind.TyEnum;
+      }
+      return ty_intern2(rt.mangled, t);
+    }
+    return ty_err();
+  }
+  if nparams != ntargs {
+    err_at("", 0, 0, cat("wrong type argument count for `", cat(d.name, "`")));
+    return ty_err();
+  }
+  let mut targs: []*Type = fresh_type_vec2();
+  let mut i: usize = 0;
+  while i < ntargs {
+    let mut targ: *Type = resolve_type_in_module(owner, ta.targs.items[i]);
+    if targ.kind == TypeKind.TyIntLit {
+      targ = ty_prim(3); // i32
+    }
+    if targ.kind == TypeKind.TyFloatLit {
+      targ = ty_prim(10); // f64
+    }
+    if targ.kind == TypeKind.TyErr {
+      return ty_err();
+    }
+    targs = push_type(targs, targ);
+    i += 1;
+  }
+  return inst_from_targs(sym, owner, targs);
 }
