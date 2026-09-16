@@ -3650,3 +3650,219 @@ fn resolve_callee(callee: *Expr) -> *CallTarget {
   err_at("", 0, 0, "cannot call this expression");
   return ct;
 }
+
+
+// ============== check_call: builtins (check.c port L6d-2) =================
+
+fn check_call(e: *Expr, expected: *Type) -> *Type {
+  // make(T, n)
+  if e.a.kind == ExprKind.ExName && streq(e.a.sv, "make") {
+    if e.args.n != 2 {
+      err_at("", 0, 0, "make takes (type, length)");
+      e.typed = ty_err();
+      return e.typed;
+    }
+    let tye: *Expr = e.args.items[0];
+    if tye.kind != ExprKind.ExType || tye.ty.kind != TypeAstKind.TaArray || tye.ty.size != null {
+      err_at("", 0, 0, "make takes a slice type like `[]i32`");
+      e.typed = ty_err();
+      return e.typed;
+    }
+    let elem: *Type = resolve_type_in_module(cur_module, tye.ty.elem);
+    let mut ln: *Type = check_expr(e.args.items[1], null);
+    if ln.kind == TypeKind.TyIntLit {
+      ln = ty_prim(12);
+      e.args.items[1].typed = ln;
+    }
+    if !ty_is_int(ln) {
+      err_at("", 0, 0, "make length must be an integer");
+    }
+    e.typed = ty_slice(elem);
+    return e.typed;
+  }
+  // len(x)
+  if e.a.kind == ExprKind.ExName && streq(e.a.sv, "len") {
+    if e.args.n != 1 {
+      err_at("", 0, 0, "len takes one argument");
+      e.typed = ty_err();
+      return e.typed;
+    }
+    let t: *Type = check_expr(e.args.items[0], null);
+    if t.kind != TypeKind.TySlice && t.kind != TypeKind.TyStringK && t.kind != TypeKind.TyArray {
+      err_at("", 0, 0, "len needs an array, slice or string");
+      e.typed = ty_err();
+      return e.typed;
+    }
+    e.typed = ty_prim(12);
+    return e.typed;
+  }
+  // weak.from(p)
+  if e.a.kind == ExprKind.ExField && e.a.a.kind == ExprKind.ExName &&
+     streq(e.a.a.sv, "weak") && streq(e.a.sv, "from") {
+    if e.args.n != 1 {
+      err_at("", 0, 0, "weak.from takes one argument");
+      e.typed = ty_err();
+      return e.typed;
+    }
+    let t: *Type = check_expr(e.args.items[0], null);
+    if t.kind != TypeKind.TyPtr ||
+       (t.elem.kind != TypeKind.TyStruct && t.elem.kind != TypeKind.TyEnum) {
+      err_at("", 0, 0, "weak.from needs a pointer to a new object");
+      e.typed = ty_err();
+      return e.typed;
+    }
+    e.typed = ty_weak(t.elem);
+    return e.typed;
+  }
+  // w.get()
+  if e.a.kind == ExprKind.ExField && streq(e.a.sv, "get") {
+    let mut bt: *Type = e.a.a.typed;
+    if bt == null {
+      bt = check_expr(e.a.a, null);
+    }
+    if bt != null && bt.kind == TypeKind.TyWeak {
+      if e.args.n != 0 {
+        err_at("", 0, 0, "get takes no arguments");
+      }
+      e.typed = ty_ptr(bt.elem);
+      return e.typed;
+    }
+  }
+  // intrinsics.*
+  if e.a.kind == ExprKind.ExField && e.a.a.kind == ExprKind.ExName &&
+     streq(e.a.a.sv, "intrinsics") {
+    let name: string = e.a.sv;
+    let is_load: bool = streq(name, "load_u8") || streq(name, "load_u32") ||
+                        streq(name, "load_u64") || streq(name, "load_i64");
+    let is_store: bool = streq(name, "store_u8") || streq(name, "store_u32") ||
+                         streq(name, "store_u64") || streq(name, "store_i64");
+    let is_memcpy: bool = streq(name, "memcpy");
+    let is_slice_str: bool = streq(name, "slice_string");
+    if !is_load && !is_store && !is_memcpy && !is_slice_str {
+      err_at("", 0, 0, cat("unknown intrinsic `", cat(name, "`")));
+      e.typed = ty_err();
+      return e.typed;
+    }
+    if is_load {
+      if e.args.n != 1 {
+        err_at("", 0, 0, "intrinsics load takes one pointer");
+        e.typed = ty_err();
+        return e.typed;
+      }
+      let t: *Type = check_expr(e.args.items[0], null);
+      if t.kind != TypeKind.TyPtr {
+        err_at("", 0, 0, "intrinsics load needs a pointer");
+        e.typed = ty_err();
+        return e.typed;
+      }
+      let mut k: i32 = 8; // u32 default falls out below
+      if streq(name, "load_u8") { k = 5; }
+      if streq(name, "load_u32") { k = 7; }
+      if streq(name, "load_u64") { k = 8; }
+      if streq(name, "load_i64") { k = 4; }
+      e.typed = ty_prim(k);
+      return e.typed;
+    }
+    if is_store {
+      if e.args.n != 2 {
+        err_at("", 0, 0, "intrinsics store takes pointer and value");
+        e.typed = ty_err();
+        return e.typed;
+      }
+      let t: *Type = check_expr(e.args.items[0], null);
+      if t.kind != TypeKind.TyPtr {
+        err_at("", 0, 0, "intrinsics store needs a pointer");
+        e.typed = ty_err();
+        return e.typed;
+      }
+      check_expr(e.args.items[1], null);
+      e.typed = ty_prim(14);
+      return e.typed;
+    }
+    if is_memcpy {
+      if e.args.n != 3 {
+        err_at("", 0, 0, "memcpy takes dst, src and count");
+        e.typed = ty_err();
+        return e.typed;
+      }
+      check_expr(e.args.items[0], null);
+      check_expr(e.args.items[1], null);
+      check_expr(e.args.items[2], null);
+      e.typed = ty_prim(14);
+      return e.typed;
+    }
+    // slice_string
+    if e.args.n != 1 {
+      err_at("", 0, 0, "slice_string takes one []u8");
+      e.typed = ty_err();
+      return e.typed;
+    }
+    let t: *Type = check_expr(e.args.items[0], null);
+    if t.kind != TypeKind.TySlice {
+      err_at("", 0, 0, "slice_string takes a []u8");
+      e.typed = ty_err();
+      return e.typed;
+    }
+    e.typed = ty_prim(11);
+    return e.typed;
+  }
+  // general call path (L6e): resolve_callee + arg checking + generics
+  let ct: *CallTarget = resolve_callee(e.a);
+  if ct.kind == CtKind.CtNone {
+    e.typed = ty_err();
+    return e.typed;
+  }
+  if ct.kind == CtKind.CtVariant {
+    // variant construction: check args against the variant payload types
+    let d: *Decl = ct.enum_type.rec.decl;
+    let v: *VariantAst = d.variants.items[ct.variant];
+    if ct.is_ctor {
+      // named-args struct-variant construction
+      let mut i: usize = 0;
+      while i < e.args.n {
+        let init: *Expr = e.args.items[i];
+        check_expr(init, null);
+        i += 1;
+      }
+    } else {
+      let mut i: usize = 0;
+      while i < e.args.n {
+        let mut at: *Type = null;
+        if i < v.types.n {
+          at = resolve_type_in_module(cur_module, v.types.items[i]);
+        }
+        check_expr(e.args.items[i], at);
+        i += 1;
+      }
+    }
+    e.typed = ct.enum_type;
+    return e.typed;
+  }
+  // fn/extern/indirect: check args against the signature
+  let ft: *Type = ct.fn_type;
+  let nparams: usize = len(ft.params);
+  if ct.is_method {
+    // args[0] is the receiver; the callee's receiver expr was already checked
+  }
+  if e.args.n != nparams {
+    err_at("", 0, 0, "argument count mismatch");
+    e.typed = ty_err();
+    return e.typed;
+  }
+  let mut i: usize = 0;
+  while i < e.args.n {
+    let pt: *Type = ft.params[i];
+    let got: *Type = check_expr(e.args.items[i], pt);
+    let adapted: *Type = adapt_literal(got, pt);
+    if adapted != pt && adapted.kind != TypeKind.TyIntLit &&
+       adapted.kind != TypeKind.TyFloatLit && adapted.kind != TypeKind.TyNull &&
+       pt.kind != TypeKind.TyErr && got.kind != TypeKind.TyErr {
+      err_at("", 0, 0, "argument type mismatch");
+      e.typed = ty_err();
+      return e.typed;
+    }
+    i += 1;
+  }
+  e.typed = ft.ret;
+  return e.typed;
+}
