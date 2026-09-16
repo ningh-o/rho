@@ -3464,8 +3464,16 @@ fn check_field_access(e: *Expr, expected: *Type) -> *Type {
             e.typed = ty_err();
             return e.typed;
           }
+          let mut vtype: *Type = sym.type;
+          // unit variant of a generic enum: take the expected instantiation
+          // when the context pins one (`let x: Option[i32] = Option.None`)
+          if vtype != null && vtype.rec != null && vtype.rec.is_template &&
+             expected != null && expected.kind == TypeKind.TyEnum &&
+             expected.rec != null && expected.rec.decl == d {
+            vtype = expected;
+          }
           let vs: *Sym = new Sym {
-            kind: SymKind.SyVariant, name: e.sv, type: sym.type, decl: d,
+            kind: SymKind.SyVariant, name: e.sv, type: vtype, decl: d,
             mutable: false, variant_index: i as i32, local_id: 0, symbol: "",
           };
           e.sym = vs;
@@ -3779,6 +3787,16 @@ fn resolve_callee(callee: *Expr) -> *CallTarget {
     if rec_t != null {
       let rec: *RecType = rec_t.rec;
       let mut i: usize = 0;
+      eprint("[meths of ");
+      eprint(rec.mangled);
+      eprint(":");
+      let mut mi: usize = 0;
+      while mi < len(rec.methods) {
+        eprint(rec.methods[mi].name);
+        eprint(",");
+        mi += 1;
+      }
+      eprint("]\n");
       while i < len(rec.methods) {
         let m: *Sym = rec.methods[i];
         if streq(m.name, callee.sv) {
@@ -3792,8 +3810,31 @@ fn resolve_callee(callee: *Expr) -> *CallTarget {
         }
         i += 1;
       }
+      eprint("[tmplchk rec=");
+      eprint(rec.mangled);
+      eprint(" istpl=");
+      if rec.is_template {
+        eprint("y");
+      } else {
+        eprint("n");
+      }
+      eprint(" decltpl=");
+      if rec.decl.templ != null {
+        eprint("y");
+      } else {
+        eprint("n");
+      }
+      eprint("]\n");
       if !rec.is_template && rec.decl.templ != null {
         let tmpl: *RecType = rec.decl.templ;
+        eprint("[tmpl meths: ");
+        let mut ti: usize = 0;
+        while ti < len(tmpl.methods) {
+          eprint(tmpl.methods[ti].name);
+          eprint(",");
+          ti += 1;
+        }
+        eprint("]\n");
         let mut j: usize = 0;
         while j < len(tmpl.methods) {
           let m: *Sym = tmpl.methods[j];
@@ -4385,6 +4426,11 @@ fn check_all(m: *Module) -> i32 {
       }
     }
     if decl.kind == DeclKind.DkFn {
+      eprint("[p1 ");
+      eprint(decl.name);
+      eprint(" recv=");
+      eprint(decl.recv);
+      eprint("]\n");
       if len(decl.recv) > 0 {
         wire_method(m, decl);
       }
