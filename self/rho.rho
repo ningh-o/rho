@@ -4065,3 +4065,80 @@ fn check_fn_body(d: *Decl, sym: *Sym) {
   scope_pop();
   g_tenv = null;
 }
+
+
+// ============== check driver (check.c port L6f) ===========================
+
+// attach a method to its receiver struct's RecType and build the fn type
+fn wire_method(m: *Module, d: *Decl) -> *Type {
+  let mut struct_sym: *Sym = sm_get(m.syms, d.recv);
+  if struct_sym == null || (struct_sym.kind != SymKind.SyStruct && struct_sym.kind != SymKind.SyEnum) {
+    err_at("", 0, 0, "method receiver type not found");
+    return ty_err();
+  }
+  let rec: *RecType = ensure_template(struct_sym.decl, m);
+  let nparams: usize = d.params.n;
+  let mut ps: []*Type = fresh_type_vec2();
+  let mut i: usize = 0;
+  while i < nparams {
+    ps = push_type(ps, resolve_type_in_module(m, d.params.items[i].ty));
+    i += 1;
+  }
+  let ret: *Type = resolve_type_in_module(m, d.ret);
+  let ft: *Type = ty_fn(ps, ret);
+  let msym: *Sym = new Sym {
+    kind: SymKind.SyFn, name: d.name, type: ft, decl: d,
+    mutable: false, variant_index: 0, local_id: 0, symbol: "",
+  };
+  rec.methods = push_sym(rec.methods, msym);
+  return ft;
+}
+
+// full semantic check of a parsed module; returns the diag count
+fn check_all(m: *Module) -> i32 {
+  cur_module = m;
+  check_module(m);
+  let d: *Decl = m.root;
+  // pass 1: resolve signatures and wire methods
+  let mut i: usize = 0;
+  while i < d.decls.n {
+    let decl: *Decl = d.decls.items[i];
+    if decl.kind == DeclKind.DkFn {
+      if len(decl.recv) > 0 {
+        wire_method(m, decl);
+      }
+    }
+    i += 1;
+  }
+  // pass 2: check fn bodies (plain fns and methods alike; generics once)
+  i = 0;
+  while i < d.decls.n {
+    let decl: *Decl = d.decls.items[i];
+    if decl.kind == DeclKind.DkFn {
+      // build the fn symbol's signature type on the fly
+      let nparams: usize = decl.params.n;
+      let mut ps: []*Type = fresh_type_vec2();
+      let mut j: usize = 0;
+      while j < nparams {
+        ps = push_type(ps, resolve_type_in_module(m, decl.params.items[j].ty));
+        j += 1;
+      }
+      let ret: *Type = resolve_type_in_module(m, decl.ret);
+      let ft: *Type = ty_fn(ps, ret);
+      let fsym: *Sym = new Sym {
+        kind: SymKind.SyFn, name: decl.name, type: ft, decl: decl,
+        mutable: false, variant_index: 0, local_id: 0, symbol: "",
+      };
+      cur_fn_sym = fsym;
+      check_fn_body(decl, fsym);
+    }
+    if decl.kind == DeclKind.DkStatic || decl.kind == DeclKind.DkConst {
+      if decl.init != null {
+        let ann: *Type = resolve_type_in_module(m, decl.ret);
+        check_expr(decl.init, ann);
+      }
+    }
+    i += 1;
+  }
+  return diag_count();
+}
