@@ -3275,6 +3275,58 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
   if e.kind == ExprKind.ExIf {
     return check_if_expr(e, expected);
   }
+  if e.kind == ExprKind.ExQmark {
+    // expr? : expr must be a Result; yields the Ok payload
+    let et: *Type = check_expr(e.a, null);
+    if et.kind != TypeKind.TyEnum {
+      err_at("", 0, 0, "`?` needs a Result");
+      e.typed = ty_err();
+      return e.typed;
+    }
+    if len(et.rec.targs) != 2 {
+      err_at("", 0, 0, "`?` needs a Result[T, E]");
+      e.typed = ty_err();
+      return e.typed;
+    }
+    e.typed = et.rec.targs[0];
+    return e.typed;
+  }
+  if e.kind == ExprKind.ExClosure {
+    // params: type ASTs resolve now; body checked in a nested scope
+    scope_push();
+    let mut ps: []*Type = fresh_type_vec2();
+    let mut i: usize = 0;
+    while i < e.params.n {
+      let p: *Param = e.params.items[i];
+      let pt: *Type = resolve_type_in_module(cur_module, p.ty);
+      ps = push_type(ps, pt);
+      let psym: *Sym = new Sym {
+        kind: SymKind.SyParam, name: p.name, type: pt, decl: null,
+        mutable: false, variant_index: 0, local_id: next_local_id, symbol: "",
+      };
+      next_local_id += 1;
+      scope_decl(p.name, psym);
+      i += 1;
+    }
+    let mut rt: *Type = ty_prim(14);
+    if e.ret != null {
+      rt = resolve_type_in_module(cur_module, e.ret);
+    }
+    // return statements inside check against the closure's return type
+    let saved_ret: *Type = cur_ret;
+    cur_ret = rt;
+    let bt: *Type = check_block_value2(e.items);
+    cur_ret = saved_ret;
+    let ends_ret: bool = e.items.n > 0 && e.items.items[e.items.n - 1].kind == StmtKind.StReturn;
+    if !ends_ret && rt.kind != TypeKind.TyVoid && bt != rt && bt.kind != TypeKind.TyErr &&
+       bt.kind != TypeKind.TyIntLit && bt.kind != TypeKind.TyFloatLit &&
+       rt.kind != TypeKind.TyErr {
+      err_at("", 0, 0, "closure body type mismatch");
+    }
+    scope_pop();
+    e.typed = ty_fn(ps, rt);
+    return e.typed;
+  }
   if e.kind == ExprKind.ExField {
     return check_field_access(e, expected);
   }
