@@ -2934,6 +2934,25 @@ const char *rho_sanitize(const char *s) {
   return sb.buf;
 }
 
+// symbol-name sanitize: instantiation markers (`push$u8`) must not fold to
+// the same token as a plain identifier (`push_u8`), so `$` escapes to `_Q_`
+const char *rho_sanitize_sym(const char *s) {
+  SB sb = {0};
+  for (const char *p = s; *p; p++) {
+    char c = *p;
+    bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '_';
+    if (ok)
+      sb_push(&sb, c);
+    else if (c == '$')
+      sb_append_c(&sb, "_Q_");
+    else
+      sb_push(&sb, '_');
+  }
+  sb_push(&sb, 0);
+  return sb.buf;
+}
+
 const char *sym_symbol(Sym *s) {
   if (s->symbol)
     return s->symbol;
@@ -2945,7 +2964,7 @@ const char *sym_symbol(Sym *s) {
   // instantiation names carry type arguments (`swap$i32,i64`) — sanitize so
   // the assembler sees one legal token
   s->symbol = arena_printf("rho_%s__%s", rho_sanitize(str_to_c(m->path)),
-                           rho_sanitize(str_to_c(s->name)));
+                           rho_sanitize_sym(str_to_c(s->name)));
   return s->symbol;
 }
 

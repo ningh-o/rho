@@ -177,6 +177,11 @@ static void map_grow(Map *m) {
     if (old.slots[i].used)
       map_put(m, old.slots[i].key, old.slots[i].val);
   }
+  // the rehash above re-appended keys in slot order, which REORDERS the
+  // list; restore the original insertion order or any loop iterating
+  // m->keys by index (check phase 2/3, lower) skips and double-visits
+  // entries across the grow
+  m->keys = old.keys;
 }
 
 void *map_get(const Map *m, Str key) {
