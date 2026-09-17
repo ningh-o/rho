@@ -1229,6 +1229,8 @@ struct Decl {
   decls: *Vec[*Decl],      // module root
   templ: *RecType,         // generic definition's RecType (check)
   templated: bool,         // generic template: never lowered directly
+  tenv: *TypeMap,          // instantiation env (clones)
+  owner: *Module,          // owning module (decl registration)
   ceval_ok: bool,
   ceval_is_int: bool,
   ceval_i: u64,
@@ -2015,7 +2017,7 @@ fn parse_file(path: string, src: string) -> *Decl {
     variants: fresh_variant_vec(), init: null, body: fresh_stmt_vec(),
     tparams: fresh_str_vec(), is_method: false, recv: "", decls: fresh_decl_vec(),
     templ: null,
-    templated: false, ceval_ok: false, ceval_is_int: false, ceval_i: 0, ceval_f: 0.0,
+    templated: false, tenv: null, owner: null, ceval_ok: false, ceval_is_int: false, ceval_i: 0, ceval_f: 0.0,
   };
   while !at_eof(p) {
     let start: *Token = pk(p);
@@ -2027,7 +2029,7 @@ fn parse_file(path: string, src: string) -> *Decl {
       fields: fresh_field_vec(), variants: fresh_variant_vec(), init: null,
       body: fresh_stmt_vec(), tparams: fresh_str_vec(), is_method: false,
       recv: "", decls: fresh_decl_vec(), templ: null,
-    templated: false, ceval_ok: false, ceval_is_int: false, ceval_i: 0, ceval_f: 0.0,
+    templated: false, tenv: null, owner: null, ceval_ok: false, ceval_is_int: false, ceval_i: 0, ceval_f: 0.0,
     };
     if accept(p, Tok.KwUse) {
       d.kind = DeclKind.DkUse;
@@ -2824,31 +2826,78 @@ fn subst_type(t: *Type, env: *TypeMap) -> *Type {
 // bind type parameters by structural matching of a template type against
 // the argument's concrete type
 fn infer_targs(tmpl: *Type, arg: *Type, env: *TypeMap) {
-  if tmpl == null || arg == null {
+  if tmpl == null || arg == null || tmpl.kind != TypeKind.TyParam {
+    if tmpl == null || arg == null {
+      return;
+    }
+    if tmpl.kind == TypeKind.TyPtr {
+      if arg.kind == TypeKind.TyPtr {
+        infer_targs(tmpl.elem, arg.elem, env);
+      }
+      return;
+    }
+    if tmpl.kind == TypeKind.TyWeak {
+      if arg.kind == TypeKind.TyWeak {
+        infer_targs(tmpl.elem, arg.elem, env);
+      }
+      return;
+    }
+    if tmpl.kind == TypeKind.TySlice {
+      if arg.kind == TypeKind.TySlice {
+        infer_targs(tmpl.elem, arg.elem, env);
+      }
+      return;
+    }
+    if tmpl.kind == TypeKind.TyArray {
+      if arg.kind == TypeKind.TyArray && arg.len == tmpl.len {
+        infer_targs(tmpl.elem, arg.elem, env);
+      }
+      return;
+    }
+    if tmpl.kind == TypeKind.TyFn {
+      if arg.kind == TypeKind.TyFn && len(arg.params) == len(tmpl.params) {
+        let mut i: usize = 0;
+        while i < len(tmpl.params) {
+          infer_targs(tmpl.params[i], arg.params[i], env);
+          i += 1;
+        }
+        infer_targs(tmpl.ret, arg.ret, env);
+      }
+      return;
+    }
+    if tmpl.kind == TypeKind.TyStruct || tmpl.kind == TypeKind.TyEnum {
+      if arg.kind == tmpl.kind && arg.rec != null && tmpl.rec != null &&
+         arg.rec.decl == tmpl.rec.decl {
+        let n: usize = if len(tmpl.rec.targs) < len(arg.rec.targs) {
+          len(tmpl.rec.targs)
+        } else {
+          len(arg.rec.targs)
+        };
+        let mut i: usize = 0;
+        while i < n {
+          infer_targs(tmpl.rec.targs[i], arg.rec.targs[i], env);
+          i += 1;
+        }
+      }
+      return;
+    }
     return;
   }
-  if tmpl.kind != TypeKind.TyParam {
-    if tmpl.kind == TypeKind.TyPtr && arg.kind == TypeKind.TyPtr {
-      infer_targs(tmpl.elem, arg.elem, env);
-      return;
-    }
-    if tmpl.kind == TypeKind.TyWeak && arg.kind == TypeKind.TyWeak {
-      infer_targs(tmpl.elem, arg.elem, env);
-      return;
-    }
-    if tmpl.kind == TypeKind.TySlice && arg.kind == TypeKind.TySlice {
-      infer_targs(tmpl.elem, arg.elem, env);
-      return;
-    }
-    if tmpl.kind == TypeKind.TyArray && arg.kind == TypeKind.TyArray {
-      infer_targs(tmpl.elem, arg.elem, env);
-      return;
-    }
-    return;
-  }
-  let existing: *Type = tm_get(env, tmpl.mangled);
-  if existing == null || existing.kind == TypeKind.TyParam {
+  let bound: *Type = tm_get(env, tmpl.mangled);
+  if bound == null {
     tm_put(env, tmpl.mangled, arg);
+  } else if bound != arg && bound.kind != TypeKind.TyErr && arg.kind != TypeKind.TyErr {
+    // conflicting bindings: prefer the concrete over a literal
+    if bound.kind == TypeKind.TyIntLit || arg.kind == TypeKind.TyIntLit ||
+       bound.kind == TypeKind.TyFloatLit || arg.kind == TypeKind.TyFloatLit {
+      if bound.kind == TypeKind.TyIntLit || bound.kind == TypeKind.TyFloatLit {
+        if arg.kind != TypeKind.TyIntLit && arg.kind != TypeKind.TyFloatLit {
+          tm_put(env, tmpl.mangled, arg);
+        }
+      } else {
+        tm_put(env, tmpl.mangled, bound);
+      }
+    }
   }
 }
 
@@ -3413,7 +3462,7 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
       }
       ci += 1;
     }
-    e.caps = caps.items;
+    e.caps = caps.items[0..caps.n];
     e.typed = ty_fn(ps, rt);
     return e.typed;
   }
@@ -3507,6 +3556,13 @@ fn check_field_access(e: *Expr, expected: *Type) -> *Type {
     let deref: *Type = base.elem;
     if deref.kind == TypeKind.TyStruct {
       let rec: *RecType = deref.rec;
+      eprint("[FA-REC m=");
+      eprint(rec.mangled);
+      eprint(" field=");
+      eprint(e.sv);
+      eprint(" done=");
+      if rec.fields_done { eprint("y"); } else { eprint("n"); }
+      eprint("\n");
       let d: *Decl = rec.decl;
       let mut i: usize = 0;
       while i < d.fields.n {
@@ -3744,8 +3800,10 @@ fn check_match(e: *Expr, expected: *Type) -> *Type {
                 eprint("\n");
                 next_local_id += 1;
                 arm.bind_syms = push_sym(arm.bind_syms, bs);
+                arm.bind_fidx = push_i64(arm.bind_fidx, b as i64);
               } else {
                 arm.bind_syms = push_sym(arm.bind_syms, null);
+                arm.bind_fidx = push_i64(arm.bind_fidx, b as i64);
               }
               b += 1;
             }
@@ -3775,8 +3833,10 @@ fn check_match(e: *Expr, expected: *Type) -> *Type {
                 };
                 next_local_id += 1;
                 arm.bind_syms = push_sym(arm.bind_syms, bs);
+                arm.bind_fidx = push_i64(arm.bind_fidx, fidx);
               } else {
                 arm.bind_syms = push_sym(arm.bind_syms, null);
+                arm.bind_fidx = push_i64(arm.bind_fidx, fidx);
               }
               b += 1;
             }
@@ -4269,6 +4329,61 @@ fn check_call(e: *Expr, expected: *Type) -> *Type {
     e.typed = ct.enum_type;
     return e.typed;
   }
+  // generic call: infer the type arguments and specialize
+  if ct.kind == CtKind.CtFn &&
+     (ct.inst_rec != null || (ct.sym.decl.templated && ct.sym.decl.tparams.n > 0)) {
+    let env: *TypeMap = tm_new();
+    let names: *Vec[string] = make_str_vec();
+    if ct.inst_rec != null {
+      let rd: *Decl = ct.inst_rec.decl;
+      let mut ri: usize = 0;
+      while ri < rd.tparams.n && ri < len(ct.inst_rec.targs) {
+        names.push(rd.tparams.items[ri]);
+        tm_put(env, rd.tparams.items[ri], ct.inst_rec.targs[ri]);
+        ri += 1;
+      }
+    }
+    let mut ni: usize = 0;
+    while ni < ct.sym.decl.tparams.n {
+      names.push(ct.sym.decl.tparams.items[ni]);
+      ni += 1;
+    }
+    let fn_t: *Type = ct.fn_type; // template signature
+    let nparams0: usize = len(fn_t.params);
+    let first: usize = if ct.is_method { 1 } else { 0 };
+    if ct.is_method {
+      let mut recv: *Type = e.a.a.typed;
+      if recv == null {
+        recv = check_expr(e.a.a, null);
+      }
+      infer_targs(fn_t.params[0], recv, env);
+    }
+    if e.args.n + first != nparams0 {
+      err_at("", 0, 0, "argument count mismatch");
+      e.typed = ty_err();
+      return e.typed;
+    }
+    let mut gi: usize = 0;
+    while gi < e.args.n {
+      let at: *Type = check_expr(e.args.items[gi], null);
+      infer_targs(fn_t.params[first + gi], at, env);
+      gi += 1;
+    }
+    // untyped literals adapt through a direct `-> T` return
+    if expected != null && fn_t.ret != null && fn_t.ret.kind == TypeKind.TyParam {
+      let targ: *Type = tm_get(env, fn_t.ret.mangled);
+      if targ != null && targ.kind == TypeKind.TyIntLit && ty_is_int(expected) {
+        tm_put(env, fn_t.ret.mangled, expected);
+      } else if targ != null && targ.kind == TypeKind.TyFloatLit && ty_is_flt(expected) {
+        tm_put(env, fn_t.ret.mangled, expected);
+      }
+    }
+    let inst: *Sym = instantiate_fn(ct.sym, names.items[0..names.n], env);
+    ct.sym = inst;
+    ct.fn_type = inst.type;
+    ct.inst_rec = null;
+    e.a.sym = inst; // lower emits the call against the instantiation
+  }
   // fn/extern/indirect: check args against the signature
   let ft: *Type = ct.fn_type;
   let nparams: usize = len(ft.params);
@@ -4511,7 +4626,13 @@ fn check_fn_body(d: *Decl, sym: *Sym, m: *Module) {
   let mut i: usize = 0;
   while i < d.params.n {
     let p: *Param = d.params.items[i];
-    let pt: *Type = resolve_type_in_module(cur_module, p.ty);
+    // use the symbol's resolved signature: instantiation clones carry
+    // concrete param types the AST re-resolution would clobber
+    let pt: *Type = if i < len(sym.type.params) {
+      sym.type.params[i]
+    } else {
+      resolve_type_in_module(cur_module, p.ty)
+    };
     let ps: *Sym = new Sym {
       kind: SymKind.SyParam, name: p.name, type: pt, decl: null,
       mutable: false, variant_index: 0, local_id: next_local_id, symbol: "",
@@ -4644,7 +4765,113 @@ fn check_all(m: *Module) -> i32 {
     }
     i += 1;
   }
-  // pass 2: check fn bodies (plain fns and methods alike; generics once)
+  // pass 2a: resolve fn signatures (and templated flags) for every decl —
+  // before any body checks, so calls see concrete templates
+  i = 0;
+  while i < d.decls.n {
+    let decl: *Decl = d.decls.items[i];
+    if decl.kind == DeclKind.DkFn {
+      if len(decl.recv) > 0 {
+        let mut rsym: *Sym = sm_get(m.syms, decl.recv);
+        if rsym == null && prelude_module != null && prelude_module != m {
+          rsym = sm_get(prelude_module.syms, decl.recv);
+        }
+        if rsym != null && rsym.decl.tparams.n > 0 {
+          decl.templated = true;
+        }
+      }
+      if decl.tparams.n > 0 {
+        decl.templated = true;
+      }
+      let nparams0: usize = decl.params.n;
+      let mut ps0: []*Type = fresh_type_vec2();
+      let mut j0: usize = 0;
+      while j0 < nparams0 {
+        if len(decl.recv) > 0 {
+          let rsym2: *Sym = sm_get(m.syms, decl.recv);
+          if rsym2 != null && rsym2.decl.tparams.n > 0 {
+            let tmpl0: *RecType = ensure_template(rsym2.decl, m);
+            g_tenv = tmpl0.env_tenv;
+            ps0 = push_type(ps0, resolve_type_in_module(m, decl.params.items[j0].ty));
+            g_tenv = null;
+            j0 += 1;
+            continue;
+          }
+        }
+        if decl.tparams.n > 0 {
+          let saved_env0: *TypeMap = g_tenv;
+          g_tenv = template_env_of(decl);
+          ps0 = push_type(ps0, resolve_type_in_module(m, decl.params.items[j0].ty));
+          g_tenv = saved_env0;
+          j0 += 1;
+          continue;
+        }
+        ps0 = push_type(ps0, resolve_type_in_module(m, decl.params.items[j0].ty));
+        j0 += 1;
+      }
+      let mut ret0: *Type = null;
+      if decl.tparams.n > 0 {
+        let saved_env1: *TypeMap = g_tenv;
+        g_tenv = template_env_of(decl);
+        ret0 = resolve_type_in_module(m, decl.ret);
+        g_tenv = saved_env1;
+      } else if len(decl.recv) > 0 {
+        let rsym3: *Sym = sm_get(m.syms, decl.recv);
+        if rsym3 != null && rsym3.decl.tparams.n > 0 {
+          let tmpl1: *RecType = ensure_template(rsym3.decl, m);
+          g_tenv = tmpl1.env_tenv;
+          ret0 = resolve_type_in_module(m, decl.ret);
+          g_tenv = null;
+        } else {
+          ret0 = resolve_type_in_module(m, decl.ret);
+        }
+      } else {
+        ret0 = resolve_type_in_module(m, decl.ret);
+      }
+      let ft0: *Type = ty_fn(ps0, ret0);
+      let mut tsym0: *Sym = sm_get(m.syms, decl.name);
+      if decl.is_method {
+        tsym0 = sm_get(m.syms, cat3(decl.recv, ".", decl.name));
+      }
+      if tsym0 != null {
+        tsym0.type = ft0;
+      }
+    }
+    if decl.kind == DeclKind.DkExtern {
+      let esym: *Sym = sm_get(m.syms, decl.name);
+      if esym != null && esym.type == null {
+        let mut ps1: []*Type = fresh_type_vec2();
+        let mut j1: usize = 0;
+        while j1 < decl.params.n {
+          ps1 = push_type(ps1, resolve_type_in_module(m, decl.params.items[j1].ty));
+          j1 += 1;
+        }
+        esym.type = ty_fn(ps1, resolve_type_in_module(m, decl.ret));
+      }
+    }
+    if decl.kind == DeclKind.DkStatic || decl.kind == DeclKind.DkConst {
+      let ann: *Type = resolve_type_in_module(m, decl.ret);
+      let ssym: *Sym = sm_get(m.syms, decl.name);
+      if ssym != null {
+        ssym.type = ann;
+      }
+      if decl.init != null {
+        check_expr(decl.init, ann);
+        let v: *CV = const_eval(decl.init, m);
+        if !v.ok {
+          err_at(decl.file, decl.line, decl.col, cat3(decl.name, ": initializer must be a compile-time constant", ""));
+        } else {
+          decl.ceval_ok = true;
+          decl.ceval_is_int = v.is_int;
+          decl.ceval_i = v.i;
+          decl.ceval_f = v.f;
+        }
+        decl.init.typed = ann;
+      }
+    }
+    i += 1;
+  }
+  // pass 2b: check fn bodies (plain fns and methods alike; generics once)
   i = 0;
   while i < d.decls.n {
     let decl: *Decl = d.decls.items[i];
@@ -4662,10 +4889,12 @@ fn check_all(m: *Module) -> i32 {
         if rsym != null && rsym.decl.tparams.n > 0 {
           let tmpl: *RecType = ensure_template(rsym.decl, m);
           g_tenv = tmpl.env_tenv;
+          decl.templated = true;
         }
       }
       if decl.tparams.n > 0 {
         g_tenv = template_env_of(decl);
+        decl.templated = true;
       }
       let nparams: usize = decl.params.n;
       let mut ps: []*Type = fresh_type_vec2();
@@ -4677,7 +4906,10 @@ fn check_all(m: *Module) -> i32 {
       let ret: *Type = resolve_type_in_module(m, decl.ret);
       let ft: *Type = ty_fn(ps, ret);
       g_tenv = null;
-      let tsym: *Sym = sm_get(m.syms, decl.name);
+      let mut tsym: *Sym = sm_get(m.syms, decl.name);
+      if decl.is_method {
+        tsym = sm_get(m.syms, cat3(decl.recv, ".", decl.name));
+      }
       if tsym != null {
         tsym.type = ft;
       }
@@ -4710,9 +4942,34 @@ fn check_all(m: *Module) -> i32 {
       }
       if decl.init != null {
         check_expr(decl.init, ann);
+        let v: *CV = const_eval(decl.init, m);
+        if !v.ok {
+          err_at(decl.file, decl.line, decl.col, cat3(decl.name, ": initializer must be a compile-time constant", ""));
+        } else {
+          decl.ceval_ok = true;
+          decl.ceval_is_int = v.is_int;
+          decl.ceval_i = v.i;
+          decl.ceval_f = v.f;
+        }
+        decl.init.typed = ann;
       }
     }
     i += 1;
+  }
+  // instantiation worklist: each clone's body re-checked under its concrete
+  // environment; checking may discover further instantiations, so the loop
+  // runs until the queue settles
+  if g_instantiations != null {
+    let mut wl: usize = 0;
+    while wl < g_instantiations.n {
+      let isym: *Sym = g_instantiations.items[wl];
+      wl += 1;
+      let saved_env: *TypeMap = g_tenv;
+      g_tenv = isym.decl.tenv;
+      cur_fn_sym = isym;
+      check_fn_body(isym.decl, isym, m);
+      g_tenv = saved_env;
+    }
   }
   scope_pop();
   return diag_count();
@@ -5048,7 +5305,20 @@ fn new_vreg(c: *LCtx, ty: IRType) -> *IRVreg {
 }
 
 fn new_slot(c: *LCtx, size: i64, align: i64, name: string) -> *IRSlot {
-  let s: *IRSlot = new IRSlot { id: c.f.next_slot, size: size, align: align, name: name };
+  // scalars get 8-byte slots: the register spill stores full 64-bit slots
+  // and narrower accesses simply use the low bytes
+  let mut sz: i64 = size;
+  if sz == 0 {
+    sz = 8;
+  }
+  if sz < 8 {
+    sz = 8;
+  }
+  let mut al: i64 = align;
+  if al == 0 {
+    al = 8;
+  }
+  let s: *IRSlot = new IRSlot { id: c.f.next_slot, size: sz, align: al, name: name };
   c.f.next_slot += 1;
   c.f.slots = push_slot(c.f.slots, s);
   return s;
@@ -5667,6 +5937,9 @@ fn type_size(t: *Type) -> i64 {
   if t.kind == TypeKind.TyStringK || t.kind == TypeKind.TySlice {
     return 24;
   }
+  if t.kind == TypeKind.TyFn {
+    return 16; // {code, env}
+  }
   if t.kind == TypeKind.TyStruct || t.kind == TypeKind.TyEnum {
     layout_rec(t.rec);
     return t.rec.size;
@@ -6048,9 +6321,33 @@ fn sym_symbol(s: *Sym) -> string {
   if s.owner != null {
     path = rho_sanitize(s.owner.path);
   }
-  let sym: string = cat3("rho_", cat3(path, "__", rho_sanitize(s.name)), "");
+  // instantiation markers (`push$u8`) must not fold to the same token as a
+  // plain identifier (`push_u8`), so `$` escapes to `_Q_`
+  let name: string = rho_sanitize_sym(s.name);
+  let sym: string = cat3("rho_", cat3(path, "__", name), "");
   s.symbol = sym;
   return sym;
+}
+
+fn rho_sanitize_sym(s: string) -> string {
+  let buf: *Vec[u8] = new Vec[u8] { items: make([]u8, 32), n: 0 };
+  let mut i: usize = 0;
+  while i < len(s) {
+    let c: u8 = s[i];
+    let ok: bool = (c >= 97 && c <= 122) || (c >= 65 && c <= 90) ||
+                   (c >= 48 && c <= 57) || c == 95;
+    if ok {
+      buf.push(c);
+    } else if c == 36 {
+      buf.push(95);
+      buf.push(81);
+      buf.push(95);
+    } else {
+      buf.push(95);
+    }
+    i += 1;
+  }
+  return intrinsics.slice_string(buf.items[0..buf.n]);
 }
 
 fn prelude_fn(name: string) -> *Sym {
@@ -6856,9 +7153,10 @@ fn lift_closure(c: *LCtx, e: *Expr, envdrop_out: *Vec[string]) -> string {
     let ct: *Type = cap.type;
     let al: i64 = type_align(ct);
     doff = round_up_i64(doff, al);
+    let cap_addr: *IRVreg = v_addi(dc, daddr, doff); // always: keeps vreg numbering
     let fnn: string = value_fn_for(ct, false);
     if fnn != "" {
-      rc_call1(dc, fnn, v_addi(dc, daddr, doff));
+      rc_call1(dc, fnn, cap_addr);
     }
     doff += type_size(ct);
     di += 1;
@@ -7390,8 +7688,12 @@ fn lv_expr(c: *LCtx, e: *Expr) -> *IRVreg {
       // statement context: no value to merge
       let then_b: *IRBlock = new_block(c);
       let join: *IRBlock = new_block(c);
+      let mut has_else: bool = false;
+      if e.items.n > 1 || e.else_if != null {
+        has_else = true;
+      }
       let mut false_b: *IRBlock = join;
-      if e.items.n > 1 {
+      if has_else {
         false_b = new_block(c);
       }
       let cond: *IRVreg = lv_expr(c, e.a);
@@ -7404,7 +7706,7 @@ fn lv_expr(c: *LCtx, e: *Expr) -> *IRVreg {
       run_defers(c, c.scope.parent);
       scope_pop_release(c);
       emit_br(c, join);
-      if e.items.n > 1 {
+      if has_else {
         use_block(c, false_b);
         if e.else_if != null {
           lv_expr(c, e.else_if);
@@ -7423,7 +7725,7 @@ fn lv_expr(c: *LCtx, e: *Expr) -> *IRVreg {
     let then_b2: *IRBlock = new_block(c);
     let join2: *IRBlock = new_block(c);
     let mut false_b2: *IRBlock = join2;
-    if e.items.n > 1 {
+    if e.items.n > 1 || e.else_if != null {
       false_b2 = new_block(c);
     }
     let phi: *IRPhi = emit_phi_in(c, join2, ir_type_of(t));
@@ -8633,9 +8935,6 @@ fn lower_program() {
         if sym.kind == SymKind.SyFn && sym.decl != null && sym.decl.body.n > 0 &&
            !sym.decl.templated {
           g_ir_fns.push(lower_fn(sym));
-          eprint("[lowered ");
-          eprint(sym.name);
-          eprint("]\n");
         } else if sym.kind == SymKind.SyStatic {
           lower_static(sym);
         }
@@ -10588,6 +10887,17 @@ fn lower_dump_ir() {
     eprint("fn ");
     eprint(fn_.symbol);
     eprint("\n");
+    let mut si: usize = 0;
+    while si < len(fn_.slots) {
+      eprint("  slot ");
+      eprint(itoa(fn_.slots[si].id as i64));
+      eprint(" size=");
+      eprint(itoa(fn_.slots[si].size));
+      eprint(" name=");
+      eprint(fn_.slots[si].name);
+      eprint("\n");
+      si += 1;
+    }
     let mut b: usize = 0;
     while b < len(fn_.blocks) {
       let blk: *IRBlock = fn_.blocks[b];
@@ -10670,3 +10980,306 @@ fn lower_dump_ir() {
     i += 1;
   }
 }
+
+// ============== generic fn instantiation (check.c port L7) =================
+
+// ---- declaration cloning (instantiation bodies) ----------------------------
+
+fn clone_typeast(t: *TypeAst) -> *TypeAst {
+  if t == null {
+    return null;
+  }
+  let c: *TypeAst = new TypeAst {
+    kind: t.kind, prim: t.prim, path: t.path, targs: t.targs, elem: t.elem,
+    params: t.params, ret: t.ret, size: t.size,
+  };
+  // deep-copy the recursive fields; path/string payloads are immutable
+  let mut ta: *Vec[*TypeAst] = new Vec[*TypeAst] { items: make([]*TypeAst, 4), n: 0 };
+  let mut i: usize = 0;
+  while i < t.targs.n {
+    ta.push(clone_typeast(t.targs.items[i]));
+    i += 1;
+  }
+  c.targs = ta;
+  let mut tp: *Vec[*TypeAst] = new Vec[*TypeAst] { items: make([]*TypeAst, 4), n: 0 };
+  i = 0;
+  while i < t.params.n {
+    tp.push(clone_typeast(t.params.items[i]));
+    i += 1;
+  }
+  c.params = tp;
+  c.elem = clone_typeast(t.elem);
+  c.ret = clone_typeast(t.ret);
+  c.size = clone_expr(t.size);
+  return c;
+}
+
+fn clone_fieldast(f: *FieldAst) -> *FieldAst {
+  if f == null {
+    return null;
+  }
+  return new FieldAst {
+    name: f.name, ty: clone_typeast(f.ty), file: f.file, line: f.line, col: f.col,
+  };
+}
+
+fn clone_param(p: *Param) -> *Param {
+  if p == null {
+    return null;
+  }
+  return new Param {
+    name: p.name, ty: clone_typeast(p.ty), is_self: p.is_self,
+    file: p.file, line: p.line, col: p.col,
+  };
+}
+
+fn clone_arm(a: *MatchArm) -> *MatchArm {
+  if a == null {
+    return null;
+  }
+  let mut pf: *Vec[*FieldAst] = new Vec[*FieldAst] { items: make([]*FieldAst, 4), n: 0 };
+  let mut i: usize = 0;
+  while i < a.pat_fields.n {
+    pf.push(clone_fieldast(a.pat_fields.items[i]));
+    i += 1;
+  }
+  return new MatchArm {
+    pk: a.pk, pat_path: a.pat_path, pat_int: a.pat_int, variant_index: a.variant_index,
+    disc: a.disc, pat_str: a.pat_str, pat_names: a.pat_names, pat_fields: pf,
+    bind_syms: make([]*Sym, 0), bind_fidx: make([]i64, 0),
+    body: clone_expr(a.body), file: a.file, line: a.line, col: a.col,
+  };
+}
+
+fn clone_stmt(s: *Stmt) -> *Stmt {
+  if s == null {
+    return null;
+  }
+  let c: *Stmt = new Stmt {
+    kind: s.kind, file: s.file, line: s.line, col: s.col, pre: s.pre,
+    mut_: s.mut_, tail: s.tail, name: s.name, ty: clone_typeast(s.ty),
+    a: clone_expr(s.a), b: clone_expr(s.b), assign_op: s.assign_op,
+    stmts: new Vec[*Stmt] { items: make([]*Stmt, 4), n: 0 },
+    cond: clone_expr(s.cond),
+    body: new Vec[*Stmt] { items: make([]*Stmt, 4), n: 0 },
+  };
+  let mut i: usize = 0;
+  while i < s.stmts.n {
+    c.stmts.push(clone_stmt(s.stmts.items[i]));
+    i += 1;
+  }
+  i = 0;
+  while i < s.body.n {
+    c.body.push(clone_stmt(s.body.items[i]));
+    i += 1;
+  }
+  return c;
+}
+
+fn clone_expr(e: *Expr) -> *Expr {
+  if e == null {
+    return null;
+  }
+  let c: *Expr = new Expr {
+    kind: e.kind, file: e.file, line: e.line, col: e.col,
+    iv: e.iv, fv: e.fv, sv: e.sv, bv: e.bv,
+    a: clone_expr(e.a), b: clone_expr(e.b), c: clone_expr(e.c),
+    binop: e.binop, unop: e.unop,
+    args: new Vec[*Expr] { items: make([]*Expr, 4), n: 0 },
+    arg_names: e.arg_names,
+    ty: clone_typeast(e.ty),
+    arms: new Vec[*MatchArm] { items: make([]*MatchArm, 4), n: 0 },
+    params: new Vec[*Param] { items: make([]*Param, 4), n: 0 },
+    ret: clone_typeast(e.ret),
+    q_ok: e.q_ok, q_err: e.q_err, else_if: clone_expr(e.else_if),
+    fnval: e.fnval, caps: make([]*Sym, 0),
+    items: new Vec[*Stmt] { items: make([]*Stmt, 4), n: 0 },
+    typed: null, sym: null,
+  };
+  let mut i: usize = 0;
+  while i < e.args.n {
+    c.args.push(clone_expr(e.args.items[i]));
+    i += 1;
+  }
+  i = 0;
+  while i < e.arms.n {
+    c.arms.push(clone_arm(e.arms.items[i]));
+    i += 1;
+  }
+  i = 0;
+  while i < e.params.n {
+    c.params.push(clone_param(e.params.items[i]));
+    i += 1;
+  }
+  // NEW field lists: name entries in items alongside args
+  if e.kind == ExprKind.ExNew {
+    i = 0;
+    while i < e.items.n {
+      let entry: *Stmt = e.items.items[i];
+      let nc: *Stmt = new Stmt {
+        kind: StmtKind.StBlock, file: entry.file, line: entry.line, col: entry.col,
+        pre: entry.pre, mut_: false, tail: false, name: entry.name, ty: null,
+        a: null, b: null, assign_op: entry.assign_op,
+        stmts: new Vec[*Stmt] { items: make([]*Stmt, 0), n: 0 },
+        cond: null, body: new Vec[*Stmt] { items: make([]*Stmt, 0), n: 0 },
+      };
+      c.items.push(nc);
+      i += 1;
+    }
+  } else {
+    i = 0;
+    while i < e.items.n {
+      c.items.push(clone_stmt(e.items.items[i]));
+      i += 1;
+    }
+  }
+  return c;
+}
+
+fn clone_fn_decl(d: *Decl) -> *Decl {
+  let c: *Decl = new Decl {
+    kind: DeclKind.DkFn, file: d.file, line: d.line, col: d.col, pre: d.pre,
+    pub_: d.pub_, is_mut: d.is_mut, name: d.name,
+    path: d.path,
+    params: new Vec[*Param] { items: make([]*Param, 4), n: 0 },
+    ret: clone_typeast(d.ret),
+    fields: d.fields, variants: d.variants, init: d.init,
+    body: new Vec[*Stmt] { items: make([]*Stmt, 8), n: 0 },
+    tparams: make_str_vec(), is_method: d.is_method, recv: d.recv,
+    decls: d.decls, templ: null,
+    templated: false, tenv: null, owner: null,
+    ceval_ok: false, ceval_is_int: false, ceval_i: 0, ceval_f: 0.0,
+  };
+  let mut i: usize = 0;
+  while i < d.params.n {
+    c.params.push(clone_param(d.params.items[i]));
+    i += 1;
+  }
+  i = 0;
+  while i < d.body.n {
+    c.body.push(clone_stmt(d.body.items[i]));
+    i += 1;
+  }
+  return c;
+}
+
+// ---- instantiation ---------------------------------------------------------
+
+static mut g_instantiations: *Vec[*Sym] = 0 as *Vec[*Sym]; // pending body checks
+static mut g_instantiated_names: *Vec[string] = 0 as *Vec[string]; // mangled keys
+static mut g_instantiated_syms: *Vec[*Sym] = 0 as *Vec[*Sym];
+static mut g_instantiation_depth: i32 = 0;
+
+fn make_str_vec() -> *Vec[string] {
+  return new Vec[string] { items: make([]string, 8), n: 0 };
+}
+
+fn instantiated_get(mangled: string) -> *Sym {
+  if g_instantiated_names == null {
+    return null;
+  }
+  let mut i: usize = 0;
+  while i < g_instantiated_names.n {
+    if streq(g_instantiated_names.items[i], mangled) {
+      return g_instantiated_syms.items[i];
+    }
+    i += 1;
+  }
+  return null;
+}
+
+// resolve a cloned fn symbol's signature under its tenv (boot resolve_sym_type)
+fn resolve_inst_signature(sym: *Sym) {
+  let d: *Decl = sym.decl;
+  let saved_env: *TypeMap = g_tenv;
+  let saved_mod: *Module = cur_module;
+  cur_module = sym.owner;
+  g_tenv = d.tenv;
+  let mut ps: []*Type = fresh_type_vec2();
+  let mut i: usize = 0;
+  while i < d.params.n {
+    ps = push_type(ps, resolve_type_in_module(sym.owner, d.params.items[i].ty));
+    i += 1;
+  }
+  let ret: *Type = resolve_type_in_module(sym.owner, d.ret);
+  sym.type = ty_fn(ps, ret);
+  eprint("[CLONESIG ");
+  eprint(sym.name);
+  eprint(" p0=");
+  if len(ps) > 0 && ps[0] != null { eprint(ps[0].mangled); } else { eprint("null"); }
+  eprint(" ret=");
+  if ret != null { eprint(ret.mangled); } else { eprint("null"); }
+  eprint("\n");
+  g_tenv = saved_env;
+  cur_module = saved_mod;
+}
+
+fn instantiate_fn(gsym: *Sym, names: []string, env: *TypeMap) -> *Sym {
+  let d: *Decl = gsym.decl;
+  // mangle in the canonical parameter order so the name is deterministic
+  let mut mangled: string = cat3(d.name, "$", "");
+  let mut i: usize = 0;
+  while i < len(names) {
+    let targ: *Type = tm_get(env, names[i]);
+    if i > 0 {
+      mangled = cat3(mangled, ",", "");
+    }
+    if targ == null || targ.kind == TypeKind.TyParam {
+      err_at("", 0, 0, cat3("cannot infer `", cat3(names[i], "` for `", cat3(d.name, "`", "")), ""));
+      return gsym;
+    }
+    let mut targ2: *Type = targ;
+    if targ2.kind == TypeKind.TyIntLit {
+      targ2 = ty_prim(3); // i32
+    }
+    if targ2.kind == TypeKind.TyFloatLit {
+      targ2 = ty_prim(10); // f64
+    }
+    tm_put(env, names[i], targ2);
+    mangled = cat3(mangled, targ2.mangled, "");
+    i += 1;
+  }
+  let existing: *Sym = instantiated_get(mangled);
+  if existing != null {
+    return existing;
+  }
+  g_instantiation_depth += 1;
+  if g_instantiation_depth > 256 {
+    err_at("", 0, 0, "generic instantiation nesting too deep (recursive generics?)");
+    g_instantiation_depth -= 1;
+    return gsym;
+  }
+  let clone: *Decl = clone_fn_decl(d);
+  clone.name = mangled;
+  clone.tenv = env;
+  clone.owner = gsym.owner;
+  let sym: *Sym = new Sym {
+    kind: SymKind.SyFn, name: mangled, type: null, decl: clone,
+    mutable: false, variant_index: 0, local_id: 0, symbol: "",
+    owner: gsym.owner,
+  };
+  if g_instantiated_names == null {
+    g_instantiated_names = new Vec[string] { items: make([]string, 64), n: 0 };
+    g_instantiated_syms = new Vec[*Sym] { items: make([]*Sym, 64), n: 0 };
+  }
+  g_instantiated_names.push(mangled);
+  g_instantiated_syms.push(sym);
+  let saved_mod: *Module = cur_module;
+  let saved_env: *TypeMap = g_tenv;
+  cur_module = gsym.owner;
+  g_tenv = env;
+  resolve_inst_signature(sym);
+  g_tenv = saved_env;
+  cur_module = saved_mod;
+  // register the instantiation in the owner module's symbol table so lower
+  // emits it (boot: map_put(&owner->syms, mangled, sym))
+  sm_put(gsym.owner.syms, mangled, sym);
+  if g_instantiations == null {
+    g_instantiations = new Vec[*Sym] { items: make([]*Sym, 64), n: 0 };
+  }
+  g_instantiations.push(sym);
+  g_instantiation_depth -= 1;
+  return sym;
+}
+
+
