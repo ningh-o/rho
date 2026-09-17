@@ -420,6 +420,17 @@ static void emit_ins64(Emitter64 *e, IRIns *i) {
       sb_printf(e->out, "  fcvt s0, d0\n");
       st_(e, dof, 4, true, "s0");
       break;
+    case CAST_REINTERP:
+      // fmov gpr, fpr — exact bit move (f32_bits/f64_bits)
+      if (i->cast_from == IT_F32) {
+        ld(e, sof, 4, true, "s0");
+        sb_printf(e->out, "  fmov w8, s0\n");
+      } else {
+        ld(e, sof, 8, true, "d0");
+        sb_printf(e->out, "  fmov x8, d0\n");
+      }
+      st_(e, dof, i->cast_from == IT_F32 ? 4 : 8, false, "x8");
+      break;
     case CAST_BITCOPY:
       ld(e, sof, 8, false, "x8");
       st_(e, dof, 8, false, "x8");

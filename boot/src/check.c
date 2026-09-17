@@ -1947,9 +1947,26 @@ static Type *check_call(Expr *e, Type *expected) {
                     !strcmp(name, "store_u64") || !strcmp(name, "store_i64");
     bool is_memcpy = !strcmp(name, "memcpy");
     bool is_slice_str = !strcmp(name, "slice_string");
-    if (!is_load && !is_store && !is_memcpy && !is_slice_str) {
+    bool is_bits = !strcmp(name, "f64_bits") || !strcmp(name, "f32_bits");
+    if (!is_load && !is_store && !is_memcpy && !is_slice_str && !is_bits) {
       ERR(e, "unknown intrinsic `%s`", name);
       e->typed = ty_err_;
+      return e->typed;
+    }
+    if (is_bits) {
+      if (e->args.n != 1) {
+        ERR(e, "intrinsics.%s takes one argument", name);
+        e->typed = ty_err_;
+        return e->typed;
+      }
+      Type *t = check_expr(e->args.items[0], NULL);
+      bool wantf = !strcmp(name, "f64_bits");
+      if (wantf ? t->kind != TY_F64 : t->kind != TY_F32) {
+        ERR(e, "intrinsics.%s needs %s", name, wantf ? "f64" : "f32");
+        e->typed = ty_err_;
+        return e->typed;
+      }
+      e->typed = ty_prim(wantf ? PRIM_U64 : PRIM_U32);
       return e->typed;
     }
     if (is_load) {

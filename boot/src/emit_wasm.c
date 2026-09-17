@@ -652,6 +652,13 @@ static void emit_ins(WFnCtx *c, IRIns *i) {
     case CAST_F64_F32:
       w8(c->body, 0xB6); // f32.demote_f64
       break;
+    case CAST_REINTERP:
+      // i32.reinterpret_f32=0xBC, i64.reinterpret_f64=0xBD
+      if (from == IT_F32)
+        w8(c->body, 0xBC);
+      else
+        w8(c->body, 0xBD);
+      break;
     case CAST_BITCOPY:
       // same-memory-size reinterpretations; across the wasm32 split the
       // pointer half is i32, so 64-bit ints need a width hop

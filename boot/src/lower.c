@@ -270,6 +270,10 @@ static IRVreg *v_cast(LCtx *c, IRVreg *src, IRType to) {
   // classify
   if (ir_is_float(src->ty) && ir_is_float(to))
     i->cast = src->ty == IT_F32 && to == IT_F64 ? CAST_F32_F64 : CAST_F64_F32;
+  else if (ir_size_of(src->ty) == ir_size_of(to) &&
+           ir_is_float(src->ty) && !ir_is_float(to) &&
+           (to == IT_U32 || to == IT_U64))
+    i->cast = CAST_REINTERP; // exact bit move (f32_bits/f64_bits)
   else if (ir_is_float(src->ty))
     i->cast = CAST_F2I;
   else if (ir_is_float(to))
@@ -2289,6 +2293,11 @@ static IRVreg *compute_call_value(LCtx *c, Expr *e) {
       IRVreg *v = lv_expr(c, e->args.items[1]);
       v_store(c, p, v);
       return v_const(c, 0, IT_U8);
+    }
+    if (!strcmp(name, "f64_bits") || !strcmp(name, "f32_bits")) {
+      IRVreg *v = lv_expr(c, e->args.items[0]);
+      bool wantf = !strcmp(name, "f64_bits");
+      return v_cast(c, v, wantf ? IT_U64 : IT_U32);
     }
     if (!strcmp(name, "memcpy")) {
       IRVreg *dst = lv_expr(c, e->args.items[0]);

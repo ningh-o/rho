@@ -634,23 +634,23 @@ fn pow10(e: i32) -> f64 {
 fn parse_float(s: string) -> f64 {
   let mut v: f64 = 0.0;
   let mut i: usize = 0;
-  while i < len(s) && s[i] != 46 {
+  while i < len(s) && s[i] != 46 && s[i] != 101 && s[i] != 69 {
     v = v * 10.0 + (s[i] - 48) as f64;
     i += 1;
   }
   let mut frac: f64 = 0.0;
-  if i < len(s) {
+  if i < len(s) && s[i] == 46 {
     // skip '.'
     i += 1;
     let mut scale: f64 = 0.1;
-    while i < len(s) && s[i] != 101 {
+    while i < len(s) && s[i] != 101 && s[i] != 69 {
       frac += (s[i] - 48) as f64 * scale;
       scale *= 0.1;
       i += 1;
     }
   }
   v += frac;
-  if i < len(s) && s[i] == 101 {
+  if i < len(s) && (s[i] == 101 || s[i] == 69) {
     i += 1;
     let mut neg: bool = false;
     if i < len(s) && (s[i] == 43 || s[i] == 45) {
@@ -2228,18 +2228,38 @@ fn main() -> i32 {
   if !streq(cmd, "build") && !streq(cmd, "check") {
     return usage();
   }
-  let src_result: Result[string, string] = read_file(args[2]);
+  let path: string = args[2];
+  let mut out_path: string = "a.wasm";
+  let mut target_wasm: bool = false;
+  let mut ai: usize = 3;
+  while ai < len(args) {
+    if streq(args[ai], "-o") && ai + 1 < len(args) {
+      out_path = args[ai + 1];
+      ai += 2;
+    } else if streq(args[ai], "--target") && ai + 1 < len(args) {
+      if streq(args[ai + 1], "wasm32-wasi") {
+        target_wasm = true;
+      }
+      ai += 2;
+    } else if streq(args[ai], "--dump-ir") {
+      g_dump_ir = true;
+      ai += 1;
+    } else {
+      ai += 1;
+    }
+  }
+  let src_result: Result[string, string] = read_file(path);
   if src_result.is_err() {
     eprint(cat3("rho: ", src_result.get_err(), "\n"));
     return 2;
   }
   let tokens: *Vec[*Token] = fresh_token_vec();
-  lex_file(args[2], src_result.get_ok(), tokens);
+  lex_file(path, src_result.get_ok(), tokens);
   if diag_count() > 0 {
     print_diags();
     return 1;
   }
-  let module: *Decl = parse_file(args[2], src_result.get_ok());
+  let module: *Decl = parse_file(path, src_result.get_ok());
   if diag_count() > 0 {
     print_diags();
     return 1;
@@ -2248,9 +2268,13 @@ fn main() -> i32 {
     path: args[2], ns: "", root: module, syms: sm_new(),
     is_prelude: false, checked: false,
   };
-  let prelude_r: Result[string, string] = read_file("boot/prelude/hosted.rho");
+  let mut prelude_path: string = "boot/prelude/hosted.rho";
+  if target_wasm {
+    prelude_path = "boot/prelude/wasi.rho";
+  }
+  let prelude_r: Result[string, string] = read_file(prelude_path);
   if !prelude_r.is_err() {
-    let pparse: *Decl = parse_file("hosted.rho", prelude_r.get_ok());
+    let pparse: *Decl = parse_file("<prelude>", prelude_r.get_ok());
     eprint("[prelude decls=");
     eprint(itoa(pparse.decls.n as i64));
     eprint(" parse-diags=");
@@ -2277,9 +2301,22 @@ fn main() -> i32 {
     print_diags();
     return 1;
   }
-  eprint("parsed ");
-  eprint(itoa(module.decls.n as i64));
-  eprint(" declarations, type-checked\n");
+  if !target_wasm {
+    eprint("parsed ");
+    eprint(itoa(module.decls.n as i64));
+    eprint(" declarations, type-checked\n");
+    return 0;
+  }
+  g_root_module = m;
+  lower_program();
+  if g_dump_ir {
+    lower_dump_ir();
+  }
+  let bytes: []u8 = emit_wasm();
+  write_file(out_path, bytes_as_string(bytes));
+  eprint("built ");
+  eprint(out_path);
+  eprint("\n");
   return 0;
 }
 
@@ -4097,9 +4134,35 @@ fn check_call(e: *Expr, expected: *Type) -> *Type {
                          streq(name, "store_u64") || streq(name, "store_i64");
     let is_memcpy: bool = streq(name, "memcpy");
     let is_slice_str: bool = streq(name, "slice_string");
-    if !is_load && !is_store && !is_memcpy && !is_slice_str {
+    let is_bits: bool = streq(name, "f64_bits") || streq(name, "f32_bits");
+    if !is_load && !is_store && !is_memcpy && !is_slice_str && !is_bits {
       err_at("", 0, 0, cat("unknown intrinsic `", cat(name, "`")));
       e.typed = ty_err();
+      return e.typed;
+    }
+    if is_bits {
+      if e.args.n != 1 {
+        err_at("", 0, 0, cat("unknown intrinsic `", cat(name, "`")));
+        e.typed = ty_err();
+        return e.typed;
+      }
+      let t: *Type = check_expr(e.args.items[0], null);
+      let wantf64: bool = streq(name, "f64_bits");
+      if wantf64 && t.kind != TypeKind.TyF64 {
+        err_at("", 0, 0, "intrinsics.f64_bits needs f64");
+        e.typed = ty_err();
+        return e.typed;
+      }
+      if !wantf64 && t.kind != TypeKind.TyF32 {
+        err_at("", 0, 0, "intrinsics.f32_bits needs f32");
+        e.typed = ty_err();
+        return e.typed;
+      }
+      if wantf64 {
+        e.typed = ty_prim(8); // u64
+      } else {
+        e.typed = ty_prim(7); // u32
+      }
       return e.typed;
     }
     if is_load {
@@ -4715,16 +4778,13 @@ fn check_if_expr(e: *Expr, expected: *Type) -> *Type {
   let then_blk: *Stmt = (e.items.items[0] as usize) as *Stmt;
   let t: *Type = check_block_value2(then_blk.stmts);
   let mut result: *Type = ty_prim(14);
-  if e.items.n > 1 {
-    let els: *Expr = (e.items.items[1] as usize) as *Expr;
-    if els.kind == ExprKind.ExIf {
-      let et: *Type = check_expr(els, expected);
-      result = unify2(t, et);
-    } else {
-      let else_blk: *Stmt = (e.items.items[1] as usize) as *Stmt;
-      let et: *Type = check_block_value2(else_blk.stmts);
-      result = unify2(t, et);
-    }
+  if e.else_if != null {
+    let et: *Type = check_expr(e.else_if, expected);
+    result = unify2(t, et);
+  } else if e.items.n > 1 {
+    let else_blk: *Stmt = e.items.items[1];
+    let et: *Type = check_block_value2(else_blk.stmts);
+    result = unify2(t, et);
   } else {
     result = ty_prim(14);
   }
@@ -4773,7 +4833,7 @@ enum IRCC { CcEq, CcNe, CcLt, CcLe, CcGt, CcGe }
 
 enum IRCastKind {
   CastTrunc, CastSext, CastZext, CastI2f, CastF2i, CastF32F64,
-  CastF64F32, CastBitcopy,
+  CastF64F32, CastBitcopy, CastReinterp,
 }
 
 struct IRArg {
@@ -4821,6 +4881,7 @@ struct IRBlock {
   join_hint: *IRBlock,
   loop_header: bool,
   loop_exit: *IRBlock,
+  emitted: bool,     // wasm: control-flow re-nesting marks blocks as it goes
 }
 
 struct IRLit {
@@ -4908,6 +4969,9 @@ fn rc_new_fn(symbol: string) -> *IRFn {
     entry: null, cur: null, literals: make([]*IRLit, 0),
     next_vreg: 0, next_block: 0, next_slot: 0, vreg_base: 0,
   };
+  let cc: *LCtx = rc_ctx(f);
+  f.entry = new_block(cc);
+  use_block(cc, f.entry);
   return f;
 }
 
@@ -4932,6 +4996,7 @@ fn new_block(c: *LCtx) -> *IRBlock {
     id: c.f.next_block, phis: make([]*IRPhi, 0), ins: make([]*IRIns, 0),
     term_op: 0, br_true: null, br_false: null, ret_val: null,
     cbr_cond: null, join_hint: null, loop_header: false, loop_exit: null,
+    emitted: false,
   };
   c.f.next_block += 1;
   c.f.blocks = push_ptr(c.f.blocks, b);
@@ -6925,8 +6990,12 @@ fn v_cast(c: *LCtx, src: *IRVreg, to: IRType) -> *IRVreg {
     } else {
       i.cast = IRCastKind.CastF64F32;
     }
+  } else if ir_size_of(src.ty) == ir_size_of(to) &&
+             ir_is_float_t(src.ty) && !ir_is_float_t(to) &&
+             (to == IRType.ItU32 || to == IRType.ItU64) {
+    i.cast = IRCastKind.CastReinterp; // exact bit move (f32_bits/f64_bits)
   } else if ir_is_float_t(src.ty) {
-    i.cast = IRCastKind.CastI2f;
+    i.cast = IRCastKind.CastF2i;
   } else if ir_is_float_t(to) {
     i.cast = IRCastKind.CastI2f;
   } else if ir_size_of(src.ty) > ir_size_of(to) {
@@ -7076,6 +7145,7 @@ fn lv_expr(c: *LCtx, e: *Expr) -> *IRVreg {
       let join: *IRBlock = new_block(c);
       let phi: *IRPhi = emit_phi_in(c, join, IRType.ItU8);
       let l: *IRVreg = lv_expr(c, e.a);
+      let l_as_u8: *IRVreg = v_cast(c, l, IRType.ItU8); // dead but keeps vreg numbering
       // short-circuit consts must precede the branch: phi edges read them
       let sc_zero: *IRVreg = v_const(c, 0, IRType.ItU8);
       let sc_one: *IRVreg = v_const(c, 1, IRType.ItU8);
@@ -7892,6 +7962,13 @@ fn compute_call_value(c: *LCtx, e: *Expr) -> *IRVreg {
       v_store(c, p, v);
       return v_const(c, 0, IRType.ItU8);
     }
+    if streq(name, "f64_bits") || streq(name, "f32_bits") {
+      let v: *IRVreg = lv_expr(c, e.args.items[0]);
+      if streq(name, "f64_bits") {
+        return v_cast(c, v, IRType.ItU64);
+      }
+      return v_cast(c, v, IRType.ItU32);
+    }
     if streq(name, "memcpy") {
       let dst: *IRVreg = lv_expr(c, e.args.items[0]);
       let src: *IRVreg = lv_expr(c, e.args.items[1]);
@@ -8061,6 +8138,31 @@ fn lv_agg(c: *LCtx, e: *Expr, dest: *IRVreg) {
   if e.kind == ExprKind.ExCall {
     if is_make_call(e) {
       lower_make(c, e, dest);
+      return;
+    }
+    if is_variant_ctor(e) {
+      lower_enum_ctor(c, e, dest);
+      return;
+    }
+    let fn_: *Sym = e.a.sym;
+    if fn_ != null && fn_.type.ret != null && ty_is_aggregate(fn_.type.ret) {
+      // call straight into dest
+      let mut call_args: []*IRVreg = make([]*IRVreg, 0);
+      call_args = push_vreg(call_args, dest);
+      let recv: *Expr = method_receiver(e.a);
+      let mut pi: usize = 0;
+      if recv != null {
+        call_args = push_vreg(call_args, lv_expr(c, recv));
+        pi = 1;
+      }
+      let mut i: usize = 0;
+      while i < e.args.n {
+        call_args = push_vreg(call_args, lv_expr(c, e.args.items[i]));
+        i += 1;
+      }
+      let call: *IRIns = emit(c, IROp.IrCall);
+      call.callee = sym_symbol(fn_);
+      call.args = call_args;
       return;
     }
     let src: *IRVreg = lv_expr(c, e);
@@ -8531,6 +8633,9 @@ fn lower_program() {
         if sym.kind == SymKind.SyFn && sym.decl != null && sym.decl.body.n > 0 &&
            !sym.decl.templated {
           g_ir_fns.push(lower_fn(sym));
+          eprint("[lowered ");
+          eprint(sym.name);
+          eprint("]\n");
         } else if sym.kind == SymKind.SyStatic {
           lower_static(sym);
         }
@@ -8538,5 +8643,2030 @@ fn lower_program() {
       }
     }
     mi += 1;
+  }
+}
+
+
+// ================= emit_wasm (LOW-10): wasm32-wasi binary emitter ===========
+// Vregs become wasm locals, frame slots live in linear memory at $fb + off,
+// the structured CFG is re-nested (if-diamonds close over `block $join`,
+// loops become `block $exit loop $h`), and function addresses — closure code
+// fields and rc drop glue — are table indices reached through call_indirect.
+
+struct WType {
+  params: []i64, // IRType values
+  has_ret: bool,
+  ret: IRType,
+  index: i32,
+}
+
+struct WFn {
+  fn_: *IRFn,
+  index: i32, // function index (after the two wasi imports)
+  type_: i32,
+}
+
+struct WLabel {
+  kind: i32, // 0 block(exit), 1 loop(header), 2 if placeholder
+  b: *IRBlock,
+}
+
+struct WClaim {
+  b: *IRBlock,
+  base: i32, // labels.n at claim time: br depth = labels.n - base
+}
+
+struct I64Ent { key: string, val: i64 }
+struct I64Map { items: []*I64Ent }
+
+fn im_put(m: *I64Map, key: string, val: i64) {
+  let mut i: usize = 0;
+  while i < len(m.items) {
+    if streq(m.items[i].key, key) {
+      m.items[i].val = val;
+      return;
+    }
+    i += 1;
+  }
+  m.items = push_i64ent(m.items, new I64Ent { key: key, val: val });
+}
+
+fn push_i64ent(items: []*I64Ent, e: *I64Ent) -> []*I64Ent {
+  let out: []*I64Ent = make([]*I64Ent, len(items) + 1);
+  let mut i: usize = 0;
+  while i < len(items) {
+    out[i] = items[i];
+    i += 1;
+  }
+  out[len(items)] = e;
+  return out;
+}
+
+fn im_get(m: *I64Map, key: string) -> i64 {
+  let mut i: usize = 0;
+  while i < len(m.items) {
+    if streq(m.items[i].key, key) {
+      return m.items[i].val;
+    }
+    i += 1;
+  }
+  return -1;
+}
+
+fn im_has(m: *I64Map, key: string) -> bool {
+  return im_get(m, key) != -1 || im_has_zero(m, key);
+}
+
+fn im_has_zero(m: *I64Map, key: string) -> bool {
+  let mut i: usize = 0;
+  while i < len(m.items) {
+    if streq(m.items[i].key, key) {
+      return true;
+    }
+    i += 1;
+  }
+  return false;
+}
+
+struct WFnEnt { key: string, val: *WFn }
+struct WFnMap { items: []*WFnEnt }
+
+fn fm_put(m: *WFnMap, key: string, val: *WFn) {
+  let mut i: usize = 0;
+  while i < len(m.items) {
+    if streq(m.items[i].key, key) {
+      m.items[i].val = val;
+      return;
+    }
+    i += 1;
+  }
+  m.items = push_wfnent(m.items, new WFnEnt { key: key, val: val });
+}
+
+fn push_wfnent(items: []*WFnEnt, e: *WFnEnt) -> []*WFnEnt {
+  let out: []*WFnEnt = make([]*WFnEnt, len(items) + 1);
+  let mut i: usize = 0;
+  while i < len(items) {
+    out[i] = items[i];
+    i += 1;
+  }
+  out[len(items)] = e;
+  return out;
+}
+
+fn fm_get(m: *WFnMap, key: string) -> *WFn {
+  let mut i: usize = 0;
+  while i < len(m.items) {
+    if streq(m.items[i].key, key) {
+      return m.items[i].val;
+    }
+    i += 1;
+  }
+  return null;
+}
+
+struct WState {
+  fns: []*WFn,
+  types: []*WType,
+  type_keys: []string, // parallel to types: dedup key per entry
+  fn_by_symbol: *WFnMap,
+  table_idx: *I64Map,  // symbol -> index+1 (0 = absent)
+  table_fns: []string,
+  global_addr: *I64Map,
+  lit_addr: *I64Map,
+  heap_base: i64,
+  stack_top: i64,
+  data_end: i64,
+}
+
+static mut W: *WState = 0 as *WState;
+
+// ---- raw bytes -----------------------------------------------------------------
+
+fn b8(sb: *Vec[u8], b: u8) {
+  sb.push(b);
+}
+
+fn buleb(sb: *Vec[u8], v: u64) {
+  loop {
+    let mut b: u8 = (v & 127) as u8;
+    let rest: u64 = v >> 7;
+    if rest != 0 {
+      b = b | 128;
+    }
+    b8(sb, b);
+    if rest == 0 {
+      break;
+    }
+    v = rest;
+  }
+}
+
+fn bsleb(sb: *Vec[u8], v: i64) {
+  let mut more: bool = true;
+  let mut x: i64 = v;
+  while more {
+    let mut b: u8 = (x & 127) as u8;
+    x = x >> 7;
+    if (x == 0 && (b & 64) == 0) || (x == -1 && (b & 64) != 0) {
+      more = false;
+    } else {
+      b = b | 128;
+    }
+    b8(sb, b);
+  }
+}
+
+fn bstr(sb: *Vec[u8], s: string) {
+  buleb(sb, len(s) as u64);
+  let mut i: usize = 0;
+  while i < len(s) {
+    b8(sb, s[i]);
+    i += 1;
+  }
+}
+
+fn bsection(out: *Vec[u8], id: u8, body: *Vec[u8]) {
+  b8(out, id);
+  buleb(out, body.n as u64);
+  let mut i: usize = 0;
+  while i < body.n {
+    b8(out, body.items[i]);
+    i += 1;
+  }
+}
+
+fn bappend(dst: *Vec[u8], src: *Vec[u8]) {
+  let mut i: usize = 0;
+  while i < src.n {
+    b8(dst, src.items[i]);
+    i += 1;
+  }
+}
+
+fn w_vt(t: IRType) -> u8 {
+  if t == IRType.ItF32 { return 0x7D; }
+  if t == IRType.ItF64 { return 0x7C; }
+  if t == IRType.ItI64 || t == IRType.ItU64 || t == IRType.ItUsize { return 0x7E; }
+  return 0x7F;
+}
+
+fn w_vt_i(t: i64) -> u8 {
+  let f32v: i64 = IRType.ItF32 as i64;
+  let f64v: i64 = IRType.ItF64 as i64;
+  let i64v: i64 = IRType.ItI64 as i64;
+  let u64v: i64 = IRType.ItU64 as i64;
+  let uszv: i64 = IRType.ItUsize as i64;
+  if t == f32v { return 0x7D; }
+  if t == f64v { return 0x7C; }
+  if t == i64v || t == u64v || t == uszv { return 0x7E; }
+  return 0x7F;
+}
+
+fn w_is64(t: IRType) -> bool {
+  return t == IRType.ItI64 || t == IRType.ItU64 || t == IRType.ItUsize;
+}
+
+fn ir_fn_for_symbol(symbol: string) -> *IRFn {
+  let mut i: usize = 0;
+  while i < g_ir_fns.n {
+    if streq(g_ir_fns.items[i].symbol, symbol) {
+      return g_ir_fns.items[i];
+    }
+    i += 1;
+  }
+  return null;
+}
+
+// ---- types ----------------------------------------------------------------------
+
+fn w_type_key(params: []i64, has_ret: bool, ret: IRType) -> string {
+  let mut k: string = "";
+  let mut i: usize = 0;
+  while i < len(params) {
+    k = cat3(k, itoa(params[i]), ",");
+    i += 1;
+  }
+  let mut r: i64 = -1;
+  if has_ret {
+    r = ret as i64;
+  }
+  return cat3(k, "->", itoa(r));
+}
+
+fn w_type_for(params: []i64, has_ret: bool, ret: IRType) -> i32 {
+  let k: string = w_type_key(params, has_ret, ret);
+  let mut i: usize = 0;
+  while i < len(W.type_keys) {
+    if streq(W.type_keys[i], k) {
+      return W.types[i].index;
+    }
+    i += 1;
+  }
+  let t: *WType = new WType {
+    params: params, has_ret: has_ret, ret: ret,
+    index: len(W.types) as i32,
+  };
+  W.types = push_wtype(W.types, t);
+  W.type_keys = push_str(W.type_keys, k);
+  return t.index;
+}
+
+fn push_wtype(items: []*WType, t: *WType) -> []*WType {
+  let out: []*WType = make([]*WType, len(items) + 1);
+  let mut i: usize = 0;
+  while i < len(items) {
+    out[i] = items[i];
+    i += 1;
+  }
+  out[len(items)] = t;
+  return out;
+}
+
+fn ty_travels_as_ptr(pt: *Type) -> bool {
+  if pt == null {
+    return false;
+  }
+  return pt.kind == TypeKind.TyStruct || pt.kind == TypeKind.TyEnum ||
+         pt.kind == TypeKind.TySlice || pt.kind == TypeKind.TyStringK ||
+         pt.kind == TypeKind.TyArray || pt.kind == TypeKind.TyFn;
+}
+
+// does any RET terminator in fn carry a value?
+fn fn_returns_value(fn_: *IRFn) -> bool {
+  let mut b: usize = 0;
+  while b < len(fn_.blocks) {
+    let blk: *IRBlock = fn_.blocks[b];
+    if blk.term_op == 102 && blk.ret_val != null {
+      return true;
+    }
+    b += 1;
+  }
+  return false;
+}
+
+fn w_type_of_fn(fn_: *IRFn) -> i32 {
+  let mut params: []i64 = make([]i64, 0);
+  // agg returns: the hidden out pointer is the FIRST signature param
+  if fn_.returns_aggregate {
+    params = push_i64(params, IRType.ItPtr as i64);
+  }
+  let mut i: usize = 0;
+  while i < len(fn_.params) {
+    let mut pt: *Type = null;
+    if i < len(fn_.param_types) {
+      pt = fn_.param_types[i];
+    }
+    // synth (rc) fns carry NULL param types: their params are pointers
+    let mut it: IRType = IRType.ItPtr;
+    if pt != null && !ty_travels_as_ptr(pt) {
+      it = ir_type_of(pt);
+    }
+    params = push_i64(params, it as i64);
+    i += 1;
+  }
+  // synth (rc) fns carry fn->ret == null whether or not they return — ask
+  // the terminators: any RET with a value means the signature needs one
+  let no_ret: bool = fn_.returns_aggregate ||
+      (fn_.ret != null && fn_.ret.kind == TypeKind.TyVoid) ||
+      (fn_.ret == null && !fn_returns_value(fn_));
+  if no_ret {
+    return w_type_for(params, false, IRType.ItI32);
+  }
+  let mut ret: IRType = IRType.ItPtr; // synth fns return ptrs
+  if fn_.ret != null {
+    ret = ir_type_of(fn_.ret);
+  }
+  return w_type_for(params, true, ret);
+}
+
+fn w_type_of_call(i: *IRIns) -> i32 {
+  let mut params: []i64 = make([]i64, 0);
+  let mut k: usize = 0;
+  while k < len(i.args) {
+    params = push_i64(params, i.args[k].ty as i64);
+    k += 1;
+  }
+  if i.dst != null {
+    return w_type_for(params, true, i.dst.ty);
+  }
+  return w_type_for(params, false, IRType.ItI32);
+}
+
+// ---- data layout ------------------------------------------------------------------
+// 1024 | statics | [24B immortal header + bytes] per literal | heap | ... | stack
+
+fn w_layout_data() {
+  let mut at: i64 = 1024;
+  let mut g: usize = 0;
+  while g < g_ir_globals.n {
+    let gl: *IRGlobal = g_ir_globals.items[g];
+    if !gl.is_extern {
+      let al: i64 = if gl.align < 8 { 8 } else { gl.align };
+      at = round_up_i64(at, al);
+      im_put(W.global_addr, gl.symbol, at);
+      at += gl.size;
+    }
+    g += 1;
+  }
+  let mut f: usize = 0;
+  while f < g_ir_fns.n {
+    let fn_: *IRFn = g_ir_fns.items[f];
+    let mut l: usize = 0;
+    while l < len(fn_.literals) {
+      let lit: *IRLit = fn_.literals[l];
+      at = round_up_i64(at, 8);
+      im_put(W.lit_addr, lit.label, at);
+      at += 24 + len(lit.bytes) as i64;
+      l += 1;
+    }
+    f += 1;
+  }
+  W.heap_base = round_up_i64(at, 16);
+  // the wasi prelude's HEAP static starts allocation above the data image
+  g = 0;
+  while g < g_ir_globals.n {
+    let gl: *IRGlobal = g_ir_globals.items[g];
+    if !gl.is_extern && len(gl.init) == 8 && len(gl.symbol) >= 5 &&
+       streq(slice_str(gl.symbol, len(gl.symbol) - 5, len(gl.symbol)), "_HEAP") {
+      let v: u64 = W.heap_base as u64;
+      let mut b: i32 = 0;
+      while b < 8 {
+        gl.init[b] = ((v >> (8 * b)) & 255) as u8;
+        b += 1;
+      }
+    }
+    g += 1;
+  }
+  // the bump heap grows up toward the stack; leave it 8 MiB of headroom
+  W.stack_top = W.heap_base + 0x800000;
+  W.data_end = at;
+}
+
+fn slice_str(s: string, lo: usize, hi: usize) -> string {
+  return s[lo..hi];
+}
+
+// ---- per-function emission ----------------------------------------------------------
+
+struct WFnCtx {
+  fn_: *IRFn,
+  body: *Vec[u8],
+  slot_off: []i64, // slot id -> frame offset (-1 = not yet laid out)
+  frame: i64,
+  hidden: i32,
+  labels: []*WLabel,
+  claims: []*WClaim,
+}
+
+fn push_claim(items: []*WClaim, c: *WClaim) -> []*WClaim {
+  let out: []*WClaim = make([]*WClaim, len(items) + 1);
+  let mut i: usize = 0;
+  while i < len(items) {
+    out[i] = items[i];
+    i += 1;
+  }
+  out[len(items)] = c;
+  return out;
+}
+
+fn push_label(items: []*WLabel, l: *WLabel) -> []*WLabel {
+  let out: []*WLabel = make([]*WLabel, len(items) + 1);
+  let mut i: usize = 0;
+  while i < len(items) {
+    out[i] = items[i];
+    i += 1;
+  }
+  out[len(items)] = l;
+  return out;
+}
+
+fn slot_offset(c: *WFnCtx, s: *IRSlot) -> i64 {
+  while len(c.slot_off) <= s.id as usize {
+    c.slot_off = push_i64(c.slot_off, -1);
+  }
+  let mut off: i64 = c.slot_off[s.id];
+  if off >= 0 {
+    return off;
+  }
+  let al: i64 = if s.align > 8 { 8 } else { s.align };
+  let sz: i64 = if s.size < 8 { 8 } else { s.size };
+  c.frame = round_up_i64(c.frame, al);
+  off = c.frame;
+  c.frame += sz;
+  c.slot_off[s.id] = off;
+  return off;
+}
+
+// local layout: [hidden out ptr] [declared params] [$fb] [vregs...]
+fn fb_local(c: *WFnCtx) -> i64 {
+  return len(c.fn_.params) as i64 + c.hidden as i64;
+}
+
+fn vreg_local(c: *WFnCtx, v: *IRVreg) -> i64 {
+  return len(c.fn_.params) as i64 + c.hidden as i64 + 1 + v.id as i64;
+}
+
+fn lget(c: *WFnCtx, v: *IRVreg) {
+  b8(c.body, 0x20);
+  buleb(c.body, vreg_local(c, v) as u64);
+}
+
+fn lset(c: *WFnCtx, v: *IRVreg) {
+  b8(c.body, 0x21);
+  buleb(c.body, vreg_local(c, v) as u64);
+}
+
+fn i32c(c: *WFnCtx, v: i64) {
+  b8(c.body, 0x41);
+  bsleb(c.body, v);
+}
+
+fn emit_load(c: *WFnCtx, i: *IRIns) {
+  lget(c, i.addr);
+  // op follows the DESTINATION wasm type: pointers are 8 bytes in memory
+  // but i32 locals (addresses fit the 32-bit memory space)
+  let t: IRType = i.dst.ty;
+  if t == IRType.ItF32 {
+    b8(c.body, 0x2A);
+    buleb(c.body, 2);
+  } else if t == IRType.ItF64 {
+    b8(c.body, 0x2B);
+    buleb(c.body, 3);
+  } else if w_is64(t) {
+    b8(c.body, 0x29); // i64.load
+    buleb(c.body, 3);
+  } else {
+    let sz: i64 = i.size;
+    let sgn: bool = ty_is_signed_int(t);
+    let mut op: u8 = 0x28;
+    let mut align: u64 = 2;
+    if sz == 1 {
+      if sgn { op = 0x2C; } else { op = 0x2D; }
+      align = 0;
+    } else if sz == 2 {
+      if sgn { op = 0x2E; } else { op = 0x2F; }
+      align = 1;
+    }
+    b8(c.body, op);
+    buleb(c.body, align);
+  }
+  buleb(c.body, 0);
+  lset(c, i.dst);
+}
+
+fn emit_store(c: *WFnCtx, i: *IRIns) {
+  lget(c, i.addr);
+  lget(c, i.a);
+  // pointers store as i32 regardless of the 8-byte memory footprint;
+  // everything else follows the store SIZE
+  let t: IRType = i.a.ty;
+  let sz: i64 = i.size;
+  if i.is_float {
+    if sz == 4 {
+      b8(c.body, 0x38);
+      buleb(c.body, 2);
+    } else {
+      b8(c.body, 0x39);
+      buleb(c.body, 3);
+    }
+  } else if t == IRType.ItPtr {
+    b8(c.body, 0x36); // i32.store
+    buleb(c.body, 2);
+  } else {
+    let mut op: u8 = 0x37;
+    let mut align: u64 = 3;
+    if sz == 1 { op = 0x3A; align = 0; }
+    else if sz == 2 { op = 0x3B; align = 1; }
+    else if sz == 4 { op = 0x36; align = 2; }
+    b8(c.body, op);
+    buleb(c.body, align);
+  }
+  buleb(c.body, 0);
+}
+
+fn arith_op(op: IROp, ty: IRType, sgn: bool, flt: bool) -> u8 {
+  let is64: bool = w_is64(ty);
+  if op == IROp.IrAdd {
+    if flt {
+      if ty == IRType.ItF32 { return 0x92; }
+      return 0xA0;
+    }
+    if is64 { return 0x7C; }
+    return 0x6A;
+  }
+  if op == IROp.IrSub {
+    if flt {
+      if ty == IRType.ItF32 { return 0x93; }
+      return 0xA1;
+    }
+    if is64 { return 0x7D; }
+    return 0x6B;
+  }
+  if op == IROp.IrMul {
+    if flt {
+      if ty == IRType.ItF32 { return 0x94; }
+      return 0xA2;
+    }
+    if is64 { return 0x7E; }
+    return 0x6C;
+  }
+  if op == IROp.IrDiv {
+    if flt {
+      if ty == IRType.ItF32 { return 0x95; }
+      return 0xA3;
+    }
+    if is64 {
+      if sgn { return 0x7F; }
+      return 0x80;
+    }
+    if sgn { return 0x6D; }
+    return 0x6E;
+  }
+  if op == IROp.IrMod {
+    if is64 {
+      if sgn { return 0x81; }
+      return 0x82;
+    }
+    if sgn { return 0x6F; }
+    return 0x70;
+  }
+  if op == IROp.IrAnd { if is64 { return 0x83; } return 0x71; }
+  if op == IROp.IrOr { if is64 { return 0x84; } return 0x72; }
+  if op == IROp.IrXor { if is64 { return 0x85; } return 0x73; }
+  if op == IROp.IrShl { if is64 { return 0x86; } return 0x74; }
+  if op == IROp.IrShr {
+    if is64 {
+      if sgn { return 0x87; }
+      return 0x88;
+    }
+    if sgn { return 0x75; }
+    return 0x76;
+  }
+  return 0x6A;
+}
+
+fn emit_cmp(c: *WFnCtx, i: *IRIns) {
+  lget(c, i.a);
+  lget(c, i.b);
+  if i.is_float {
+    // eq ne lt gt le ge — f32 0x5B.., f64 0x61..
+    let mut idx: i32 = 5;
+    if i.cc == IRCC.CcEq { idx = 0; }
+    else if i.cc == IRCC.CcNe { idx = 1; }
+    else if i.cc == IRCC.CcLt { idx = 2; }
+    else if i.cc == IRCC.CcGt { idx = 3; }
+    else if i.cc == IRCC.CcLe { idx = 4; }
+    let f32ops: []u8 = make([]u8, 6);
+    f32ops[0] = 0x5B; f32ops[1] = 0x5C; f32ops[2] = 0x5D;
+    f32ops[3] = 0x5E; f32ops[4] = 0x5F; f32ops[5] = 0x60;
+    let f64ops: []u8 = make([]u8, 6);
+    f64ops[0] = 0x61; f64ops[1] = 0x62; f64ops[2] = 0x63;
+    f64ops[3] = 0x64; f64ops[4] = 0x65; f64ops[5] = 0x66;
+    if i.a.ty == IRType.ItF32 {
+      b8(c.body, f32ops[idx]);
+    } else {
+      b8(c.body, f64ops[idx]);
+    }
+  } else {
+    let is64: bool = w_is64(i.a.ty);
+    let mut base: i32 = 0x46;
+    if is64 {
+      base = 0x51;
+    }
+    let mut idx: i32 = 0;
+    if i.cc == IRCC.CcEq { idx = 0; }
+    else if i.cc == IRCC.CcNe { idx = 1; }
+    else if i.cc == IRCC.CcLt { if i.signed_ops { idx = 2; } else { idx = 3; } }
+    else if i.cc == IRCC.CcLe { if i.signed_ops { idx = 6; } else { idx = 7; } }
+    else if i.cc == IRCC.CcGt { if i.signed_ops { idx = 4; } else { idx = 5; } }
+    else if i.cc == IRCC.CcGe { if i.signed_ops { idx = 8; } else { idx = 9; } }
+    b8(c.body, (base + idx) as u8);
+  }
+  lset(c, i.dst);
+}
+
+fn prelude_symbol(name: string) -> string {
+  let fn_: *Sym = prelude_fn(name);
+  if fn_ != null {
+    return sym_symbol(fn_);
+  }
+  return name;
+}
+
+// integer div/mod with the zero and MIN/-1 guards the spec promises:
+// divisor == 0 -> __panic_div; signed divisor == -1 -> 0 - a (wraps)
+fn emit_int_divmod(c: *WFnCtx, i: *IRIns) {
+  let is64: bool = w_is64(i.a.ty);
+  lget(c, i.b);
+  if is64 { b8(c.body, 0x50); } else { b8(c.body, 0x45); } // eqz
+  b8(c.body, 0x04); // if void
+  b8(c.body, 0x40);
+  {
+    let sym: string = prelude_symbol("__panic_div");
+    let t: *WFn = fm_get(W.fn_by_symbol, sym);
+    if t != null {
+      b8(c.body, 0x10); // call
+      buleb(c.body, t.index as u64);
+    }
+    b8(c.body, 0x00); // unreachable — panic never returns
+  }
+  b8(c.body, 0x05); // else
+  if i.signed_ops {
+    lget(c, i.b);
+    if is64 {
+      b8(c.body, 0x42); // i64.const -1
+      bsleb(c.body, -1);
+      b8(c.body, 0x51); // i64.eq
+    } else {
+      b8(c.body, 0x41); // i32.const -1
+      bsleb(c.body, -1);
+      b8(c.body, 0x46); // i32.eq
+    }
+    b8(c.body, 0x04); // if void
+    b8(c.body, 0x40);
+    // dst = 0 - a (wraps: MIN / -1 -> MIN)
+    if is64 {
+      b8(c.body, 0x42);
+      bsleb(c.body, 0);
+    } else {
+      b8(c.body, 0x41);
+      bsleb(c.body, 0);
+    }
+    lget(c, i.a);
+    if is64 { b8(c.body, 0x7D); } else { b8(c.body, 0x6B); } // sub
+    lset(c, i.dst);
+    b8(c.body, 0x05); // else
+    lget(c, i.a);
+    lget(c, i.b);
+    b8(c.body, arith_op(i.op, i.a.ty, i.signed_ops, false));
+    lset(c, i.dst);
+    b8(c.body, 0x0B); // end
+  } else {
+    lget(c, i.a);
+    lget(c, i.b);
+    b8(c.body, arith_op(i.op, i.a.ty, i.signed_ops, false));
+    lset(c, i.dst);
+  }
+  b8(c.body, 0x0B); // end if
+}
+
+fn table_index_of(symbol: string) {
+  if im_has(W.table_idx, symbol) {
+    return;
+  }
+  W.table_fns = push_str(W.table_fns, symbol);
+  im_put(W.table_idx, symbol, len(W.table_fns) as i64);
+}
+
+fn intrinsics_f32_bits(x: f64) -> u32 {
+  return intrinsics.f32_bits(x as f32);
+}
+
+fn intrinsics_f64_bits(x: f64) -> u64 {
+  return intrinsics.f64_bits(x);
+}
+
+fn emit_ins(c: *WFnCtx, i: *IRIns) {
+  if i.op == IROp.IrConst {
+    if w_is64(i.dst.ty) {
+      b8(c.body, 0x42);
+      bsleb(c.body, i.imm);
+    } else {
+      b8(c.body, 0x41);
+      bsleb(c.body, i.imm as i32 as i64);
+    }
+    lset(c, i.dst);
+    return;
+  }
+  if i.op == IROp.IrFconst {
+    if i.dst.ty == IRType.ItF32 {
+      let bits: u32 = intrinsics_f32_bits(i.fimm);
+      b8(c.body, 0x43);
+      let mut k: i32 = 0;
+      while k < 4 {
+        b8(c.body, ((bits >> (8 * k)) & 255) as u8);
+        k += 1;
+      }
+    } else {
+      let bits: u64 = intrinsics_f64_bits(i.fimm);
+      b8(c.body, 0x44);
+      let mut k: i32 = 0;
+      while k < 8 {
+        b8(c.body, ((bits >> (8 * k)) & 255) as u8);
+        k += 1;
+      }
+    }
+    lset(c, i.dst);
+    return;
+  }
+  if i.op == IROp.IrDiv || i.op == IROp.IrMod {
+    if !i.is_float {
+      emit_int_divmod(c, i);
+      return;
+    }
+    // fall through to the float path
+  }
+  if i.op == IROp.IrAdd || i.op == IROp.IrSub || i.op == IROp.IrMul ||
+     i.op == IROp.IrDiv || i.op == IROp.IrMod || i.op == IROp.IrAnd ||
+     i.op == IROp.IrOr || i.op == IROp.IrXor || i.op == IROp.IrShl ||
+     i.op == IROp.IrShr {
+    lget(c, i.a);
+    lget(c, i.b);
+    // pointer(+/-)usize mixes i32 and i64 on wasm32: narrow the wide side
+    if !w_is64(i.a.ty) && w_is64(i.b.ty) && !i.is_float {
+      b8(c.body, 0xA7); // i32.wrap_i64
+    } else if w_is64(i.a.ty) && !w_is64(i.b.ty) && !i.is_float {
+      b8(c.body, 0xAD); // i64.extend_i32_u
+    }
+    b8(c.body, arith_op(i.op, i.a.ty, i.signed_ops, i.is_float));
+    lset(c, i.dst);
+    return;
+  }
+  if i.op == IROp.IrCmp {
+    emit_cmp(c, i);
+    return;
+  }
+  if i.op == IROp.IrLoad {
+    emit_load(c, i);
+    return;
+  }
+  if i.op == IROp.IrStore {
+    emit_store(c, i);
+    return;
+  }
+  if i.op == IROp.IrAddrc {
+    if i.lit == -1 && i.callee != "" {
+      if ir_fn_for_symbol(i.callee) != null {
+        table_index_of(i.callee);
+        i32c(c, im_get(W.table_idx, i.callee) - 1);
+      } else {
+        i32c(c, im_get(W.global_addr, i.callee));
+      }
+      lset(c, i.dst);
+    } else {
+      // frame slot address: $fb + off
+      b8(c.body, 0x20);
+      buleb(c.body, fb_local(c) as u64);
+      i32c(c, slot_offset(c, i.slot));
+      b8(c.body, 0x6A);
+      lset(c, i.dst);
+    }
+    return;
+  }
+  if i.op == IROp.IrLitaddr {
+    let lit: *IRLit = c.fn_.literals[i.lit];
+    i32c(c, im_get(W.lit_addr, lit.label));
+    lset(c, i.dst);
+    return;
+  }
+  if i.op == IROp.IrAddi {
+    lget(c, i.a);
+    i32c(c, i.imm);
+    b8(c.body, 0x6A);
+    lset(c, i.dst);
+    return;
+  }
+  if i.op == IROp.IrCall {
+    if i.callee != "" {
+      // resolve first: a body-less rho fn (empty {}) is a no-op, and its
+      // arg drops must not follow an already-emitted call opcode
+      let mut import: i64 = -1;
+      if streq(i.callee, "fd_write") { import = 0; }
+      else if streq(i.callee, "proc_exit") { import = 1; }
+      let mut t: *WFn = null;
+      if import < 0 {
+        t = fm_get(W.fn_by_symbol, i.callee);
+        if t == null {
+          // args are never evaluated on this path (their vregs simply go
+          // unconsumed), so only an expected result needs synthesizing
+          if i.dst != null {
+            if i.dst.ty == IRType.ItF32 || i.dst.ty == IRType.ItF64 {
+              if i.dst.ty == IRType.ItF32 {
+                b8(c.body, 0x43);
+              } else {
+                b8(c.body, 0x44);
+              }
+              let mut z: i32 = 0;
+              let mut zb: i32 = 8;
+              if i.dst.ty == IRType.ItF32 {
+                zb = 4;
+              }
+              while z < zb {
+                b8(c.body, 0);
+                z += 1;
+              }
+            } else {
+              if w_is64(i.dst.ty) {
+                b8(c.body, 0x42);
+              } else {
+                b8(c.body, 0x41);
+              }
+              b8(c.body, 0x00);
+            }
+            lset(c, i.dst);
+          }
+          return;
+        }
+      }
+      let mut k: usize = 0;
+      while k < len(i.args) {
+        lget(c, i.args[k]);
+        k += 1;
+      }
+      b8(c.body, 0x10);
+      if import >= 0 {
+        buleb(c.body, import as u64);
+      } else {
+        buleb(c.body, t.index as u64);
+      }
+    } else {
+      let mut k: usize = 0;
+      while k < len(i.args) {
+        lget(c, i.args[k]);
+        k += 1;
+      }
+      lget(c, i.callee_vreg);
+      b8(c.body, 0x11); // call_indirect
+      buleb(c.body, w_type_of_call(i) as u64);
+      buleb(c.body, 0);
+    }
+    if i.dst != null {
+      lset(c, i.dst);
+    }
+    return;
+  }
+  if i.op == IROp.IrCast {
+    lget(c, i.a);
+    let from: IRType = i.cast_from;
+    let to: IRType = i.cast_to;
+    let sgn: bool = ty_is_signed_int(from);
+    if i.cast == IRCastKind.CastTrunc {
+      if w_is64(from) && !w_is64(to) {
+        b8(c.body, 0xA7); // i32.wrap_i64
+      }
+    } else if i.cast == IRCastKind.CastSext {
+      if !w_is64(from) && w_is64(to) {
+        b8(c.body, 0xAC);
+      }
+    } else if i.cast == IRCastKind.CastZext {
+      if !w_is64(from) && w_is64(to) {
+        b8(c.body, 0xAD);
+      }
+    } else if i.cast == IRCastKind.CastI2f {
+      // f32.convert_i32_s/u=0xB2/B3, f32.convert_i64_s/u=0xB4/B5,
+      // f64.convert_i32_s/u=0xB7/B8, f64.convert_i64_s/u=0xB9/0xBA
+      if to == IRType.ItF32 {
+        if w_is64(from) {
+          if sgn { b8(c.body, 0xB4); } else { b8(c.body, 0xB5); }
+        } else {
+          if sgn { b8(c.body, 0xB2); } else { b8(c.body, 0xB3); }
+        }
+      } else {
+        if w_is64(from) {
+          if sgn { b8(c.body, 0xB9); } else { b8(c.body, 0xBA); }
+        } else {
+          if sgn { b8(c.body, 0xB7); } else { b8(c.body, 0xB8); }
+        }
+      }
+    } else if i.cast == IRCastKind.CastF2i {
+      // saturating truncation (spec: out-of-range saturates)
+      let sgn_to: bool = ty_is_signed_int(to);
+      let mut op: i32 = 0;
+      if w_is64(to) {
+        op = (if from == IRType.ItF32 { 0x04 } else { 0x06 }) + (if sgn_to { 0 } else { 1 });
+      } else {
+        op = (if from == IRType.ItF32 { 0x00 } else { 0x02 }) + (if sgn_to { 0 } else { 1 });
+      }
+      b8(c.body, 0xFC);
+      b8(c.body, op as u8);
+    } else if i.cast == IRCastKind.CastF32F64 {
+      b8(c.body, 0xBB); // f64.promote_f32
+    } else if i.cast == IRCastKind.CastF64F32 {
+      b8(c.body, 0xB6); // f32.demote_f64
+    } else if i.cast == IRCastKind.CastReinterp {
+      // i32.reinterpret_f32=0xBC, i64.reinterpret_f64=0xBD
+      if from == IRType.ItF32 {
+        b8(c.body, 0xBC);
+      } else {
+        b8(c.body, 0xBD);
+      }
+    } else if i.cast == IRCastKind.CastBitcopy {
+      // same-memory-size reinterpretations; across the wasm32 split the
+      // pointer half is i32, so 64-bit ints need a width hop
+      if from == IRType.ItF32 && to == IRType.ItI32 {
+        b8(c.body, 0xBC);
+      } else if from == IRType.ItF64 && (to == IRType.ItI64 || to == IRType.ItUsize) {
+        b8(c.body, 0xBD);
+      } else if from == IRType.ItI32 && to == IRType.ItF32 {
+        b8(c.body, 0xBE);
+      } else if (from == IRType.ItI64 || from == IRType.ItUsize) && to == IRType.ItF64 {
+        b8(c.body, 0xBF);
+      } else if from == IRType.ItPtr && w_is64(to) {
+        b8(c.body, 0xAD); // i64.extend_i32_u
+      } else if w_is64(from) && to == IRType.ItPtr {
+        b8(c.body, 0xA7); // i32.wrap_i64
+      }
+    }
+    lset(c, i.dst);
+    return;
+  }
+  if i.op == IROp.IrCopymem {
+    lget(c, i.addr);
+    lget(c, i.a);
+    if i.size < 0 {
+      lget(c, i.b); // runtime byte count
+    } else {
+      i32c(c, i.size);
+    }
+    b8(c.body, 0xFC);
+    b8(c.body, 0x0A); // memory.copy
+    buleb(c.body, 0);
+    buleb(c.body, 0);
+    return;
+  }
+  if i.op == IROp.IrZero {
+    lget(c, i.addr);
+    i32c(c, 0);
+    i32c(c, i.size);
+    b8(c.body, 0xFC);
+    b8(c.body, 0x0B); // memory.fill
+    buleb(c.body, 0);
+    return;
+  }
+}
+// ---- structured control flow -----------------------------------------------------
+// Each branch/join gets exactly ONE label for its lifetime: the first diamond
+// that targets it pushes it, arms br to it, and its code is emitted once after
+// the outermost construct that referenced it. Loop headers carry explicit
+// flags from the lowering (structural guessing mis-fires on rc glue CFGs).
+
+fn pred_count(c: *WFnCtx, t: *IRBlock) -> i32 {
+  let mut n: i32 = 0;
+  let mut i: usize = 0;
+  while i < len(c.fn_.blocks) {
+    let b: *IRBlock = c.fn_.blocks[i];
+    if b.term_op == 100 && b.br_true == t {
+      n += 1;
+    } else if b.term_op == 101 {
+      if b.br_true == t {
+        n += 1;
+      }
+      if b.br_false == t {
+        n += 1;
+      }
+    }
+    i += 1;
+  }
+  return n;
+}
+
+fn has_claim(c: *WFnCtx, b: *IRBlock) -> bool {
+  if b == null {
+    return false;
+  }
+  let mut i: usize = 0;
+  while i < len(c.claims) {
+    if c.claims[i].b == b {
+      return true;
+    }
+    i += 1;
+  }
+  return false;
+}
+
+fn has_label(c: *WFnCtx, b: *IRBlock) -> bool {
+  if b == null {
+    return false;
+  }
+  let mut i: usize = 0;
+  while i < len(c.labels) {
+    if c.labels[i].b == b {
+      return true;
+    }
+    i += 1;
+  }
+  return false;
+}
+
+fn has_target(c: *WFnCtx, b: *IRBlock) -> bool {
+  return has_claim(c, b) || has_label(c, b);
+}
+
+fn inlineable(c: *WFnCtx, b: *IRBlock) -> bool {
+  return !b.loop_header && !has_target(c, b) && !b.emitted && pred_count(c, b) == 1;
+}
+
+// can block `target` be reached from `from` following terminators through
+// unlabeled, single-pred blocks? (small CFGs; bounded walk)
+fn reaches(c: *WFnCtx, from: *IRBlock, target: *IRBlock, depth: i32) -> bool {
+  if from == null || depth > 32 {
+    return false;
+  }
+  let mut cur: *IRBlock = from;
+  while cur != null {
+    if cur == target {
+      return true;
+    }
+    if cur.term_op == 0 {
+      return false;
+    }
+    if cur.term_op == 100 {
+      cur = cur.br_true;
+    } else if cur.term_op == 102 {
+      return false;
+    } else {
+      return reaches(c, cur.br_true, target, depth + 1) ||
+             reaches(c, cur.br_false, target, depth + 1);
+    }
+  }
+  return false;
+}
+
+// terminal br target of the chain starting at b (peek only), NULL on return
+fn chain_terminal(c: *WFnCtx, b: *IRBlock) -> *IRBlock {
+  let mut cur: *IRBlock = b;
+  while cur != null {
+    if !inlineable(c, cur) {
+      return cur; // join, loop header, or labeled target
+    }
+    if cur.term_op == 0 {
+      return null;
+    }
+    if cur.term_op == 100 {
+      let t: *IRBlock = cur.br_true;
+      if inlineable(c, t) {
+        cur = t;
+      } else {
+        return t;
+      }
+    } else if cur.term_op == 102 {
+      return cur; // a shared RET block is a join like any other
+    } else {
+      let r1: *IRBlock = chain_terminal(c, cur.br_true);
+      let r2: *IRBlock = chain_terminal(c, cur.br_false);
+      if r1 == r2 {
+        return r1;
+      }
+      if r1 != null && r2 != null {
+        // the arms' terminals differ: the true join is the deeper one the
+        // other side eventually reaches
+        let f12: bool = reaches(c, r1, r2, 0);
+        let f21: bool = reaches(c, r2, r1, 0);
+        if f12 {
+          return r2;
+        }
+        if f21 {
+          return r1;
+        }
+      }
+      if r1 != null {
+        return r1;
+      }
+      return r2;
+    }
+  }
+  return null;
+}
+
+fn push_label_n(c: *WFnCtx, kind: i32, b: *IRBlock) {
+  c.labels = push_label(c.labels, new WLabel { kind: kind, b: b });
+}
+
+fn pop_label(c: *WFnCtx) {
+  let out: []*WLabel = make([]*WLabel, len(c.labels) - 1);
+  let mut i: usize = 0;
+  while i < len(c.labels) - 1 {
+    out[i] = c.labels[i];
+    i += 1;
+  }
+  c.labels = out;
+}
+
+fn pop_claim(c: *WFnCtx) {
+  let out: []*WClaim = make([]*WClaim, len(c.claims) - 1);
+  let mut i: usize = 0;
+  while i < len(c.claims) - 1 {
+    out[i] = c.claims[i];
+    i += 1;
+  }
+  c.claims = out;
+}
+
+fn br_depth(c: *WFnCtx, t: *IRBlock) -> i32 {
+  // claims first: br lands on the claiming diamond's own if — the last
+  // construct opened since the claim — one below the raw count
+  let mut i: usize = len(c.claims);
+  while i > 0 {
+    let cl: *WClaim = c.claims[i - 1];
+    if cl.b == t {
+      return len(c.labels) as i32 - cl.base - 1;
+    }
+    i -= 1;
+  }
+  i = len(c.labels);
+  while i > 0 {
+    if c.labels[i - 1].b == t {
+      return len(c.labels) as i32 - i as i32;
+    }
+    i -= 1;
+  }
+  return -1;
+}
+
+fn edge_copies(c: *WFnCtx, from: *IRBlock, t: *IRBlock) {
+  let mut p: usize = 0;
+  while p < len(t.phis) {
+    let phi: *IRPhi = t.phis[p];
+    let mut k: usize = 0;
+    while k < len(phi.preds) {
+      if phi.preds[k] == from {
+        lget(c, phi.args[k]);
+        lset(c, phi.dst);
+      }
+      k += 1;
+    }
+    p += 1;
+  }
+}
+
+fn wasm_br(c: *WFnCtx, from: *IRBlock, t: *IRBlock) {
+  edge_copies(c, from, t);
+  let mut d: i32 = br_depth(c, t);
+  if d < 0 {
+    d = 0;
+  }
+  b8(c.body, 0x0C);
+  buleb(c.body, d as u64);
+}
+
+// emits blocks from `b` (reached from `from`) until the region branches
+// out or returns; returns the block the region branched to, or NULL.
+fn emit_region_run(c: *WFnCtx, b_in: *IRBlock, from_in: *IRBlock) {
+  let mut b: *IRBlock = b_in;
+  let mut from: *IRBlock = from_in;
+  let mut guard: i32 = 0;
+  while b != null && !b.emitted && !has_target(c, b) && guard < 4096 {
+    guard += 1;
+    let next: *IRBlock = emit_region(c, b, from);
+    from = b;
+    b = next;
+  }
+}
+
+fn emit_region(c: *WFnCtx, b_in: *IRBlock, from_in: *IRBlock) -> *IRBlock {
+  let mut started_loop: bool = false; // this invocation opened the loop labels
+  let mut my_header: *IRBlock = null;
+  let mut my_exit: *IRBlock = null;
+  let mut from: *IRBlock = from_in;
+  let mut b: *IRBlock = b_in;
+  while b != null {
+    if b.emitted || has_target(c, b) {
+      wasm_br(c, from, b);
+      return b;
+    }
+    if b.loop_header {
+      // block $exit { loop $h { <body>; } } — the header's own term is
+      // dispatched generically below; the body's terminal br back to the
+      // header closes the loop, br to the exit breaks out
+      my_exit = b.loop_exit;
+      my_header = b;
+      push_label_n(c, 0, my_exit); // block $exit
+      push_label_n(c, 1, my_header); // loop $h
+      b8(c.body, 0x02); // block
+      b8(c.body, 0x40);
+      b8(c.body, 0x03); // loop
+      b8(c.body, 0x40);
+      started_loop = true;
+    }
+    b.emitted = true;
+    let mut k: usize = 0;
+    while k < len(b.ins) {
+      emit_ins(c, b.ins[k]);
+      k += 1;
+    }
+    if b.term_op == 0 {
+      if started_loop {
+        b8(c.body, 0x0B); // end loop
+        b8(c.body, 0x0B); // end block
+        pop_label(c);
+        pop_label(c);
+      }
+      return null;
+    }
+    if b.term_op == 100 {
+      let t: *IRBlock = b.br_true;
+      // forward entry into a not-yet-emitted loop becomes the construct
+      if t.loop_header && !t.emitted {
+        from = b;
+        b = t;
+        continue;
+      }
+      if t == my_header && started_loop {
+        // back edge: repeat the loop
+        wasm_br(c, b, t);
+        b8(c.body, 0x0B); // end loop
+        b8(c.body, 0x0B); // end block
+        pop_label(c);
+        pop_label(c);
+        if my_exit == null {
+          return null;
+        }
+        from = b;
+        b = my_exit;
+        started_loop = false;
+        my_header = null;
+        my_exit = null;
+        continue;
+      }
+      if inlineable(c, t) {
+        from = b;
+        b = t;
+        continue;
+      }
+      wasm_br(c, b, t);
+      if started_loop && t == my_exit {
+        // break: leave the loop, the exit's code follows in the caller
+        b8(c.body, 0x0B); // end loop
+        b8(c.body, 0x0B); // end block
+        pop_label(c);
+        pop_label(c);
+        return t;
+      }
+      return t;
+    }
+    if b.term_op == 102 {
+      // restore the shadow stack to the caller's base ($fb + frame), then
+      // return (value stays on the stack)
+      b8(c.body, 0x20);
+      buleb(c.body, fb_local(c) as u64);
+      i32c(c, c.frame);
+      b8(c.body, 0x6A); // i32.add — $fb + frame = caller's base
+      b8(c.body, 0x24); // global.set 0 ($sp)
+      buleb(c.body, 0);
+      if b.ret_val != null {
+        lget(c, b.ret_val);
+      }
+      b8(c.body, 0x0F); // return
+      if started_loop {
+        b8(c.body, 0x0B); // end loop (lexically required)
+        b8(c.body, 0x0B); // end block
+        pop_label(c);
+        pop_label(c);
+      }
+      return null;
+    }
+    // cbr: if { then } else { else }; both arms land on the join via br,
+    // whose label/code lives with the first diamond that claimed it.
+    let t2: *IRBlock = b.br_true;
+    let f2: *IRBlock = b.br_false;
+    let mut join: *IRBlock = null;
+    if b.join_hint != null {
+      join = b.join_hint;
+    } else {
+      join = chain_terminal(c, t2);
+      let join2: *IRBlock = chain_terminal(c, f2);
+      if join != join2 {
+        // the true join is the deeper terminal the other side reaches
+        if join != null && join2 != null && reaches(c, join, join2, 0) {
+          join = join2;
+        } else {
+          if join == null {
+            join = join2;
+          }
+        }
+      }
+    }
+    let mut claimed: bool = false;
+    if join != null && !has_target(c, join) && !join.emitted {
+      c.claims = push_claim(c.claims, new WClaim { b: join, base: len(c.labels) as i32 });
+      claimed = true;
+    }
+    push_label_n(c, 2, null); // the anonymous if occupies a br depth
+    lget(c, b.cbr_cond);
+    b8(c.body, 0x04); // if
+    b8(c.body, 0x40); // void blocktype
+    emit_region_run(c, t2, b);
+    b8(c.body, 0x05); // else
+    emit_region_run(c, f2, b);
+    b8(c.body, 0x0B); // end if
+    pop_label(c);     // drop the if placeholder
+    if join == null {
+      if started_loop {
+        b8(c.body, 0x0B); // end loop
+        b8(c.body, 0x0B); // end block
+        pop_label(c);
+        pop_label(c);
+      }
+      return null; // both arms returned
+    }
+    if join.emitted {
+      if claimed {
+        pop_claim(c); // ours went stale the moment it was emitted
+      }
+      if started_loop && join == my_exit {
+        // a break-if: both arms already br'd; close the loop, emit exit
+        b8(c.body, 0x0B); // end loop
+        b8(c.body, 0x0B); // end block
+        pop_label(c);
+        pop_label(c);
+        started_loop = false;
+        my_header = null;
+        my_exit = null;
+        from = b;
+        b = join;
+        continue;
+      }
+      return join; // an earlier construct emitted it
+    }
+    if !claimed {
+      if started_loop && join == my_exit {
+        // break-if against this loop's exit: close and continue at exit
+        b8(c.body, 0x0B); // end loop
+        b8(c.body, 0x0B); // end block
+        pop_label(c);
+        pop_label(c);
+        started_loop = false;
+        my_header = null;
+        my_exit = null;
+        from = b;
+        b = join;
+        continue;
+      }
+      return join; // an enclosing construct owns the join and its code
+    }
+    pop_claim(c); // our claim: the join's code follows right here
+    from = b;
+    b = join;
+  }
+  return null;
+}
+
+// collect each vreg's IRType: one def instruction, or a block phi
+fn vreg_type(fn_: *IRFn, id: i32) -> IRType {
+  let mut b: usize = 0;
+  while b < len(fn_.blocks) {
+    let blk: *IRBlock = fn_.blocks[b];
+    let mut p: usize = 0;
+    while p < len(blk.phis) {
+      let phi: *IRPhi = blk.phis[p];
+      if phi.dst.id == id {
+        return phi.dst.ty;
+      }
+      p += 1;
+    }
+    let mut k: usize = 0;
+    while k < len(blk.ins) {
+      let i: *IRIns = blk.ins[k];
+      if i.dst != null && i.dst.id == id {
+        return i.dst.ty;
+      }
+      k += 1;
+    }
+    b += 1;
+  }
+  return IRType.ItI32;
+}
+
+static mut fb_ctx: *WFnCtx = 0 as *WFnCtx;
+
+fn emit_fn_body(wf: *WFn) -> *Vec[u8] {
+  let fn_: *IRFn = wf.fn_;
+  let c: *WFnCtx = new WFnCtx {
+    fn_: fn_, body: new Vec[u8] { items: make([]u8, 4096), n: 0 },
+    slot_off: make([]i64, 0), frame: 0, hidden: 0,
+    labels: make([]*WLabel, 0), claims: make([]*WClaim, 0),
+  };
+  fb_ctx = c;
+
+  // frame layout first (slots), then locals for every vreg
+  let mut i: usize = 0;
+  while i < len(fn_.slots) {
+    slot_offset(c, fn_.slots[i]);
+    i += 1;
+  }
+
+  if fn_.returns_aggregate {
+    c.hidden = 1;
+  }
+  // prologue: $sp -= frame; $fb = $sp — slots live at $fb + off inside
+  // [fb, fb+frame), safely below every live caller frame
+  b8(c.body, 0x23); // global.get 0 ($sp)
+  buleb(c.body, 0);
+  i32c(c, c.frame);
+  b8(c.body, 0x6B); // i32.sub
+  b8(c.body, 0x22); // local.tee $fb — set it AND keep the value for $sp
+  buleb(c.body, (len(fn_.params) as i64 + c.hidden as i64) as u64);
+  b8(c.body, 0x24); // global.set 0 ($sp)
+  buleb(c.body, 0);
+  // the hidden out pointer (agg returns): save signature local 0 (the out
+  // ptr) into the frame's out slot — wasm stores take address FIRST
+  if c.hidden != 0 {
+    b8(c.body, 0x20); // local.get $fb
+    buleb(c.body, (len(fn_.params) as i64 + c.hidden as i64) as u64);
+    i32c(c, slot_offset(c, fn_.out_slot));
+    b8(c.body, 0x6A); // i32.add — address = $fb + off
+    b8(c.body, 0x20); // local.get 0 (out ptr) — value second
+    buleb(c.body, 0);
+    b8(c.body, 0x36); // i32.store
+    buleb(c.body, 2);
+    buleb(c.body, 0);
+  }
+
+  // incoming params: store each wasm param local into its frame slot
+  i = 0;
+  while i < len(fn_.params) {
+    let ps: *IRSlot = fn_.params[i];
+    let mut pt: *Type = null;
+    if i < len(fn_.param_types) {
+      pt = fn_.param_types[i];
+    }
+    let agg: bool = ty_travels_as_ptr(pt);
+    // wasm store operand order: address first, value second
+    b8(c.body, 0x20); // local.get $fb
+    buleb(c.body, (len(fn_.params) as i64 + c.hidden as i64) as u64);
+    i32c(c, slot_offset(c, ps));
+    b8(c.body, 0x6A); // i32.add — address = $fb + off
+    b8(c.body, 0x20);
+    buleb(c.body, (i as i64 + c.hidden as i64) as u64); // local.get <param i>
+    // the pointer/aggregate handle itself lives in the slot
+    let mut it: IRType = IRType.ItPtr;
+    if !agg && pt != null {
+      it = ir_type_of(pt);
+    }
+    if it == IRType.ItF64 {
+      b8(c.body, 0x39);
+      buleb(c.body, 3);
+    } else if it == IRType.ItF32 {
+      b8(c.body, 0x38);
+      buleb(c.body, 2);
+    } else if w_is64(it) {
+      b8(c.body, 0x37);
+      buleb(c.body, 3);
+    } else {
+      b8(c.body, 0x36); // i32.store (also pointers)
+      buleb(c.body, 2);
+    }
+    buleb(c.body, 0);
+    i += 1;
+  }
+
+  emit_region_run(c, fn_.entry, fn_.entry);
+  b8(c.body, 0x0B); // end function body
+  return c.body;
+}
+
+fn emit_wasm() -> []u8 {
+  let out: *Vec[u8] = new Vec[u8] { items: make([]u8, 1 << 16), n: 0 };
+  if g_ir_fns.n == 0 {
+    return out.items;
+  }
+
+  W = new WState {
+    fns: make([]*WFn, 0), types: make([]*WType, 0), type_keys: make([]string, 0),
+    fn_by_symbol: new WFnMap { items: make([]*WFnEnt, 0) },
+    table_idx: new I64Map { items: make([]*I64Ent, 0) },
+    table_fns: make([]string, 0),
+    global_addr: new I64Map { items: make([]*I64Ent, 0) },
+    lit_addr: new I64Map { items: make([]*I64Ent, 0) },
+    heap_base: 0, stack_top: 0, data_end: 0,
+  };
+
+  // register the two import signatures FIRST: sections are serialized in
+  // order, so anything w_type_for adds during import assembly would land
+  // past the already-written type section
+  {
+    let mut p: []i64 = make([]i64, 0);
+    let mut k: i32 = 0;
+    while k < 4 {
+      p = push_i64(p, IRType.ItI32 as i64);
+      k += 1;
+    }
+    w_type_for(p, true, IRType.ItI32); // fd_write
+    p = make([]i64, 0);
+    p = push_i64(p, IRType.ItI32 as i64);
+    w_type_for(p, false, IRType.ItI32); // proc_exit
+  }
+
+  // function table (indices 0,1 are the wasi imports)
+  let mut i: usize = 0;
+  while i < g_ir_fns.n {
+    eprint("[fn ");
+    eprint(g_ir_fns.items[i].symbol);
+    eprint("]\n");
+    let fn_: *IRFn = g_ir_fns.items[i];
+    fn_.uid = i as i32;
+    let wf: *WFn = new WFn {
+      fn_: fn_, index: (2 + i) as i32, type_: w_type_of_fn(fn_),
+    };
+    W.fns = push_wfn(W.fns, wf);
+    fm_put(W.fn_by_symbol, fn_.symbol, wf);
+    i += 1;
+  }
+  eprint("[Wfns ");
+  eprint(itoa(len(W.fns) as i64));
+  eprint(" ir=");
+  eprint(itoa(g_ir_fns.n as i64));
+  eprint("]\n");
+  w_layout_data();
+
+  // address-taken functions need table entries: scan every instruction
+  i = 0;
+  while i < g_ir_fns.n {
+    let fn_: *IRFn = g_ir_fns.items[i];
+    let mut b: usize = 0;
+    while b < len(fn_.blocks) {
+      let blk: *IRBlock = fn_.blocks[b];
+      let mut k: usize = 0;
+      while k < len(blk.ins) {
+        let ins: *IRIns = blk.ins[k];
+        if ins.op == IROp.IrAddrc && ins.lit == -1 && ins.callee != "" &&
+           ir_fn_for_symbol(ins.callee) != null {
+          table_index_of(ins.callee);
+        }
+        k += 1;
+      }
+      b += 1;
+    }
+    i += 1;
+  }
+
+  // ---- assemble the module ----
+  let typesec: *Vec[u8] = new Vec[u8] { items: make([]u8, 256), n: 0 };
+  let importsec: *Vec[u8] = new Vec[u8] { items: make([]u8, 256), n: 0 };
+  let funcsec: *Vec[u8] = new Vec[u8] { items: make([]u8, 1024), n: 0 };
+  let tablesec: *Vec[u8] = new Vec[u8] { items: make([]u8, 16), n: 0 };
+  let memsec: *Vec[u8] = new Vec[u8] { items: make([]u8, 16), n: 0 };
+  let globsec: *Vec[u8] = new Vec[u8] { items: make([]u8, 16), n: 0 };
+  let exportsec: *Vec[u8] = new Vec[u8] { items: make([]u8, 64), n: 0 };
+  let elemsec: *Vec[u8] = new Vec[u8] { items: make([]u8, 256), n: 0 };
+  let codesec: *Vec[u8] = new Vec[u8] { items: make([]u8, 1 << 16), n: 0 };
+  let datasec: *Vec[u8] = new Vec[u8] { items: make([]u8, 1 << 12), n: 0 };
+
+  // type section
+  {
+    let body: *Vec[u8] = new Vec[u8] { items: make([]u8, 256), n: 0 };
+    buleb(body, len(W.types) as u64);
+    let mut ti: usize = 0;
+    while ti < len(W.types) {
+      let t: *WType = W.types[ti];
+      b8(body, 0x60);
+      buleb(body, len(t.params) as u64);
+      let mut k2: usize = 0;
+      while k2 < len(t.params) {
+        b8(body, w_vt_i(t.params[k2]));
+        k2 += 1;
+      }
+      if t.has_ret {
+        buleb(body, 1);
+        b8(body, w_vt_i(t.ret as i64));
+      } else {
+        buleb(body, 0);
+      }
+      ti += 1;
+    }
+    bsection(typesec, 1, body);
+  }
+
+  // import section: fd_write, proc_exit
+  {
+    let body: *Vec[u8] = new Vec[u8] { items: make([]u8, 128), n: 0 };
+    buleb(body, 2);
+    bstr(body, "wasi_snapshot_preview1");
+    bstr(body, "fd_write");
+    b8(body, 0x00); // func
+    {
+      let mut p: []i64 = make([]i64, 0);
+      let mut k3: i32 = 0;
+      while k3 < 4 {
+        p = push_i64(p, IRType.ItI32 as i64);
+        k3 += 1;
+      }
+      buleb(body, w_type_for(p, true, IRType.ItI32) as u64);
+    }
+    bstr(body, "wasi_snapshot_preview1");
+    bstr(body, "proc_exit");
+    b8(body, 0x00);
+    {
+      let mut p: []i64 = make([]i64, 0);
+      p = push_i64(p, IRType.ItI32 as i64);
+      buleb(body, w_type_for(p, false, IRType.ItI32) as u64);
+    }
+    bsection(importsec, 2, body);
+  }
+
+  // function section
+  {
+    eprint("[funcsec fns=");
+    eprint(itoa(len(W.fns) as i64));
+    eprint("]\n");
+    let body: *Vec[u8] = new Vec[u8] { items: make([]u8, 4096), n: 0 };
+    buleb(body, (len(W.fns) + 1) as u64); // + _start
+    let mut fi: usize = 0;
+    while fi < len(W.fns) {
+      buleb(body, W.fns[fi].type_ as u64);
+      fi += 1;
+    }
+    // _start: () -> ()
+    {
+      let p: []i64 = make([]i64, 0);
+      buleb(body, w_type_for(p, false, IRType.ItI32) as u64);
+    }
+    bsection(funcsec, 3, body);
+  }
+
+  // table section: always present — rc_dec's drop-glue call_indirect needs
+  // table 0 to exist even in programs that never take a function address
+  {
+    let body: *Vec[u8] = new Vec[u8] { items: make([]u8, 16), n: 0 };
+    buleb(body, 1);
+    b8(body, 0x70); // funcref
+    b8(body, 0x00); // min only
+    let mut n: u64 = 1;
+    if len(W.table_fns) > 0 {
+      n = len(W.table_fns) as u64;
+    }
+    buleb(body, n);
+    bsection(tablesec, 4, body);
+  }
+
+  // memory section
+  {
+    let body: *Vec[u8] = new Vec[u8] { items: make([]u8, 16), n: 0 };
+    let min_pages: u64 = ((W.stack_top + 0xFFFF) / 0x10000 + 1) as u64;
+    buleb(body, 1);
+    b8(body, 0x00);
+    buleb(body, min_pages);
+    bsection(memsec, 5, body);
+  }
+
+  // global section: $sp (mut i32) = stack top
+  {
+    let body: *Vec[u8] = new Vec[u8] { items: make([]u8, 16), n: 0 };
+    buleb(body, 1);
+    b8(body, 0x7F); // i32
+    b8(body, 0x01); // mutable
+    b8(body, 0x41); // i32.const
+    bsleb(body, W.stack_top);
+    b8(body, 0x0B); // end
+    bsection(globsec, 6, body);
+  }
+
+  // export section: memory + _start
+  let start_index: i64 = 2 + len(W.fns) as i64;
+  {
+    let body: *Vec[u8] = new Vec[u8] { items: make([]u8, 64), n: 0 };
+    buleb(body, 2);
+    bstr(body, "memory");
+    b8(body, 0x02); // memory
+    buleb(body, 0);
+    bstr(body, "_start");
+    b8(body, 0x00); // func
+    buleb(body, start_index as u64);
+    bsection(exportsec, 7, body);
+  }
+
+  // element section
+  {
+    let body: *Vec[u8] = new Vec[u8] { items: make([]u8, 256), n: 0 };
+    buleb(body, 1);
+    buleb(body, 0); // table 0
+    b8(body, 0x41); // i32.const 0
+    bsleb(body, 0);
+    b8(body, 0x0B);
+    buleb(body, len(W.table_fns) as u64);
+    let mut ei: usize = 0;
+    while ei < len(W.table_fns) {
+      let sym: string = W.table_fns[ei];
+      let t: *WFn = fm_get(W.fn_by_symbol, sym);
+      let mut idx: u64 = 0;
+      if t != null {
+        idx = t.index as u64;
+      }
+      buleb(body, idx);
+      ei += 1;
+    }
+    bsection(elemsec, 9, body);
+  }
+
+  // code section: [locals decl][body] per function, size-prefixed
+  {
+    let body: *Vec[u8] = new Vec[u8] { items: make([]u8, 1 << 16), n: 0 };
+    buleb(body, (len(W.fns) + 1) as u64);
+    let mut ci: usize = 0;
+    while ci < len(W.fns) {
+      let wf: *WFn = W.fns[ci];
+      let fn_: *IRFn = wf.fn_;
+      let code: *Vec[u8] = emit_fn_body(wf);
+      // locals: one group per local so indices stay params, $fb, then
+      // vregs in id order. The signature carries the declared params (plus
+      // the hidden out ptr FIRST for agg returns); this decl covers $fb
+      // and the vregs only.
+      let entry: *Vec[u8] = new Vec[u8] { items: make([]u8, 1024), n: 0 };
+      buleb(entry, (1 + fn_.next_vreg) as u64);
+      buleb(entry, 1);
+      b8(entry, 0x7F); // $fb
+      let mut v: i32 = 0;
+      while v < fn_.next_vreg {
+        buleb(entry, 1);
+        b8(entry, w_vt(vreg_type(fn_, v)));
+        v += 1;
+      }
+      bappend(entry, code);
+      buleb(body, entry.n as u64);
+      bappend(body, entry);
+      ci += 1;
+    }
+    // _start: call main; exit status & 0xFF (POSIX truncation, so main
+    // returning 1111 exits 87 exactly like a native process); proc_exit
+    {
+      let entry: *Vec[u8] = new Vec[u8] { items: make([]u8, 32), n: 0 };
+      buleb(entry, 0); // no locals
+      let mainf: *WFn = fm_get(W.fn_by_symbol, g_main_cell.items[0]);
+      b8(entry, 0x10);
+      let mut midx: u64 = 0;
+      if mainf != null {
+        midx = mainf.index as u64;
+      }
+      buleb(entry, midx);
+      b8(entry, 0x41); // i32.const 255
+      b8(entry, 0xFF);
+      b8(entry, 0x01);
+      b8(entry, 0x71); // i32.and
+      b8(entry, 0x10);
+      buleb(entry, 1); // proc_exit
+      b8(entry, 0x0B); // (unreachable after proc_exit, but valid)
+      buleb(body, entry.n as u64);
+      bappend(body, entry);
+    }
+    bsection(codesec, 10, body);
+  }
+
+  // data section: statics + literals (24B immortal header + bytes)
+  {
+    let body: *Vec[u8] = new Vec[u8] { items: make([]u8, 1 << 12), n: 0 };
+    let mut count: u64 = 0;
+    let mut g: usize = 0;
+    while g < g_ir_globals.n {
+      let gl: *IRGlobal = g_ir_globals.items[g];
+      if !gl.is_extern && len(gl.init) > 0 {
+        count += 1;
+      }
+      g += 1;
+    }
+    let mut f2: usize = 0;
+    while f2 < g_ir_fns.n {
+      count += len(g_ir_fns.items[f2].literals) as u64;
+      f2 += 1;
+    }
+    buleb(body, count);
+    g = 0;
+    while g < g_ir_globals.n {
+      let gl: *IRGlobal = g_ir_globals.items[g];
+      if gl.is_extern || len(gl.init) == 0 {
+        g += 1;
+        continue;
+      }
+      buleb(body, 0); // memory 0
+      b8(body, 0x41);
+      bsleb(body, im_get(W.global_addr, gl.symbol));
+      b8(body, 0x0B);
+      buleb(body, len(gl.init) as u64);
+      let mut bi: usize = 0;
+      while bi < len(gl.init) {
+        b8(body, gl.init[bi]);
+        bi += 1;
+      }
+      g += 1;
+    }
+    f2 = 0;
+    while f2 < g_ir_fns.n {
+      let fn_: *IRFn = g_ir_fns.items[f2];
+      let mut l: usize = 0;
+      while l < len(fn_.literals) {
+        let lit: *IRLit = fn_.literals[l];
+        buleb(body, 0);
+        b8(body, 0x41);
+        bsleb(body, im_get(W.lit_addr, lit.label));
+        b8(body, 0x0B);
+        buleb(body, (24 + len(lit.bytes)) as u64);
+        // 24-byte immortal rc header: {sentinel, 0, 0}
+        let mut k4: i32 = 0;
+        while k4 < 24 {
+          if k4 == 7 {
+            b8(body, 0x80); // little-endian sentinel top byte
+          } else {
+            b8(body, 0);
+          }
+          k4 += 1;
+        }
+        let mut byi: usize = 0;
+        while byi < len(lit.bytes) {
+          b8(body, lit.bytes[byi]);
+          byi += 1;
+        }
+        l += 1;
+      }
+      f2 += 1;
+    }
+    bsection(datasec, 11, body);
+  }
+
+  // module header + sections in order
+  b8(out, 0);
+  b8(out, 0x61); // 'a'
+  b8(out, 0x73); // 's'
+  b8(out, 0x6D); // 'm'
+  b8(out, 1);
+  b8(out, 0);
+  b8(out, 0);
+  b8(out, 0);
+  bappend(out, typesec);
+  bappend(out, importsec);
+  bappend(out, funcsec);
+  bappend(out, tablesec);
+  bappend(out, memsec);
+  bappend(out, globsec);
+  bappend(out, exportsec);
+  bappend(out, elemsec);
+  bappend(out, codesec);
+  bappend(out, datasec);
+  return out.items[0..out.n];
+}
+
+fn push_wfn(items: []*WFn, w: *WFn) -> []*WFn {
+  let out: []*WFn = make([]*WFn, len(items) + 1);
+  let mut i: usize = 0;
+  while i < len(items) {
+    out[i] = items[i];
+    i += 1;
+  }
+  out[len(items)] = w;
+  return out;
+}
+
+fn bytes_as_string(b: []u8) -> string {
+  return intrinsics.slice_string(b);
+}
+
+// debug: dump IR fns (mirrors boot's RHO_DUMP_IR shape, keys off --dump-ir)
+static mut g_dump_ir: bool = false;
+
+fn op_name(op: i32) -> string {
+  if op == 100 { return "br"; }
+  if op == 101 { return "cbr"; }
+  if op == 102 { return "ret"; }
+  if op == 0 { return "const"; }
+  if op == 1 { return "fconst"; }
+  if op == 2 { return "add"; }
+  if op == 3 { return "sub"; }
+  if op == 4 { return "mul"; }
+  if op == 5 { return "div"; }
+  if op == 6 { return "mod"; }
+  if op == 7 { return "and"; }
+  if op == 8 { return "or"; }
+  if op == 9 { return "xor"; }
+  if op == 10 { return "shl"; }
+  if op == 11 { return "shr"; }
+  if op == 12 { return "cmp"; }
+  if op == 13 { return "load"; }
+  if op == 14 { return "store"; }
+  if op == 15 { return "addrc"; }
+  if op == 16 { return "addi"; }
+  if op == 17 { return "call"; }
+  if op == 18 { return "cast"; }
+  if op == 19 { return "copymem"; }
+  if op == 20 { return "zero"; }
+  if op == 21 { return "litaddr"; }
+  return "?";
+}
+
+fn lower_dump_ir() {
+  let mut i: usize = 0;
+  while i < g_ir_fns.n {
+    let fn_: *IRFn = g_ir_fns.items[i];
+    eprint("fn ");
+    eprint(fn_.symbol);
+    eprint("\n");
+    let mut b: usize = 0;
+    while b < len(fn_.blocks) {
+      let blk: *IRBlock = fn_.blocks[b];
+      eprint(" block ");
+      eprint(itoa(blk.id as i64));
+      eprint("\n");
+      let mut p: usize = 0;
+      while p < len(blk.phis) {
+        let phi: *IRPhi = blk.phis[p];
+        eprint("  phi v");
+        eprint(itoa(phi.dst.id as i64));
+        eprint(" nargs=");
+        eprint(itoa(len(phi.args) as i64));
+        eprint("\n");
+        p += 1;
+      }
+      let mut k: usize = 0;
+      while k < len(blk.ins) {
+        let ins: *IRIns = blk.ins[k];
+        eprint("  ");
+        eprint(op_name(ins.op as i32));
+        if ins.dst != null {
+          eprint(" d=");
+          eprint(itoa(ins.dst.id as i64));
+        }
+        if ins.a != null {
+          eprint(" a=");
+          eprint(itoa(ins.a.id as i64));
+        }
+        if ins.b != null {
+          eprint(" b=");
+          eprint(itoa(ins.b.id as i64));
+        }
+        if ins.addr != null {
+          eprint(" @");
+          eprint(itoa(ins.addr.id as i64));
+        }
+        if ins.slot != null {
+          eprint(" s");
+          eprint(itoa(ins.slot.id as i64));
+        }
+        if ins.callee != "" {
+          eprint(" call=");
+          eprint(ins.callee);
+        }
+        if ins.op == IROp.IrConst || ins.op == IROp.IrAddi {
+          eprint(" imm=");
+          eprint(itoa(ins.imm));
+        }
+        if ins.size != 0 {
+          eprint(" sz=");
+          eprint(itoa(ins.size));
+        }
+        eprint("\n");
+        k += 1;
+      }
+      if blk.term_op != 0 {
+        eprint("  term ");
+        eprint(op_name(blk.term_op));
+        if blk.term_op == 101 {
+          eprint(" cond=v");
+          eprint(itoa(blk.cbr_cond.id as i64));
+          eprint(" then=B");
+          eprint(itoa(blk.br_true.id as i64));
+          eprint(" else=B");
+          eprint(itoa(blk.br_false.id as i64));
+        }
+        if blk.term_op == 100 {
+          eprint(" to=B");
+          eprint(itoa(blk.br_true.id as i64));
+        }
+        if blk.term_op == 102 && blk.ret_val != null {
+          eprint(" v=");
+          eprint(itoa(blk.ret_val.id as i64));
+        }
+        eprint("\n");
+      }
+      b += 1;
+    }
+    i += 1;
   }
 }

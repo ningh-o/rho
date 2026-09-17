@@ -461,6 +461,18 @@ static void emit_ins(Emitter *e, IRIns *i) {
       sb_printf(e->out, "  cvtsd2ss %s, %s\n", XMM0, XMM0);
       mov_reg_slot(e, dof, 4, true, XMM0);
       break;
+    case CAST_REINTERP:
+      // exact bit move xmm <- slot, gpr <- xmm (f32_bits/f64_bits)
+      if (i->cast_from == IT_F32) {
+        sb_printf(e->out, "  movss %lld(%%rbp), %%xmm0\n", sof);
+        sb_printf(e->out, "  movd %%xmm0, %%eax\n");
+        mov_reg_slot(e, dof, 4, false, RAX);
+      } else {
+        sb_printf(e->out, "  movsd %lld(%%rbp), %%xmm0\n", sof);
+        sb_printf(e->out, "  movq %%xmm0, %%rax\n");
+        mov_reg_slot(e, dof, 8, false, RAX);
+      }
+      break;
     case CAST_BITCOPY:
       mov_slot_reg(e, sof, 8, false, RAX);
       mov_reg_slot(e, dof, 8, false, RAX);

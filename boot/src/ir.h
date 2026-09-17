@@ -53,6 +53,7 @@ typedef enum IRCC { CC_EQ, CC_NE, CC_LT, CC_LE, CC_GT, CC_GE } IRCC;
 typedef enum IRCastKind {
   CAST_TRUNC, CAST_SEXT, CAST_ZEXT, CAST_I2F, CAST_F2I, CAST_F32_F64,
   CAST_F64_F32, CAST_BITCOPY, // same size+class noop
+  CAST_REINTERP,              // f32->u32 / f64->u64 bit pattern move
 } IRCastKind;
 
 typedef struct IRArg {
