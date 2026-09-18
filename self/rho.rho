@@ -3237,7 +3237,10 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
     return e.typed;
   }
   if e.kind == ExprKind.ExName {
-    let sym: *Sym = lookup(e.sv);
+    let mut sym: *Sym = lookup(e.sv);
+    if sym == null && cur_module != null {
+      sym = sm_get(cur_module.syms, e.sv);
+    }
     if sym == null {
       err_at("", 0, 0, cat("unknown name `", cat(e.sv, "`")));
       e.typed = ty_err();
@@ -4062,7 +4065,10 @@ fn resolve_callee(callee: *Expr) -> *CallTarget {
     enum_type: null, is_method: false, is_ctor: false, inst_rec: null,
   };
   if callee.kind == ExprKind.ExName {
-    let sym: *Sym = lookup(callee.sv);
+    let mut sym: *Sym = lookup(callee.sv);
+    if sym == null && cur_module != null {
+      sym = sm_get(cur_module.syms, callee.sv);
+    }
     if sym == null {
       err_at("", 0, 0, cat("unknown function `", cat(callee.sv, "`")));
       return ct;
@@ -4217,7 +4223,12 @@ fn resolve_callee(callee: *Expr) -> *CallTarget {
         }
       }
     }
-    err_at("", 0, 0, "no such method for this receiver");
+    eprint("[NOMETH fn=");
+      if cur_fn_sym != null { eprint(cur_fn_sym.name); }
+      eprint(" recv=");
+      if callee.a.typed != null { eprint(callee.a.typed.mangled); } else { eprint("null"); }
+      eprint("\n");
+      err_at("", 0, 0, "no such method for this receiver");
     return ct;
   }
   let t: *Type = check_expr(callee, null);
@@ -4662,6 +4673,11 @@ fn check_stmt(s: *Stmt) {
     };
     next_local_id += 1;
     if lookup(s.name) != null {
+      eprint("[SHADOW fn=");
+      if cur_fn_sym != null { eprint(cur_fn_sym.name); }
+      eprint(" name=");
+      eprint(s.name);
+      eprint("\n");
       err_at("", 0, 0, "shadowing is not allowed (spec §5)");
     }
     scope_decl(s.name, sym);
@@ -4898,10 +4914,17 @@ fn load_use_module(user_path: string, rel: string) -> *Module {
 }
 
 fn scope_decl_module(m: *Module) {
+  // boot parity: module-level fns are NOT in the lexical scope — call/name
+  // resolution falls back to the module table (lets named like fns, e.g.
+  // `let at`, would otherwise false-positive as shadowing)
   let d: *Decl = m.root;
   let mut i: usize = 0;
   while i < d.decls.n {
     let decl: *Decl = d.decls.items[i];
+    if decl.kind == DeclKind.DkFn {
+      i += 1;
+      continue;
+    }
     let sym: *Sym = sm_get(m.syms, decl.name);
     if sym != null {
       scope_decl(decl.name, sym);
@@ -11462,7 +11485,10 @@ fn instantiate_fn(gsym: *Sym, names: []string, env: *TypeMap) -> *Sym {
       mangled = cat3(mangled, ",", "");
     }
     if targ == null || targ.kind == TypeKind.TyParam {
-      err_at("", 0, 0, cat3("cannot infer `", cat3(names[i], "` for `", cat3(d.name, "`", "")), ""));
+      eprint("[NOINFER fn=");
+  if cur_fn_sym != null { eprint(cur_fn_sym.name); }
+  eprint("\n");
+  err_at("", 0, 0, cat3("cannot infer `", cat3(names[i], "` for `", cat3(d.name, "`", "")), ""));
       return gsym;
     }
     let mut targ2: *Type = targ;
