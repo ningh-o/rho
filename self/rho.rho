@@ -4203,6 +4203,26 @@ fn resolve_callee(callee: *Expr) -> *CallTarget {
         eprint("n");
       }
       eprint("]\n");
+      eprint("[FB rec=");
+      eprint(rec.mangled);
+      eprint(" istpl=");
+      if rec.is_template { eprint("y"); } else { eprint("n"); }
+      eprint(" templ=");
+      if rec.decl.templ != null { eprint(rec.decl.templ.mangled); } else { eprint("null"); }
+      eprint(" meths=");
+      if rec.decl.templ != null {
+        eprint(itoa(len(rec.decl.templ.methods) as i64));
+        eprint(":");
+        let mut qi: usize = 0;
+        while qi < len(rec.decl.templ.methods) {
+          eprint(rec.decl.templ.methods[qi].name);
+          eprint(",");
+          qi += 1;
+        }
+      } else { eprint("-"); }
+      eprint(" want=");
+      eprint(callee.sv);
+      eprint("\n");
       if !rec.is_template && rec.decl.templ != null {
         let tmpl: *RecType = rec.decl.templ;
         eprint("[tmpl meths: ");
