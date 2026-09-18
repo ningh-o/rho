@@ -2325,8 +2325,770 @@ fn usage() -> i32 {
   eprint("  build  <file> [-o out]     compile (default target arm64-mac)\n");
   eprint("  run    <file> [-- args]    build and run\n");
   eprint("  test   [dir] [--target t]  run corpus-style tests\n");
+  eprint("  selftest [--update-goldens] [--fmt]\n");
   eprint("  --version                  print version\n");
   return 2;
+}
+
+// ------------------------------------------------------------- dump ------
+//
+// Canonical s-expression dump of a parsed module (port of boot's dump.c).
+// This is the AST's fingerprint: golden-pinned in tests and compared
+// byte-for-byte against boot's dumper by the selftest.
+
+fn d_str_lit(s: string) {
+  f_strlit(s);
+}
+
+fn d_type(t: *TypeAst) {
+  if t == null {
+    sb_s("void");
+    return;
+  }
+  if t.kind == TypeAstKind.TaPrim {
+    sb_s(prim_name(t.prim));
+    return;
+  }
+  if t.kind == TypeAstKind.TaArray {
+    if t.size != null {
+      sb_c(91);
+      d_expr(t.size);
+      sb_c(93);
+    } else {
+      sb_s("[]");
+    }
+    d_type(t.elem);
+    return;
+  }
+  if t.kind == TypeAstKind.TaPtr {
+    sb_c(42);
+    d_type(t.elem);
+    return;
+  }
+  if t.kind == TypeAstKind.TaWeak {
+    sb_s("weak[");
+    d_type(t.elem);
+    sb_c(93);
+    return;
+  }
+  if t.kind == TypeAstKind.TaNamed {
+    let mut i: usize = 0;
+    while i < t.path.n {
+      if i > 0 {
+        sb_c(46);
+      }
+      sb_s(t.path.items[i]);
+      i += 1;
+    }
+    if t.targs.n > 0 {
+      sb_c(91);
+      let mut j: usize = 0;
+      while j < t.targs.n {
+        if j > 0 {
+          sb_s(", ");
+        }
+        d_type(t.targs.items[j]);
+        j += 1;
+      }
+      sb_c(93);
+    }
+    return;
+  }
+  // TaFn
+  sb_s("fn(");
+  let mut i: usize = 0;
+  while i < t.params.n {
+    if i > 0 {
+      sb_s(", ");
+    }
+    d_type(t.params.items[i]);
+    i += 1;
+  }
+  sb_s(") -> ");
+  d_type(t.ret);
+}
+
+fn d_expr(e: *Expr) {
+  if e == null {
+    sb_s("(void)");
+    return;
+  }
+  if e.kind == ExprKind.ExInt {
+    sb_s(cat3("(int ", utoa(e.iv), ")"));
+    return;
+  }
+  if e.kind == ExprKind.ExFloat {
+    // canonical float printing: exact for the golden file
+    sb_s(cat3("(float ", g_digits(e.fv, 17), ")"));
+    return;
+  }
+  if e.kind == ExprKind.ExStr {
+    sb_s("(str ");
+    d_str_lit(e.sv);
+    sb_c(41);
+    return;
+  }
+  if e.kind == ExprKind.ExBool {
+    if e.bv { sb_s("(bool true)"); } else { sb_s("(bool false)"); }
+    return;
+  }
+  if e.kind == ExprKind.ExNull {
+    sb_s("(null)");
+    return;
+  }
+  if e.kind == ExprKind.ExName {
+    sb_s("(name ");
+    sb_s(e.sv);
+    sb_c(41);
+    return;
+  }
+  if e.kind == ExprKind.ExType {
+    sb_s("(ty ");
+    d_type(e.ty);
+    sb_c(41);
+    return;
+  }
+  if e.kind == ExprKind.ExBin {
+    sb_s(cat3("(bin ", spell_op(e.binop), " "));
+    d_expr(e.a);
+    sb_c(32);
+    d_expr(e.b);
+    sb_c(41);
+    return;
+  }
+  if e.kind == ExprKind.ExUn {
+    sb_s(cat3("(un ", spell_op(e.unop), " "));
+    d_expr(e.a);
+    sb_c(41);
+    return;
+  }
+  if e.kind == ExprKind.ExCall {
+    sb_s("(call ");
+    d_expr(e.a);
+    let mut i: usize = 0;
+    while i < e.args.n {
+      sb_c(32);
+      if e.arg_names != null && i < e.arg_names.n && e.arg_names.items[i] != "" {
+        sb_s(e.arg_names.items[i]);
+        sb_s(": ");
+      }
+      d_expr(e.args.items[i]);
+      i += 1;
+    }
+    sb_c(41);
+    return;
+  }
+  if e.kind == ExprKind.ExIndex {
+    sb_s("(index ");
+    d_expr(e.a);
+    sb_c(32);
+    d_expr(e.b);
+    sb_c(41);
+    return;
+  }
+  if e.kind == ExprKind.ExSlice {
+    sb_s("(slice ");
+    d_expr(e.a);
+    sb_c(32);
+    d_expr(e.b);
+    sb_c(32);
+    d_expr(e.c);
+    sb_c(41);
+    return;
+  }
+  if e.kind == ExprKind.ExField {
+    sb_s("(field ");
+    d_expr(e.a);
+    sb_c(32);
+    sb_s(e.sv);
+    sb_c(41);
+    return;
+  }
+  if e.kind == ExprKind.ExCast {
+    sb_s("(cast ");
+    d_type(e.ty);
+    sb_c(32);
+    d_expr(e.a);
+    sb_c(41);
+    return;
+  }
+  if e.kind == ExprKind.ExNew {
+    sb_s("(new ");
+    d_type(e.ty);
+    let mut i: usize = 0;
+    while i < e.args.n {
+      sb_c(32);
+      sb_c(40);
+      sb_s(e.items.items[i].name);
+      sb_c(32);
+      d_expr(e.args.items[i]);
+      sb_c(41);
+      i += 1;
+    }
+    sb_c(41);
+    return;
+  }
+  if e.kind == ExprKind.ExMake {
+    sb_s("(make ");
+    d_type(e.ty);
+    sb_c(32);
+    d_expr(e.c);
+    sb_c(41);
+    return;
+  }
+  if e.kind == ExprKind.ExClosure {
+    sb_s("(closure (params");
+    let mut i: usize = 0;
+    while i < e.params.n {
+      sb_c(32);
+      sb_c(40);
+      sb_s(e.params.items[i].name);
+      sb_c(32);
+      d_type(e.params.items[i].ty);
+      sb_c(41);
+      i += 1;
+    }
+    sb_s(") -> ");
+    d_type(e.ret);
+    let mut j: usize = 0;
+    while j < e.items.n {
+      d_stmt(e.items.items[j]);
+      j += 1;
+    }
+    sb_c(41);
+    return;
+  }
+  if e.kind == ExprKind.ExMatch {
+    sb_s("(match ");
+    d_expr(e.a);
+    let mut i: usize = 0;
+    while i < e.arms.n {
+      let arm: *MatchArm = e.arms.items[i];
+      sb_s(" (arm ");
+      if arm.pk == PatKind.PatWildcard {
+        sb_s("_");
+      } else if arm.pk == PatKind.PatInt {
+        sb_s(utoa(arm.pat_int));
+      } else if arm.pk == PatKind.PatStr {
+        d_str_lit(arm.pat_str);
+      } else {
+        let mut j: usize = 0;
+        while j < arm.pat_path.n {
+          if j > 0 {
+            sb_c(46);
+          }
+          sb_s(arm.pat_path.items[j]);
+          j += 1;
+        }
+        if arm.pk == PatKind.PatTuple {
+          sb_c(40);
+          let mut k: usize = 0;
+          while k < arm.pat_names.n {
+            if k > 0 {
+              sb_c(32);
+            }
+            sb_s(arm.pat_names.items[k]);
+            k += 1;
+          }
+          sb_c(41);
+        } else if arm.pk == PatKind.PatStruct {
+          sb_c(123);
+          let mut k: usize = 0;
+          while k < arm.pat_fields.n {
+            if k > 0 {
+              sb_c(32);
+            }
+            sb_s(arm.pat_fields.items[k].name);
+            sb_c(32);
+            sb_s(arm.pat_names.items[k]);
+            k += 1;
+          }
+          sb_c(125);
+        }
+      }
+      sb_c(32);
+      d_expr(arm.body);
+      sb_c(41);
+      i += 1;
+    }
+    sb_c(41);
+    return;
+  }
+  if e.kind == ExprKind.ExQmark {
+    sb_s("(qmark ");
+    d_expr(e.a);
+    sb_c(41);
+    return;
+  }
+  if e.kind == ExprKind.ExIf {
+    sb_s("(if ");
+    d_expr(e.a);
+    sb_s(" (block");
+    if e.items.n > 0 {
+      let then: *Stmt = e.items.items[0];
+      let mut i: usize = 0;
+      while i < then.stmts.n {
+        d_stmt(then.stmts.items[i]);
+        i += 1;
+      }
+    }
+    sb_c(41);
+    if e.else_if != null {
+      sb_c(32);
+      d_expr(e.else_if);
+    } else if e.items.n > 1 {
+      sb_s(" (block");
+      let else_blk: *Stmt = e.items.items[1];
+      let mut i: usize = 0;
+      while i < else_blk.stmts.n {
+        d_stmt(else_blk.stmts.items[i]);
+        i += 1;
+      }
+      sb_c(41);
+    }
+    sb_c(41);
+    return;
+  }
+  if e.kind == ExprKind.ExBlock {
+    sb_s("(block");
+    let mut i: usize = 0;
+    while i < e.items.n {
+      d_stmt(e.items.items[i]);
+      i += 1;
+    }
+    sb_c(41);
+    return;
+  }
+}
+
+fn d_stmt(s: *Stmt) {
+  if s.kind == StmtKind.StLet {
+    sb_s(" (let");
+    if s.mut_ {
+      sb_s(" mut");
+    }
+    sb_c(32);
+    sb_s(s.name);
+    sb_c(32);
+    d_type(s.ty);
+    sb_c(32);
+    d_expr(s.a);
+    sb_c(41);
+    return;
+  }
+  if s.kind == StmtKind.StAssign {
+    sb_s(cat3(" (assign ", spell_op(s.assign_op), " "));
+    d_expr(s.a);
+    sb_c(32);
+    d_expr(s.b);
+    sb_c(41);
+    return;
+  }
+  if s.kind == StmtKind.StExpr {
+    if s.tail {
+      sb_s(" (tail ");
+    } else {
+      sb_s(" (expr ");
+    }
+    d_expr(s.a);
+    sb_c(41);
+    return;
+  }
+  if s.kind == StmtKind.StReturn {
+    sb_s(" (return");
+    if s.a != null {
+      sb_c(32);
+      d_expr(s.a);
+    }
+    sb_c(41);
+    return;
+  }
+  if s.kind == StmtKind.StBreak {
+    sb_s(" (break)");
+    return;
+  }
+  if s.kind == StmtKind.StContinue {
+    sb_s(" (continue)");
+    return;
+  }
+  if s.kind == StmtKind.StDefer {
+    sb_s(" (defer");
+    let mut i: usize = 0;
+    while i < s.stmts.n {
+      d_stmt(s.stmts.items[i]);
+      i += 1;
+    }
+    sb_c(41);
+    return;
+  }
+  if s.kind == StmtKind.StWhile {
+    sb_s(" (while ");
+    d_expr(s.cond);
+    sb_s(" (block");
+    let mut i: usize = 0;
+    while i < s.body.n {
+      d_stmt(s.body.items[i]);
+      i += 1;
+    }
+    sb_s("))");
+    return;
+  }
+  if s.kind == StmtKind.StLoop {
+    sb_s(" (loop (block");
+    let mut i: usize = 0;
+    while i < s.body.n {
+      d_stmt(s.body.items[i]);
+      i += 1;
+    }
+    sb_s("))");
+    return;
+  }
+  // StBlock
+  sb_s(" (block");
+  let mut i: usize = 0;
+  while i < s.stmts.n {
+    d_stmt(s.stmts.items[i]);
+    i += 1;
+  }
+  sb_c(41);
+}
+
+fn d_decl(d: *Decl) {
+  if d.kind == DeclKind.DkFn {
+    sb_s(" (fn");
+    if d.pub_ {
+      sb_s(" pub");
+    }
+    sb_c(32);
+    sb_s(d.name);
+    sb_s(" (params");
+    let mut i: usize = 0;
+    while i < d.params.n {
+      sb_c(32);
+      sb_c(40);
+      sb_s(d.params.items[i].name);
+      sb_c(32);
+      d_type(d.params.items[i].ty);
+      sb_c(41);
+      i += 1;
+    }
+    sb_c(41);
+    if d.ret != null {
+      sb_s(" (ret ");
+      d_type(d.ret);
+      sb_c(41);
+    }
+    let mut j: usize = 0;
+    while j < d.body.n {
+      d_stmt(d.body.items[j]);
+      j += 1;
+    }
+    sb_c(41);
+    return;
+  }
+  if d.kind == DeclKind.DkExtern {
+    sb_s(" (extern ");
+    sb_s(d.name);
+    sb_s(" (params");
+    let mut i: usize = 0;
+    while i < d.params.n {
+      sb_c(32);
+      sb_c(40);
+      sb_s(d.params.items[i].name);
+      sb_c(32);
+      d_type(d.params.items[i].ty);
+      sb_c(41);
+      i += 1;
+    }
+    sb_c(41);
+    if d.ret != null {
+      sb_s(" (ret ");
+      d_type(d.ret);
+      sb_c(41);
+    }
+    sb_c(41);
+    return;
+  }
+  if d.kind == DeclKind.DkStruct {
+    sb_s(" (struct");
+    if d.pub_ {
+      sb_s(" pub");
+    }
+    sb_c(32);
+    sb_s(d.name);
+    let mut i: usize = 0;
+    while i < d.fields.n {
+      sb_c(32);
+      sb_c(40);
+      sb_s(d.fields.items[i].name);
+      sb_c(32);
+      d_type(d.fields.items[i].ty);
+      sb_c(41);
+      i += 1;
+    }
+    sb_c(41);
+    return;
+  }
+  if d.kind == DeclKind.DkEnum {
+    sb_s(" (enum");
+    if d.pub_ {
+      sb_s(" pub");
+    }
+    sb_c(32);
+    sb_s(d.name);
+    let mut i: usize = 0;
+    while i < d.variants.n {
+      let v: *VariantAst = d.variants.items[i];
+      sb_c(32);
+      sb_c(40);
+      sb_s(v.name);
+      sb_c(32);
+      sb_s(utoa(v.disc));
+      if v.vkind == VarKind.VarTuple {
+        let mut j: usize = 0;
+        while j < v.types.n {
+          sb_c(32);
+          d_type(v.types.items[j]);
+          j += 1;
+        }
+      } else if v.vkind == VarKind.VarStruct {
+        let mut j: usize = 0;
+        while j < v.fields.n {
+          sb_c(32);
+          sb_c(40);
+          sb_s(v.fields.items[j].name);
+          sb_c(32);
+          d_type(v.fields.items[j].ty);
+          sb_c(41);
+          j += 1;
+        }
+      }
+      sb_c(41);
+      i += 1;
+    }
+    sb_c(41);
+    return;
+  }
+  if d.kind == DeclKind.DkStatic || d.kind == DeclKind.DkConst {
+    if d.kind == DeclKind.DkConst {
+      sb_s(" (const");
+    } else {
+      sb_s(" (static");
+    }
+    if d.is_mut {
+      sb_s(" mut");
+    }
+    sb_c(32);
+    sb_s(d.name);
+    sb_c(32);
+    d_type(d.ret);
+    sb_c(32);
+    d_expr(d.init);
+    sb_c(41);
+    return;
+  }
+  // DkUse
+  sb_s(" (use");
+  let mut i: usize = 0;
+  while i < d.path.n {
+    sb_c(32);
+    sb_s(d.path.items[i]);
+    i += 1;
+  }
+  sb_c(41);
+}
+
+fn dump_module(module: *Decl) -> string {
+  g_sb = new Vec[u8] { items: make([]u8, 65536), n: 0 };
+  sb_s("(module");
+  let mut i: usize = 0;
+  while i < module.decls.n {
+    d_decl(module.decls.items[i]);
+    i += 1;
+  }
+  sb_s(")\n");
+  return intrinsics.slice_string(g_sb.items[0..g_sb.n]);
+}
+
+// ---------------------------------------------------------- selftest -----
+//
+// Port of boot's selftest: AST goldens for tests/frontend, fmt roundtrip +
+// idempotence + AST preservation, and diagnostic goldens for tests/diag.
+// All goldens are files under tests/golden/ — nothing embedded.
+
+static mut g_st_failures: i32 = 0;
+
+fn st_fail(name: string, msg: string) {
+  print(cat5("FAIL ", name, ": ", msg, "\n"));
+  g_st_failures += 1;
+}
+
+// the diagnostics vec rendered exactly as print_diags would print it
+fn render_diags_str() -> string {
+  if diags == null {
+    return "";
+  }
+  g_sb = new Vec[u8] { items: make([]u8, 4096), n: 0 };
+  let mut i: usize = 0;
+  while i < diags.n {
+    let d: *Diag = diags.items[i];
+    sb_s(d.file);
+    sb_c(58);
+    sb_s(itoa(d.line as i64));
+    sb_c(58);
+    sb_s(itoa(d.col as i64));
+    sb_s(": error: ");
+    sb_s(d.msg);
+    sb_c(10);
+    i += 1;
+  }
+  return intrinsics.slice_string(g_sb.items[0..g_sb.n]);
+}
+
+fn golden_check(got: string, golden_path: string, name: string, update: bool) {
+  if update {
+    if !write_file(golden_path, got) {
+      st_fail(name, cat("cannot write golden ", golden_path));
+    }
+    return;
+  }
+  let r: Result[string, string] = read_file(golden_path);
+  if r.is_err() {
+    st_fail(name, cat("missing golden ", golden_path));
+    return;
+  }
+  if !streq(got, r.get_ok()) {
+    let tmp: string = cat("build/", cat(name, ".got"));
+    write_file(tmp, got);
+    st_fail(name, cat5("output differs from ", golden_path, " (wrote ", tmp, ")"));
+  }
+}
+
+fn st_reset_with_prelude() {
+  reset_compiler_state();
+  let pr: Result[string, string] = read_file("boot/prelude/hosted.rho");
+  if pr.is_err() {
+    return;
+  }
+  let pparse: *Decl = parse_file("<prelude>", pr.get_ok());
+  let pmod: *Module = new Module {
+    path: "<prelude>", ns: "", root: pparse,
+    syms: sm_new(), is_prelude: true, checked: false,
+  };
+  check_all(pmod);
+  prelude_module = pmod;
+}
+
+fn cmd_selftest(args: []string) -> i32 {
+  let mut update: bool = false;
+  let mut fmt_only: bool = false;
+  let mut ai: usize = 2;
+  while ai < len(args) {
+    if streq(args[ai], "--update-goldens") {
+      update = true;
+    } else if streq(args[ai], "--fmt") {
+      fmt_only = true;
+    }
+    ai += 1;
+  }
+  g_st_failures = 0;
+  // 1. AST goldens + 2. fmt roundtrip: tests/frontend/*.rho
+  let fe: *Vec[string] = list_dir_rho("tests/frontend");
+  let mut fi: usize = 0;
+  while fi < fe.n {
+    let path: string = fe.items[fi];
+    let name: string = basename_no_ext(path);
+    if !fmt_only {
+      st_reset_with_prelude();
+      let src_r: Result[string, string] = read_file(path);
+      if src_r.is_err() {
+        st_fail(name, cat("cannot read ", path));
+        fi += 1;
+        continue;
+      }
+      let root: *Decl = parse_file(path, src_r.get_ok());
+      golden_check(dump_module(root), cat("tests/golden/ast/", cat(name, ".dump")), name, update);
+      if diag_count() > 0 {
+        golden_check(render_diags_str(), cat("tests/golden/diag/", cat(name, "_parse.err")), cat(name, " parse"), update);
+      }
+      let m: *Module = new Module {
+        path: path, ns: "", root: root, syms: sm_new(),
+        is_prelude: false, checked: false,
+      };
+      check_all(m);
+      if diag_count() > 0 {
+        golden_check(render_diags_str(), cat("tests/golden/diag/", cat(name, "_check.err")), cat(name, " check"), update);
+      }
+    }
+    // fmt roundtrip + idempotence (parse errors naturally skip via check)
+    st_reset_with_prelude();
+    let src2: Result[string, string] = read_file(path);
+    if src2.is_err() {
+      fi += 1;
+      continue;
+    }
+    let root2: *Decl = parse_file(path, src2.get_ok());
+    if diag_count() == 0 {
+      let once: string = fmt_module(root2);
+      let reparsed: *Decl = parse_file(path, once);
+      if diag_count() > 0 {
+        st_fail(cat(name, " fmt"), cat("fmt output does not reparse:\n", render_diags_str()));
+      } else {
+        let twice: string = fmt_module(reparsed);
+        if !streq(once, twice) {
+          st_fail(cat(name, " fmt"), "fmt is not idempotent");
+        }
+        // strongest pin: reformatting must preserve the AST exactly
+        if !streq(dump_module(root2), dump_module(reparsed)) {
+          st_fail(cat(name, " fmt"), "fmt changed the AST");
+        }
+        // and the reformatted source must still typecheck the same
+        st_reset_with_prelude();
+        let m2: *Module = new Module {
+          path: path, ns: "", root: reparsed, syms: sm_new(),
+          is_prelude: false, checked: false,
+        };
+        check_module(m2);
+        if diag_count() > 0 {
+          st_fail(cat(name, " fmt"), cat("fmt output fails check:\n", render_diags_str()));
+        }
+      }
+    }
+    fi += 1;
+  }
+  // 3. diagnostic goldens: tests/diag/*.rho -> tests/golden/diag/<name>.err
+  if !fmt_only {
+    let dg: *Vec[string] = list_dir_rho("tests/diag");
+    let mut di: usize = 0;
+    while di < dg.n {
+      let path: string = dg.items[di];
+      let name: string = basename_no_ext(path);
+      st_reset_with_prelude();
+      let src_r: Result[string, string] = read_file(path);
+      if src_r.is_err() {
+        st_fail(name, cat("cannot read ", path));
+        di += 1;
+        continue;
+      }
+      let root: *Decl = parse_file(path, src_r.get_ok());
+      let m: *Module = new Module {
+        path: path, ns: "", root: root, syms: sm_new(),
+        is_prelude: false, checked: false,
+      };
+      check_all(m);
+      golden_check(render_diags_str(), cat("tests/golden/diag/", cat(name, ".err")), name, update);
+      di += 1;
+    }
+  }
+  if g_st_failures == 0 {
+    print("selftest ok\n");
+  } else {
+    print(cat("selftest: ", cat(itoa(g_st_failures as i64), " failure(s)\n")));
+  }
+  if g_st_failures > 0 {
+    return 1;
+  }
+  return 0;
 }
 
 // list *.rho files under dir (boot: `find <dir> -name '*.rho' | sort`)
@@ -2511,24 +3273,6 @@ fn build_to(path: string, target: i32, out_path: string, check_only: bool) -> i3
     prelude_module = pmod;
     m.syms = sm_new();
     check_module(m);
-    // load `use` targets: aux modules check before the user module
-    let mut ui: usize = 0;
-    while ui < module.decls.n {
-      let ud: *Decl = module.decls.items[ui];
-      if ud.kind == DeclKind.DkUse && ud.path.n > 0 {
-        let aux: *Module = load_use_module(path, ud.path.items[0]);
-        if aux != null {
-          let msym: *Sym = new Sym {
-            kind: SymKind.SyModule, name: ud.path.items[0], type: null,
-            decl: null, mutable: false, variant_index: 0, local_id: 0,
-            symbol: "", owner: m, module: aux,
-          };
-          sm_put(m.syms, ud.path.items[0], msym);
-          check_all(aux);
-        }
-      }
-      ui += 1;
-    }
   }
   let diags_before: i32 = diag_count();
   let nd: i32 = check_all(m);
@@ -2652,6 +3396,9 @@ fn main() -> i32 {
   if streq(cmd, "--version") || streq(cmd, "version") {
     print("rho 0.1.3\n");
     return 0;
+  }
+  if streq(cmd, "selftest") {
+    return cmd_selftest(args);
   }
   if streq(cmd, "fmt") {
     // rho fmt [-w] <file>: parse + canonical print; no check, no prelude
@@ -3153,7 +3900,29 @@ fn check_module(m: *Module) {
   let d: *Decl = m.root;
   let mut i: usize = 0;
   while i < d.decls.n {
-    declare_sym(m, d.decls.items[i]);
+    let ud: *Decl = d.decls.items[i];
+    if ud.kind == DeclKind.DkUse && ud.path.n > 0 {
+      // load the used module (relative to this file), register it under its
+      // namespace, and check it before the using module
+      let ns_name: string = ud.path.items[ud.path.n - 1];
+      let aux: *Module = load_use_module(m.path, ud.path.items[0]);
+      if aux != null {
+        if sm_get(m.syms, ns_name) == null {
+          let msym: *Sym = new Sym {
+            kind: SymKind.SyModule, name: ns_name, type: null,
+            decl: null, mutable: false, variant_index: 0, local_id: 0,
+            symbol: "", owner: m, module: aux,
+          };
+          sm_put(m.syms, ns_name, msym);
+        }
+        if !aux.checked {
+          check_all(aux);
+        }
+      }
+      i += 1;
+      continue;
+    }
+    declare_sym(m, ud);
     i += 1;
   }
 }
@@ -5449,6 +6218,17 @@ fn load_use_module(user_path: string, rel: string) -> *Module {
     dir = user_path[0..last + 1];
   }
   let aux_path: string = cat3(dir, rel, ".rho");
+  // cache by resolved path (boot: modules_by_path) — several `use` sites in
+  // one compile must share one module instance
+  if g_aux_modules != null {
+    let mut ci: usize = 0;
+    while ci < g_aux_modules.n {
+      if streq(g_aux_modules.items[ci].path, aux_path) {
+        return g_aux_modules.items[ci];
+      }
+      ci += 1;
+    }
+  }
   let r: Result[string, string] = read_file(aux_path);
   if r.is_err() {
     err_at(user_path, 1, 1, cat3("cannot read `", cat3(rel, ".rho`", ""), ""));
@@ -5493,6 +6273,7 @@ fn scope_decl_module(m: *Module) {
 }
 
 fn check_all(m: *Module) -> i32 {
+  m.checked = true;
   cur_module = m;
   check_module(m);
   scope_push();
@@ -14759,7 +15540,7 @@ fn rep0(cnt: usize) -> string {
   return intrinsics.slice_string(buf);
 }
 
-fn g6(x: f64) -> string {
+fn g_digits(x: f64, prec: i64) -> string {
   let bits: u64 = intrinsics.f64_bits(x);
   let be: u64 = (bits >> 52) & 2047;
   if be == 2047 {
@@ -14807,10 +15588,10 @@ fn g6(x: f64) -> string {
       s += k;
     }
   }
-  // n: x = 0.<digits> * 10^n; cut at six significant digits
+  // n: x = 0.<digits> * 10^n; cut at `prec` significant digits
   let topd: i64 = u32_digits(b.w[b.n - 1]);
   let mut n: i64 = (b.n as i64 - 1) * 9 + topd - s;
-  let cut: i64 = s + n - 6;
+  let cut: i64 = s + n - prec;
   let mut qv: u64 = 0;
   if cut > 0 {
     let q: *Big = big_divmod_pow10(b, cut as usize);
@@ -14833,17 +15614,17 @@ fn g6(x: f64) -> string {
     }
     qv = big_get_u64(b);
   }
-  // round-up carry: 999999.7 -> 1000000 -> re-exponent
-  if qv >= 1000000 {
+  // round-up carry: 999...9.7 -> 10^prec -> re-exponent
+  if qv >= p10_u64(prec as usize) {
     qv = qv / 10;
     n += 1;
   }
   let e10: i64 = n - 1;
   let ds: string = utoa(qv);
-  if e10 >= (0 - 4) as i64 && e10 < 6 {
+  if e10 >= (0 - 4) as i64 && e10 < prec {
     if e10 >= 0 {
       let ip: usize = e10 as usize + 1;
-      let frac: string = g6_strip(substr(ds, ip, 6));
+      let frac: string = g6_strip(substr(ds, ip, prec as usize));
       if len(frac) == 0 {
         return substr(ds, 0, ip);
       }
@@ -14856,7 +15637,7 @@ fn g6(x: f64) -> string {
     return cat3("0.", all, "");
   }
   let mut out: string = substr(ds, 0, 1);
-  let frac: string = g6_strip(substr(ds, 1, 6));
+  let frac: string = g6_strip(substr(ds, 1, prec as usize));
   if len(frac) > 0 {
     out = cat3(out, cat3(".", frac, ""), "");
   }
@@ -14872,6 +15653,10 @@ fn g6(x: f64) -> string {
     return cat3(out, cat3("e-", es, ""), "");
   }
   return cat3(out, cat3("e+", es, ""), "");
+}
+
+fn g6(x: f64) -> string {
+  return g_digits(x, 6);
 }
 
 fn fmt_float(x: f64) {
