@@ -3124,6 +3124,20 @@ fn ty_is_flt(t: *Type) -> bool {
          t.kind == TypeKind.TyFloatLit;
 }
 
+fn types_compatible(got: *Type, expected: *Type) -> bool {
+  return got == expected;
+}
+
+fn require(got_in: *Type, expected: *Type, e: *Expr, what: string) {
+  // mirror boot: adapt literals to the expected type AND rewrite the
+  // expression's semantic type, so lowering sees the concrete width
+  let got: *Type = adapt_literal(got_in, expected);
+  e.typed = got;
+  if !types_compatible(got, expected) {
+    err_at(e.file, e.line, e.col, cat3(what, ": type mismatch", ""));
+  }
+}
+
 fn adapt_literal(got: *Type, expected: *Type) -> *Type {
   if got == null {
     return got;
@@ -3692,6 +3706,7 @@ fn check_new(e: *Expr) -> *Type {
            !type_has_param(ft) {
           err_at("", 0, 0, "field initializer type mismatch");
         }
+        argi.typed = adapt_literal(got, ft);
         found = true;
         break;
       }
@@ -4410,6 +4425,7 @@ fn check_call(e: *Expr, expected: *Type) -> *Type {
       e.typed = ty_err();
       return e.typed;
     }
+    e.args.items[i].typed = adapted;
     i += 1;
   }
   e.typed = ft.ret;
@@ -4541,7 +4557,9 @@ fn check_stmt(s: *Stmt) {
       if s.a == null {
         err_at("", 0, 0, "missing return value");
       } else {
-        check_expr(s.a, cur_ret);
+        let got: *Type = check_expr(s.a, cur_ret);
+        let adapted: *Type = adapt_literal(got, cur_ret);
+        s.a.typed = adapted;
       }
     }
     return;
@@ -7029,6 +7047,15 @@ fn eq_walk(c: *LCtx, t: *Type, pa: *IRVreg, pb: *IRVreg, rs: *IRSlot) {
         let mut fi: usize = 0;
         while fi < nf {
           let ft: *Type = variant_field_type(t, vi as i32, fi as i32);
+          eprint("[EQF ");
+          eprint(t.mangled);
+          eprint(" v=");
+          eprint(itoa(vi as i64));
+          eprint(" f=");
+          eprint(itoa(fi as i64));
+          eprint(" t=");
+          if ft != null { eprint(ft.mangled); } else { eprint("null"); }
+          eprint("\n");
           let off: i64 = variant_field_offset(t, vi as i32, fi as i32);
           eq_field(c, ft, v_addi(c, pa, off), v_addi(c, pb, off), rs);
           fi += 1;
