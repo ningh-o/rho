@@ -1658,6 +1658,27 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
       }
       return dest;
     }
+    // module-qualified statics and consts: `mod.ITEM`
+    if (fsym && (fsym->kind == SY_STATIC || fsym->kind == SY_CONST)) {
+      if (fsym->kind == SY_CONST) {
+        CV *memo = fsym->decl->ceval_cache;
+        if (memo && memo->ok && memo->is_int)
+          return v_const(c, memo->i, ir_type_of(t2));
+        if (memo && memo->ok && !memo->is_int && t2 &&
+            (t2->kind == TY_F32 || t2->kind == TY_F64))
+          return fconst(c, memo->f, ir_type_of(t2));
+        if (t2 && ty_is_aggregate(t2))
+          panic_call(c, "internal: constant has no address");
+        return v_const(c, 0, ir_type_of(t2));
+      }
+      IRIns *i = emit(c, IR_ADDRC);
+      i->dst = new_vreg(c, IT_PTR);
+      i->callee = sym_symbol(fsym);
+      i->lit = -1; // global-address form
+      if (t2 && ty_is_aggregate(t2))
+        return i->dst;
+      return v_load(c, i->dst, ir_type_of(t2));
+    }
     if (t2 && ty_is_aggregate(t2))
       return compute_addr(c, e);
     return v_load(c, compute_addr(c, e), ir_type_of(t2));

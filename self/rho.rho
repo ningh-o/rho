@@ -8403,6 +8403,30 @@ fn lv_expr(c: *LCtx, e: *Expr) -> *IRVreg {
       }
       return dest;
     }
+    // module-qualified statics and consts: `mod.ITEM`
+    if fsym != null && (fsym.kind == SymKind.SyStatic || fsym.kind == SymKind.SyConst) {
+      if fsym.kind == SymKind.SyConst {
+        if fsym.decl.ceval_ok && fsym.decl.ceval_is_int {
+          return v_const(c, fsym.decl.ceval_i as i64, ir_type_of(t2));
+        }
+        if fsym.decl.ceval_ok && !fsym.decl.ceval_is_int && t2 != null &&
+           (t2.kind == TypeKind.TyF32 || t2.kind == TypeKind.TyF64) {
+          return fconst(c, fsym.decl.ceval_f, ir_type_of(t2));
+        }
+        if t2 != null && ty_is_aggregate(t2) {
+          panic_call(c, "internal: constant has no address");
+        }
+        return v_const(c, 0, ir_type_of(t2));
+      }
+      let gi: *IRIns = emit(c, IROp.IrAddrc);
+      gi.dst = new_vreg(c, IRType.ItPtr);
+      gi.callee = sym_symbol(fsym);
+      gi.lit = 0 - 1; // global-address form
+      if t2 != null && ty_is_aggregate(t2) {
+        return gi.dst;
+      }
+      return v_load(c, gi.dst, ir_type_of(t2));
+    }
     if t2 != null && ty_is_aggregate(t2) {
       return compute_addr(c, e);
     }
