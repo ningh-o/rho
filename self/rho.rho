@@ -1125,6 +1125,9 @@ struct TypeAst {
   params: *Vec[*TypeAst], // Fn
   ret: *TypeAst,       // Fn
   size: *Expr,         // Array: constant length expression
+  file: string,
+  line: i32,
+  col: i32,
 }
 
 struct Param {
@@ -1380,7 +1383,7 @@ fn expect_tok(p: *Parser, k: Tok, what: string) -> *Token {
     return advance(p);
   }
   let t: *Token = pk(p);
-  err_at(t.file, t.line, t.col, cat3("expected ", what, cat3(", found ", tok_name(t.kind), "")));
+  err_at(t.file, t.line, t.col, cat5("expected ", what, cat(" (", tok_name(k)), "), found ", tok_name(t.kind)));
   return t;
 }
 
@@ -1423,7 +1426,7 @@ fn parse_type(p: *Parser) -> *TypeAst {
   let mut t: *TypeAst = null;
   if accept(p, Tok.PLbracket) {
     // []T slice or [N]T array — `[*` can only start the element type
-    t = new TypeAst { kind: TypeAstKind.TaArray, prim: 0, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null };
+    t = new TypeAst { kind: TypeAstKind.TaArray, prim: 0, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null, file: start.file, line: start.line, col: start.col };
     if at(p, Tok.PStar) {
       // [*T] — slice of pointer: the `*` starts the element type
       t.elem = parse_type(p);
@@ -1438,13 +1441,13 @@ fn parse_type(p: *Parser) -> *TypeAst {
     return t;
   }
   if accept(p, Tok.PStar) {
-    t = new TypeAst { kind: TypeAstKind.TaPtr, prim: 0, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null };
+    t = new TypeAst { kind: TypeAstKind.TaPtr, prim: 0, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null, file: start.file, line: start.line, col: start.col };
     t.elem = parse_type(p);
     return t;
   }
   if at(p, Tok.KwWeak) {
     advance(p);
-    t = new TypeAst { kind: TypeAstKind.TaWeak, prim: 0, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null };
+    t = new TypeAst { kind: TypeAstKind.TaWeak, prim: 0, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null, file: start.file, line: start.line, col: start.col };
     expect_tok(p, Tok.PLbracket, "`[`");
     t.elem = parse_type(p);
     expect_tok(p, Tok.PRbracket, "`]`");
@@ -1452,7 +1455,7 @@ fn parse_type(p: *Parser) -> *TypeAst {
   }
   if at(p, Tok.KwFn) {
     advance(p);
-    t = new TypeAst { kind: TypeAstKind.TaFn, prim: 0, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null };
+    t = new TypeAst { kind: TypeAstKind.TaFn, prim: 0, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null, file: start.file, line: start.line, col: start.col };
     expect_tok(p, Tok.PLparen, "`(`");
     if !at(p, Tok.PRparen) {
       loop {
@@ -1472,10 +1475,10 @@ fn parse_type(p: *Parser) -> *TypeAst {
     let id: *Token = advance(p);
     let prim: i32 = prim_from_name(id.text);
     if prim >= 0 {
-      t = new TypeAst { kind: TypeAstKind.TaPrim, prim: prim, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null };
+      t = new TypeAst { kind: TypeAstKind.TaPrim, prim: prim, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null, file: start.file, line: start.line, col: start.col };
       return t;
     }
-    t = new TypeAst { kind: TypeAstKind.TaNamed, prim: 0, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null };
+    t = new TypeAst { kind: TypeAstKind.TaNamed, prim: 0, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null, file: start.file, line: start.line, col: start.col };
     t.path.push(id.text);
     while accept(p, Tok.PDot) {
       let seg: *Token = expect_ident(p, "type name");
@@ -1495,7 +1498,7 @@ fn parse_type(p: *Parser) -> *TypeAst {
     return t;
   }
   err_at(start.file, start.line, start.col, cat3("expected a type, found ", tok_name(start.kind), ""));
-  t = new TypeAst { kind: TypeAstKind.TaPrim, prim: 0, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null };
+  t = new TypeAst { kind: TypeAstKind.TaPrim, prim: 0, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null, file: start.file, line: start.line, col: start.col };
   return t;
 }
 
@@ -1727,7 +1730,7 @@ fn parse_primary(p: *Parser) -> *Expr {
         variant_index: 0, disc: 0, pat_str: "", pat_names: fresh_str_vec(),
         pat_fields: fresh_field_vec(), body: null,
         file: pt.file, line: pt.line, col: pt.col,
-       bind_syms: make([]*Sym, 4), bind_fidx: make([]i64, 4),
+       bind_syms: make([]*Sym, 0), bind_fidx: make([]i64, 0),
   };
       if at(p, Tok.TkInt) {
         advance(p);
@@ -2345,12 +2348,6 @@ fn main() -> i32 {
       eprint(cat3("rho: ", r.get_err(), "\n"));
       return 2;
     }
-    let toks: *Vec[*Token] = fresh_token_vec();
-    lex_file(file, r.get_ok(), toks);
-    if diag_count() > 0 {
-      print_diags();
-      return 1;
-    }
     let root: *Decl = parse_file(file, r.get_ok());
     if diag_count() > 0 {
       print_diags();
@@ -2401,12 +2398,6 @@ fn main() -> i32 {
   if src_result.is_err() {
     eprint(cat3("rho: ", src_result.get_err(), "\n"));
     return 2;
-  }
-  let tokens: *Vec[*Token] = fresh_token_vec();
-  lex_file(path, src_result.get_ok(), tokens);
-  if diag_count() > 0 {
-    print_diags();
-    return 1;
   }
   let module: *Decl = parse_file(path, src_result.get_ok());
   if diag_count() > 0 {
@@ -2555,6 +2546,14 @@ fn ty_intern2(key: string, t: *Type) -> *Type {
   }
   t.mangled = key;
   return tm_intern(type_map(), key, t);
+}
+
+// friendly type name for diagnostics (boot: ty_name(t) = t->mangled)
+fn ty_name(t: *Type) -> string {
+  if t == null {
+    return "<null>";
+  }
+  return t.mangled;
 }
 
 fn prim_kind(prim: i32) -> TypeKind {
@@ -2717,6 +2716,14 @@ fn scope_pop() {
 }
 
 fn scope_decl(name: string, sym: *Sym) {
+  if scope_lookup_local(cur_scope, name) != null {
+    if cur_fn_sym != null {
+      err_at(cur_fn_sym.decl.file, 0, 0, cat3("duplicate name `", name, "`"));
+    } else {
+      err_at(cur_module.path, 0, 0, cat3("duplicate name `", name, "`"));
+    }
+    return;
+  }
   let b: *Binding = new Binding { name: name, sym: sym, next: cur_scope.bindings };
   cur_scope.bindings = b;
 }
@@ -2732,6 +2739,18 @@ fn scope_lookup_local(s: *CScope, name: string) -> *Sym {
   return null;
 }
 
+fn scope_lookup(name: string) -> *Sym {
+  let mut s: *CScope = cur_scope;
+  while s != null {
+    let sym: *Sym = scope_lookup_local(s, name);
+    if sym != null {
+      return sym;
+    }
+    s = s.parent;
+  }
+  return null;
+}
+
 fn lookup(name: string) -> *Sym {
   let mut s: *CScope = cur_scope;
   while s != null {
@@ -2740,6 +2759,15 @@ fn lookup(name: string) -> *Sym {
       return sym;
     }
     s = s.parent;
+  }
+  if cur_module != null {
+    let msym: *Sym = sm_get(cur_module.syms, name);
+    if msym != null {
+      return msym;
+    }
+  }
+  if prelude_module != null && prelude_module != cur_module {
+    return sm_get(prelude_module.syms, name);
   }
   return null;
 }
@@ -3180,14 +3208,14 @@ fn resolve_type_in_module(m: *Module, ta: *TypeAst) -> *Type {
             return named_type_full(sym, prelude_module, ta);
           }
         }
-        err_at("", 0, 0, cat("unknown type `", cat(last, "`")));
+        err_at(ta.file, ta.line, ta.col, cat3("unknown type `", last, "`"));
         cur_module = saved;
         return ty_err();
       }
       cur_module = saved;
       return named_type_full(sym, m, ta);
     }
-    err_at("", 0, 0, "type paths are `module.Type` at most");
+    err_at(ta.file, ta.line, ta.col, "type paths are `module.Type` at most");
     cur_module = saved;
     return ty_err();
   } else if ta.kind == TypeAstKind.TaFn {
@@ -3222,7 +3250,7 @@ fn named_type_full(sym: *Sym, owner: *Module, ta: *TypeAst) -> *Type {
         tv = tm_get(g_tenv, d.tparams.items[i]);
       }
       if tv == null || tv.kind == TypeKind.TyErr {
-        err_at("", 0, 0, cat("generic type `", cat(d.name, "` needs type arguments")));
+        err_at(ta.file, ta.line, ta.col, cat3("generic type `", d.name, "` needs type arguments"));
         return ty_err();
       }
       targs = push_type(targs, tv);
@@ -3253,7 +3281,7 @@ fn named_type_full(sym: *Sym, owner: *Module, ta: *TypeAst) -> *Type {
     return ty_err();
   }
   if nparams != ntargs {
-    err_at("", 0, 0, cat("wrong type argument count for `", cat(d.name, "`")));
+    err_at(ta.file, ta.line, ta.col, cat5("`", d.name, "` takes ", itoa(nparams as i64), cat3(" type arguments, got ", itoa(ntargs as i64), "")));
     return ty_err();
   }
   let mut targs: []*Type = fresh_type_vec2();
@@ -3302,7 +3330,7 @@ fn require(got_in: *Type, expected: *Type, e: *Expr, what: string) {
   let got: *Type = adapt_literal(got_in, expected);
   e.typed = got;
   if !types_compatible(got, expected) {
-    err_at(e.file, e.line, e.col, cat3(what, ": type mismatch", ""));
+    err_at(e.file, e.line, e.col, cat5(what, ": expected `", ty_name(expected), "`, found `", cat3(ty_name(got), "`", "")));
   }
 }
 
@@ -3360,7 +3388,7 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
       sym = sm_get(cur_module.syms, e.sv);
     }
     if sym == null {
-      err_at("", 0, 0, cat("unknown name `", cat(e.sv, "`")));
+      err_at(e.file, e.line, e.col, cat3("unknown name `", e.sv, "`"));
       e.typed = ty_err();
       return e.typed;
     }
@@ -3397,28 +3425,28 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
     let a: *Type = check_expr(e.a, null);
     if e.unop == Tok.PBang {
       if a.kind != TypeKind.TyBool {
-        err_at("", 0, 0, "`!` needs a bool");
+        err_at(e.file, e.line, e.col, "`!` needs a bool");
       }
       e.typed = ty_prim(0);
       return e.typed;
     }
     if e.unop == Tok.PTilde {
       if !ty_is_int(a) {
-        err_at("", 0, 0, "`~` needs an integer");
+        err_at(e.file, e.line, e.col, "`~` needs an integer");
       }
       e.typed = a;
       return e.typed;
     }
     if e.unop == Tok.PMinus {
       if !ty_is_int(a) && !ty_is_flt(a) {
-        err_at("", 0, 0, "`-` needs a number");
+        err_at(e.file, e.line, e.col, "`-` needs a number");
       }
       e.typed = a;
       return e.typed;
     }
     if e.unop == Tok.PStar {
       if a.kind != TypeKind.TyPtr {
-        err_at("", 0, 0, "`*` dereference needs a pointer");
+        err_at(e.file, e.line, e.col, cat3("`*` dereference needs a pointer, found `", ty_name(a), "`"));
         e.typed = ty_err();
       } else {
         e.typed = a.elem;
@@ -3445,7 +3473,7 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
       ok = true;
     }
     if !ok {
-      err_at("", 0, 0, "cannot cast to the requested type");
+      err_at(e.file, e.line, e.col, cat5("cannot cast `", ty_name(srct), "` to `", ty_name(target), "`"));
     }
     e.typed = target;
     return e.typed;
@@ -3456,15 +3484,15 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
     let mut r: *Type = null;
     if op == Tok.PAndand || op == Tok.POror {
       if l.kind != TypeKind.TyBool {
-        err_at("", 0, 0, "short-circuit operand must be bool");
+        err_at(e.a.file, e.a.line, e.a.col, cat3("left of `", spell_op(op), "` must be bool"));
       }
-      r = check_expr(e.b, null);
+      r = check_expr(e.b, ty_prim(0));
       if r.kind == TypeKind.TyIntLit || r.kind == TypeKind.TyFloatLit {
         r = ty_prim(0);
         e.b.typed = r;
       }
       if r.kind != TypeKind.TyBool {
-        err_at("", 0, 0, "short-circuit operand must be bool");
+        err_at(e.b.file, e.b.line, e.b.col, cat3("right of `", spell_op(op), "` must be bool"));
       }
       e.typed = ty_prim(0);
       return e.typed;
@@ -3497,7 +3525,7 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
         ok = (ty_is_int(l) && ty_is_int(r)) || (ty_is_flt(l) && ty_is_flt(r));
       }
       if !ok {
-        err_at("", 0, 0, "cannot compare these types");
+        err_at(e.file, e.line, e.col, cat5("cannot compare `", ty_name(l), "` and `", ty_name(r), "`"));
         return ty_err();
       }
       e.typed = ty_prim(0);
@@ -3505,26 +3533,26 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
     }
     if op == Tok.PShl || op == Tok.PShr {
       if !ty_is_int(l) {
-        err_at("", 0, 0, "shift needs an integer left side");
+        err_at(e.file, e.line, e.col, "shift needs an integer left side");
       }
       if !ty_is_int(r) {
-        err_at("", 0, 0, "shift needs an integer right side");
+        err_at(e.file, e.line, e.col, "shift needs an integer right side");
       }
       e.typed = l;
       return e.typed;
     }
     if l != r {
-      err_at("", 0, 0, "type mismatch in binary operator");
+      err_at(e.file, e.line, e.col, cat3(cat3("type mismatch in `", spell_op(op), "`: `"), cat3(ty_name(l), "` vs `", ty_name(r)), "`"));
       e.typed = ty_err();
       return e.typed;
     }
     if op == Tok.PPlus || op == Tok.PMinus || op == Tok.PStar || op == Tok.PSlash || op == Tok.PPercent {
       if (!ty_is_int(l) && !ty_is_flt(l)) && l.kind != TypeKind.TyParam {
-        err_at("", 0, 0, "arithmetic needs numbers");
+        err_at(e.file, e.line, e.col, cat3("arithmetic needs numbers, found `", ty_name(l), "`"));
       }
     } else if op == Tok.PAmp || op == Tok.PPipe || op == Tok.PCaret {
       if !ty_is_int(l) {
-        err_at("", 0, 0, "bitwise needs integers");
+        err_at(e.file, e.line, e.col, cat3("bitwise needs integers, found `", ty_name(l), "`"));
       }
     }
     if l.kind == TypeKind.TyIntLit {
@@ -3550,14 +3578,14 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
       e.b.typed = idx;
     }
     if !ty_is_int(idx) {
-      err_at("", 0, 0, "index must be an integer");
+      err_at(e.b.file, e.b.line, e.b.col, cat3("index must be an integer, found `", ty_name(idx), "`"));
     }
     if base.kind == TypeKind.TyArray || base.kind == TypeKind.TySlice {
       e.typed = base.elem;
     } else if base.kind == TypeKind.TyStringK {
       e.typed = ty_prim(5);
     } else {
-      err_at("", 0, 0, "cannot index this type");
+      err_at(e.file, e.line, e.col, cat3("cannot index `", ty_name(base), "`"));
       e.typed = ty_err();
     }
     return e.typed;
@@ -3575,14 +3603,14 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
       e.c.typed = hi;
     }
     if !ty_is_int(lo) || !ty_is_int(hi) {
-      err_at("", 0, 0, "slice bounds must be integers");
+      err_at(e.file, e.line, e.col, "slice bounds must be integers");
     }
     if base.kind == TypeKind.TyArray || base.kind == TypeKind.TySlice {
       e.typed = ty_slice(base.elem);
     } else if base.kind == TypeKind.TyStringK {
       e.typed = ty_prim(11);
     } else {
-      err_at("", 0, 0, "cannot slice this type");
+      err_at(e.file, e.line, e.col, cat3("cannot slice `", ty_name(base), "`"));
       e.typed = ty_err();
     }
     return e.typed;
@@ -3591,19 +3619,78 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
     return check_if_expr(e, expected);
   }
   if e.kind == ExprKind.ExQmark {
-    // expr? : expr must be a Result; yields the Ok payload
-    let et: *Type = check_expr(e.a, null);
-    if et.kind != TypeKind.TyEnum {
-      err_at("", 0, 0, "`?` needs a Result");
+    // expr? : expr must be a Result or Option; yields the Ok/Some payload
+    let operand: *Type = check_expr(e.a, null);
+    if operand.kind != TypeKind.TyEnum {
+      let mut what: string = ty_name(operand);
+      if operand.kind == TypeKind.TyIntLit || operand.kind == TypeKind.TyFloatLit {
+        what = "an untyped literal";
+      }
+      err_at(e.file, e.line, e.col, cat3("`?` needs a Result or Option, found `", what, "`"));
       e.typed = ty_err();
       return e.typed;
     }
-    if len(et.rec.targs) != 2 {
-      err_at("", 0, 0, "`?` needs a Result[T, E]");
+    let ed: *Decl = operand.rec.decl;
+    let mut ok_i: i32 = 0 - 1;
+    let mut err_i: i32 = 0 - 1;
+    let mut none_i: i32 = 0 - 1;
+    let mut some_i: i32 = 0 - 1;
+    let mut vi: usize = 0;
+    while vi < ed.variants.n {
+      let vn: string = ed.variants.items[vi].name;
+      if streq(vn, "Ok") {
+        ok_i = vi as i32;
+      }
+      if streq(vn, "Err") {
+        err_i = vi as i32;
+      }
+      if streq(vn, "Some") {
+        some_i = vi as i32;
+      }
+      if streq(vn, "None") {
+        none_i = vi as i32;
+      }
+      vi += 1;
+    }
+    let result_like: bool = ok_i >= 0 && err_i >= 0;
+    let option_like: bool = some_i >= 0 && none_i >= 0;
+    if !result_like && !option_like {
+      err_at(e.file, e.line, e.col, cat3("`?` needs a Result or Option, found `", ty_name(operand), "`"));
       e.typed = ty_err();
       return e.typed;
     }
-    e.typed = et.rec.targs[0];
+    let mut qv: i32 = some_i;
+    let mut qe: i32 = none_i;
+    if result_like {
+      qv = ok_i;
+      qe = err_i;
+    }
+    expr_set_q(e, qv, qe);
+    // the enclosing function must return the same family, with a
+    // compatible error payload for Results
+    let mut rn: *Type = cur_ret;
+    if rn == null {
+      rn = ty_prim(14);
+    }
+    if cur_ret == null || cur_ret.kind != TypeKind.TyEnum || cur_ret.rec.decl != ed {
+      let mut fam: string = "Result";
+      if !result_like {
+        fam = "Option";
+      }
+      err_at(e.file, e.line, e.col, cat5("`?` propagates into `", fam, "`, but this function returns `", ty_name(rn), "`"));
+      e.typed = ty_err();
+      return e.typed;
+    }
+    if result_like {
+      let e_op: *Type = variant_field_type(operand, err_i, 0);
+      let e_ret: *Type = variant_field_type(cur_ret, err_i, 0);
+      if !types_compatible(e_op, e_ret) {
+        err_at(e.file, e.line, e.col, cat5("error payload mismatch: function propagates `", ty_name(e_ret), "`, operand carries `", ty_name(e_op), "`"));
+        e.typed = ty_err();
+        return e.typed;
+      }
+    }
+    e.typed = variant_field_type(operand, e.q_ok, 0);
     return e.typed;
   }
   if e.kind == ExprKind.ExClosure {
@@ -3640,11 +3727,8 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
     cur_ret = rt;
     let bt: *Type = check_block_value2(e.items);
     cur_ret = saved_ret;
-    let ends_ret: bool = e.items.n > 0 && e.items.items[e.items.n - 1].kind == StmtKind.StReturn;
-    if !ends_ret && rt.kind != TypeKind.TyVoid && bt != rt && bt.kind != TypeKind.TyErr &&
-       bt.kind != TypeKind.TyIntLit && bt.kind != TypeKind.TyFloatLit &&
-       rt.kind != TypeKind.TyErr {
-      err_at("", 0, 0, "closure body type mismatch");
+    if rt.kind != TypeKind.TyVoid && !block_returns(e.items) {
+      err_at(e.file, e.line, e.col, cat3("missing return: closure body must produce `", ty_name(rt), "`"));
     }
     scope_pop();
     g_cap_list = saved_caps;
@@ -3653,7 +3737,7 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
     while ci < caps.n {
       let cap: *Sym = caps.items[ci];
       if cap.kind == SymKind.SyLocal && cap.mutable {
-        err_at("", 0, 0, cat("cannot capture mutable `", cat(cap.name, "` (boot-era closures copy; box it in a struct instead)")));
+        err_at(e.file, e.line, e.col, cat3("cannot capture mutable `", cap.name, "` (boot-era closures copy; box it in a struct instead)"));
       }
       ci += 1;
     }
@@ -3673,7 +3757,7 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
   if e.kind == ExprKind.ExMatch {
     return check_match(e, expected);
   }
-  err_at("", 0, 0, "internal: expression kind not yet checked");
+  err_at(e.file, e.line, e.col, "internal: unexpected expression form");
   e.typed = ty_err();
   return e.typed;
 }
@@ -3770,7 +3854,7 @@ fn check_field_access(e: *Expr, expected: *Type) -> *Type {
       }
       return e.typed;
     }
-    err_at("", 0, 0, "slices have `len` and `ptr`");
+    err_at(e.file, e.line, e.col, cat3("slices have `len` and `ptr`, not `", e.sv, "`"));
     e.typed = ty_err();
     return e.typed;
   }
@@ -3788,11 +3872,11 @@ fn check_field_access(e: *Expr, expected: *Type) -> *Type {
         }
         i += 1;
       }
-      err_at("", 0, 0, "no field on this struct");
+      err_at(e.file, e.line, e.col, cat5("no field `", e.sv, "` on `", ty_name(deref), "`"));
       e.typed = ty_err();
       return e.typed;
     }
-    err_at("", 0, 0, "auto-deref only works on struct pointers");
+    err_at(e.file, e.line, e.col, cat3("`", ty_name(deref), "` has no fields (auto-deref only works on struct pointers)"));
     e.typed = ty_err();
     return e.typed;
   }
@@ -3808,7 +3892,7 @@ fn check_field_access(e: *Expr, expected: *Type) -> *Type {
       }
       i += 1;
     }
-    err_at("", 0, 0, "no such field on struct");
+    err_at(e.file, e.line, e.col, cat5("no field `", e.sv, "` on `", ty_name(base), "`"));
     e.typed = ty_err();
     return e.typed;
   }
@@ -3879,21 +3963,14 @@ fn check_new(e: *Expr) -> *Type {
       let df: *FieldAst = d.fields.items[j];
       if streq(df.name, fname) {
         let ft: *Type = struct_field_type(rec, j);
-        let got: *Type = check_expr(argi, ft);
-        if got != ft && got.kind != TypeKind.TyIntLit && got.kind != TypeKind.TyFloatLit &&
-           got.kind != TypeKind.TyErr && ft.kind != TypeKind.TyErr &&
-           got.kind != TypeKind.TyParam && ft.kind != TypeKind.TyParam &&
-           !type_has_param(ft) {
-          err_at("", 0, 0, "field initializer type mismatch");
-        }
-        argi.typed = adapt_literal(got, ft);
+        require(check_expr(argi, ft), ft, argi, "field initializer");
         found = true;
         break;
       }
       j += 1;
     }
     if !found {
-      err_at("", 0, 0, "no such field on struct");
+      err_at(argi.file, argi.line, argi.col, cat5("no field `", fname, "` on `", d.name, "`"));
     }
     i += 1;
   }
@@ -3942,6 +4019,124 @@ fn variant_field_type(enum_t: *Type, variant: i32, field: i32) -> *Type {
   return t;
 }
 
+// does this expression's if-chain guarantee a return on both sides?
+fn if_expr_returns(ifx: *Expr) -> bool {
+  let then: *Stmt = ifx.items.items[0];
+  if !block_returns(then.stmts) {
+    return false;
+  }
+  if ifx.else_if != null {
+    return if_expr_returns(ifx.else_if);
+  }
+  if ifx.items.n < 2 {
+    return false;
+  }
+  return block_returns(ifx.items.items[1].stmts);
+}
+
+fn loop_has_break(stmts: *Vec[*Stmt]) -> bool {
+  let mut i: usize = 0;
+  while i < stmts.n {
+    let s: *Stmt = stmts.items[i];
+    if s.kind == StmtKind.StBreak {
+      return true;
+    }
+    if s.kind == StmtKind.StWhile || s.kind == StmtKind.StLoop {
+      // an inner loop's break belongs to the inner loop
+      i += 1;
+      continue;
+    }
+    if s.stmts.n > 0 && loop_has_break(s.stmts) {
+      return true;
+    }
+    if s.kind == StmtKind.StExpr {
+      if s.a.kind == ExprKind.ExIf && if_arms_have_break(s.a) {
+        return true;
+      }
+      if s.a.kind == ExprKind.ExMatch {
+        let mut j: usize = 0;
+        while j < s.a.arms.n {
+          let arm: *MatchArm = s.a.arms.items[j];
+          if arm.body.kind == ExprKind.ExBlock && arm.body.items.n > 0 &&
+             loop_has_break(arm.body.items) {
+            return true;
+          }
+          j += 1;
+        }
+      }
+    }
+    i += 1;
+  }
+  return false;
+}
+
+fn if_arms_have_break(ifx: *Expr) -> bool {
+  let then: *Stmt = ifx.items.items[0];
+  if then.stmts.n > 0 && loop_has_break(then.stmts) {
+    return true;
+  }
+  if ifx.else_if != null {
+    return if_arms_have_break(ifx.else_if);
+  }
+  if ifx.items.n > 1 {
+    let blk: *Stmt = ifx.items.items[1];
+    if blk.stmts.n > 0 && loop_has_break(blk.stmts) {
+      return true;
+    }
+  }
+  return false;
+}
+
+fn stmt_returns(s: *Stmt) -> bool {
+  if s.kind == StmtKind.StReturn {
+    return true;
+  }
+  if s.kind == StmtKind.StExpr && s.a.kind == ExprKind.ExIf {
+    return if_expr_returns(s.a);
+  }
+  if s.kind == StmtKind.StExpr && s.a.kind == ExprKind.ExMatch {
+    if s.a.arms.n == 0 {
+      return false;
+    }
+    let mut i: usize = 0;
+    while i < s.a.arms.n {
+      let arm: *MatchArm = s.a.arms.items[i];
+      if arm.body.kind != ExprKind.ExBlock {
+        // expression arms produce values, they do not return
+        i += 1;
+        continue;
+      }
+      let mut any: bool = false;
+      let mut j: usize = 0;
+      while j < arm.body.items.n {
+        if stmt_returns(arm.body.items.items[j]) {
+          any = true;
+        }
+        j += 1;
+      }
+      if !any {
+        return false;
+      }
+      i += 1;
+    }
+    return true;
+  }
+  if s.kind == StmtKind.StLoop {
+    return !loop_has_break(s.body);
+  }
+  if s.kind == StmtKind.StBlock {
+    return block_returns(s.stmts);
+  }
+  return false;
+}
+
+fn block_returns(stmts: *Vec[*Stmt]) -> bool {
+  if stmts.n == 0 {
+    return false;
+  }
+  return stmt_returns(stmts.items[stmts.n - 1]);
+}
+
 fn check_match(e: *Expr, expected: *Type) -> *Type {
   let scrut: *Type = check_expr(e.a, null);
   let mut ed: *Decl = null;
@@ -3949,29 +4144,59 @@ fn check_match(e: *Expr, expected: *Type) -> *Type {
   if scrut.kind == TypeKind.TyEnum {
     ed = scrut.rec.decl;
   } else if !int_match {
-    err_at("", 0, 0, "match scrutinee must be an enum or integer");
+    err_at(e.file, e.line, e.col, cat3("match scrutinee must be an enum or integer, found `", ty_name(scrut), "`"));
     e.typed = ty_err();
     return e.typed;
   }
+  let covered: []bool = make([]bool, 256);
+  let mut wildcard: bool = false;
   let mut result: *Type = null;
   let mut i: usize = 0;
   while i < e.arms.n {
     let arm: *MatchArm = e.arms.items[i];
-    if ed != null && arm.pk != PatKind.PatWildcard {
-      let vn: string = arm.pat_path.items[arm.pat_path.n - 1];
-      let mut found: bool = false;
-      let mut j: usize = 0;
-      while j < ed.variants.n {
-        let v: *VariantAst = ed.variants.items[j];
-        if streq(v.name, vn) {
-          found = true;
+    if ed != null {
+      if arm.pk == PatKind.PatWildcard {
+        wildcard = true;
+      } else if arm.pk == PatKind.PatUnit || arm.pk == PatKind.PatTuple || arm.pk == PatKind.PatStruct {
+        let vn: string = arm.pat_path.items[arm.pat_path.n - 1];
+        let mut found: bool = false;
+        let mut j: usize = 0;
+        while j < ed.variants.n {
+          let v: *VariantAst = ed.variants.items[j];
+          if !streq(v.name, vn) {
+            j += 1;
+            continue;
+          }
+          if arm.pk == PatKind.PatUnit && v.vkind != VarKind.VarUnit {
+            err_at(arm.file, arm.line, arm.col, cat5("variant `", vn, "` carries a payload; bind it: `", vn, "(..)`"));
+          } else if arm.pk != PatKind.PatUnit && v.vkind == VarKind.VarUnit {
+            err_at(arm.file, arm.line, arm.col, cat3("variant `", vn, "` has no payload to bind"));
+          }
+          covered[j] = true;
           arm.variant_index = j as i32;
           arm.disc = v.disc;
-          let nfields: usize = if v.vkind == VarKind.VarStruct { v.fields.n } else { v.types.n };
-          let nbinds: usize = arm.pat_names.n;
+          found = true;
+          break;
+        }
+        if !found {
+          err_at(arm.file, arm.line, arm.col, cat5("no variant `", vn, "` on `", ty_name(scrut), "`"));
+        } else {
+          let v: *VariantAst = ed.variants.items[arm.variant_index as usize];
+          let mut nfields: usize = 0;
+          if v.vkind == VarKind.VarTuple {
+            nfields = v.types.n;
+          } else if v.vkind == VarKind.VarStruct {
+            nfields = v.fields.n;
+          }
+          let mut nbinds: usize = 0;
+          if arm.pk == PatKind.PatTuple {
+            nbinds = arm.pat_names.n;
+          } else if arm.pk == PatKind.PatStruct {
+            nbinds = arm.pat_fields.n;
+          }
           if arm.pk != PatKind.PatUnit && nbinds != nfields {
-            err_at("", 0, 0, "pattern binds the wrong number of values");
-          } else if arm.pk == PatKind.PatTuple {
+            err_at(arm.file, arm.line, arm.col, cat5("pattern `", vn, "` binds ", itoa(nbinds as i64), cat3(" values, variant has ", itoa(nfields as i64), "")));
+          } else if arm.pk == PatKind.PatTuple && v.vkind == VarKind.VarTuple {
             let mut b: usize = 0;
             while b < nbinds && b < nfields {
               let nm: string = arm.pat_names.items[b];
@@ -3993,67 +4218,59 @@ fn check_match(e: *Expr, expected: *Type) -> *Type {
               }
               b += 1;
             }
-          } else if arm.pk == PatKind.PatStruct {
-            // named pattern fields: resolve each binding by field NAME
+          } else if arm.pk == PatKind.PatStruct && v.vkind == VarKind.VarStruct {
+            // every pattern field must exist on the variant; bindings in
+            // pattern order, types from the matched variant field
             let mut b: usize = 0;
-            while b < nbinds && b < nfields {
+            while b < nbinds {
               let fa: *FieldAst = arm.pat_fields.items[b];
-              let nm: string = arm.pat_names.items[b];
-              let mut fidx: i64 = (0 - 1) as i64;
+              let mut hit: bool = false;
               let mut j2: usize = 0;
               while j2 < v.fields.n {
                 let vf: *FieldAst = v.fields.items[j2];
                 if streq(vf.name, fa.name) {
-                  fidx = j2 as i64;
+                  hit = true;
+                  let nm: string = arm.pat_names.items[b];
+                  if !streq(nm, "_") {
+                    let bs: *Sym = new Sym {
+                      kind: SymKind.SyLocal, name: nm,
+                      type: variant_field_type(scrut, arm.variant_index, j2 as i32),
+                      decl: null, mutable: false, variant_index: 0,
+                      local_id: next_local_id, symbol: "",
+    owner: cur_module,
+    module: null,
+                    };
+                    next_local_id += 1;
+                    arm.bind_syms = push_sym(arm.bind_syms, bs);
+                    arm.bind_fidx = push_i64(arm.bind_fidx, j2 as i64);
+                  } else {
+                    arm.bind_syms = push_sym(arm.bind_syms, null);
+                    arm.bind_fidx = push_i64(arm.bind_fidx, j2 as i64);
+                  }
                   break;
                 }
                 j2 += 1;
               }
-              if !streq(nm, "_") {
-                let bs: *Sym = new Sym {
-                  kind: SymKind.SyLocal, name: nm,
-                  type: variant_field_type(scrut, arm.variant_index, fidx as i32),
-                  decl: null, mutable: false, variant_index: 0,
-                  local_id: next_local_id, symbol: "",
-    owner: cur_module,
-    module: null,
-                };
-                next_local_id += 1;
-                arm.bind_syms = push_sym(arm.bind_syms, bs);
-                arm.bind_fidx = push_i64(arm.bind_fidx, fidx);
-              } else {
-                arm.bind_syms = push_sym(arm.bind_syms, null);
-                arm.bind_fidx = push_i64(arm.bind_fidx, fidx);
+              if !hit {
+                err_at(fa.file, fa.line, fa.col, cat5("variant `", vn, "` has no field `", fa.name, "`"));
               }
               b += 1;
             }
-          } else if arm.pk == PatKind.PatTuple {
-            let mut b: usize = 0;
-            while b < nbinds && b < nfields {
-              let nm: string = arm.pat_names.items[b];
-              if !streq(nm, "_") {
-                let bs: *Sym = new Sym {
-                  kind: SymKind.SyLocal, name: nm,
-                  type: variant_field_type(scrut, arm.variant_index, b as i32),
-                  decl: null, mutable: false, variant_index: 0,
-                  local_id: next_local_id, symbol: "",
-    owner: cur_module,
-    module: null,
-                };
-                next_local_id += 1;
-                arm.bind_syms = push_sym(arm.bind_syms, bs);
-              } else {
-                arm.bind_syms = push_sym(arm.bind_syms, null);
-              }
-              b += 1;
+            if nbinds != 0 && len(arm.bind_syms) != v.fields.n {
+              err_at(arm.file, arm.line, arm.col, cat5("pattern `", vn, " { .. }` must bind every field", "", ""));
             }
           }
-          break;
         }
-        j += 1;
+      } else {
+        err_at(arm.file, arm.line, arm.col, "this pattern does not match an enum");
       }
-      if !found {
-        err_at("", 0, 0, "no such variant on this enum");
+    } else {
+      if arm.pk == PatKind.PatWildcard {
+        wildcard = true;
+      } else if arm.pk == PatKind.PatInt {
+        // literal match
+      } else {
+        err_at(arm.file, arm.line, arm.col, "integer match arms must be literals or `_`");
       }
     }
     scope_push();
@@ -4061,27 +4278,37 @@ fn check_match(e: *Expr, expected: *Type) -> *Type {
     while bi < len(arm.bind_syms) {
       let bs: *Sym = arm.bind_syms[bi];
       if bs != null {
+        if scope_lookup(bs.name) != null {
+          err_at(arm.file, arm.line, arm.col, cat3("`", bs.name, "` shadows an existing binding"));
+        }
         scope_decl(bs.name, bs);
       }
       bi += 1;
     }
-    let arm_t: *Type = check_expr(arm.body, expected);
+    let bt: *Type = check_expr(arm.body, expected);
     if result == null {
-      result = arm_t;
-    } else if arm_t != result && arm_t.kind != TypeKind.TyErr && result.kind != TypeKind.TyErr &&
-              arm_t.kind != TypeKind.TyParam && result.kind != TypeKind.TyParam {
-      // panic never returns: its arm coerces to the other branch's type
-      if arm_t.kind == TypeKind.TyVoid && is_panic_call(arm.body) {
-        // keep result
-      } else if result.kind == TypeKind.TyVoid && is_panic_call(arm.body) {
-        result = arm_t;
-      } else {
-        err_at("", 0, 0, "match arms have inconsistent types");
-        result = ty_err();
+      result = bt;
+    } else {
+      let u: *Type = unify2(result, bt, arm.body);
+      if u.kind != TypeKind.TyErr {
+        result = u;
       }
     }
     scope_pop();
     i += 1;
+  }
+  if ed != null && !wildcard {
+    let mut j: usize = 0;
+    while j < ed.variants.n {
+      if !covered[j] {
+        err_at(e.file, e.line, e.col, cat3("match is not exhaustive: missing `", ed.variants.items[j].name, "`"));
+        break;
+      }
+      j += 1;
+    }
+  }
+  if int_match && !wildcard && e.arms.n == 0 {
+    err_at(e.file, e.line, e.col, "match needs at least one arm");
   }
   if result == null {
     result = ty_prim(14);
@@ -4546,9 +4773,7 @@ fn check_call(e: *Expr, expected: *Type) -> *Type {
       infer_targs(fn_t.params[0], recv, env);
     }
     if e.args.n + first != nparams0 {
-      err_at("", 0, 0, "argument count mismatch");
-      e.typed = ty_err();
-      return e.typed;
+      err_at(e.file, e.line, e.col, cat5("function takes ", itoa((nparams0 - first) as i64), " arguments, got ", itoa(e.args.n as i64), ""));
     }
     let mut gi: usize = 0;
     while gi < e.args.n {
@@ -4565,7 +4790,7 @@ fn check_call(e: *Expr, expected: *Type) -> *Type {
         tm_put(env, fn_t.ret.mangled, expected);
       }
     }
-    let inst: *Sym = instantiate_fn(ct.sym, names.items[0..names.n], env);
+    let inst: *Sym = instantiate_fn(ct.sym, names.items[0..names.n], env, e);
     ct.sym = inst;
     ct.fn_type = inst.type;
     ct.inst_rec = null;
@@ -4579,25 +4804,36 @@ fn check_call(e: *Expr, expected: *Type) -> *Type {
     // ft.params[0] is self; the receiver expression supplies it
     arg_off = 1;
   }
-  if e.args.n != nparams - arg_off {
-    err_at("", 0, 0, "argument count mismatch");
-    e.typed = ty_err();
-    return e.typed;
-  }
-  let mut i: usize = 0;
-  while i < e.args.n {
-    let pt: *Type = ft.params[i + arg_off];
-    let got: *Type = check_expr(e.args.items[i], pt);
-    let adapted: *Type = adapt_literal(got, pt);
-    if adapted != pt && adapted.kind != TypeKind.TyIntLit &&
-       adapted.kind != TypeKind.TyFloatLit && adapted.kind != TypeKind.TyNull &&
-       pt.kind != TypeKind.TyErr && got.kind != TypeKind.TyErr &&
-       pt.kind != TypeKind.TyParam && !type_has_param(pt) {
-      err_at("", 0, 0, "argument type mismatch");
-      e.typed = ty_err();
-      return e.typed;
+  if ct.is_method {
+    if e.args.n + 1 != nparams {
+      err_at(e.file, e.line, e.col, cat5("method takes ", itoa((nparams - 1) as i64), " arguments, got ", itoa(e.args.n as i64), ""));
     }
-    e.args.items[i].typed = adapted;
+    let self_param: *Type = ft.params[0];
+    let mut recv: *Type = e.a.a.typed;
+    if recv == null || recv.kind == TypeKind.TyErr {
+      recv = check_expr(e.a.a, null);
+    }
+    // accept receiver by value or pointer when self matches the other form
+    let mut ok: bool = types_compatible(recv, self_param);
+    if !ok && recv != null && recv.kind == TypeKind.TyPtr && self_param.kind != TypeKind.TyPtr &&
+       types_compatible(recv.elem, self_param) {
+      ok = true; // self: T, receiver *T: auto-deref (no auto-ref; there is no &)
+    }
+    if !ok {
+      err_at(e.a.file, e.a.line, e.a.col, cat5("method `", e.a.sv, "` expects self as `", ty_name(self_param), cat3("`, receiver is `", ty_name(recv), "`")));
+    }
+    arg_off = 1;
+  } else if e.args.n != nparams {
+    err_at(e.file, e.line, e.col, cat5("function takes ", itoa(nparams as i64), " arguments, got ", itoa(e.args.n as i64), ""));
+  }
+  let mut i: usize = arg_off;
+  while i < nparams {
+    let ai: usize = i - arg_off;
+    if ai >= e.args.n {
+      break;
+    }
+    let pt: *Type = ft.params[i];
+    require(check_expr(e.args.items[ai], pt), pt, e.args.items[ai], "argument");
     i += 1;
   }
   e.typed = ft.ret;
@@ -4675,12 +4911,11 @@ fn check_stmt(s: *Stmt) {
     }
     let mut t: *Type = check_expr(s.a, ann);
     if ann != null {
-      if !ty_is_or_has_err(ann) && !ty_is_or_has_err(t) && t != ann &&
-         t.kind != TypeKind.TyIntLit && t.kind != TypeKind.TyFloatLit &&
-         t.kind != TypeKind.TyNull && t.kind != TypeKind.TyErr &&
-         ann.kind != TypeKind.TyParam && t.kind != TypeKind.TyParam &&
-         !type_has_param(ann) && !type_has_param(t) {
-        err_at("", 0, 0, "initializer type mismatch");
+      // the annotation pins the binding's type; literals adapt, anything
+      // else must genuinely match. An error type already has its own
+      // diagnostic — don't pile a second one onto it
+      if !ty_is_or_has_err(ann) && !ty_is_or_has_err(t) {
+        require(t, ann, s.a, "initializer");
       }
       t = ann;
     } else {
@@ -4689,9 +4924,12 @@ fn check_stmt(s: *Stmt) {
       } else if t.kind == TypeKind.TyFloatLit {
         t = ty_prim(10);
       } else if t.kind == TypeKind.TyNull {
-        err_at("", 0, 0, "`null` needs a type annotation");
+        err_at(s.file, s.line, s.col, "`null` needs a type annotation");
         t = ty_err();
       } else if t.kind == TypeKind.TyErr {
+        t = ty_err();
+      } else if t.kind == TypeKind.TyVoid {
+        err_at(s.file, s.line, s.col, "cannot bind void");
         t = ty_err();
       }
     }
@@ -4702,12 +4940,8 @@ fn check_stmt(s: *Stmt) {
     module: null,
     };
     next_local_id += 1;
-    if lookup(s.name) != null {
-      if cur_fn_sym != null { eprint(cur_fn_sym.name); }
-      eprint(" name=");
-      eprint(s.name);
-      eprint("\n");
-      err_at("", 0, 0, "shadowing is not allowed (spec §5)");
+    if scope_lookup(s.name) != null {
+      err_at(s.file, s.line, s.col, cat("`", cat3(s.name, "` shadows an existing binding", "")));
     }
     scope_decl(s.name, sym);
     s.a.typed = t;
@@ -4715,15 +4949,31 @@ fn check_stmt(s: *Stmt) {
   }
   if s.kind == StmtKind.StAssign {
     let target: *Type = check_expr(s.a, null);
-    let value: *Type = adapt_literal(check_expr(s.b, target), target);
-    s.b.typed = value;
-    if target != value && !(ty_is_int(target) && ty_is_int(value)) &&
-       !(ty_is_flt(target) && ty_is_flt(value)) &&
-       target.kind != TypeKind.TyErr && value.kind != TypeKind.TyErr {
-      err_at("", 0, 0, "type mismatch in assignment");
+    let compound: bool = s.assign_op != Tok.PAssign;
+    let mut value: *Type = null;
+    if compound {
+      value = adapt_literal(check_expr(s.b, target), target);
+      s.b.typed = value;
+      // target op value must be well-formed and equal target's type
+      if s.assign_op == Tok.PShleq || s.assign_op == Tok.PShreq {
+        if !ty_is_int(target) || !ty_is_int(value) {
+          err_at(s.file, s.line, s.col, "shift assignment needs integers");
+        }
+      } else {
+        if !types_compatible(target, value) && !(ty_is_int(target) && ty_is_int(value)) &&
+           !(ty_is_flt(target) && ty_is_flt(value)) {
+          err_at(s.file, s.line, s.col, cat5("type mismatch in assignment: `", ty_name(target), "` vs `", ty_name(value), "`"));
+        }
+      }
+    } else {
+      value = adapt_literal(check_expr(s.b, target), target);
+      s.b.typed = value;
+      if !types_compatible(target, value) {
+        err_at(s.file, s.line, s.col, cat5("cannot assign `", ty_name(value), "` to `", ty_name(target), "`"));
+      }
     }
     if !lvalue_mutable(s.a) {
-      err_at("", 0, 0, "cannot assign to an immutable binding (declare it `let mut`)");
+      err_at(s.file, s.line, s.col, "cannot assign to an immutable binding (declare it `let mut`)");
     }
     return;
   }
@@ -4732,24 +4982,32 @@ fn check_stmt(s: *Stmt) {
     return;
   }
   if s.kind == StmtKind.StReturn {
+    if in_defer {
+      err_at(s.file, s.line, s.col, "`return` is not allowed in defer");
+      return;
+    }
     if cur_ret == null || cur_ret.kind == TypeKind.TyVoid {
       if s.a != null {
-        err_at("", 0, 0, "this function returns nothing");
+        err_at(s.file, s.line, s.col, "this function returns nothing");
       }
     } else {
       if s.a == null {
-        err_at("", 0, 0, "missing return value");
+        err_at(s.file, s.line, s.col, "missing return value");
       } else {
-        let got: *Type = check_expr(s.a, cur_ret);
-        let adapted: *Type = adapt_literal(got, cur_ret);
-        s.a.typed = adapted;
+        require(check_expr(s.a, cur_ret), cur_ret, s.a, "return value");
       }
     }
     return;
   }
   if s.kind == StmtKind.StBreak || s.kind == StmtKind.StContinue {
-    if loop_depth == 0 {
-      err_at("", 0, 0, "break/continue outside of a loop");
+    let mut w: string = "break";
+    if s.kind == StmtKind.StContinue {
+      w = "continue";
+    }
+    if in_defer {
+      err_at(s.file, s.line, s.col, cat3("`", w, "` is not allowed in defer"));
+    } else if loop_depth == 0 {
+      err_at(s.file, s.line, s.col, cat3("`", w, "` outside of a loop"));
     }
     return;
   }
@@ -4848,6 +5106,9 @@ fn check_fn_body(d: *Decl, sym: *Sym, m: *Module) {
   while k < d.body.n {
     check_stmt(d.body.items[k]);
     k += 1;
+  }
+  if cur_ret != null && cur_ret.kind != TypeKind.TyVoid && !block_returns(d.body) {
+    err_at(d.file, d.line, d.col, cat5("missing return: `", d.name, "` is `", ty_name(cur_ret), "`"));
   }
   scope_pop();
   g_tenv = null;
@@ -4976,18 +5237,6 @@ fn check_all(m: *Module) -> i32 {
         scope_decl(m.syms.items[si].key, ms);
       }
       si += 1;
-    }
-  }
-  if prelude_module != null && prelude_module != m {
-    let pd: *Decl = prelude_module.root;
-    let mut pi: usize = 0;
-    while pi < pd.decls.n {
-      let pdecl: *Decl = pd.decls.items[pi];
-      let psym: *Sym = sm_get(prelude_module.syms, pdecl.name);
-      if psym != null {
-        scope_decl(pdecl.name, psym);
-      }
-      pi += 1;
     }
   }
   let d: *Decl = m.root;
@@ -5153,23 +5402,29 @@ fn check_all(m: *Module) -> i32 {
         g_tenv = template_env_of(decl);
         decl.templated = true;
       }
-      let nparams: usize = decl.params.n;
-      let mut ps: []*Type = fresh_type_vec2();
-      let mut j: usize = 0;
-      while j < nparams {
-        ps = push_type(ps, resolve_type_in_module(m, decl.params.items[j].ty));
-        j += 1;
-      }
-      let ret: *Type = resolve_type_in_module(m, decl.ret);
-      let ft: *Type = ty_fn(ps, ret);
-      g_tenv = null;
       let mut tsym: *Sym = sm_get(m.syms, decl.name);
       if decl.is_method {
         tsym = sm_get(m.syms, cat3(decl.recv, ".", decl.name));
       }
-      if tsym != null {
-        tsym.type = ft;
+      let mut ft: *Type = null;
+      if tsym != null && tsym.type != null {
+        // pass 2a resolved the signature already; re-resolving would
+        // re-emit diagnostics for names that failed to resolve
+        ft = tsym.type;
+      } else {
+        let nparams: usize = decl.params.n;
+        let mut ps: []*Type = fresh_type_vec2();
+        let mut j: usize = 0;
+        while j < nparams {
+          ps = push_type(ps, resolve_type_in_module(m, decl.params.items[j].ty));
+          j += 1;
+        }
+        ft = ty_fn(ps, resolve_type_in_module(m, decl.ret));
+        if tsym != null {
+          tsym.type = ft;
+        }
       }
+      g_tenv = null;
       let fsym: *Sym = new Sym {
         kind: SymKind.SyFn, name: decl.name, type: ft, decl: decl,
         mutable: false, variant_index: 0, local_id: 0, symbol: "",
@@ -5255,6 +5510,13 @@ fn check_block_value2(stmts: *Vec[*Stmt]) -> *Type {
   return result;
 }
 
+// store the qmark family fields (kept in one place; the two consecutive
+// scalar stores through the pointer confuse no one)
+fn expr_set_q(e: *Expr, ok: i32, err: i32) {
+  e.q_ok = ok;
+  e.q_err = err;
+}
+
 fn is_panic_call(e: *Expr) -> bool {
   if e == null || e.kind != ExprKind.ExCall || e.a == null || e.a.sym == null {
     return false;
@@ -5267,7 +5529,10 @@ fn is_panic_call(e: *Expr) -> bool {
 }
 
 fn unify2(a: *Type, b: *Type, at: *Expr) -> *Type {
-  if a == b {
+  if a == null || a.kind == TypeKind.TyErr {
+    return b;
+  }
+  if b == null || b.kind == TypeKind.TyErr {
     return a;
   }
   // panic never returns: its arm coerces to the other branch's type
@@ -5289,39 +5554,34 @@ fn unify2(a: *Type, b: *Type, at: *Expr) -> *Type {
   if b.kind == TypeKind.TyErr {
     return a;
   }
-  if a.kind == TypeKind.TyIntLit && ty_is_int(b) {
-    return b;
+  // untyped literals adapt to the other side's type
+  let u: *Type = adapt_literal(a, b);
+  let v: *Type = adapt_literal(b, a);
+  if u.kind == TypeKind.TyVoid && v.kind == TypeKind.TyVoid {
+    return u;
   }
-  if b.kind == TypeKind.TyIntLit && ty_is_int(a) {
-    return a;
+  if types_compatible(u, v) {
+    return u;
   }
-  if a.kind == TypeKind.TyFloatLit && ty_is_flt(b) {
-    return b;
-  }
-  if b.kind == TypeKind.TyFloatLit && ty_is_flt(a) {
-    return a;
-  }
-  err_at("", 0, 0, "if arms have different types");
+  err_at(at.file, at.line, at.col, cat5("branches have different types: `", ty_name(a), "` vs `", ty_name(b), "`"));
   return ty_err();
 }
 
 fn check_if_expr(e: *Expr, expected: *Type) -> *Type {
   let cond: *Type = check_expr(e.a, null);
   if cond.kind != TypeKind.TyBool {
-    err_at("", 0, 0, "if condition must be bool");
+    err_at(e.a.file, e.a.line, e.a.col, cat3("if condition must be bool, found `", ty_name(cond), "`"));
   }
-  let then_blk: *Stmt = (e.items.items[0] as usize) as *Stmt;
+  let then_blk: *Stmt = e.items.items[0];
   let t: *Type = check_block_value2(then_blk.stmts);
   let mut result: *Type = ty_prim(14);
   if e.else_if != null {
-    let et: *Type = check_expr(e.else_if, expected);
+    let et: *Type = check_expr(e.else_if, if expected != null { expected } else { t });
     result = unify2(t, et, e.else_if);
   } else if e.items.n > 1 {
     let else_blk: *Stmt = e.items.items[1];
     let et: *Type = check_block_value2(else_blk.stmts);
-    result = unify2(t, et, e.else_if);
-  } else {
-    result = ty_prim(14);
+    result = unify2(t, et, e);
   }
   e.typed = result;
   return result;
@@ -12873,6 +13133,7 @@ fn clone_typeast(t: *TypeAst) -> *TypeAst {
   let c: *TypeAst = new TypeAst {
     kind: t.kind, prim: t.prim, path: t.path, targs: t.targs, elem: t.elem,
     params: t.params, ret: t.ret, size: t.size,
+    file: t.file, line: t.line, col: t.col,
   };
   // deep-copy the recursive fields; path/string payloads are immutable
   let mut ta: *Vec[*TypeAst] = new Vec[*TypeAst] { items: make([]*TypeAst, 4), n: 0 };
@@ -13088,7 +13349,7 @@ fn resolve_inst_signature(sym: *Sym) {
   cur_module = saved_mod;
 }
 
-fn instantiate_fn(gsym: *Sym, names: []string, env: *TypeMap) -> *Sym {
+fn instantiate_fn(gsym: *Sym, names: []string, env: *TypeMap, at: *Expr) -> *Sym {
   let d: *Decl = gsym.decl;
   // mangle in the canonical parameter order so the name is deterministic
   let mut mangled: string = cat3(d.name, "$", "");
@@ -13099,7 +13360,7 @@ fn instantiate_fn(gsym: *Sym, names: []string, env: *TypeMap) -> *Sym {
       mangled = cat3(mangled, ",", "");
     }
     if targ == null || targ.kind == TypeKind.TyParam {
-      err_at("", 0, 0, cat3("cannot infer `", cat3(names[i], "` for `", cat3(d.name, "`", "")), ""));
+      err_at(at.file, at.line, at.col, cat5("cannot infer `", names[i], "` for `", d.name, "`"));
       return gsym;
     }
     let mut targ2: *Type = targ;
