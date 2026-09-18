@@ -3054,6 +3054,22 @@ fn named_type_full(sym: *Sym, owner: *Module, ta: *TypeAst) -> *Type {
           eprint("set");
         }
         eprint("]\n");
+        eprint("[NTF-ERR name=");
+        eprint(d.name);
+        eprint(" gtenv=null fn=");
+        if cur_fn_sym != null { eprint(cur_fn_sym.name); } else { eprint("?"); }
+        eprint(" ta-path=");
+        if ta != null && ta.path != null {
+          let mut pi2: usize = 0;
+          while pi2 < ta.path.n {
+            eprint(ta.path.items[pi2]);
+            eprint("/");
+            pi2 += 1;
+          }
+        } else {
+          eprint("null-ta");
+        }
+        eprint("\n");
         err_at("", 0, 0, cat("generic type `", cat(d.name, "` needs type arguments")));
         return ty_err();
       }
@@ -3194,6 +3210,11 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
       return e.typed;
     }
     e.sym = sym;
+    e.typed = sym.type;
+    // a fn name in value position makes a closure value
+    if sym.kind == SymKind.SyFn || sym.kind == SymKind.SyExtern {
+      e.fnval = true;
+    }
     // copy-capture: a closure body naming an outer local records it
     if g_cap_list != null &&
        (sym.kind == SymKind.SyLocal || sym.kind == SymKind.SyParam) &&
@@ -4326,7 +4347,27 @@ fn check_call(e: *Expr, expected: *Type) -> *Type {
       let mut i: usize = 0;
       while i < e.args.n {
         let init: *Expr = e.args.items[i];
-        check_expr(init, null);
+        let mut ft: *Type = null;
+        if v.vkind == VarKind.VarStruct && i < v.fields.n {
+          // named field: find the payload type by name
+          let mut nm: string = "";
+          if i < e.arg_names.n {
+            nm = e.arg_names.items[i];
+          }
+          let mut j2: usize = 0;
+          while j2 < v.fields.n {
+            if streq(v.fields.items[j2].name, nm) {
+              ft = variant_field_type(ct.enum_type, ct.variant, j2 as i32);
+              j2 = v.fields.n;
+            } else {
+              j2 += 1;
+            }
+          }
+        }
+        let got: *Type = check_expr(init, ft);
+        if ft != null {
+          init.typed = adapt_literal(got, ft);
+        }
         i += 1;
       }
     } else {
@@ -4806,7 +4847,10 @@ fn check_all(m: *Module) -> i32 {
       let mut j0: usize = 0;
       while j0 < nparams0 {
         if len(decl.recv) > 0 {
-          let rsym2: *Sym = sm_get(m.syms, decl.recv);
+          let mut rsym2: *Sym = sm_get(m.syms, decl.recv);
+          if rsym2 == null && prelude_module != null && prelude_module != m {
+            rsym2 = sm_get(prelude_module.syms, decl.recv);
+          }
           if rsym2 != null && rsym2.decl.tparams.n > 0 {
             let tmpl0: *RecType = ensure_template(rsym2.decl, m);
             g_tenv = tmpl0.env_tenv;
@@ -4834,7 +4878,10 @@ fn check_all(m: *Module) -> i32 {
         ret0 = resolve_type_in_module(m, decl.ret);
         g_tenv = saved_env1;
       } else if len(decl.recv) > 0 {
-        let rsym3: *Sym = sm_get(m.syms, decl.recv);
+        let mut rsym3: *Sym = sm_get(m.syms, decl.recv);
+        if rsym3 == null && prelude_module != null && prelude_module != m {
+          rsym3 = sm_get(prelude_module.syms, decl.recv);
+        }
         if rsym3 != null && rsym3.decl.tparams.n > 0 {
           let tmpl1: *RecType = ensure_template(rsym3.decl, m);
           g_tenv = tmpl1.env_tenv;
