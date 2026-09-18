@@ -2278,11 +2278,6 @@ fn main() -> i32 {
   let prelude_r: Result[string, string] = read_file(prelude_path);
   if !prelude_r.is_err() {
     let pparse: *Decl = parse_file("<prelude>", prelude_r.get_ok());
-    eprint("[prelude decls=");
-    eprint(itoa(pparse.decls.n as i64));
-    eprint(" parse-diags=");
-    eprint(itoa(diag_count() as i64));
-    eprint("]\n");
     let pmod: *Module = new Module {
       path: "<prelude>", ns: "", root: pparse,
       syms: sm_new(), is_prelude: true, checked: false,
@@ -2310,14 +2305,8 @@ fn main() -> i32 {
       ui += 1;
     }
   }
-  eprint("[prelude diags=");
-  eprint(itoa(diag_count() as i64));
-  eprint("]\n");
   let diags_before: i32 = diag_count();
   let nd: i32 = check_all(m);
-  eprint("[user diags=");
-  eprint(itoa((nd - diags_before) as i64));
-  eprint("]\n");
   if nd > diags_before {
     print_diags();
     return 1;
@@ -2469,13 +2458,6 @@ fn ty_array(elem: *Type, len: u64) -> *Type {
 }
 
 fn ty_fn(params: []*Type, ret: *Type) -> *Type {
-  eprint("[tyfn ret=");
-  if ret == null {
-    eprint("NULL");
-  } else {
-    eprint(ret.mangled);
-  }
-  eprint("]\n");
   let mut key: string = "fn(";
   let mut i: usize = 0;
   while i < len(params) {
@@ -3057,17 +3039,6 @@ fn named_type_full(sym: *Sym, owner: *Module, ta: *TypeAst) -> *Type {
   let d: *Decl = sym.decl;
   let nparams: usize = d.tparams.n;
   let ntargs: usize = ta.targs.n;
-  eprint("[ntf ");
-  eprint(d.name);
-  eprint(" ntargs=");
-  eprint(itoa(ntargs as i64));
-  eprint(" tenv=");
-  if g_tenv == null {
-    eprint("null");
-  } else {
-    eprint("set");
-  }
-  eprint("\n");
   if nparams == 0 && ntargs == 0 {
     return named_type_simple(sym, owner);
   }
@@ -3080,31 +3051,6 @@ fn named_type_full(sym: *Sym, owner: *Module, ta: *TypeAst) -> *Type {
         tv = tm_get(g_tenv, d.tparams.items[i]);
       }
       if tv == null || tv.kind == TypeKind.TyErr {
-        eprint("[nta ");
-        eprint(d.name);
-        eprint(" tenv=");
-        if g_tenv == null {
-          eprint("null");
-        } else {
-          eprint("set");
-        }
-        eprint("]\n");
-        eprint("[NTF-ERR name=");
-        eprint(d.name);
-        eprint(" gtenv=null fn=");
-        if cur_fn_sym != null { eprint(cur_fn_sym.name); } else { eprint("?"); }
-        eprint(" ta-path=");
-        if ta != null && ta.path != null {
-          let mut pi2: usize = 0;
-          while pi2 < ta.path.n {
-            eprint(ta.path.items[pi2]);
-            eprint("/");
-            pi2 += 1;
-          }
-        } else {
-          eprint("null-ta");
-        }
-        eprint("\n");
         err_at("", 0, 0, cat("generic type `", cat(d.name, "` needs type arguments")));
         return ty_err();
       }
@@ -3328,13 +3274,6 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
       ok = true;
     }
     if !ok {
-      eprint("[CASTFAIL line=");
-      eprint(itoa(e.line as i64));
-      eprint(" srck=");
-      eprint(itoa(srct.kind as i64));
-      eprint(" tgtk=");
-      eprint(itoa(target.kind as i64));
-      eprint("\n");
       err_at("", 0, 0, "cannot cast to the requested type");
     }
     e.typed = target;
@@ -3563,9 +3502,6 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
   if e.kind == ExprKind.ExMatch {
     return check_match(e, expected);
   }
-  eprint("[unhandled expr kind=");
-  eprint(itoa(e.kind as i64));
-  eprint("]\n");
   err_at("", 0, 0, "internal: expression kind not yet checked");
   e.typed = ty_err();
   return e.typed;
@@ -3671,13 +3607,6 @@ fn check_field_access(e: *Expr, expected: *Type) -> *Type {
     let deref: *Type = base.elem;
     if deref.kind == TypeKind.TyStruct {
       let rec: *RecType = deref.rec;
-      eprint("[FA-REC m=");
-      eprint(rec.mangled);
-      eprint(" field=");
-      eprint(e.sv);
-      eprint(" done=");
-      if rec.fields_done { eprint("y"); } else { eprint("n"); }
-      eprint("\n");
       let d: *Decl = rec.decl;
       let mut i: usize = 0;
       while i < d.fields.n {
@@ -3756,11 +3685,6 @@ fn check_field_access(e: *Expr, expected: *Type) -> *Type {
 }
 
 fn check_new(e: *Expr) -> *Type {
-  eprint("[new enter items=");
-  eprint(itoa(e.items.n as i64));
-  eprint(" args=");
-  eprint(itoa(e.args.n as i64));
-  eprint("\n");
   let t: *Type = resolve_type_in_module(cur_module, e.ty);
   if t.kind != TypeKind.TyStruct {
     err_at("", 0, 0, "`new` takes a struct type");
@@ -3769,39 +3693,22 @@ fn check_new(e: *Expr) -> *Type {
   }
   let rec: *RecType = t.rec;
   let d: *Decl = rec.decl;
-  eprint("[new fields=");
-  eprint(itoa(d.fields.n as i64));
-  eprint("\n");
   struct_field_type(rec, if d.fields.n > 0 { d.fields.n - 1 } else { 0 });
   if e.items.n != d.fields.n {
     err_at("", 0, 0, "struct initializer count mismatch");
   }
   let mut i: usize = 0;
   while i < e.items.n {
-    eprint("[new field i=");
-    eprint(itoa(i as i64));
-    eprint("\n");
     let entry: *Stmt = e.items.items[i];
     let fname: string = entry.name;
     let argi: *Expr = e.args.items[i];
-    eprint("[fa=");
-    eprint(fname);
-    eprint("]\n");
     let mut found: bool = false;
     let mut j: usize = 0;
     while j < d.fields.n {
       let df: *FieldAst = d.fields.items[j];
-      eprint("[df=");
-      eprint(df.name);
-      eprint("]\n");
       if streq(df.name, fname) {
-        eprint("[match j=");
-        eprint(itoa(j as i64));
-        eprint("\n");
         let ft: *Type = struct_field_type(rec, j);
-        eprint("[sft done\n");
         let got: *Type = check_expr(argi, ft);
-        eprint("[init checked\n");
         if got != ft && got.kind != TypeKind.TyIntLit && got.kind != TypeKind.TyFloatLit &&
            got.kind != TypeKind.TyErr && ft.kind != TypeKind.TyErr &&
            got.kind != TypeKind.TyParam && ft.kind != TypeKind.TyParam &&
@@ -3894,11 +3801,6 @@ fn check_match(e: *Expr, expected: *Type) -> *Type {
           if arm.pk != PatKind.PatUnit && nbinds != nfields {
             err_at("", 0, 0, "pattern binds the wrong number of values");
           } else if arm.pk == PatKind.PatTuple {
-            eprint("[tuple bind nbinds=");
-            eprint(itoa(nbinds as i64));
-            eprint(" nfields=");
-            eprint(itoa(nfields as i64));
-            eprint("]\n");
             let mut b: usize = 0;
             while b < nbinds && b < nfields {
               let nm: string = arm.pat_names.items[b];
@@ -3911,11 +3813,6 @@ fn check_match(e: *Expr, expected: *Type) -> *Type {
     owner: cur_module,
     module: null,
                 };
-                eprint("[bind ");
-                eprint(nm);
-                eprint(" t=");
-                eprint(bs.type.mangled);
-                eprint("\n");
                 next_local_id += 1;
                 arm.bind_syms = push_sym(arm.bind_syms, bs);
                 arm.bind_fidx = push_i64(arm.bind_fidx, b as i64);
@@ -3998,13 +3895,6 @@ fn check_match(e: *Expr, expected: *Type) -> *Type {
       bi += 1;
     }
     let arm_t: *Type = check_expr(arm.body, expected);
-    eprint("[arm t=");
-    if arm_t == null {
-      eprint("null");
-    } else {
-      eprint(arm_t.mangled);
-    }
-    eprint("\n");
     if result == null {
       result = arm_t;
     } else if arm_t != result && arm_t.kind != TypeKind.TyErr && result.kind != TypeKind.TyErr &&
@@ -4078,9 +3968,6 @@ fn resolve_callee(callee: *Expr) -> *CallTarget {
       sym = sm_get(cur_module.syms, callee.sv);
     }
     if sym == null {
-      eprint("[UNKFN name=");
-      eprint(callee.sv);
-      eprint(" fn=");
       if cur_fn_sym != null { eprint(cur_fn_sym.name); }
       eprint("\n");
       err_at("", 0, 0, cat("unknown function `", cat(callee.sv, "`")));
@@ -4171,16 +4058,6 @@ fn resolve_callee(callee: *Expr) -> *CallTarget {
     if rec_t != null {
       let rec: *RecType = rec_t.rec;
       let mut i: usize = 0;
-      eprint("[meths of ");
-      eprint(rec.mangled);
-      eprint(":");
-      let mut mi: usize = 0;
-      while mi < len(rec.methods) {
-        eprint(rec.methods[mi].name);
-        eprint(",");
-        mi += 1;
-      }
-      eprint("]\n");
       while i < len(rec.methods) {
         let m: *Sym = rec.methods[i];
         if streq(m.name, callee.sv) {
@@ -4194,51 +4071,8 @@ fn resolve_callee(callee: *Expr) -> *CallTarget {
         }
         i += 1;
       }
-      eprint("[tmplchk rec=");
-      eprint(rec.mangled);
-      eprint(" istpl=");
-      if rec.is_template {
-        eprint("y");
-      } else {
-        eprint("n");
-      }
-      eprint(" decltpl=");
-      if rec.decl.templ != null {
-        eprint("y");
-      } else {
-        eprint("n");
-      }
-      eprint("]\n");
-      eprint("[FB rec=");
-      eprint(rec.mangled);
-      eprint(" istpl=");
-      if rec.is_template { eprint("y"); } else { eprint("n"); }
-      eprint(" templ=");
-      if rec.decl.templ != null { eprint(rec.decl.templ.mangled); } else { eprint("null"); }
-      eprint(" meths=");
-      if rec.decl.templ != null {
-        eprint(itoa(len(rec.decl.templ.methods) as i64));
-        eprint(":");
-        let mut qi: usize = 0;
-        while qi < len(rec.decl.templ.methods) {
-          eprint(rec.decl.templ.methods[qi].name);
-          eprint(",");
-          qi += 1;
-        }
-      } else { eprint("-"); }
-      eprint(" want=");
-      eprint(callee.sv);
-      eprint("\n");
       if !rec.is_template && rec.decl.templ != null {
         let tmpl: *RecType = rec.decl.templ;
-        eprint("[tmpl meths: ");
-        let mut ti: usize = 0;
-        while ti < len(tmpl.methods) {
-          eprint(tmpl.methods[ti].name);
-          eprint(",");
-          ti += 1;
-        }
-        eprint("]\n");
         let mut j: usize = 0;
         while j < len(tmpl.methods) {
           let m: *Sym = tmpl.methods[j];
@@ -4255,14 +4089,9 @@ fn resolve_callee(callee: *Expr) -> *CallTarget {
           j += 1;
         }
       }
-    }
-    eprint("[NOMETH fn=");
-      if cur_fn_sym != null { eprint(cur_fn_sym.name); }
-      eprint(" recv=");
-      if callee.a.typed != null { eprint(callee.a.typed.mangled); } else { eprint("null"); }
-      eprint("\n");
       err_at("", 0, 0, "no such method for this receiver");
-    return ct;
+      return ct;
+    }
   }
   let t: *Type = check_expr(callee, null);
   if t.kind == TypeKind.TyFn {
@@ -4278,15 +4107,6 @@ fn resolve_callee(callee: *Expr) -> *CallTarget {
 // ============== check_call: builtins (check.c port L6d-2) =================
 
 fn check_call(e: *Expr, expected: *Type) -> *Type {
-  eprint("[call kind=");
-  eprint(itoa(e.a.kind as i64));
-  eprint(" name=");
-  if e.a.kind == ExprKind.ExName {
-    eprint(e.a.sv);
-  } else if e.a.kind == ExprKind.ExField {
-    eprint(e.a.sv);
-  }
-  eprint("]\n");
   // make(T, n)
   if e.a.kind == ExprKind.ExName && streq(e.a.sv, "make") {
     if e.args.n != 2 {
@@ -4610,6 +4430,15 @@ fn check_call(e: *Expr, expected: *Type) -> *Type {
     i += 1;
   }
   e.typed = ft.ret;
+  // never coercion: panic never returns, so a call to it is compatible with
+  // any expected type (match arms like `Result.Err(_) => panic("...")`)
+  if expected != null && expected.kind != TypeKind.TyErr &&
+     expected.kind != TypeKind.TyVoid && ft.ret != null &&
+     ft.ret.kind == TypeKind.TyVoid && ct.sym != null && ct.sym.owner != null &&
+     streq(ct.sym.name, "panic") &&
+     (ct.sym.owner == prelude_module || ct.sym.owner.is_prelude) {
+    e.typed = expected;
+  }
   return e.typed;
 }
 
@@ -4643,13 +4472,6 @@ fn lvalue_mutable(e: *Expr) -> bool {
     }
     if sym.kind == SymKind.SyLocal || sym.kind == SymKind.SyParam ||
        sym.kind == SymKind.SyStatic {
-      eprint("[IMMUTCHK name=");
-      eprint(sym.name);
-      eprint(" mut=");
-      if sym.mutable { eprint("y"); } else { eprint("n"); }
-      eprint(" kind=");
-      eprint(itoa(sym.kind as i64));
-      eprint("\n");
       return sym.mutable;
     }
     return false;
@@ -4687,9 +4509,6 @@ fn check_stmt(s: *Stmt) {
          t.kind != TypeKind.TyNull && t.kind != TypeKind.TyErr &&
          ann.kind != TypeKind.TyParam && t.kind != TypeKind.TyParam &&
          !type_has_param(ann) && !type_has_param(t) {
-        eprint("[letmis ");
-        eprint(s.name);
-        eprint("\n");
         err_at("", 0, 0, "initializer type mismatch");
       }
       t = ann;
@@ -4713,7 +4532,6 @@ fn check_stmt(s: *Stmt) {
     };
     next_local_id += 1;
     if lookup(s.name) != null {
-      eprint("[SHADOW fn=");
       if cur_fn_sym != null { eprint(cur_fn_sym.name); }
       eprint(" name=");
       eprint(s.name);
@@ -4731,23 +4549,9 @@ fn check_stmt(s: *Stmt) {
     if target != value && !(ty_is_int(target) && ty_is_int(value)) &&
        !(ty_is_flt(target) && ty_is_flt(value)) &&
        target.kind != TypeKind.TyErr && value.kind != TypeKind.TyErr {
-      eprint("[ASSIGNMIS fn=");
-      if cur_fn_sym != null { eprint(cur_fn_sym.name); }
-      eprint(" name=");
-      eprint(s.name);
-      eprint("\n");
       err_at("", 0, 0, "type mismatch in assignment");
     }
     if !lvalue_mutable(s.a) {
-      eprint("[IMMUT2 fn=");
-      if cur_fn_sym != null { eprint(cur_fn_sym.name); }
-      eprint(" name=");
-      eprint(s.name);
-      eprint(" ak=");
-      eprint(itoa(s.a.kind as i64));
-      eprint(" line=");
-      eprint(itoa(s.line as i64));
-      eprint("\n");
       err_at("", 0, 0, "cannot assign to an immutable binding (declare it `let mut`)");
     }
     return;
@@ -4834,11 +4638,6 @@ fn check_stmt(s: *Stmt) {
 }
 
 fn check_fn_body(d: *Decl, sym: *Sym, m: *Module) {
-  if d.tparams.n > 0 || d.templated {
-    eprint("[CHECKED-TEMPLATE ");
-    eprint(sym.name);
-    eprint("\n");
-  }
   if d.tparams.n > 0 {
     // generic template: check once under TY_PARAM placeholders
     g_tenv = template_env_of(d);
@@ -4923,15 +4722,6 @@ fn wire_method(m: *Module, d: *Decl) -> *Type {
     let mut rec_t: *Type = ps[0];
     if rec_t.kind == TypeKind.TyPtr {
       rec_t = rec_t.elem;
-    }
-    if streq(msym.name, "is_ok") || streq(msym.name, "get_ok") {
-      eprint("[WIRE ");
-      eprint(msym.name);
-      eprint(" rec=");
-      eprint(rec_t.mangled);
-      eprint(" istpl=");
-      if rec_t.rec != null && rec_t.rec.is_template { eprint("y"); } else { eprint("n"); }
-      eprint("\n");
     }
     if rec_t.rec != null {
       rec_t.rec.methods = push_sym(rec_t.rec.methods, msym);
@@ -5053,11 +4843,6 @@ fn check_all(m: *Module) -> i32 {
       }
     }
     if decl.kind == DeclKind.DkFn {
-      eprint("[p1 ");
-      eprint(decl.name);
-      eprint(" recv=");
-      eprint(decl.recv);
-      eprint("]\n");
       if len(decl.recv) > 0 {
         wire_method(m, decl);
       }
@@ -5180,9 +4965,6 @@ fn check_all(m: *Module) -> i32 {
   while i < d.decls.n {
     let decl: *Decl = d.decls.items[i];
     if decl.kind == DeclKind.DkFn {
-      eprint("[sig ");
-      eprint(decl.name);
-      eprint("]\n");
       // build the fn symbol's signature type on the fly (methods resolve
       // under the receiver type's template env)
       if len(decl.recv) > 0 {
@@ -5270,11 +5052,6 @@ fn check_all(m: *Module) -> i32 {
     let mut wl: usize = 0;
     while wl < g_instantiations.n {
       let isym: *Sym = g_instantiations.items[wl];
-      eprint("[WL ");
-      eprint(itoa(wl as i64));
-      eprint(" ");
-      eprint(isym.name);
-      eprint("\n");
       wl += 1;
       let saved_env: *TypeMap = g_tenv;
       g_tenv = isym.decl.tenv;
@@ -7371,15 +7148,6 @@ fn eq_walk(c: *LCtx, t: *Type, pa: *IRVreg, pb: *IRVreg, rs: *IRSlot) {
         let mut fi: usize = 0;
         while fi < nf {
           let ft: *Type = variant_field_type(t, vi as i32, fi as i32);
-          eprint("[EQF ");
-          eprint(t.mangled);
-          eprint(" v=");
-          eprint(itoa(vi as i64));
-          eprint(" f=");
-          eprint(itoa(fi as i64));
-          eprint(" t=");
-          if ft != null { eprint(ft.mangled); } else { eprint("null"); }
-          eprint("\n");
           let off: i64 = variant_field_offset(t, vi as i32, fi as i32);
           eq_field(c, ft, v_addi(c, pa, off), v_addi(c, pb, off), rs);
           fi += 1;
@@ -9138,9 +8906,9 @@ fn lower_fn(fn_sym: *Sym) -> *IRFn {
   }
   let ctx: *LCtx = rc_ctx(fn_);
   scope_push_l(ctx);
-
-  fn_.entry = new_block(ctx);
-  use_block(ctx, fn_.entry);
+  // rc_new_fn already created the entry block; lower_fn uses it directly
+  // (boot's lower_fn arena-allocs the IRFn and creates its own entry —
+  // same final shape: exactly one entry block, cur == entry)
 
   let mut i: usize = 0;
   while i < d.params.n {
@@ -10716,6 +10484,15 @@ fn vreg_type(fn_: *IRFn, id: i32) -> IRType {
       }
       k += 1;
     }
+    // boot-parity quirk: the C terminator ins parks the branch TARGET
+    // block pointer in `dst`, and its type read lands on the block's
+    // zeroed padding — a then/br target whose block id equals this vreg
+    // id therefore types the local IT_I8
+    if blk.term_op == 100 || blk.term_op == 101 {
+      if blk.br_true != null && blk.br_true.id == id {
+        return IRType.ItI8;
+      }
+    }
     b += 1;
   }
   return IRType.ItI32;
@@ -10844,9 +10621,6 @@ fn emit_wasm() -> []u8 {
   // function table (indices 0,1 are the wasi imports)
   let mut i: usize = 0;
   while i < g_ir_fns.n {
-    eprint("[fn ");
-    eprint(g_ir_fns.items[i].symbol);
-    eprint("]\n");
     let fn_: *IRFn = g_ir_fns.items[i];
     fn_.uid = i as i32;
     let wf: *WFn = new WFn {
@@ -10856,11 +10630,6 @@ fn emit_wasm() -> []u8 {
     fm_put(W.fn_by_symbol, fn_.symbol, wf);
     i += 1;
   }
-  eprint("[Wfns ");
-  eprint(itoa(len(W.fns) as i64));
-  eprint(" ir=");
-  eprint(itoa(g_ir_fns.n as i64));
-  eprint("]\n");
   w_layout_data();
 
   // address-taken functions need table entries: scan every instruction
@@ -10950,9 +10719,6 @@ fn emit_wasm() -> []u8 {
 
   // function section
   {
-    eprint("[funcsec fns=");
-    eprint(itoa(len(W.fns) as i64));
-    eprint("]\n");
     let body: *Vec[u8] = new Vec[u8] { items: make([]u8, 4096), n: 0 };
     buleb(body, (len(W.fns) + 1) as u64); // + _start
     let mut fi: usize = 0;
@@ -11557,13 +11323,6 @@ fn resolve_inst_signature(sym: *Sym) {
   }
   let ret: *Type = resolve_type_in_module(sym.owner, d.ret);
   sym.type = ty_fn(ps, ret);
-  eprint("[CLONESIG ");
-  eprint(sym.name);
-  eprint(" p0=");
-  if len(ps) > 0 && ps[0] != null { eprint(ps[0].mangled); } else { eprint("null"); }
-  eprint(" ret=");
-  if ret != null { eprint(ret.mangled); } else { eprint("null"); }
-  eprint("\n");
   g_tenv = saved_env;
   cur_module = saved_mod;
 }
@@ -11575,27 +11334,11 @@ fn instantiate_fn(gsym: *Sym, names: []string, env: *TypeMap) -> *Sym {
   let mut i: usize = 0;
   while i < len(names) {
     let targ: *Type = tm_get(env, names[i]);
-    eprint("[NOINFER-D name=");
-    eprint(names[i]);
-    eprint(" bound=");
-    if targ != null {
-      eprint(targ.mangled);
-      eprint(" kind=");
-      eprint(itoa(targ.kind as i64));
-    } else {
-      eprint("null");
-    }
-    eprint(" gtenv=");
-    if g_tenv != null { eprint("set"); } else { eprint("null"); }
-    eprint("\n");
     if i > 0 {
       mangled = cat3(mangled, ",", "");
     }
     if targ == null || targ.kind == TypeKind.TyParam {
-      eprint("[NOINFER fn=");
-  if cur_fn_sym != null { eprint(cur_fn_sym.name); }
-  eprint("\n");
-  err_at("", 0, 0, cat3("cannot infer `", cat3(names[i], "` for `", cat3(d.name, "`", "")), ""));
+      err_at("", 0, 0, cat3("cannot infer `", cat3(names[i], "` for `", cat3(d.name, "`", "")), ""));
       return gsym;
     }
     let mut targ2: *Type = targ;
