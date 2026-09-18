@@ -9,6 +9,7 @@ extern fn free(p: *u8);
 extern fn open(path: *u8, flags: i32, mode: i32) -> i32;
 extern fn read(fd: i32, buf: *u8, n: usize) -> isize;
 extern fn close(fd: i32) -> i32;
+extern fn write(fd: i32, buf: *u8, n: usize) -> isize;
 
 // rho's main takes no arguments; the bootstrap driver pulls argv from
 // libSystem (arm64-mac target; other hosts provide their own accessors)
@@ -4077,6 +4078,11 @@ fn resolve_callee(callee: *Expr) -> *CallTarget {
       sym = sm_get(cur_module.syms, callee.sv);
     }
     if sym == null {
+      eprint("[UNKFN name=");
+      eprint(callee.sv);
+      eprint(" fn=");
+      if cur_fn_sym != null { eprint(cur_fn_sym.name); }
+      eprint("\n");
       err_at("", 0, 0, cat("unknown function `", cat(callee.sv, "`")));
       return ct;
     }
@@ -4637,6 +4643,13 @@ fn lvalue_mutable(e: *Expr) -> bool {
     }
     if sym.kind == SymKind.SyLocal || sym.kind == SymKind.SyParam ||
        sym.kind == SymKind.SyStatic {
+      eprint("[IMMUTCHK name=");
+      eprint(sym.name);
+      eprint(" mut=");
+      if sym.mutable { eprint("y"); } else { eprint("n"); }
+      eprint(" kind=");
+      eprint(itoa(sym.kind as i64));
+      eprint("\n");
       return sym.mutable;
     }
     return false;
@@ -4718,9 +4731,23 @@ fn check_stmt(s: *Stmt) {
     if target != value && !(ty_is_int(target) && ty_is_int(value)) &&
        !(ty_is_flt(target) && ty_is_flt(value)) &&
        target.kind != TypeKind.TyErr && value.kind != TypeKind.TyErr {
+      eprint("[ASSIGNMIS fn=");
+      if cur_fn_sym != null { eprint(cur_fn_sym.name); }
+      eprint(" name=");
+      eprint(s.name);
+      eprint("\n");
       err_at("", 0, 0, "type mismatch in assignment");
     }
     if !lvalue_mutable(s.a) {
+      eprint("[IMMUT2 fn=");
+      if cur_fn_sym != null { eprint(cur_fn_sym.name); }
+      eprint(" name=");
+      eprint(s.name);
+      eprint(" ak=");
+      eprint(itoa(s.a.kind as i64));
+      eprint(" line=");
+      eprint(itoa(s.line as i64));
+      eprint("\n");
       err_at("", 0, 0, "cannot assign to an immutable binding (declare it `let mut`)");
     }
     return;
@@ -4807,6 +4834,11 @@ fn check_stmt(s: *Stmt) {
 }
 
 fn check_fn_body(d: *Decl, sym: *Sym, m: *Module) {
+  if d.tparams.n > 0 || d.templated {
+    eprint("[CHECKED-TEMPLATE ");
+    eprint(sym.name);
+    eprint("\n");
+  }
   if d.tparams.n > 0 {
     // generic template: check once under TY_PARAM placeholders
     g_tenv = template_env_of(d);
@@ -4834,7 +4866,7 @@ fn check_fn_body(d: *Decl, sym: *Sym, m: *Module) {
     };
     let ps: *Sym = new Sym {
       kind: SymKind.SyParam, name: p.name, type: pt, decl: null,
-      mutable: false, variant_index: 0, local_id: next_local_id, symbol: "",
+      mutable: true, variant_index: 0, local_id: next_local_id, symbol: "",
     owner: cur_module,
     module: null,
     };
@@ -4891,6 +4923,15 @@ fn wire_method(m: *Module, d: *Decl) -> *Type {
     let mut rec_t: *Type = ps[0];
     if rec_t.kind == TypeKind.TyPtr {
       rec_t = rec_t.elem;
+    }
+    if streq(msym.name, "is_ok") || streq(msym.name, "get_ok") {
+      eprint("[WIRE ");
+      eprint(msym.name);
+      eprint(" rec=");
+      eprint(rec_t.mangled);
+      eprint(" istpl=");
+      if rec_t.rec != null && rec_t.rec.is_template { eprint("y"); } else { eprint("n"); }
+      eprint("\n");
     }
     if rec_t.rec != null {
       rec_t.rec.methods = push_sym(rec_t.rec.methods, msym);
@@ -5183,7 +5224,10 @@ fn check_all(m: *Module) -> i32 {
     module: null,
       };
       cur_fn_sym = fsym;
-      check_fn_body(decl, fsym, m);
+      // generic templates are checked per instantiation, never directly
+      if !decl.templated {
+        check_fn_body(decl, fsym, m);
+      }
     }
     if decl.kind == DeclKind.DkExtern {
       // resolve the extern signature into its symbol
@@ -5226,6 +5270,11 @@ fn check_all(m: *Module) -> i32 {
     let mut wl: usize = 0;
     while wl < g_instantiations.n {
       let isym: *Sym = g_instantiations.items[wl];
+      eprint("[WL ");
+      eprint(itoa(wl as i64));
+      eprint(" ");
+      eprint(isym.name);
+      eprint("\n");
       wl += 1;
       let saved_env: *TypeMap = g_tenv;
       g_tenv = isym.decl.tenv;
@@ -11526,6 +11575,19 @@ fn instantiate_fn(gsym: *Sym, names: []string, env: *TypeMap) -> *Sym {
   let mut i: usize = 0;
   while i < len(names) {
     let targ: *Type = tm_get(env, names[i]);
+    eprint("[NOINFER-D name=");
+    eprint(names[i]);
+    eprint(" bound=");
+    if targ != null {
+      eprint(targ.mangled);
+      eprint(" kind=");
+      eprint(itoa(targ.kind as i64));
+    } else {
+      eprint("null");
+    }
+    eprint(" gtenv=");
+    if g_tenv != null { eprint("set"); } else { eprint("null"); }
+    eprint("\n");
     if i > 0 {
       mangled = cat3(mangled, ",", "");
     }
