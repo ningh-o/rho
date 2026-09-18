@@ -624,58 +624,150 @@ fn lex_error(lx: *Lexer, msg: string) {
   err_at(lx.file, lx.t.line2, lx.t.col2, msg);
 }
 
-fn pow10(e: i32) -> f64 {
-  let mut r: f64 = 1.0;
-  let mut i: i32 = 0;
-  while i < e {
-    r *= 10.0;
-    i += 1;
-  }
-  return r;
-}
-
-// hand-rolled decimal float parse (no libc here): digits[.digits][e[+-]exp]
+// exact decimal float parse (strtod semantics, no libc here):
+// digits[.digits][e[+-]exp]. The digit string becomes a big-int N and the
+// scale a power of ten M; binary long division extracts the mantissa bits
+// and rounds half-even on the exact remainder — correctly rounded for every
+// literal, including subnormals, where naive `v *= 10^e` loops overflow or
+// drift. Digits past the 40th are dropped: that shifts the value by less
+// than 1e-40 relative, far below any rounding decision a double can make.
 fn parse_float(s: string) -> f64 {
-  let mut v: f64 = 0.0;
+  let d: *Big = big_new(); // significant digits
+  let mut sig: usize = 0;
+  let mut e10: i64 = 0;
   let mut i: usize = 0;
-  while i < len(s) && s[i] != 46 && s[i] != 101 && s[i] != 69 {
-    v = v * 10.0 + (s[i] - 48) as f64;
+  let mut seen: bool = false;
+  while i < len(s) && s[i] >= 48 && s[i] <= 57 {
+    seen = true;
+    if sig < 40 {
+      big_mul_u32(d, 10);
+      big_add_u32(d, (s[i] - 48) as u32);
+      sig += 1;
+    } else {
+      // integer digits beyond the cap: pure magnitude, keep the exponent
+      e10 += 1;
+    }
     i += 1;
   }
-  let mut frac: f64 = 0.0;
   if i < len(s) && s[i] == 46 {
-    // skip '.'
     i += 1;
-    let mut scale: f64 = 0.1;
-    while i < len(s) && s[i] != 101 && s[i] != 69 {
-      frac += (s[i] - 48) as f64 * scale;
-      scale *= 0.1;
+    while i < len(s) && s[i] >= 48 && s[i] <= 57 {
+      seen = true;
+      if sig < 40 {
+        big_mul_u32(d, 10);
+        big_add_u32(d, (s[i] - 48) as u32);
+        sig += 1;
+        e10 -= 1;
+      }
       i += 1;
     }
   }
-  v += frac;
   if i < len(s) && (s[i] == 101 || s[i] == 69) {
     i += 1;
-    let mut neg: bool = false;
+    let mut eneg: bool = false;
     if i < len(s) && (s[i] == 43 || s[i] == 45) {
-      neg = s[i] == 45;
+      eneg = s[i] == 45;
       i += 1;
     }
-    let mut e: i32 = 0;
-    while i < len(s) {
-      e = e * 10 + (s[i] - 48) as i32;
+    let mut ev: i64 = 0;
+    while i < len(s) && s[i] >= 48 && s[i] <= 57 {
+      ev = ev * 10 + (s[i] - 48) as i64;
       i += 1;
     }
-    if neg {
-      e = 0 - e;
-    }
-    if e >= 0 {
-      v *= pow10(e);
+    if eneg {
+      e10 -= ev;
     } else {
-      v /= pow10(0 - e);
+      e10 += ev;
     }
   }
-  return v;
+  if !seen || (d.n == 1 && d.w[0] == 0) {
+    return 0.0;
+  }
+  let dl: i64 = (d.n as i64 - 1) * 9 + u32_digits(d.w[d.n - 1]);
+  let approx: i64 = dl - 1 + e10;
+  if approx > 309 {
+    // beyond the max double; x10 overflows to inf without a literal trap
+    let mut big: f64 = 1e308;
+    big = big * 10.0;
+    return big;
+  }
+  if approx < 0 - 331 {
+    return 0.0;
+  }
+  // value = N / M, both exact big-ints (big_new is the zero value; seed
+  // M with 1 so the 10^k scaling below has something to scale)
+  let n2: *Big = big_clone(d);
+  let m2: *Big = big_new();
+  big_add_u32(m2, 1);
+  if e10 >= 0 {
+    let mut k: i64 = e10;
+    while k >= 9 {
+      big_mul_u32(n2, 1000000000);
+      k -= 9;
+    }
+    if k > 0 {
+      big_mul_u32(n2, p10_u64(k as usize) as u32);
+    }
+  } else {
+    let mut k: i64 = 0 - e10;
+    while k >= 9 {
+      big_mul_u32(m2, 1000000000);
+      k -= 9;
+    }
+    if k > 0 {
+      big_mul_u32(m2, p10_u64(k as usize) as u32);
+    }
+  }
+  // normalize the fraction n2/m2 into (1/2, 1): scale N up until N >= M,
+  // then M up until M > N — sN and cc track the exact power-of-two drift
+  let mut sN: i64 = 0;
+  while big_cmp(n2, m2) < 0 {
+    big_mul_u32(n2, 2);
+    sN += 1;
+  }
+  let mut cc: i64 = 0;
+  while big_cmp(n2, m2) >= 0 {
+    big_mul_u32(m2, 2);
+    cc += 1;
+  }
+  // value = fraction * 2^e2v with fraction in (1/2, 1)
+  let mut e2v: i64 = cc - sN;
+  let mut q: u64 = 0;
+  if e2v >= 0 - 1021 {
+    // normal: extract 53 mantissa bits, round half-even on the remainder
+    q = big_div_bits(n2, m2, 53);
+    if q >= 9007199254740992 {
+      // carry re-normalizes: 2^53 -> 2^52 one exponent step higher
+      q = 4503599627370496;
+      e2v += 1;
+    }
+    let mut result: f64 = q as i64 as f64;
+    // value = fraction * 2^e2v and q = fraction * 2^53
+    let mut t: i64 = e2v - 53;
+    while t > 0 {
+      result = result * 2.0;
+      t -= 1;
+    }
+    while t < 0 {
+      result = result / 2.0;
+      t += 1;
+    }
+    return result;
+  }
+  // subnormal: m = round(value * 2^1074), one exact power-of-two scale.
+  // e2v <= -1022 keeps k <= 52, so the quotient cannot overflow.
+  let mut k: i64 = e2v + 1074;
+  if k < 1 {
+    k = 1;
+  }
+  q = big_div_bits(n2, m2, k);
+  let mut result: f64 = q as i64 as f64;
+  let mut t: i64 = 1074;
+  while t > 0 {
+    result = result / 2.0;
+    t -= 1;
+  }
+  return result;
 }
 
 // scan a string literal (the opening quote is at lx.t.pos)
@@ -2222,6 +2314,7 @@ fn diag_count() -> i32 {
 fn usage() -> i32 {
   eprint("usage: rho build <file> [-o out] [--target t]\n");
   eprint("       rho check <file>\n");
+  eprint("       rho fmt [-w] <file>\n");
   return 2;
 }
 
@@ -2231,6 +2324,49 @@ fn main() -> i32 {
     return usage();
   }
   let cmd: string = args[1];
+  if streq(cmd, "fmt") {
+    // rho fmt [-w] <file>: parse + canonical print; no check, no prelude
+    let mut inplace: bool = false;
+    let mut file: string = "";
+    let mut fi: usize = 2;
+    while fi < len(args) {
+      if streq(args[fi], "-w") {
+        inplace = true;
+      } else {
+        file = args[fi];
+      }
+      fi += 1;
+    }
+    if streq(file, "") {
+      return usage();
+    }
+    let r: Result[string, string] = read_file(file);
+    if r.is_err() {
+      eprint(cat3("rho: ", r.get_err(), "\n"));
+      return 2;
+    }
+    let toks: *Vec[*Token] = fresh_token_vec();
+    lex_file(file, r.get_ok(), toks);
+    if diag_count() > 0 {
+      print_diags();
+      return 1;
+    }
+    let root: *Decl = parse_file(file, r.get_ok());
+    if diag_count() > 0 {
+      print_diags();
+      return 1;
+    }
+    let out: string = fmt_module(root);
+    if inplace {
+      if !write_file(file, out) {
+        eprint(cat3("rho: cannot write ", file, "\n"));
+        return 2;
+      }
+    } else {
+      print(out);
+    }
+    return 0;
+  }
   if !streq(cmd, "build") && !streq(cmd, "check") {
     return usage();
   }
@@ -2320,6 +2456,11 @@ fn main() -> i32 {
   if nd > diags_before {
     print_diags();
     return 1;
+  }
+  if streq(cmd, "check") {
+    // check stops here: parse + typecheck ok (boot prints "ok <file>")
+    print(cat4("ok ", path, "\n", ""));
+    return 0;
   }
   g_root_module = m;
   lower_program();
@@ -13014,6 +13155,1183 @@ fn instantiate_fn(gsym: *Sym, names: []string, env: *TypeMap) -> *Sym {
   g_instantiations.push(sym);
   g_instantiation_depth -= 1;
   return sym;
+}
+
+
+// ---------------------------------------------------------------- fmt -----
+//
+// Canonical formatter (port of boot's fmt.c): one style, no configuration.
+// `fmt` output is idempotent and reparses to the same AST — both pinned by
+// the fmt battery (boot fmt file == stage0 fmt file == stage1 fmt file).
+
+static mut g_sb: *Vec[u8] = 0 as *Vec[u8];
+static mut f_indent: i32 = 0;
+
+fn sb_c(c: u8) {
+  g_sb.push(c);
+}
+fn sb_s(s: string) {
+  let mut i: usize = 0;
+  while i < len(s) {
+    g_sb.push(s[i]);
+    i += 1;
+  }
+}
+// newline + the current indent (two spaces per level)
+fn f_line() {
+  sb_c(10);
+  let mut i: i32 = 0;
+  while i < f_indent {
+    sb_s("  ");
+    i += 1;
+  }
+}
+
+// operator spelling for bin/un/assign ops (boot: tok_spell)
+fn spell_op(t: Tok) -> string {
+  if t == Tok.PPlus { return "+"; }
+  if t == Tok.PPluseq { return "+="; }
+  if t == Tok.PMinus { return "-"; }
+  if t == Tok.PMinuseq { return "-="; }
+  if t == Tok.PStar { return "*"; }
+  if t == Tok.PStareq { return "*="; }
+  if t == Tok.PSlash { return "/"; }
+  if t == Tok.PSlasheq { return "/="; }
+  if t == Tok.PPercent { return "%"; }
+  if t == Tok.PPercenteq { return "%="; }
+  if t == Tok.PBang { return "!"; }
+  if t == Tok.PTilde { return "~"; }
+  if t == Tok.PAmp { return "&"; }
+  if t == Tok.PAmpeq { return "&="; }
+  if t == Tok.PPipe { return "|"; }
+  if t == Tok.PPipeeq { return "|="; }
+  if t == Tok.PCaret { return "^"; }
+  if t == Tok.PCareteq { return "^="; }
+  if t == Tok.PShl { return "<<"; }
+  if t == Tok.PShleq { return "<<="; }
+  if t == Tok.PShr { return ">>"; }
+  if t == Tok.PShreq { return ">>="; }
+  if t == Tok.PAndand { return "&&"; }
+  if t == Tok.POror { return "||"; }
+  if t == Tok.PEq { return "=="; }
+  if t == Tok.PNe { return "!="; }
+  if t == Tok.PLt { return "<"; }
+  if t == Tok.PGt { return ">"; }
+  if t == Tok.PLe { return "<="; }
+  if t == Tok.PGe { return ">="; }
+  if t == Tok.PAssign { return "="; }
+  return tok_name(t);
+}
+
+fn f_strlit(s: string) {
+  sb_c(34); // "
+  let mut i: usize = 0;
+  while i < len(s) {
+    let c: u8 = s[i];
+    if c == 10 {
+      sb_s("\\n");
+    } else if c == 9 {
+      sb_s("\\t");
+    } else if c == 13 {
+      sb_s("\\r");
+    } else if c == 92 {
+      sb_s("\\\\");
+    } else if c == 34 {
+      sb_s("\\\"");
+    } else if c == 0 {
+      sb_s("\\0");
+    } else if c < 32 {
+      // \x%02x, lowercase hex
+      sb_s("\\x");
+      let hi: u8 = c >> 4;
+      let lo: u8 = c & 15;
+      if hi < 10 { sb_c(48 + hi); } else { sb_c(87 + hi); }
+      if lo < 10 { sb_c(48 + lo); } else { sb_c(87 + lo); }
+    } else {
+      sb_c(c);
+    }
+    i += 1;
+  }
+  sb_c(34);
+}
+
+fn f_type(t: *TypeAst) {
+  if t == null {
+    return;
+  }
+  if t.kind == TypeAstKind.TaPrim {
+    sb_s(prim_name(t.prim));
+    return;
+  }
+  if t.kind == TypeAstKind.TaArray {
+    if t.size != null {
+      sb_c(91); // [
+      f_expr(t.size);
+      sb_c(93); // ]
+    } else {
+      sb_s("[]");
+    }
+    f_type(t.elem);
+    return;
+  }
+  if t.kind == TypeAstKind.TaPtr {
+    sb_c(42); // *
+    f_type(t.elem);
+    return;
+  }
+  if t.kind == TypeAstKind.TaWeak {
+    sb_s("weak[");
+    f_type(t.elem);
+    sb_c(93);
+    return;
+  }
+  if t.kind == TypeAstKind.TaNamed {
+    let mut i: usize = 0;
+    while i < t.path.n {
+      if i > 0 {
+        sb_c(46); // .
+      }
+      sb_s(t.path.items[i]);
+      i += 1;
+    }
+    if t.targs.n > 0 {
+      sb_c(91);
+      let mut j: usize = 0;
+      while j < t.targs.n {
+        if j > 0 {
+          sb_s(", ");
+        }
+        f_type(t.targs.items[j]);
+        j += 1;
+      }
+      sb_c(93);
+    }
+    return;
+  }
+  // TaFn
+  sb_s("fn(");
+  let mut i: usize = 0;
+  while i < t.params.n {
+    if i > 0 {
+      sb_s(", ");
+    }
+    f_type(t.params.items[i]);
+    i += 1;
+  }
+  sb_c(41); // )
+  if t.ret != null {
+    sb_s(" -> ");
+    f_type(t.ret);
+  }
+}
+
+// expressions print without precedence machinery: binary/unary ops always
+// get parens (boot relies on the same shape — its parent_bp is dead too)
+fn f_expr(e: *Expr) {
+  if e.kind == ExprKind.ExInt {
+    sb_s(utoa(e.iv));
+    return;
+  }
+  if e.kind == ExprKind.ExFloat {
+    fmt_float(e.fv);
+    return;
+  }
+  if e.kind == ExprKind.ExStr {
+    f_strlit(e.sv);
+    return;
+  }
+  if e.kind == ExprKind.ExBool {
+    if e.bv { sb_s("true"); } else { sb_s("false"); }
+    return;
+  }
+  if e.kind == ExprKind.ExNull {
+    sb_s("null");
+    return;
+  }
+  if e.kind == ExprKind.ExName {
+    sb_s(e.sv);
+    return;
+  }
+  if e.kind == ExprKind.ExType {
+    f_type(e.ty);
+    return;
+  }
+  if e.kind == ExprKind.ExBin {
+    sb_c(40); // (
+    f_expr(e.a);
+    sb_c(32);
+    sb_s(spell_op(e.binop));
+    sb_c(32);
+    f_expr(e.b);
+    sb_c(41); // )
+    return;
+  }
+  if e.kind == ExprKind.ExUn {
+    sb_c(40);
+    sb_s(spell_op(e.unop));
+    f_expr(e.a);
+    sb_c(41);
+    return;
+  }
+  if e.kind == ExprKind.ExCall {
+    f_expr(e.a);
+    sb_c(40);
+    let mut i: usize = 0;
+    while i < e.args.n {
+      if i > 0 {
+        sb_s(", ");
+      }
+      if e.arg_names != null && i < e.arg_names.n && e.arg_names.items[i] != "" {
+        sb_s(e.arg_names.items[i]);
+        sb_s(": ");
+      }
+      f_expr(e.args.items[i]);
+      i += 1;
+    }
+    sb_c(41);
+    return;
+  }
+  if e.kind == ExprKind.ExIndex {
+    f_expr(e.a);
+    sb_c(91);
+    f_expr(e.b);
+    sb_c(93);
+    return;
+  }
+  if e.kind == ExprKind.ExSlice {
+    f_expr(e.a);
+    sb_c(91);
+    f_expr(e.b);
+    sb_s("..");
+    f_expr(e.c);
+    sb_c(93);
+    return;
+  }
+  if e.kind == ExprKind.ExField {
+    f_expr(e.a);
+    sb_c(46);
+    sb_s(e.sv);
+    return;
+  }
+  if e.kind == ExprKind.ExCast {
+    f_expr(e.a);
+    sb_s(" as ");
+    f_type(e.ty);
+    return;
+  }
+  if e.kind == ExprKind.ExNew {
+    sb_s("new ");
+    f_type(e.ty);
+    sb_s(" { ");
+    let mut i: usize = 0;
+    while i < e.args.n {
+      if i > 0 {
+        sb_s(", ");
+      }
+      sb_s(e.items.items[i].name);
+      sb_s(": ");
+      f_expr(e.args.items[i]);
+      i += 1;
+    }
+    sb_s(" }");
+    return;
+  }
+  if e.kind == ExprKind.ExMake {
+    sb_s("make(");
+    f_type(e.ty);
+    sb_s(", ");
+    f_expr(e.c);
+    sb_c(41);
+    return;
+  }
+  if e.kind == ExprKind.ExClosure {
+    sb_s("fn(");
+    let mut i: usize = 0;
+    while i < e.params.n {
+      if i > 0 {
+        sb_s(", ");
+      }
+      sb_s(e.params.items[i].name);
+      sb_s(": ");
+      f_type(e.params.items[i].ty);
+      i += 1;
+    }
+    sb_c(41);
+    if e.ret != null {
+      sb_s(" -> ");
+      f_type(e.ret);
+    }
+    sb_s(" {");
+    f_indent += 1;
+    f_stmts(e.items);
+    f_indent -= 1;
+    f_line();
+    sb_c(125); // }
+    return;
+  }
+  if e.kind == ExprKind.ExMatch {
+    f_match_full(e);
+    return;
+  }
+  if e.kind == ExprKind.ExQmark {
+    f_expr(e.a);
+    sb_c(63); // ?
+    return;
+  }
+  if e.kind == ExprKind.ExIf {
+    f_if_full(e);
+    return;
+  }
+  // ExEnumCtor / ExMethod / ExBlock: post-parse placeholders, same as boot
+  sb_s("...");
+}
+
+// full expression printing — if/match get real block bodies
+fn f_expr_full(e: *Expr) {
+  if e.kind == ExprKind.ExIf {
+    f_if_full(e);
+    return;
+  }
+  if e.kind == ExprKind.ExMatch {
+    f_match_full(e);
+    return;
+  }
+  f_expr(e);
+}
+
+fn f_if_full(e: *Expr) {
+  sb_s("if ");
+  f_expr_full(e.a);
+  sb_s(" {");
+  f_indent += 1;
+  f_stmts(e.items.items[0].stmts);
+  f_indent -= 1;
+  f_line();
+  if e.else_if != null {
+    sb_s("} else ");
+    f_if_full(e.else_if);
+    return;
+  }
+  if e.items.n > 1 {
+    sb_s("} else ");
+    sb_c(123); // {
+    f_indent += 1;
+    f_stmts(e.items.items[1].stmts);
+    f_indent -= 1;
+    f_line();
+  }
+  sb_c(125); // }
+}
+
+fn f_pat_path(arm: *MatchArm) {
+  let mut j: usize = 0;
+  while j < arm.pat_path.n {
+    if j > 0 {
+      sb_c(46); // .
+    }
+    sb_s(arm.pat_path.items[j]);
+    j += 1;
+  }
+}
+
+fn f_match_full(e: *Expr) {
+  sb_s("match ");
+  f_expr_full(e.a);
+  sb_s(" {");
+  f_indent += 1;
+  let mut i: usize = 0;
+  while i < e.arms.n {
+    let arm: *MatchArm = e.arms.items[i];
+    f_line();
+    if arm.pk == PatKind.PatWildcard {
+      sb_s("_");
+    } else if arm.pk == PatKind.PatInt {
+      sb_s(utoa(arm.pat_int));
+    } else if arm.pk == PatKind.PatStr {
+      f_strlit(arm.pat_str);
+    } else if arm.pk == PatKind.PatTuple {
+      f_pat_path(arm);
+      sb_c(40);
+      let mut j: usize = 0;
+      while j < arm.pat_names.n {
+        if j > 0 {
+          sb_s(", ");
+        }
+        sb_s(arm.pat_names.items[j]);
+        j += 1;
+      }
+      sb_c(41);
+    } else if arm.pk == PatKind.PatStruct {
+      f_pat_path(arm);
+      sb_s(" { ");
+      let mut j: usize = 0;
+      while j < arm.pat_fields.n {
+        if j > 0 {
+          sb_s(", ");
+        }
+        sb_s(arm.pat_fields.items[j].name);
+        sb_s(": ");
+        sb_s(arm.pat_names.items[j]);
+        j += 1;
+      }
+      sb_s(" }");
+    } else {
+      f_pat_path(arm);
+    }
+    sb_s(" => ");
+    if arm.body.kind == ExprKind.ExBlock {
+      sb_c(123);
+      f_indent += 1;
+      f_stmts(arm.body.items);
+      f_indent -= 1;
+      f_line();
+      sb_c(125);
+    } else {
+      f_expr_full(arm.body);
+    }
+    sb_c(44); // ,
+    i += 1;
+  }
+  f_indent -= 1;
+  f_line();
+  sb_c(125);
+}
+
+fn f_stmt(s: *Stmt) {
+  f_pre(s.pre);
+  if s.kind == StmtKind.StLet {
+    sb_s("let ");
+    if s.mut_ {
+      sb_s("mut ");
+    }
+    sb_s(s.name);
+    if s.ty != null {
+      sb_s(": ");
+      f_type(s.ty);
+    }
+    sb_s(" = ");
+    f_expr_full(s.a);
+    if !s.tail {
+      sb_c(59); // ;
+    }
+    return;
+  }
+  if s.kind == StmtKind.StAssign {
+    f_expr_full(s.a);
+    sb_c(32);
+    sb_s(spell_op(s.assign_op));
+    sb_c(32);
+    f_expr_full(s.b);
+    sb_c(59);
+    return;
+  }
+  if s.kind == StmtKind.StExpr {
+    f_expr_full(s.a);
+    if !s.tail && s.a.kind != ExprKind.ExIf && s.a.kind != ExprKind.ExMatch &&
+       s.a.kind != ExprKind.ExBlock {
+      sb_c(59);
+    }
+    return;
+  }
+  if s.kind == StmtKind.StReturn {
+    sb_s("return");
+    if s.a != null {
+      sb_c(32);
+      f_expr_full(s.a);
+    }
+    sb_c(59);
+    return;
+  }
+  if s.kind == StmtKind.StBreak {
+    sb_s("break;");
+    return;
+  }
+  if s.kind == StmtKind.StContinue {
+    sb_s("continue;");
+    return;
+  }
+  if s.kind == StmtKind.StDefer {
+    sb_s("defer ");
+    if s.stmts.n == 1 && s.stmts.items[0].kind == StmtKind.StBlock {
+      let blk: *Stmt = s.stmts.items[0];
+      sb_c(123);
+      f_indent += 1;
+      f_stmts(blk.stmts);
+      f_indent -= 1;
+      f_line();
+      sb_c(125);
+    } else {
+      let mut i: usize = 0;
+      while i < s.stmts.n {
+        f_stmt(s.stmts.items[i]);
+        i += 1;
+      }
+    }
+    return;
+  }
+  if s.kind == StmtKind.StWhile {
+    sb_s("while ");
+    f_expr_full(s.cond);
+    sb_s(" {");
+    f_indent += 1;
+    f_stmts(s.body);
+    f_indent -= 1;
+    f_line();
+    sb_c(125);
+    return;
+  }
+  if s.kind == StmtKind.StLoop {
+    sb_s("loop {");
+    f_indent += 1;
+    f_stmts(s.body);
+    f_indent -= 1;
+    f_line();
+    sb_c(125);
+    return;
+  }
+  // StBlock
+  sb_c(123);
+  f_indent += 1;
+  f_stmts(s.stmts);
+  f_indent -= 1;
+  f_line();
+  sb_c(125);
+}
+
+fn f_stmts(stmts: *Vec[*Stmt]) {
+  let mut i: usize = 0;
+  while i < stmts.n {
+    f_line();
+    f_stmt(stmts.items[i]);
+    i += 1;
+  }
+}
+
+// leading line comments, re-emitted at the current indent
+fn f_pre(pre: *Vec[string]) {
+  if pre == null {
+    return;
+  }
+  let mut i: usize = 0;
+  while i < pre.n {
+    sb_s("//");
+    sb_s(pre.items[i]);
+    f_line();
+    i += 1;
+  }
+}
+
+fn f_tparams(tparams: *Vec[string]) {
+  if tparams == null || tparams.n == 0 {
+    return;
+  }
+  sb_c(91); // [
+  let mut i: usize = 0;
+  while i < tparams.n {
+    if i > 0 {
+      sb_s(", ");
+    }
+    sb_s(tparams.items[i]);
+    i += 1;
+  }
+  sb_c(93); // ]
+}
+
+fn f_params(params: *Vec[*Param]) {
+  sb_c(40); // (
+  let mut i: usize = 0;
+  while i < params.n {
+    if i > 0 {
+      sb_s(", ");
+    }
+    sb_s(params.items[i].name);
+    sb_s(": ");
+    f_type(params.items[i].ty);
+    i += 1;
+  }
+  sb_c(41); // )
+}
+
+fn f_decl(d: *Decl) {
+  f_pre(d.pre);
+  if d.kind == DeclKind.DkUse {
+    sb_s("use ");
+    let mut i: usize = 0;
+    while i < d.path.n {
+      if i > 0 {
+        sb_c(47); // /
+      }
+      sb_s(d.path.items[i]);
+      i += 1;
+    }
+    sb_c(59);
+    return;
+  }
+  if d.kind == DeclKind.DkExtern {
+    sb_s("extern fn ");
+    sb_s(d.name);
+    f_params(d.params);
+    if d.ret != null {
+      sb_s(" -> ");
+      f_type(d.ret);
+    }
+    sb_c(59);
+    return;
+  }
+  if d.kind == DeclKind.DkFn {
+    if d.pub_ {
+      sb_s("pub ");
+    }
+    sb_s("fn ");
+    if len(d.recv) > 0 {
+      sb_s(d.recv);
+      sb_c(46);
+    }
+    sb_s(d.name);
+    f_tparams(d.tparams);
+    f_params(d.params);
+    if d.ret != null {
+      sb_s(" -> ");
+      f_type(d.ret);
+    }
+    sb_s(" {");
+    f_indent += 1;
+    f_stmts(d.body);
+    f_indent -= 1;
+    f_line();
+    sb_c(125);
+    return;
+  }
+  if d.kind == DeclKind.DkStruct {
+    if d.pub_ {
+      sb_s("pub ");
+    }
+    sb_s("struct ");
+    sb_s(d.name);
+    f_tparams(d.tparams);
+    if d.fields.n == 0 {
+      sb_s(" {}");
+      return;
+    }
+    sb_s(" {");
+    f_indent += 1;
+    let mut i: usize = 0;
+    while i < d.fields.n {
+      f_line();
+      sb_s(d.fields.items[i].name);
+      sb_s(": ");
+      f_type(d.fields.items[i].ty);
+      sb_c(44);
+      i += 1;
+    }
+    f_indent -= 1;
+    f_line();
+    sb_c(125);
+    return;
+  }
+  if d.kind == DeclKind.DkEnum {
+    if d.pub_ {
+      sb_s("pub ");
+    }
+    sb_s("enum ");
+    sb_s(d.name);
+    f_tparams(d.tparams);
+    sb_s(" {");
+    f_indent += 1;
+    let mut i: usize = 0;
+    while i < d.variants.n {
+      let v: *VariantAst = d.variants.items[i];
+      f_line();
+      sb_s(v.name);
+      if v.vkind == VarKind.VarTuple {
+        sb_c(40);
+        let mut j: usize = 0;
+        while j < v.types.n {
+          if j > 0 {
+            sb_s(", ");
+          }
+          f_type(v.types.items[j]);
+          j += 1;
+        }
+        sb_c(41);
+      } else if v.vkind == VarKind.VarStruct {
+        sb_s(" { ");
+        let mut j: usize = 0;
+        while j < v.fields.n {
+          if j > 0 {
+            sb_s(", ");
+          }
+          sb_s(v.fields.items[j].name);
+          sb_s(": ");
+          f_type(v.fields.items[j].ty);
+          j += 1;
+        }
+        sb_s(" }");
+      }
+      if v.has_disc {
+        sb_s(" = ");
+        sb_s(utoa(v.disc));
+      }
+      sb_c(44);
+      i += 1;
+    }
+    f_indent -= 1;
+    f_line();
+    sb_c(125);
+    return;
+  }
+  if d.kind == DeclKind.DkStatic {
+    sb_s("static ");
+    if d.is_mut {
+      sb_s("mut ");
+    }
+    sb_s(d.name);
+    sb_s(": ");
+    f_type(d.ret);
+    sb_s(" = ");
+    f_expr_full(d.init);
+    sb_c(59);
+    return;
+  }
+  // DkConst
+  sb_s("const ");
+  sb_s(d.name);
+  sb_s(": ");
+  f_type(d.ret);
+  sb_s(" = ");
+  f_expr_full(d.init);
+  sb_c(59);
+}
+
+fn fmt_module(module: *Decl) -> string {
+  g_sb = new Vec[u8] { items: make([]u8, 65536), n: 0 };
+  f_indent = 0;
+  let mut first: bool = true;
+  let mut i: usize = 0;
+  while i < module.decls.n {
+    let d: *Decl = module.decls.items[i];
+    if !first {
+      sb_c(10);
+    }
+    f_decl(d);
+    sb_c(10);
+    first = false;
+    i += 1;
+  }
+  if module.pre != null && module.pre.n > 0 {
+    f_pre(module.pre);
+    // f_pre leaves the cursor on a fresh line; close it
+    sb_c(10);
+  }
+  return intrinsics.slice_string(g_sb.items[0..g_sb.n]);
+}
+
+
+// ------------------------------------------------------ %g, six digits ----
+//
+// The EX_FLOAT canonical form: C printf("%g") of the literal's value.
+// Implemented exactly — the double's bit pattern is decomposed and rounded
+// as a big decimal integer, so the 6-significant-digit rounding matches
+// libc for every finite input (no float arithmetic on the value itself).
+
+// decimal big-int, base 1e9, little-endian limbs; 160 limbs (1440 digits)
+// covers 5^1074 * 2^53 with room to spare
+struct Big {
+  w: []u32,
+  n: usize,
+}
+
+fn big_new() -> *Big {
+  return new Big { w: make([]u32, 160), n: 1 };
+}
+
+fn big_trim(b: *Big) {
+  while b.n > 1 && b.w[b.n - 1] == 0 {
+    b.n -= 1;
+  }
+}
+
+fn big_set_u64(b: *Big, v: u64) {
+  b.w[0] = (v % 1000000000) as u32;
+  b.w[1] = ((v / 1000000000) % 1000000000) as u32;
+  b.w[2] = (v / 1000000000000000000) as u32;
+  b.n = 3;
+  big_trim(b);
+}
+
+// schoolbook multiply by a factor < 1e9; products stay under 2^63
+fn big_mul_u32(b: *Big, m: u32) {
+  let mut carry: u64 = 0;
+  let mut i: usize = 0;
+  while i < b.n {
+    let cur: u64 = b.w[i] as u64 * m as u64 + carry;
+    b.w[i] = (cur % 1000000000) as u32;
+    carry = cur / 1000000000;
+    i += 1;
+  }
+  while carry > 0 {
+    b.w[b.n] = (carry % 1000000000) as u32;
+    carry = carry / 1000000000;
+    b.n += 1;
+  }
+}
+
+fn big_get_u64(b: *Big) -> u64 {
+  let mut v: u64 = 0;
+  let mut i: usize = b.n;
+  while i > 0 {
+    i -= 1;
+    v = v * 1000000000 + b.w[i] as u64;
+  }
+  return v;
+}
+
+// add a single-digit value (< 10) to the low limb
+fn big_add_u32(b: *Big, v: u32) {
+  b.w[0] = b.w[0] + v;
+  let mut i: usize = 0;
+  while b.w[i] >= 1000000000 {
+    b.w[i] = b.w[i] - 1000000000;
+    i += 1;
+    b.w[i] = b.w[i] + 1;
+  }
+  if i >= b.n {
+    b.n = i + 1;
+  }
+}
+
+// floor(a * 2^bits / b) rounded half-even on the exact remainder; `a` is
+// consumed, `b` must exceed the remainder at every step (b > 0, a < b)
+fn big_div_bits(a: *Big, b: *Big, bits: i64) -> u64 {
+  let mut q: u64 = 0;
+  let mut j: i64 = 0;
+  while j < bits {
+    big_mul_u32(a, 2);
+    q = q * 2;
+    if big_cmp(a, b) >= 0 {
+      big_sub(a, b);
+      q += 1;
+    }
+    j += 1;
+  }
+  big_mul_u32(a, 2);
+  let c: i32 = big_cmp(a, b);
+  if c > 0 || (c == 0 && (q & 1) == 1) {
+    q += 1;
+  }
+  return q;
+}
+
+// a -= b in place; caller guarantees a >= b
+fn big_sub(a: *Big, b: *Big) {  let mut borrow: i64 = 0;
+  let mut i: usize = 0;
+  while i < a.n {
+    let sub: i64 = borrow;
+    let mut cur: i64 = a.w[i] as i64 - sub;
+    if i < b.n {
+      cur = a.w[i] as i64 - b.w[i] as i64 - borrow;
+    }
+    if cur < 0 {
+      cur += 1000000000;
+      borrow = 1;
+    } else {
+      borrow = 0;
+    }
+    a.w[i] = cur as u32;
+    i += 1;
+  }
+  big_trim(a);
+}
+
+fn big_add_one(b: *Big) {
+  let mut i: usize = 0;
+  loop {
+    if i >= b.n {
+      b.w[i] = 1;
+      b.n += 1;
+      return;
+    }
+    b.w[i] = b.w[i] + 1;
+    if b.w[i] < 1000000000 {
+      return;
+    }
+    b.w[i] = 0;
+    i += 1;
+  }
+}
+
+fn big_clone(a: *Big) -> *Big {
+  let b: *Big = big_new();
+  let mut i: usize = 0;
+  while i < a.n {
+    b.w[i] = a.w[i];
+    i += 1;
+  }
+  b.n = a.n;
+  return b;
+}
+
+fn big_cmp(a: *Big, b: *Big) -> i32 {
+  if a.n != b.n {
+    if a.n < b.n {
+      return 0 - 1;
+    }
+    return 1;
+  }
+  let mut i: usize = a.n;
+  while i > 0 {
+    i -= 1;
+    if a.w[i] != b.w[i] {
+      if a.w[i] < b.w[i] {
+        return 0 - 1;
+      }
+      return 1;
+    }
+  }
+  return 0;
+}
+
+fn p10_u64(r: usize) -> u64 {
+  let mut v: u64 = 1;
+  let mut i: usize = 0;
+  while (i as i64) < r as i64 {
+    v = v * 10;
+    i += 1;
+  }
+  return v;
+}
+
+fn pow2_u32(k: i64) -> u32 {
+  let mut v: u32 = 1;
+  let mut i: i64 = 0;
+  while i < k {
+    v = v * 2;
+    i += 1;
+  }
+  return v;
+}
+
+fn pow5_u32(k: i64) -> u32 {
+  let mut v: u32 = 1;
+  let mut i: i64 = 0;
+  while i < k {
+    v = v * 5;
+    i += 1;
+  }
+  return v;
+}
+
+// 5 * 10^(cut-1): half of the divisor 10^cut
+fn big_half(cut: usize) -> *Big {
+  let h: *Big = big_new();
+  let pos: usize = cut - 1;
+  let l: usize = pos / 9;
+  let r: usize = pos % 9;
+  h.w[l] = (5 * p10_u64(r)) as u32;
+  h.n = l + 1;
+  return h;
+}
+
+// Q = N div 10^cut (returned); N becomes N mod 10^cut
+fn big_divmod_pow10(b: *Big, cut: usize) -> *Big {
+  let l: usize = cut / 9;
+  let r: usize = cut % 9;
+  let q: *Big = big_new();
+  if b.n <= l {
+    return q;
+  }
+  let qn: usize = b.n - l;
+  let p: u64 = p10_u64(r);
+  let mut rem: u64 = 0;
+  let mut i: usize = qn;
+  while i > 0 {
+    i -= 1;
+    let cur: u64 = rem * 1000000000 + b.w[l + i] as u64;
+    q.w[i] = (cur / p) as u32;
+    rem = cur % p;
+  }
+  q.n = qn;
+  big_trim(q);
+  if r > 0 {
+    b.w[l] = rem as u32;
+    b.n = l + 1;
+  } else {
+    b.n = l;
+  }
+  if b.n == 0 {
+    b.w[0] = 0;
+    b.n = 1;
+  }
+  big_trim(b);
+  return q;
+}
+
+fn u32_digits(v: u32) -> i64 {
+  let mut d: i64 = 1;
+  let mut x: u32 = v;
+  while x >= 10 {
+    x = x / 10;
+    d += 1;
+  }
+  return d;
+}
+
+fn substr(s: string, a: usize, b: usize) -> string {
+  let buf: []u8 = make([]u8, b - a);
+  let mut i: usize = a;
+  while i < b {
+    buf[i - a] = s[i];
+    i += 1;
+  }
+  return intrinsics.slice_string(buf);
+}
+
+// strip trailing '0's ("1000" -> "1", "000" -> "")
+fn g6_strip(fr: string) -> string {
+  let mut k: usize = len(fr);
+  while k > 0 && fr[k - 1] == 48 {
+    k -= 1;
+  }
+  return substr(fr, 0, k);
+}
+
+fn rep0(cnt: usize) -> string {
+  let buf: []u8 = make([]u8, cnt);
+  let mut i: usize = 0;
+  while i < cnt {
+    buf[i] = 48;
+    i += 1;
+  }
+  return intrinsics.slice_string(buf);
+}
+
+fn g6(x: f64) -> string {
+  let bits: u64 = intrinsics.f64_bits(x);
+  let be: u64 = (bits >> 52) & 2047;
+  if be == 2047 {
+    if (bits & 4503599627370495) == 0 {
+      return "inf";
+    }
+    return "nan";
+  }
+  if (bits << 1) == 0 {
+    return "0";
+  }
+  let mut m2: u64 = 0;
+  let mut e2: i64 = 0;
+  if be == 0 {
+    m2 = bits & 4503599627370495;
+    e2 = (0 - 1074) as i64;
+  } else {
+    m2 = (bits & 4503599627370495) | 4503599627370496;
+    e2 = be as i64 - 1075;
+  }
+  // exact integer N with x == N / 10^s
+  let b: *Big = big_new();
+  big_set_u64(b, m2);
+  let mut s: i64 = 0;
+  if e2 >= 0 {
+    let mut k: i64 = e2;
+    while k >= 29 {
+      big_mul_u32(b, 536870912);
+      k -= 29;
+    }
+    if k > 0 {
+      big_mul_u32(b, pow2_u32(k));
+    }
+  } else {
+    // x = m2 * 2^-k = (m2 * 5^k) / 10^k — powers of FIVE: multiplying by
+    // powers of ten here would smuggle extra factors of two into N
+    let mut k: i64 = 0 - e2;
+    while k >= 9 {
+      big_mul_u32(b, 1953125);
+      s += 9;
+      k -= 9;
+    }
+    if k > 0 {
+      big_mul_u32(b, pow5_u32(k));
+      s += k;
+    }
+  }
+  // n: x = 0.<digits> * 10^n; cut at six significant digits
+  let topd: i64 = u32_digits(b.w[b.n - 1]);
+  let mut n: i64 = (b.n as i64 - 1) * 9 + topd - s;
+  let cut: i64 = s + n - 6;
+  let mut qv: u64 = 0;
+  if cut > 0 {
+    let q: *Big = big_divmod_pow10(b, cut as usize);
+    // round half to even on the exact remainder
+    let c: i32 = big_cmp(b, big_half(cut as usize));
+    if c > 0 || (c == 0 && (q.w[0] & 1) == 1) {
+      big_add_one(q);
+    }
+    qv = big_get_u64(q);
+  } else if cut == 0 {
+    qv = big_get_u64(b);
+  } else {
+    let mut k: i64 = 0 - cut;
+    while k >= 9 {
+      big_mul_u32(b, 1000000000);
+      k -= 9;
+    }
+    if k > 0 {
+      big_mul_u32(b, p10_u64(k as usize) as u32);
+    }
+    qv = big_get_u64(b);
+  }
+  // round-up carry: 999999.7 -> 1000000 -> re-exponent
+  if qv >= 1000000 {
+    qv = qv / 10;
+    n += 1;
+  }
+  let e10: i64 = n - 1;
+  let ds: string = utoa(qv);
+  if e10 >= (0 - 4) as i64 && e10 < 6 {
+    if e10 >= 0 {
+      let ip: usize = e10 as usize + 1;
+      let frac: string = g6_strip(substr(ds, ip, 6));
+      if len(frac) == 0 {
+        return substr(ds, 0, ip);
+      }
+      return cat3(substr(ds, 0, ip), cat3(".", frac, ""), "");
+    }
+    let all: string = g6_strip(cat3(rep0((0 - e10 - 1) as usize), ds, ""));
+    if len(all) == 0 {
+      return "0";
+    }
+    return cat3("0.", all, "");
+  }
+  let mut out: string = substr(ds, 0, 1);
+  let frac: string = g6_strip(substr(ds, 1, 6));
+  if len(frac) > 0 {
+    out = cat3(out, cat3(".", frac, ""), "");
+  }
+  let mut ae: i64 = e10;
+  if ae < 0 {
+    ae = 0 - ae;
+  }
+  let mut es: string = itoa(ae);
+  if ae < 10 {
+    es = cat3("0", es, "");
+  }
+  if e10 < 0 {
+    return cat3(out, cat3("e-", es, ""), "");
+  }
+  return cat3(out, cat3("e+", es, ""), "");
+}
+
+fn fmt_float(x: f64) {
+  let s: string = g6(x);
+  sb_s(s);
+  // keep it a float literal: no '.' or 'e' in the %g form means append ".0"
+  let mut i: usize = 0;
+  while i < len(s) {
+    if s[i] == 46 || s[i] == 101 {
+      return;
+    }
+    i += 1;
+  }
+  sb_s(".0");
 }
 
 
