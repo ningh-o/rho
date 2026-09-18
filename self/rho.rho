@@ -4008,8 +4008,15 @@ fn check_match(e: *Expr, expected: *Type) -> *Type {
       result = arm_t;
     } else if arm_t != result && arm_t.kind != TypeKind.TyErr && result.kind != TypeKind.TyErr &&
               arm_t.kind != TypeKind.TyParam && result.kind != TypeKind.TyParam {
-      err_at("", 0, 0, "match arms have inconsistent types");
-      result = ty_err();
+      // panic never returns: its arm coerces to the other branch's type
+      if arm_t.kind == TypeKind.TyVoid && is_panic_call(arm.body) {
+        // keep result
+      } else if result.kind == TypeKind.TyVoid && is_panic_call(arm.body) {
+        result = arm_t;
+      } else {
+        err_at("", 0, 0, "match arms have inconsistent types");
+        result = ty_err();
+      }
     }
     scope_pop();
     i += 1;
@@ -5231,8 +5238,26 @@ fn check_block_value2(stmts: *Vec[*Stmt]) -> *Type {
   return result;
 }
 
-fn unify2(a: *Type, b: *Type) -> *Type {
+fn is_panic_call(e: *Expr) -> bool {
+  if e == null || e.kind != ExprKind.ExCall || e.a == null || e.a.sym == null {
+    return false;
+  }
+  let s: *Sym = e.a.sym;
+  if !streq(s.name, "panic") || s.owner == null {
+    return false;
+  }
+  return s.owner == prelude_module || s.owner.is_prelude;
+}
+
+fn unify2(a: *Type, b: *Type, at: *Expr) -> *Type {
   if a == b {
+    return a;
+  }
+  // panic never returns: its arm coerces to the other branch's type
+  if a.kind == TypeKind.TyVoid && b.kind != TypeKind.TyVoid && is_panic_call(at) {
+    return b;
+  }
+  if b.kind == TypeKind.TyVoid && a.kind != TypeKind.TyVoid && is_panic_call(at) {
     return a;
   }
   if a != null && a.kind == TypeKind.TyParam {
@@ -5273,11 +5298,11 @@ fn check_if_expr(e: *Expr, expected: *Type) -> *Type {
   let mut result: *Type = ty_prim(14);
   if e.else_if != null {
     let et: *Type = check_expr(e.else_if, expected);
-    result = unify2(t, et);
+    result = unify2(t, et, e.else_if);
   } else if e.items.n > 1 {
     let else_blk: *Stmt = e.items.items[1];
     let et: *Type = check_block_value2(else_blk.stmts);
-    result = unify2(t, et);
+    result = unify2(t, et, e.else_if);
   } else {
     result = ty_prim(14);
   }
