@@ -2290,6 +2290,24 @@ fn main() -> i32 {
     prelude_module = pmod;
     m.syms = sm_new();
     check_module(m);
+    // load `use` targets: aux modules check before the user module
+    let mut ui: usize = 0;
+    while ui < module.decls.n {
+      let ud: *Decl = module.decls.items[ui];
+      if ud.kind == DeclKind.DkUse && ud.path.n > 0 {
+        let aux: *Module = load_use_module(args[2], ud.path.items[0]);
+        if aux != null {
+          let msym: *Sym = new Sym {
+            kind: SymKind.SyModule, name: ud.path.items[0], type: null,
+            decl: null, mutable: false, variant_index: 0, local_id: 0,
+            symbol: "", owner: m, module: aux,
+          };
+          sm_put(m.syms, ud.path.items[0], msym);
+          check_all(aux);
+        }
+      }
+      ui += 1;
+    }
   }
   eprint("[prelude diags=");
   eprint(itoa(diag_count() as i64));
@@ -2480,6 +2498,18 @@ fn ty_err() -> *Type {
   });
 }
 
+static mut g_module_type: *Type = 0 as *Type;
+
+fn ty_module() -> *Type {
+  if g_module_type == null {
+    g_module_type = new Type {
+      kind: TypeKind.TyModule, elem: null, len: 0, rec: null,
+      params: fresh_type_vec2(), ret: null, mangled: "<module>",
+    };
+  }
+  return g_module_type;
+}
+
 fn ty_param_(name: string) -> *Type {
   let t: *Type = new Type {
     kind: TypeKind.TyParam, elem: null, len: 0, rec: null,
@@ -2510,6 +2540,7 @@ struct Sym {
   local_id: i32,
   symbol: string,
   owner: *Module,
+  module: *Module, // SY_MODULE: the referenced module
 }
 
 struct Binding { name: string, sym: *Sym, next: *Binding }
@@ -2605,6 +2636,7 @@ struct Module {
 
 static mut cur_module: *Module = 0 as *Module;
 static mut prelude_module: *Module = 0 as *Module;
+static mut g_aux_modules: *Vec[*Module] = 0 as *Vec[*Module];
 
 // register one declaration into the module's symbol table
 fn declare_sym(m: *Module, d: *Decl) {
@@ -2612,6 +2644,7 @@ fn declare_sym(m: *Module, d: *Decl) {
     kind: SymKind.SyFn, name: d.name, type: null, decl: d,
     mutable: false, variant_index: 0, local_id: 0, symbol: "",
     owner: m,
+    module: null,
   };
   if d.kind == DeclKind.DkFn {
     sym.kind = SymKind.SyFn;
@@ -2639,6 +2672,7 @@ fn declare_sym(m: *Module, d: *Decl) {
         kind: SymKind.SyVariant, name: v.name, type: null, decl: d,
         mutable: false, variant_index: vi, local_id: 0, symbol: "",
     owner: m,
+    module: null,
       };
       sm_put(m.syms, v.name, vsym);
       vi += 1;
@@ -3210,7 +3244,11 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
       return e.typed;
     }
     e.sym = sym;
-    e.typed = sym.type;
+    if sym.kind == SymKind.SyModule {
+      e.typed = ty_module();
+    } else {
+      e.typed = sym.type;
+    }
     // a fn name in value position makes a closure value
     if sym.kind == SymKind.SyFn || sym.kind == SymKind.SyExtern {
       e.fnval = true;
@@ -3286,6 +3324,13 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
       ok = true;
     }
     if !ok {
+      eprint("[CASTFAIL line=");
+      eprint(itoa(e.line as i64));
+      eprint(" srck=");
+      eprint(itoa(srct.kind as i64));
+      eprint(" tgtk=");
+      eprint(itoa(target.kind as i64));
+      eprint("\n");
       err_at("", 0, 0, "cannot cast to the requested type");
     }
     e.typed = target;
@@ -3466,6 +3511,7 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
         kind: SymKind.SyParam, name: p.name, type: pt, decl: null,
         mutable: true, variant_index: 0, local_id: next_local_id, symbol: "",
     owner: cur_module,
+    module: null,
       };
       next_local_id += 1;
       scope_decl(p.name, psym);
@@ -3566,9 +3612,39 @@ fn RecType.owner_module(self: *RecType) -> *Module {
 }
 
 fn check_field_access(e: *Expr, expected: *Type) -> *Type {
-  eprint("[fa ");
-  eprint(e.sv);
-  eprint("]\n");
+  // module access: statics/consts (functions go through call resolution)
+  if e.a.kind == ExprKind.ExName && e.a.sym == null {
+    check_expr(e.a, null);
+  }
+  if e.a.kind == ExprKind.ExName && e.a.sym != null &&
+     e.a.sym.kind == SymKind.SyModule && e.a.sym.module != null {
+    let item: *Sym = sm_get(e.a.sym.module.syms, e.sv);
+    if item == null {
+      let msg: string = cat3("module `", cat3(e.a.sv, "` has no item `", ""), "");
+      err_at("", 0, 0, cat3(msg, cat3(e.sv, "`", ""), ""));
+      e.typed = ty_err();
+      return e.typed;
+    }
+    if item.kind == SymKind.SyStatic || item.kind == SymKind.SyConst {
+      if !item.decl.pub_ && !item.owner.is_prelude {
+        let msg: string = cat3(e.a.sv, ".", "");
+        err_at("", 0, 0, cat3(msg, cat3(e.sv, "` is not public", ""), ""));
+      }
+      e.sym = item;
+      e.typed = item.type;
+      return e.typed;
+    }
+    if item.kind == SymKind.SyFn || item.kind == SymKind.SyExtern {
+      e.sym = item;
+      e.typed = item.type;
+      e.fnval = true;
+      return e.typed;
+    }
+    let msg: string = cat3(e.a.sv, ".", "");
+    err_at("", 0, 0, cat3(msg, cat3(e.sv, "` is a type; types are not values", ""), ""));
+    e.typed = ty_err();
+    return e.typed;
+  }
   let base: *Type = check_expr(e.a, null);
   if base.kind == TypeKind.TySlice || base.kind == TypeKind.TyStringK {
     if streq(e.sv, "len") {
@@ -3657,6 +3733,7 @@ fn check_field_access(e: *Expr, expected: *Type) -> *Type {
             kind: SymKind.SyVariant, name: e.sv, type: vtype, decl: d,
             mutable: false, variant_index: i as i32, local_id: 0, symbol: "",
     owner: cur_module,
+    module: null,
           };
           e.sym = vs;
           e.typed = vs.type;
@@ -3828,6 +3905,7 @@ fn check_match(e: *Expr, expected: *Type) -> *Type {
                   decl: null, mutable: false, variant_index: 0,
                   local_id: next_local_id, symbol: "",
     owner: cur_module,
+    module: null,
                 };
                 eprint("[bind ");
                 eprint(nm);
@@ -3866,6 +3944,7 @@ fn check_match(e: *Expr, expected: *Type) -> *Type {
                   decl: null, mutable: false, variant_index: 0,
                   local_id: next_local_id, symbol: "",
     owner: cur_module,
+    module: null,
                 };
                 next_local_id += 1;
                 arm.bind_syms = push_sym(arm.bind_syms, bs);
@@ -3887,6 +3966,7 @@ fn check_match(e: *Expr, expected: *Type) -> *Type {
                   decl: null, mutable: false, variant_index: 0,
                   local_id: next_local_id, symbol: "",
     owner: cur_module,
+    module: null,
                 };
                 next_local_id += 1;
                 arm.bind_syms = push_sym(arm.bind_syms, bs);
@@ -4011,7 +4091,22 @@ fn resolve_callee(callee: *Expr) -> *CallTarget {
     if callee.a.kind == ExprKind.ExName {
       let base: *Sym = lookup(callee.a.sv);
       if base != null && base.kind == SymKind.SyModule {
-        err_at("", 0, 0, "module-qualified calls pending multi-module check");
+        let item: *Sym = sm_get(base.module.syms, callee.sv);
+        if item != null && (item.kind == SymKind.SyFn || item.kind == SymKind.SyExtern) {
+          if !item.decl.pub_ && !item.owner.is_prelude {
+            err_at("", 0, 0, cat3(callee.a.sv, cat3(".", callee.sv, ""), " is not public"));
+          }
+          if item.kind == SymKind.SyFn {
+            ct.kind = CtKind.CtFn;
+          } else {
+            ct.kind = CtKind.CtExtern;
+          }
+          ct.sym = item;
+          ct.fn_type = item.type;
+          callee.sym = item;
+          return ct;
+        }
+        err_at("", 0, 0, cat3("module `", cat3(callee.a.sv, cat3("` has no function `", cat3(callee.sv, "`", ""), ""), ""), ""));
         return ct;
       }
       if base != null && base.kind == SymKind.SyEnum {
@@ -4029,6 +4124,7 @@ fn resolve_callee(callee: *Expr) -> *CallTarget {
               decl: d, mutable: false, variant_index: i as i32,
               local_id: 0, symbol: "",
     owner: cur_module,
+    module: null,
             };
             callee.sym = vs;
             return ct;
@@ -4562,6 +4658,7 @@ fn check_stmt(s: *Stmt) {
       kind: SymKind.SyLocal, name: s.name, type: t, decl: null,
       mutable: s.mut_, variant_index: 0, local_id: next_local_id, symbol: "",
     owner: cur_module,
+    module: null,
     };
     next_local_id += 1;
     if lookup(s.name) != null {
@@ -4696,6 +4793,7 @@ fn check_fn_body(d: *Decl, sym: *Sym, m: *Module) {
       kind: SymKind.SyParam, name: p.name, type: pt, decl: null,
       mutable: false, variant_index: 0, local_id: next_local_id, symbol: "",
     owner: cur_module,
+    module: null,
     };
     next_local_id += 1;
     scope_decl(p.name, ps);
@@ -4743,6 +4841,7 @@ fn wire_method(m: *Module, d: *Decl) -> *Type {
     kind: SymKind.SyFn, name: d.name, type: ft, decl: d,
     mutable: false, variant_index: 0, local_id: 0, symbol: "",
     owner: cur_module,
+    module: null,
   };
   // attach the method to the receiver's own rec (deref through *self)
   if len(ps) > 0 {
@@ -4759,6 +4858,45 @@ fn wire_method(m: *Module, d: *Decl) -> *Type {
 }
 
 // full semantic check of a parsed module; returns the diag count
+// load one `use` target: read + parse + register syms; the caller checks it
+fn load_use_module(user_path: string, rel: string) -> *Module {
+  // relative to the user file's directory
+  let mut dir: string = "";
+  let mut i: usize = 0;
+  let mut last: usize = 0;
+  while i < len(user_path) {
+    if user_path[i] == 47 { // '/'
+      last = i;
+    }
+    i += 1;
+  }
+  if last > 0 {
+    dir = user_path[0..last + 1];
+  }
+  let aux_path: string = cat3(dir, rel, ".rho");
+  let r: Result[string, string] = read_file(aux_path);
+  if r.is_err() {
+    err_at(user_path, 1, 1, cat3("cannot read `", cat3(rel, ".rho`", ""), ""));
+    return null;
+  }
+  let aux_root: *Decl = parse_file(aux_path, r.get_ok());
+  if diag_count() > 0 {
+    return null;
+  }
+  // ns = last path segment of the use
+  let ns: string = rel;
+  let aux: *Module = new Module {
+    path: aux_path, ns: ns, root: aux_root, syms: sm_new(),
+    is_prelude: false, checked: false,
+  };
+  check_module(aux);
+  if g_aux_modules == null {
+    g_aux_modules = new Vec[*Module] { items: make([]*Module, 8), n: 0 };
+  }
+  g_aux_modules.push(aux);
+  return aux;
+}
+
 fn scope_decl_module(m: *Module) {
   let d: *Decl = m.root;
   let mut i: usize = 0;
@@ -4777,6 +4915,17 @@ fn check_all(m: *Module) -> i32 {
   check_module(m);
   scope_push();
   scope_decl_module(m);
+  // module symbols (`use mod_aux;`) into the top scope
+  {
+    let mut si: usize = 0;
+    while si < m.syms.n {
+      let ms: *Sym = m.syms.items[si].val;
+      if ms.kind == SymKind.SyModule {
+        scope_decl(m.syms.items[si].key, ms);
+      }
+      si += 1;
+    }
+  }
   if prelude_module != null && prelude_module != m {
     let pd: *Decl = prelude_module.root;
     let mut pi: usize = 0;
@@ -4921,7 +5070,6 @@ fn check_all(m: *Module) -> i32 {
         ssym.type = ann;
       }
       if decl.init != null {
-        check_expr(decl.init, ann);
         let v: *CV = const_eval(decl.init, m);
         if !v.ok {
           err_at(decl.file, decl.line, decl.col, cat3(decl.name, ": initializer must be a compile-time constant", ""));
@@ -4982,6 +5130,7 @@ fn check_all(m: *Module) -> i32 {
         kind: SymKind.SyFn, name: decl.name, type: ft, decl: decl,
         mutable: false, variant_index: 0, local_id: 0, symbol: "",
     owner: cur_module,
+    module: null,
       };
       cur_fn_sym = fsym;
       check_fn_body(decl, fsym, m);
@@ -5006,7 +5155,6 @@ fn check_all(m: *Module) -> i32 {
         ssym.type = ann;
       }
       if decl.init != null {
-        check_expr(decl.init, ann);
         let v: *CV = const_eval(decl.init, m);
         if !v.ok {
           err_at(decl.file, decl.line, decl.col, cat3(decl.name, ": initializer must be a compile-time constant", ""));
@@ -6171,6 +6319,18 @@ fn const_eval(e: *Expr, m: *Module) -> *CV {
   if e.kind == ExprKind.ExBool {
     r.ok = true;
     r.b = e.bv;
+    cur_module = saved;
+    return r;
+  }
+  if e.kind == ExprKind.ExCast {
+    let a: *CV = const_eval(e.a, m);
+    if !a.ok {
+      cur_module = saved;
+      return r;
+    }
+    r.ok = a.is_int;
+    r.is_int = a.is_int;
+    r.i = a.i;
     cur_module = saved;
     return r;
   }
@@ -8997,10 +9157,13 @@ fn lower_program() {
   rc_runtime_build(); // __rc_inc/dec/w* helpers every managed program needs
   // module order: prelude first, then the user module (C's g_module_order)
   let mut mi: i32 = 0;
-  while mi < 2 {
+  let naux: i32 = if g_aux_modules != null { g_aux_modules.n as i32 } else { 0 };
+  while mi < 2 + naux {
     let mut m: *Module = g_root_module;
     if mi == 0 {
       m = prelude_module;
+    } else if mi >= 2 {
+      m = g_aux_modules.items[mi - 2];
     }
     if m != null {
       let mut k: usize = 0;
@@ -11331,6 +11494,7 @@ fn instantiate_fn(gsym: *Sym, names: []string, env: *TypeMap) -> *Sym {
     kind: SymKind.SyFn, name: mangled, type: null, decl: clone,
     mutable: false, variant_index: 0, local_id: 0, symbol: "",
     owner: gsym.owner,
+    module: null,
   };
   if g_instantiated_names == null {
     g_instantiated_names = new Vec[string] { items: make([]string, 64), n: 0 };
