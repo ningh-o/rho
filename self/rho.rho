@@ -10,6 +10,9 @@ extern fn open(path: *u8, flags: i32, mode: i32) -> i32;
 extern fn read(fd: i32, buf: *u8, n: usize) -> isize;
 extern fn close(fd: i32) -> i32;
 extern fn write(fd: i32, buf: *u8, n: usize) -> isize;
+extern fn popen(cmd: *u8, mode: *u8) -> *u8;
+extern fn pclose(f: *u8) -> i32;
+extern fn fgets(buf: *u8, n: i32, f: *u8) -> *u8;
 
 // rho's main takes no arguments; the bootstrap driver pulls argv from
 // libSystem (arm64-mac target; other hosts provide their own accessors)
@@ -2315,18 +2318,341 @@ fn diag_count() -> i32 {
 }
 
 fn usage() -> i32 {
-  eprint("usage: rho build <file> [-o out] [--target t]\n");
-  eprint("       rho check <file>\n");
-  eprint("       rho fmt [-w] <file>\n");
+  eprint("rho 0.1.3\n");
+  eprint("usage: rho <command> [args]\n");
+  eprint("  check  <file>              parse + typecheck\n");
+  eprint("  fmt    [-w] <file>         print canonical formatting\n");
+  eprint("  build  <file> [-o out]     compile (default target arm64-mac)\n");
+  eprint("  run    <file> [-- args]    build and run\n");
+  eprint("  test   [dir] [--target t]  run corpus-style tests\n");
+  eprint("  --version                  print version\n");
   return 2;
+}
+
+// list *.rho files under dir (boot: `find <dir> -name '*.rho' | sort`)
+fn list_dir_rho(dir: string) -> *Vec[string] {
+  let out: *Vec[string] = new Vec[string] { items: make([]string, 64), n: 0 };
+  let cmd: string = cat("find ", cat3(dir, " -name '*.rho' | sort", ""));
+  let f: *u8 = popen(cstr(cmd).ptr, cstr("r").ptr);
+  if f == null {
+    return out;
+  }
+  let buf: []u8 = make([]u8, 4096);
+  loop {
+    let line: *u8 = fgets(buf.ptr, 4096, f);
+    if line == null {
+      break;
+    }
+    let mut n: usize = 0;
+    while n < 4096 && buf[n] != 0 {
+      n += 1;
+    }
+    while n > 0 && (buf[n - 1] == 10 || buf[n - 1] == 13) {
+      n -= 1;
+    }
+    if n > 0 {
+      out.push(intrinsics.slice_string(buf[0..n]));
+    }
+  }
+  pclose(f);
+  return out;
+}
+
+fn basename_no_ext(path: string) -> string {
+  let mut start: usize = 0;
+  let mut i: usize = 0;
+  while i < len(path) {
+    if path[i] == 47 {
+      start = i + 1;
+    }
+    i += 1;
+  }
+  let mut end: usize = len(path);
+  let mut j: usize = len(path);
+  while j > start {
+    if path[j - 1] == 46 {
+      end = j - 1;
+      break;
+    }
+    j -= 1;
+  }
+  return substr(path, start, end);
+}
+
+// `// exit: N` on the source's first line pins the expected exit code
+fn expected_exit(src: string) -> i32 {
+  let mut n: usize = 0;
+  while n < len(src) && src[n] != 10 {
+    n += 1;
+  }
+  let mut i: usize = 0;
+  while i + 5 <= n {
+    if src[i] == 101 && src[i + 1] == 120 && src[i + 2] == 105 && src[i + 3] == 116 && src[i + 4] == 58 {
+      let mut k: usize = i + 5;
+      let mut neg: bool = false;
+      while k < n && (src[k] == 32 || src[k] == 9) {
+        k += 1;
+      }
+      if k < n && src[k] == 45 {
+        neg = true;
+        k += 1;
+      }
+      let mut v: i32 = 0;
+      while k < n && src[k] >= 48 && src[k] <= 57 {
+        v = v * 10 + (src[k] - 48) as i32;
+        k += 1;
+      }
+      if neg {
+        return 0 - v;
+      }
+      return v;
+    }
+    i += 1;
+  }
+  return 0;
+}
+
+fn read_file_or_empty(path: string) -> string {
+  let r: Result[string, string] = read_file(path);
+  if r.is_err() {
+    return "";
+  }
+  return r.get_ok();
+}
+
+fn parse_target_name(s: string) -> i32 {
+  // 0 = amd64-linux, 1 = amd64-mac, 2 = arm64-mac (default), 3 = wasm32-wasi
+  if streq(s, "wasm32-wasi") {
+    return 3;
+  }
+  if streq(s, "amd64-linux") {
+    return 0;
+  }
+  if streq(s, "amd64-mac") {
+    return 1;
+  }
+  return 2;
+}
+
+// boot runs one compile per check_reset(): every compile starts from the
+// zero state, so `test` driving many builds in one process cannot leak
+// interned types, scopes, or IR between files
+fn reset_compiler_state() {
+  diags = null;
+  g_types = null;
+  g_recs = null;
+  g_module_type = null;
+  cur_scope = null;
+  cur_ret = null;
+  cur_fn_sym = null;
+  next_local_id = 0;
+  g_cap_list = null;
+  g_cap_boundary = 0;
+  cur_module = null;
+  prelude_module = null;
+  g_aux_modules = null;
+  g_tenv = null;
+  in_defer = false;
+  loop_depth = 0;
+  g_ir_fns = null;
+  g_ir_uid = 0;
+  g_ir_globals = null;
+  g_main_cell = null;
+  g_root_module = null;
+  g_panic_site = 0;
+  g_lit_counter = 0;
+  g_closure_counter = 0;
+  g_eq_fns = null;
+  g_rel_fns = null;
+  g_ret_fns = null;
+  g_shims = null;
+  W = null;
+  fb_ctx = null;
+  g_label64 = 0;
+  g_uid64 = 0;
+  g_label_amd = 0;
+  g_fconsts = null;
+  g_fn_uid = 0;
+  g_instantiations = null;
+  g_instantiated_names = null;
+  g_instantiated_syms = null;
+  g_instantiation_depth = 0;
+}
+
+// compile one file end to end; silent on success (the caller prints)
+fn build_to(path: string, target: i32, out_path: string, check_only: bool) -> i32 {
+  reset_compiler_state();
+  let src_result: Result[string, string] = read_file(path);
+  if src_result.is_err() {
+    eprint(cat3("rho: ", src_result.get_err(), "\n"));
+    return 2;
+  }
+  let module: *Decl = parse_file(path, src_result.get_ok());
+  if diag_count() > 0 {
+    print_diags();
+    return 1;
+  }
+  let m: *Module = new Module {
+    path: path, ns: "", root: module, syms: sm_new(),
+    is_prelude: false, checked: false,
+  };
+  let mut prelude_path: string = "boot/prelude/hosted.rho";
+  if target == 3 {
+    prelude_path = "boot/prelude/wasi.rho";
+  }
+  let prelude_r: Result[string, string] = read_file(prelude_path);
+  if !prelude_r.is_err() {
+    let pparse: *Decl = parse_file("<prelude>", prelude_r.get_ok());
+    let pmod: *Module = new Module {
+      path: "<prelude>", ns: "", root: pparse,
+      syms: sm_new(), is_prelude: true, checked: false,
+    };
+    check_all(pmod);
+    prelude_module = pmod;
+    m.syms = sm_new();
+    check_module(m);
+    // load `use` targets: aux modules check before the user module
+    let mut ui: usize = 0;
+    while ui < module.decls.n {
+      let ud: *Decl = module.decls.items[ui];
+      if ud.kind == DeclKind.DkUse && ud.path.n > 0 {
+        let aux: *Module = load_use_module(path, ud.path.items[0]);
+        if aux != null {
+          let msym: *Sym = new Sym {
+            kind: SymKind.SyModule, name: ud.path.items[0], type: null,
+            decl: null, mutable: false, variant_index: 0, local_id: 0,
+            symbol: "", owner: m, module: aux,
+          };
+          sm_put(m.syms, ud.path.items[0], msym);
+          check_all(aux);
+        }
+      }
+      ui += 1;
+    }
+  }
+  let diags_before: i32 = diag_count();
+  let nd: i32 = check_all(m);
+  if nd > diags_before {
+    print_diags();
+    return 1;
+  }
+  if check_only {
+    // check stops here: parse + typecheck ok (boot prints "ok <file>")
+    print(cat4("ok ", path, "\n", ""));
+    return 0;
+  }
+  g_root_module = m;
+  lower_program();
+  if g_dump_ir {
+    lower_dump_ir();
+  }
+  if target == 3 {
+    let bytes: []u8 = emit_wasm();
+    write_file(out_path, bytes_as_string(bytes));
+    return 0;
+  }
+  // native: emit assembly, then hand it to cc exactly like boot's driver
+  let mut bytes: []u8 = make([]u8, 0);
+  if target == 2 {
+    bytes = emit_arm64_text();
+  } else {
+    bytes = emit_amd64_text(target);
+  }
+  let s_path: string = cat3(out_path, ".s", "");
+  write_file(s_path, bytes_as_string(bytes));
+  let mut arch: string = "";
+  if target == 0 || target == 1 {
+    arch = "-arch x86_64 ";
+  }
+  let link_cmd: string = cat5("cc ", arch, s_path, " -o ", cat3(out_path, " 2>&1", ""));
+  let link_ptr: *u8 = cstr(link_cmd).ptr;
+  let rc: i32 = system(link_ptr);
+  if rc != 0 {
+    eprint("rho: assembler/linker failed\n");
+    return 1;
+  }
+  return 0;
+}
+
+// rho test [dir] [--target t]: corpus-style expected-exit/stdout runner
+fn cmd_test(args: []string) -> i32 {
+  let mut dir: string = "corpus";
+  let mut target: i32 = 1; // boot's test defaults to amd64-mac
+  let mut i: usize = 2;
+  while i < len(args) {
+    if streq(args[i], "--target") && i + 1 < len(args) {
+      target = parse_target_name(args[i + 1]);
+      i += 2;
+    } else {
+      dir = args[i];
+      i += 1;
+    }
+  }
+  let files: *Vec[string] = list_dir_rho(dir);
+  let mut failures: i32 = 0;
+  let mut ran: i32 = 0;
+  let mut fi: usize = 0;
+  while fi < files.n {
+    let path: string = files.items[fi];
+    let base: string = basename_no_ext(path);
+    let bin: string = cat("build/corpus_", base);
+    let brc: i32 = build_to(path, target, bin, false);
+    if brc != 0 {
+      print(cat("FAIL ", cat3(base, " (build)\n", "")));
+      failures += 1;
+      fi += 1;
+      continue;
+    }
+    let tmpout: string = cat("/tmp/rho_out_", base);
+    let mut run_cmd: string = "";
+    if target == 3 {
+      run_cmd = cat5("wasmtime run ", bin, " > ", tmpout, " 2>/dev/null");
+    } else {
+      run_cmd = cat5(bin, " > ", tmpout, "", "");
+    }
+    let st: i32 = system(cstr(run_cmd).ptr);
+    let code: i32 = (st >> 8) & 255;
+    let src_r: Result[string, string] = read_file(path);
+    let mut want_code: i32 = 0;
+    if !src_r.is_err() {
+      want_code = expected_exit(src_r.get_ok());
+    }
+    let want_out: string = read_file_or_empty(cat5(dir, "/", base, ".out", ""));
+    let got_out: string = read_file_or_empty(tmpout);
+    ran += 1;
+    let ok: bool = code == want_code && streq(got_out, want_out);
+    if !ok {
+      let mut line: string = cat5("FAIL ", base, cat(" (exit ", itoa(code as i64)), ", want ", cat(itoa(want_code as i64), ")"));
+      if len(got_out) != len(want_out) {
+        line = cat(line, " stdout differs");
+      }
+      line = cat(line, "\n");
+      print(line);
+      failures += 1;
+    }
+    fi += 1;
+  }
+  let mut verdict: string = "corpus ok";
+  if failures > 0 {
+    verdict = "corpus FAIL";
+  }
+  print(cat5(verdict, ": ", itoa(ran as i64), " ran, ", cat(itoa(failures as i64), " failed\n")));
+  if failures > 0 {
+    return 1;
+  }
+  return 0;
 }
 
 fn main() -> i32 {
   let args: []string = program_args();
-  if len(args) < 3 {
+  if len(args) < 2 {
     return usage();
   }
   let cmd: string = args[1];
+  if streq(cmd, "--version") || streq(cmd, "version") {
+    print("rho 0.1.3\n");
+    return 0;
+  }
   if streq(cmd, "fmt") {
     // rho fmt [-w] <file>: parse + canonical print; no check, no prelude
     let mut inplace: bool = false;
@@ -2364,11 +2690,50 @@ fn main() -> i32 {
     }
     return 0;
   }
+  if streq(cmd, "test") {
+    return cmd_test(args);
+  }
+  if streq(cmd, "run") {
+    let mut file: string = "";
+    let mut target: i32 = 2;
+    let mut ri: usize = 2;
+    while ri < len(args) {
+      if streq(args[ri], "--target") && ri + 1 < len(args) {
+        target = parse_target_name(args[ri + 1]);
+        ri += 2;
+      } else {
+        file = args[ri];
+        ri += 1;
+      }
+    }
+    if streq(file, "") {
+      return usage();
+    }
+    let brc: i32 = build_to(file, target, "/tmp/rho_run", false);
+    if brc != 0 {
+      return brc;
+    }
+    let mut cmd_line: string = "/tmp/rho_run";
+    let mut ai: usize = 2;
+    while ai < len(args) {
+      if streq(args[ai], "--") {
+        let mut j: usize = ai + 1;
+        while j < len(args) {
+          cmd_line = cat5(cmd_line, " \"", args[j], "\"", "");
+          j += 1;
+        }
+        break;
+      }
+      ai += 1;
+    }
+    let st: i32 = system(cstr(cmd_line).ptr);
+    return (st >> 8) & 255;
+  }
   if !streq(cmd, "build") && !streq(cmd, "check") {
     return usage();
   }
   let path: string = args[2];
-  let mut out_path: string = "a.wasm";
+  let mut out_path: string = "a.out";
   // 0 = amd64-linux, 1 = amd64-mac, 2 = arm64-mac (default), 3 = wasm32-wasi
   let mut target: i32 = 2;
   let mut ai: usize = 3;
@@ -2377,15 +2742,7 @@ fn main() -> i32 {
       out_path = args[ai + 1];
       ai += 2;
     } else if streq(args[ai], "--target") && ai + 1 < len(args) {
-      if streq(args[ai + 1], "wasm32-wasi") {
-        target = 3;
-      } else if streq(args[ai + 1], "arm64-mac") {
-        target = 2;
-      } else if streq(args[ai + 1], "amd64-mac") {
-        target = 1;
-      } else if streq(args[ai + 1], "amd64-linux") {
-        target = 0;
-      }
+      target = parse_target_name(args[ai + 1]);
       ai += 2;
     } else if streq(args[ai], "--dump-ir") {
       g_dump_ir = true;
@@ -2394,101 +2751,13 @@ fn main() -> i32 {
       ai += 1;
     }
   }
-  let src_result: Result[string, string] = read_file(path);
-  if src_result.is_err() {
-    eprint(cat3("rho: ", src_result.get_err(), "\n"));
-    return 2;
-  }
-  let module: *Decl = parse_file(path, src_result.get_ok());
-  if diag_count() > 0 {
-    print_diags();
-    return 1;
-  }
-  let m: *Module = new Module {
-    path: args[2], ns: "", root: module, syms: sm_new(),
-    is_prelude: false, checked: false,
-  };
-  let mut prelude_path: string = "boot/prelude/hosted.rho";
-  if target == 3 {
-    prelude_path = "boot/prelude/wasi.rho";
-  }
-  let prelude_r: Result[string, string] = read_file(prelude_path);
-  if !prelude_r.is_err() {
-    let pparse: *Decl = parse_file("<prelude>", prelude_r.get_ok());
-    let pmod: *Module = new Module {
-      path: "<prelude>", ns: "", root: pparse,
-      syms: sm_new(), is_prelude: true, checked: false,
-    };
-    check_all(pmod);
-    prelude_module = pmod;
-    m.syms = sm_new();
-    check_module(m);
-    // load `use` targets: aux modules check before the user module
-    let mut ui: usize = 0;
-    while ui < module.decls.n {
-      let ud: *Decl = module.decls.items[ui];
-      if ud.kind == DeclKind.DkUse && ud.path.n > 0 {
-        let aux: *Module = load_use_module(args[2], ud.path.items[0]);
-        if aux != null {
-          let msym: *Sym = new Sym {
-            kind: SymKind.SyModule, name: ud.path.items[0], type: null,
-            decl: null, mutable: false, variant_index: 0, local_id: 0,
-            symbol: "", owner: m, module: aux,
-          };
-          sm_put(m.syms, ud.path.items[0], msym);
-          check_all(aux);
-        }
-      }
-      ui += 1;
-    }
-  }
-  let diags_before: i32 = diag_count();
-  let nd: i32 = check_all(m);
-  if nd > diags_before {
-    print_diags();
-    return 1;
-  }
-  if streq(cmd, "check") {
-    // check stops here: parse + typecheck ok (boot prints "ok <file>")
-    print(cat4("ok ", path, "\n", ""));
-    return 0;
-  }
-  g_root_module = m;
-  lower_program();
-  if g_dump_ir {
-    lower_dump_ir();
-  }
-  if target == 3 {
-    let bytes: []u8 = emit_wasm();
-    write_file(out_path, bytes_as_string(bytes));
-    eprint("built ");
-    eprint(out_path);
-    eprint("\n");
-    return 0;
-  }
-  // native: emit assembly, then hand it to cc exactly like boot's driver
-  let mut bytes: []u8 = make([]u8, 0);
-  if target == 2 {
-    bytes = emit_arm64_text();
-  } else {
-    bytes = emit_amd64_text(target);
-  }
-  let s_path: string = cat3(out_path, ".s", "");
-  write_file(s_path, bytes_as_string(bytes));
-  let mut arch: string = "";
-  if target == 0 || target == 1 {
-    arch = "-arch x86_64 ";
-  }
-  let link_cmd: string = cat5("cc ", arch, s_path, " -o ", cat3(out_path, " 2>&1", ""));
-  let link_ptr: *u8 = cstr(link_cmd).ptr;
-  let rc: i32 = system(link_ptr);
+  let rc: i32 = build_to(path, target, out_path, streq(cmd, "check"));
   if rc != 0 {
-    eprint("rho: assembler/linker failed\n");
-    return 1;
+    return rc;
   }
-  eprint("built ");
-  eprint(out_path);
-  eprint("\n");
+  if streq(cmd, "build") {
+    print(cat5("built ", out_path, "\n", "", ""));
+  }
   return 0;
 }
 
@@ -7622,8 +7891,8 @@ fn lift_closure(c: *LCtx, e: *Expr, envdrop_out: *Vec[string]) -> string {
     lf.returns_aggregate = true;
     lf.out_slot = new_slot(cc, type_size(ret), type_align(ret), "out");
   }
-  lf.entry = new_block(cc);
-  use_block(cc, lf.entry);
+  // rc_new_fn already created the entry block; use it directly (a second
+  // block here left an empty B0 first, so lifted closures returned at once)
   scope_push_l(cc);
 
   let mut i: usize = 0;
