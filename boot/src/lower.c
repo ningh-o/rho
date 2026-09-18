@@ -237,7 +237,9 @@ static IRVreg *v_cmp(LCtx *c, IRCC cc, IRVreg *a, IRVreg *b, bool is_float) {
   i->b = b;
   i->cc = cc;
   i->is_float = is_float;
-  i->signed_ops = true;
+  // signedness follows the operand: usize/u64 counters with the top bit
+  // set must compare unsigned
+  i->signed_ops = ty_is_signed_int(a->ty);
   return i->dst;
 }
 

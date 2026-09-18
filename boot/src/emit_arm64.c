@@ -314,6 +314,20 @@ static void emit_ins64(Emitter64 *e, IRIns *i) {
     ld(e, vreg_off(e, i->a), 8, false, "x8");
     ld(e, vreg_off(e, i->b), 8, false, "x9");
     sb_printf(e->out, "  %s x8, x8, x9\n", mn);
+    // narrow operands wrap at their own width (spec: integer wraparound);
+    // canonicalize the 64-bit result so compares see the wrapped value
+    {
+      int64_t w = ir_size_of(i->a->ty);
+      if (w < 8) {
+        bool sgn = ty_is_signed_int(i->a->ty);
+        if (w == 4)
+          sb_printf(e->out, sgn ? "  sxtw x8, w8\n" : "  mov w8, w8\n");
+        else if (w == 2)
+          sb_printf(e->out, sgn ? "  sxth x8, w8\n" : "  uxth x8, w8\n");
+        else
+          sb_printf(e->out, sgn ? "  sxtb x8, w8\n" : "  uxtb x8, w8\n");
+      }
+    }
     st_(e, dof, 8, false, "x8");
     break;
   }
@@ -328,6 +342,18 @@ static void emit_ins64(Emitter64 *e, IRIns *i) {
     ld(e, vreg_off(e, i->b), 8, false, "x9");
     const char *mn = i->op == IR_SHL ? "lslv" : i->signed_ops ? "asrv" : "lsrv";
     sb_printf(e->out, "  %s x8, x8, x9\n", mn);
+    {
+      int64_t w = ir_size_of(i->a->ty);
+      if (w < 8 && i->op == IR_SHL) {
+        bool sgn = ty_is_signed_int(i->a->ty);
+        if (w == 4)
+          sb_printf(e->out, sgn ? "  sxtw x8, w8\n" : "  mov w8, w8\n");
+        else if (w == 2)
+          sb_printf(e->out, sgn ? "  sxth x8, w8\n" : "  uxth x8, w8\n");
+        else
+          sb_printf(e->out, sgn ? "  sxtb x8, w8\n" : "  uxtb x8, w8\n");
+      }
+    }
     st_(e, dof, 8, false, "x8");
     break;
   }
@@ -341,9 +367,12 @@ static void emit_ins64(Emitter64 *e, IRIns *i) {
       sb_printf(e->out, "  ldr %s, [x8]\n", i->size == 8 ? "d0" : "s0");
       st_(e, dof, i->size, true, "d0");
     } else {
-      const char *op = i->size == 1 ? "ldrsb x8, [x8]"
-                       : i->size == 2 ? "ldrsh x8, [x8]"
-                       : i->size == 4 ? "ldrsw x8, [x8]"
+      // zero-extend unsigned loads; the spill slot holds 8 bytes and
+      // sign-extension of a u8/u16/u32 would poison high bits
+      bool sgn = ty_is_signed_int(i->dst->ty);
+      const char *op = i->size == 1 ? (sgn ? "ldrsb x8, [x8]" : "ldrb w8, [x8]")
+                       : i->size == 2 ? (sgn ? "ldrsh x8, [x8]" : "ldrh w8, [x8]")
+                       : i->size == 4 ? (sgn ? "ldrsw x8, [x8]" : "ldr w8, [x8]")
                                       : "ldr x8, [x8]";
       sb_printf(e->out, "  %s\n", op);
       st_(e, dof, 8, false, "x8");
@@ -388,8 +417,10 @@ static void emit_ins64(Emitter64 *e, IRIns *i) {
     int64_t sof = vreg_off(e, i->a), dof = vreg_off(e, i->dst);
     switch (i->cast) {
     case CAST_TRUNC:
+      // store full width: every spill-slot reader reloads 8 bytes, and a
+      // narrow store would leave stale high bytes (spill-everything rule)
       ld(e, sof, ir_size_of(i->cast_from), false, "x8");
-      st_(e, dof, ir_size_of(i->cast_to) < 4 ? ir_size_of(i->cast_to) : 4, false, "x8");
+      st_(e, dof, 8, false, "x8");
       break;
     case CAST_SEXT:
       ld(e, sof, ir_size_of(i->cast_from), false, "x8");

@@ -1,5 +1,8 @@
 extern fn fd_write(fd: i32, iovs: i32, count: i32, nwritten: i32) -> i32;
 extern fn proc_exit(code: i32);
+extern fn system(cmd: *u8) -> i32;
+
+extern fn chmod(path: *u8, mode: i32) -> i32;
 
 pub enum Option[T] {
   Some(T),

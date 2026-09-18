@@ -347,6 +347,19 @@ static void emit_ins(Emitter *e, IRIns *i) {
       mov_slot_reg(e, ao, 8, false, RAX);
       mov_slot_reg(e, bo, 8, false, RCX);
       sb_printf(e->out, "  %s %s, %s\n", mn, RCX, RAX);
+      // narrow operands wrap at their own width (spec: integer wraparound)
+      {
+        int64_t w = ir_size_of(i->a->ty);
+        if (w < 8) {
+          bool sgn = ty_is_signed_int(i->a->ty);
+          if (w == 4)
+            sb_printf(e->out, sgn ? "  movslq %%eax, %%rax\n" : "  movl %%eax, %%eax\n");
+          else if (w == 2)
+            sb_printf(e->out, sgn ? "  movswq %%ax, %%rax\n" : "  movzwq %%ax, %%rax\n");
+          else
+            sb_printf(e->out, sgn ? "  movsbq %%al, %%rax\n" : "  movzbq %%al, %%rax\n");
+        }
+      }
       mov_reg_slot(e, dof, 8, false, RAX);
     }
     break;
@@ -362,6 +375,18 @@ static void emit_ins(Emitter *e, IRIns *i) {
     mov_slot_reg(e, bo, 8, false, RCX);
     const char *mn = i->op == IR_SHL ? "salq" : i->signed_ops ? "sarq" : "shrq";
     sb_printf(e->out, "  %s %%cl, %s\n", mn, RAX);
+    {
+      int64_t w = ir_size_of(i->a->ty);
+      if (w < 8 && i->op == IR_SHL) {
+        bool sgn = ty_is_signed_int(i->a->ty);
+        if (w == 4)
+          sb_printf(e->out, sgn ? "  movslq %%eax, %%rax\n" : "  movl %%eax, %%eax\n");
+        else if (w == 2)
+          sb_printf(e->out, sgn ? "  movswq %%ax, %%rax\n" : "  movzwq %%ax, %%rax\n");
+        else
+          sb_printf(e->out, sgn ? "  movsbq %%al, %%rax\n" : "  movzbq %%al, %%rax\n");
+      }
+    }
     mov_reg_slot(e, dof, 8, false, RAX);
     break;
   }
@@ -374,11 +399,17 @@ static void emit_ins(Emitter *e, IRIns *i) {
     if (i->is_float)
       sb_printf(e->out, "  %s (%%rax), %%xmm0\n", i->size == 8 ? "movsd" : "movss");
     else if (i->size == 1)
-      sb_printf(e->out, "  movsbq (%%rax), %s\n", RAX);
+      sb_printf(e->out, "  %s (%%rax), %s\n",
+                ty_is_signed_int(i->dst->ty) ? "movsbq" : "movzbq", RAX);
     else if (i->size == 2)
-      sb_printf(e->out, "  movswq (%%rax), %s\n", RAX);
-    else if (i->size == 4)
-      sb_printf(e->out, "  movslq (%%rax), %s\n", RAX);
+      sb_printf(e->out, "  %s (%%rax), %s\n",
+                ty_is_signed_int(i->dst->ty) ? "movswq" : "movzwq", RAX);
+    else if (i->size == 4) {
+      if (ty_is_signed_int(i->dst->ty))
+        sb_printf(e->out, "  movslq (%%rax), %%rax\n");
+      else
+        sb_printf(e->out, "  movl (%%rax), %%eax\n");
+    }
     else
       sb_printf(e->out, "  movq (%%rax), %s\n", RAX);
     if (i->is_float)
@@ -422,8 +453,10 @@ static void emit_ins(Emitter *e, IRIns *i) {
     int64_t sof = vreg_off(e, i->a), dof = vreg_off(e, i->dst);
     switch (i->cast) {
     case CAST_TRUNC:
+      // store full width: readers reload 8 bytes; narrow stores leave
+      // stale high bytes in the spill slot
       mov_slot_reg(e, sof, 8, false, RAX);
-      mov_reg_slot(e, dof, i->size == 4 ? 4 : (int)i->size, false, RAX);
+      mov_reg_slot(e, dof, 8, false, RAX);
       break;
     case CAST_SEXT:
       mov_slot_reg(e, sof, ir_size_of(i->cast_from), false, RAX);

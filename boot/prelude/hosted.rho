@@ -4,6 +4,10 @@ extern fn calloc(nm: usize, sz: usize) -> *u8;
 
 extern fn free(p: *u8);
 
+extern fn system(cmd: *u8) -> i32;
+
+extern fn chmod(path: *u8, mode: i32) -> i32;
+
 pub enum Option[T] {
   Some(T),
   None,

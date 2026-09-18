@@ -3,6 +3,9 @@
 const char PRELUDE_WASI_SOURCE[] =
 "extern fn fd_write(fd: i32, iovs: i32, count: i32, nwritten: i32) -> i32;\n"
 "extern fn proc_exit(code: i32);\n"
+"extern fn system(cmd: *u8) -> i32;\n"
+"\n"
+"extern fn chmod(path: *u8, mode: i32) -> i32;\n"
 "\n"
 "pub enum Option[T] {\n"
 "  Some(T),\n"
