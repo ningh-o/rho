@@ -1,0 +1,1 @@
+tests/diag/d031_dup_prim_method.rho:1:1: error: duplicate method `to_str` for primitive `i32` (primitive methods are global)

@@ -1,0 +1,7 @@
+fn i32.to_str(self: i32) -> string {
+  return "nope";
+}
+
+fn main() -> i32 {
+  return 0;
+}

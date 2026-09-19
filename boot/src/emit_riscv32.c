@@ -829,7 +829,10 @@ static void emit_fn32(Emitter32 *e, IRFn *fn) {
   for (size_t p = 0; p < fn->params.n && ri < 8; p++) {
     IRSlot *slot = fn->params.items[p];
     Type *pt = fn->param_types.items[p];
-    if (pt && (pt->kind == TY_I64 || pt->kind == TY_U64)) {
+    // i64/u64 AND f64 travel as register pairs (the caller's is64arg
+    // classification) — missing f64 here dropped the high word and every
+    // float parameter arrived as its low 32 bits
+    if (pt && (pt->kind == TY_I64 || pt->kind == TY_U64 || pt->kind == TY_F64)) {
       if (ri + 2 > 8)
         break;
       addr_into32(e, slot_off32(e, slot));

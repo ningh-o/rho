@@ -18,21 +18,18 @@ fn main() -> i32 {
     title: "Numbers that stay defined",
     code: `fn main() -> i32 {
   let big: i32 = 2_147_483_647;
-  print_int((big + 1) as i64); // wraps, never UB
-  print("\\n");
+  println(big + 1); // wraps, never UB
 
   let third: f64 = 1.0 / 3.0;
-  print_int((third * 3.0) as i64); // 0.333... * 3 == 1
-  print("\\n");
+  println(third); // 17 digits: enough to read the exact value back
 
   let hex: i32 = 0xFF;      // 255
   let bits: i32 = 0b1010;   // 10
-  print_int((hex + bits) as i64);
-  print("\\n");
+  println(hex + bits);
   return 0;
 }
 `,
-    expect: `-2147483648\n1\n265\n`,
+    expect: `-2147483648\n0.33333333333333331\n265\n`,
   },
   {
     id: "bindings",
@@ -42,8 +39,7 @@ fn main() -> i32 {
   let mut y: i32 = 0;   // mut to allow assignment
   y += x;
   // x = 5;             // rejected by the compiler
-  print_int(y as i64);
-  print("\\n");
+  println(y);
   return 0;
 }
 `,
@@ -58,8 +54,7 @@ fn main() -> i32 {
 }
 
 fn main() -> i32 {
-  print(classify(5));
-  print("\\n");
+  println(classify(5));
 
   let mut i: i32 = 0;
   let mut sum: i32 = 0;
@@ -67,8 +62,7 @@ fn main() -> i32 {
     sum += i;
     i += 1;
   }
-  print_int(sum as i64);
-  print("\\n");
+  println(sum);
 
   loop {
     sum += 1;
@@ -76,8 +70,7 @@ fn main() -> i32 {
       break;
     }
   }
-  print_int(sum as i64);
-  print("\\n");
+  println(sum);
   return 0;
 }
 `,
@@ -104,10 +97,8 @@ fn power(base: i32, exp: i32) -> i32 {
 }
 
 fn main() -> i32 {
-  print_int(fib(20) as i64);
-  print("\\n");
-  print_int(power(2, 16) as i64);
-  print("\\n");
+  println(fib(20));
+  println(power(2, 16));
   return 0;
 }
 `,
@@ -131,13 +122,11 @@ fn Point.dist2(self: *Point, other: *Point) -> f64 {
 fn main() -> i32 {
   let a: *Point = new Point { x: 0.0, y: 0.0 };
   let b: *Point = new Point { x: 3.0, y: 4.0 };
-  let d2: f64 = a.dist2(b); // 25: the 3-4-5 triangle
-  print_int(d2 as i64);
-  print("\\n");
+  println(a.dist2(b)); // 25: the 3-4-5 triangle
   return 0;
 }
 `,
-    expect: `25\n`,
+    expect: `25.0\n`,
   },
   {
     id: "enums",
@@ -160,16 +149,13 @@ fn area(s: Shape) -> f64 {
 fn main() -> i32 {
   let r: Shape = Shape.Rect(w: 3.0, h: 4.0);
   let c: Shape = Shape.Circle(2.0);
-  print_int((area(r) * 100.0) as i64);
-  print("\\n");
-  print_int((area(c) * 100.0) as i64);
-  print("\\n");
-  print_int(area(Shape.Point) as i64);
-  print("\\n");
+  println(area(r));
+  println(area(c));
+  println(area(Shape.Point));
   return 0;
 }
 `,
-    expect: `1200\n1256\n0\n`,
+    expect: `12.0\n12.56636\n0.0\n`,
   },
   {
     id: "slices",
@@ -190,11 +176,9 @@ fn main() -> i32 {
   xs[1] = 20;
   xs[2] = 30;
   xs[3] = 40;
-  print_int(sum(xs) as i64);
-  print("\\n");
+  println(sum(xs));
   let view: []i32 = xs[1..3]; // shares the buffer
-  print_int(sum(view) as i64);
-  print("\\n");
+  println(sum(view));
   // xs[9] would panic: index out of bounds, never silent corruption
   return 0;
 }
@@ -219,16 +203,15 @@ fn compute() -> Result[i32, string] {
 
 fn main() -> i32 {
   let v: Result[i32, string] = compute();
-  print_int(match v {
+  let n: i32 = match v {
     Result.Ok(x) => x,
     Result.Err(_) => 0,
-  } as i64);
-  print("\\n");
-  print(match safe_div(1, 0) {
+  };
+  println(n);
+  println(match safe_div(1, 0) {
     Result.Ok(_) => "ok",
     Result.Err(e) => e,
   });
-  print("\\n");
   return 0;
 }
 `,
@@ -245,12 +228,9 @@ fn main() -> i32 {
 fn main() -> i32 {
   let add10: fn(i32) -> i32 = make_adder(10);
   let add90: fn(i32) -> i32 = make_adder(90);
-  print_int(add10(5) as i64);
-  print("\\n");
-  print_int(add90(5) as i64);
-  print("\\n");
-  print_int((add10(1) + add90(1)) as i64);
-  print("\\n");
+  println(add10(5));
+  println(add90(5));
+  println(add10(1) + add90(1));
   return 0;
 }
 `,
@@ -277,12 +257,9 @@ fn main() -> i32 {
   let b: i64 = id(11); // a fresh specialization
   let p: *Pair[i32, i64] = new Pair[i32, i64] { a: 3, b: 4 };
   let q: *Pair[i64, i32] = swap(p);
-  print_int(a as i64);
-  print("\\n");
-  print_int(b);
-  print("\\n");
-  print_int(q.a); // i64 payload survives the swap
-  print("\\n");
+  println(a);
+  println(b);
+  println(q.a); // i64 payload survives the swap
   return 0;
 }
 `,
@@ -302,8 +279,7 @@ fn main() -> i32 {
 
 fn main() -> i32 {
   let r: i32 = work();
-  print_int(r as i64);
-  print("\\n");
+  println(r);
   return 0;
 }
 `,
@@ -322,8 +298,7 @@ fn main() -> i32 {
   let a: *Node = new Node { value: 1, next: null };
   let b: *Node = a; // copies the pointer, bumps the count
 
-  print_int(b.value as i64);
-  print("\\n");
+  println(b.value);
 
   // when the last reference dies the object is freed —
   // no garbage collector, no pauses, no use-after-free
@@ -349,10 +324,9 @@ fn main() -> i32 {
   let mut i: i32 = 0;
   while i <= 10 {
     print("fib(");
-    print_int(i as i64);
+    print(i.to_str());
     print(") = ");
-    print_int(fib(i) as i64);
-    print("\\n");
+    println(fib(i));
     i += 1;
   }
   return 0;

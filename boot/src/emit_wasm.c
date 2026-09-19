@@ -684,9 +684,13 @@ static void emit_ins(WFnCtx *c, IRIns *i) {
   case IR_COPYMEM:
     lget(c, i->addr);
     lget(c, i->a);
-    if (i->size < 0)
+    if (i->size < 0) {
       lget(c, i->b); // runtime byte count
-    else
+      // usize travels as an i64 local on this target, but memory.copy
+      // takes i32 lengths
+      if (w_is64(i->b->ty))
+        w8(c->body, 0xA7); // i32.wrap_i64
+    } else
       i32c(c, i->size);
     w8(c->body, 0xFC);
     w8(c->body, 0x0A); // memory.copy
@@ -873,11 +877,19 @@ static IRBlock *emit_region(WFnCtx *c, IRBlock *b, IRBlock *from);
 // fresh, stop the moment it was already emitted or someone owns it
 static void emit_region_run(WFnCtx *c, IRBlock *b, IRBlock *from) {
   int guard = 0;
+  bool ran = false;
   while (b && !b->emitted && !has_target(c, b) && guard++ < 4096) {
+    ran = true;
     IRBlock *next = emit_region(c, b, from);
     from = b;
     b = next;
   }
+  // an arm that BEGINS at an owned block (the short-circuit false edge
+  // straight into the claimed join) used to fall through silently — the
+  // position was right, but the br's phi edge copies never happened, so
+  // `&&` results went stale across loop iterations. Branch explicitly.
+  if (!ran && b && (b->emitted || has_target(c, b)))
+    emit_br(c, from, b);
 }
 static IRBlock *emit_region(WFnCtx *c, IRBlock *b, IRBlock *from) {
   int started_loop = 0; // this invocation opened the loop labels
@@ -902,6 +914,9 @@ static IRBlock *emit_region(WFnCtx *c, IRBlock *b, IRBlock *from) {
       started_loop = 1;
     }
     b->emitted = true;
+    if (getenv("RHO_WASM_DEBUG"))
+      fprintf(stderr, "  [%s] emit B%d (loop=%d) labels=%u\n", c->fn->symbol, b->id,
+              b->loop_header ? 1 : 0, (unsigned)c->labels.n);
     for (size_t k = 0; k < b->ins.n; k++)
       emit_ins(c, b->ins.items[k]);
     if (!b->term) {
@@ -1001,12 +1016,20 @@ static IRBlock *emit_region(WFnCtx *c, IRBlock *b, IRBlock *from) {
       claimed = true;
     }
     push_label(c, 2, NULL); // the anonymous if occupies a br depth
+    if (getenv("RHO_WASM_DEBUG"))
+      fprintf(stderr, "  [%s] if B%d t=B%d f=B%d join=B%d claimed=%d labels=%u\n",
+              c->fn->symbol, b->id, t ? t->id : -1, f ? f->id : -1, join ? join->id : -1,
+              claimed, (unsigned)c->labels.n);
     lget(c, b->term->a);
     w8(c->body, 0x04); // if
     w8(c->body, 0x40); // void blocktype
     emit_region_run(c, t, b);
+    if (getenv("RHO_WASM_DEBUG"))
+      fprintf(stderr, "  [%s] else (of B%d)\n", c->fn->symbol, b->id);
     w8(c->body, 0x05); // else
     emit_region_run(c, f, b);
+    if (getenv("RHO_WASM_DEBUG"))
+      fprintf(stderr, "  [%s] endif (of B%d)\n", c->fn->symbol, b->id);
     w8(c->body, 0x0B); // end if
     pop_label(c);      // drop the if placeholder
     if (!join) {

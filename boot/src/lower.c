@@ -10,6 +10,9 @@ Vec g_ir_fns = {0};
 Vec g_ir_globals = {0};
 const char *g_main_symbol = NULL;
 
+static void lower_drop_unreachable(void);
+extern bool g_prelude_esp32; // set by the build driver: RV32 keep-set (below)
+
 static Module *g_root_module;
 
 void lower_set_root(Module *m) { g_root_module = m; }
@@ -94,6 +97,8 @@ static IRType ir_type_of(Type *t) {
   case TY_ISIZE: return IT_I64;
   case TY_F32: return IT_F32;
   case TY_F64: return IT_F64;
+  case TY_INT_LIT: return IT_I32;
+  case TY_FLOAT_LIT: return IT_F64; // BISECT-A
   default: return IT_PTR;
   }
 }
@@ -1503,17 +1508,22 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
         return p;
       return v_load(c, p, ir_type_of(pointee));
     }
-    IRVreg *a = lv_expr(c, e->a);
     IRType ty = ir_type_of(t);
+    // forward the context-adapted node type to a literal operand: the
+    // child of `-2.75` in an f32 position must materialize as f32, not as
+    // the unadapted FLOAT_LIT default
+    if (e->unop == P_MINUS && (e->a->kind == EX_FLOAT || e->a->kind == EX_INT))
+      e->a->typed = t;
+    IRVreg *a = lv_expr(c, e->a);
     if (e->unop == P_BANG)
       return v_cmp(c, CC_EQ, a, v_const(c, 0, a->ty), false);
     if (e->unop == P_TILDE)
       return v_binop(c, IR_XOR, a, v_const(c, ~(uint64_t)0, a->ty), a->ty, false);
     if (e->unop == P_MINUS) {
-      if (ir_is_float(a->ty)) {
-        IRVreg *zero = v_const(c, 0, a->ty);
+      if (ir_is_float(ty)) {
+        IRVreg *zero = fconst(c, 0.0, ty);
         IRIns *i = emit(c, IR_SUB);
-        i->dst = new_vreg(c, a->ty);
+        i->dst = new_vreg(c, ty);
         i->a = zero;
         i->b = a;
         i->is_float = true;
@@ -2926,6 +2936,85 @@ void lower_program(void) {
         lower_static(sym);
     }
   }
+  if (!getenv("RHO_NO_DCE"))
+    lower_drop_unreachable();
+}
+
+// ------------------------------------------------------ reachability -----
+//
+// Post-lowering dead-function elimination (spec §11.3): the prelude carries
+// formatting machinery most programs never touch, and lowering emits every
+// checked fn. Every cross-function reference in the IR is a `callee` string
+// — direct calls, address-taken fn values and globals, shims — so a symbol
+// walk over instructions is the whole reference graph. Two classes are kept
+// beyond the graph: the entry fn, and the fns backends call by symbol from
+// emitted code (__panic_div everywhere; the esp32c3 soft-float set on RV32).
+// Emission order is preserved — determinism is untouched.
+
+typedef struct ReachCtx {
+  Map *all;  // symbol -> IRFn*
+  Map *keep; // symbol -> IRFn* kept so far
+  Vec *work;
+} ReachCtx;
+
+static void reach_visit(const char *sym, void *p) {
+  ReachCtx *rc = p;
+  IRFn *fn = map_get(rc->all, str_from(sym));
+  if (fn && !map_get(rc->keep, str_from(fn->symbol))) {
+    map_put(rc->keep, str_from(fn->symbol), fn);
+    vec_push(rc->work, fn);
+  }
+}
+
+static void lower_drop_unreachable(void) {
+  if (g_ir_fns.n == 0)
+    return;
+  Map all = {0};
+  for (size_t i = 0; i < g_ir_fns.n; i++) {
+    IRFn *fn = g_ir_fns.items[i];
+    map_put(&all, str_from(fn->symbol), fn);
+  }
+  // entry point; without a resolvable one (defensive — every real build has
+  // main) keep everything rather than guess
+  if (!g_main_symbol || !map_get(&all, str_from(g_main_symbol)))
+    return;
+  Map keep = {0};
+  Vec work = {0};
+  ReachCtx rc = {&all, &keep, &work};
+  reach_visit(g_main_symbol, &rc);
+  // the divide-by-zero check every backend emits references by symbol
+  reach_visit(prelude_symbol("__panic_div"), &rc);
+  if (g_prelude_esp32) {
+    // RV32 soft-float helpers + the panic family the emitter can reach
+    static const char *ESP32_KEEP[] = {
+        "__fadd32", "__fadd64", "__fsub32", "__fsub64", "__fmul32", "__fmul64",
+        "__fdiv32", "__fdiv64", "__feq32", "__feq64", "__flt32", "__flt64",
+        "__f64_f32", "__f32_f64", "__i2f64", "__f2i64", "__panic_oob",
+        "__panic_null",
+    };
+    for (size_t i = 0; i < sizeof(ESP32_KEEP) / sizeof(ESP32_KEEP[0]); i++)
+      reach_visit(prelude_symbol(ESP32_KEEP[i]), &rc);
+  }
+  while (work.n > 0) {
+    IRFn *fn = work.items[work.n - 1];
+    work.n--;
+    for (size_t bi = 0; bi < fn->blocks.n; bi++) {
+      IRBlock *b = fn->blocks.items[bi];
+      for (size_t ii = 0; ii < b->ins.n; ii++) {
+        IRIns *i = b->ins.items[ii];
+        if (i->callee)
+          reach_visit(i->callee, &rc);
+      }
+    }
+  }
+  // filter in place, preserving emission order
+  size_t w = 0;
+  for (size_t i = 0; i < g_ir_fns.n; i++) {
+    IRFn *fn = g_ir_fns.items[i];
+    if (map_get(&keep, str_from(fn->symbol)))
+      g_ir_fns.items[w++] = fn;
+  }
+  g_ir_fns.n = w;
 }
 
 void lower_dump_ir(void) {

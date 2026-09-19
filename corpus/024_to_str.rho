@@ -1,0 +1,34 @@
+// exit: 0
+struct Point {
+  x: i32,
+  y: i32,
+}
+
+fn Point.to_str(self: *Point) -> string {
+  return cat("(", cat(self.x.to_str(), cat(", ", cat(self.y.to_str(), ")"))));
+}
+
+enum Shape {
+  Circle(f64),
+  Unit,
+}
+
+fn Shape.to_str(self: Shape) -> string {
+  return match self {
+    Shape.Circle(r) => cat("circle(", cat(r.to_str(), ")")),
+    Shape.Unit => "unit",
+  };
+}
+
+fn main() -> i32 {
+  let p = new Point { x: 3, y: 0 - 4 };
+  println(p);
+  let c: Shape = Shape.Circle(2.5);
+  println(c);
+  let u: Shape = Shape.Unit;
+  println(u);
+  assert_eq(1 + 1, 2);
+  let n: i32 = 5;
+  println(n.to_str());
+  return 0;
+}

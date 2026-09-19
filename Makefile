@@ -16,10 +16,12 @@ build/rho-boot: $(BOOT_OBJ)
 boot/src/%.o: boot/src/%.c boot/src/rho.h boot/src/prelude_data.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-boot/src/prelude_data.c: boot/prelude/hosted.rho boot/prelude/wasi.rho boot/prelude/esp32c3.rho tools/embed.py
-	python3 tools/embed.py boot/prelude/hosted.rho PRELUDE_SOURCE boot/src/prelude_data.c
-	python3 tools/embed.py boot/prelude/wasi.rho PRELUDE_WASI_SOURCE boot/src/prelude_wasi_data.inc
-	python3 tools/embed.py boot/prelude/esp32c3.rho PRELUDE_ESP32_SOURCE boot/src/prelude_esp32_data.inc
+CORE := boot/prelude/core.rho
+
+boot/src/prelude_data.c: $(CORE) boot/prelude/hosted.rho boot/prelude/wasi.rho boot/prelude/esp32c3.rho tools/embed.py
+	python3 tools/embed.py PRELUDE_SOURCE boot/src/prelude_data.c $(CORE) boot/prelude/hosted.rho
+	python3 tools/embed.py PRELUDE_WASI_SOURCE boot/src/prelude_wasi_data.inc $(CORE) boot/prelude/wasi.rho
+	python3 tools/embed.py PRELUDE_ESP32_SOURCE boot/src/prelude_esp32_data.inc $(CORE) boot/prelude/esp32c3.rho
 	cat boot/src/prelude_wasi_data.inc boot/src/prelude_esp32_data.inc >> boot/src/prelude_data.c
 
 # the compiler itself as wasm32-wasi: the browser playground runs this

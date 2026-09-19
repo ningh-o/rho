@@ -187,7 +187,39 @@ static Type *ty_fn(Vec params, Type *ret) {
 // its body under the concrete environment, and is lowered as a plain
 // function. Template decls themselves are never checked or lowered.
 
+// a primitive in the spec sense (§2.1): any named builtin type a method can
+// anchor to — every integer width, bool, the two floats, and string
+static bool ty_is_primitive(Type *t) {
+  switch (t->kind) {
+  case TY_BOOL: case TY_I8: case TY_I16: case TY_I32: case TY_I64:
+  case TY_U8: case TY_U16: case TY_U32: case TY_U64:
+  case TY_F32: case TY_F64: case TY_STRING: case TY_USIZE: case TY_ISIZE:
+    return true;
+  default:
+    return false;
+  }
+}
+
 static Map *g_tenv;  // active name -> Type* while resolving/checking a clone
+
+// Methods on primitive types (`fn i32.to_str(self: i32)`). Struct and enum
+// methods hang off the RecType; primitives are interned singletons without
+// one, so their methods live here, keyed by the primitive's mangled name.
+// The table is GLOBAL: a duplicate primitive method anywhere — prelude
+// included — is an error, so a prelude method can never be silently
+// shadowed from user code.
+static Map g_prim_methods; // char* prim name -> Vec of Sym*
+static Sym *prim_method_find(Type *prim, Str name) {
+  Vec *v = map_get(&g_prim_methods, str_from(prim->mangled));
+  if (!v)
+    return NULL;
+  for (size_t i = 0; i < v->n; i++) {
+    Sym *m = v->items[i];
+    if (str_eq(m->name, name))
+      return m;
+  }
+  return NULL;
+}
 
 static Type *ty_param_(char *name) {
   Type *t = ty_newk(TY_PARAM);
@@ -450,11 +482,15 @@ static Sym *instantiate_fn(Sym *gsym, Vec *names, Map *env, Expr *at) {
   // mangle in the canonical parameter order so the name is deterministic
   SB sb = {0};
   sb_printf(&sb, "%.*s$", (int)d->name.n, d->name.p);
+  SB pb = {0}; // pretty name for diagnostics: `print[T=*Point]`
+  sb_printf(&pb, "%.*s[", (int)d->name.n, d->name.p);
   for (size_t i = 0; i < names->n; i++) {
     char *name = names->items[i];
     Type *targ = map_get(env, str_from(name));
-    if (i)
+    if (i) {
       sb_push(&sb, ',');
+      sb_append_c(&pb, ", ");
+    }
     if (!targ || targ->kind == TY_PARAM) {
       err_at(at->file, at->line, at->col, "cannot infer `%s` for `%s`", name,
              str_to_c(d->name));
@@ -465,6 +501,9 @@ static Sym *instantiate_fn(Sym *gsym, Vec *names, Map *env, Expr *at) {
     if (targ->kind == TY_FLOAT_LIT)
       targ = ty_prim(PRIM_F64);
     map_put(env, str_from(name), targ);
+    sb_append_c(&pb, name);
+    sb_push(&pb, '=');
+    sb_append_c(&pb, targ->mangled);
     // sanitize into the symbol name
     for (const char *p = targ->mangled; *p; p++)
       sb_push(&sb, ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
@@ -472,6 +511,7 @@ static Sym *instantiate_fn(Sym *gsym, Vec *names, Map *env, Expr *at) {
                        ? *p
                        : '_');
   }
+  sb_push(&pb, ']');
   Str mangled = sb_finish(&sb);
   Sym *existing = map_get(&g_instantiated, mangled);
   if (existing)
@@ -485,6 +525,10 @@ static Sym *instantiate_fn(Sym *gsym, Vec *names, Map *env, Expr *at) {
   Decl *clone = clone_fn_decl(d);
   clone->name = mangled;
   clone->tenv = env;
+  clone->inst_pretty = sb_finish(&pb);
+  clone->inst_site_file = at->file;
+  clone->inst_site_line = at->line;
+  clone->inst_site_col = at->col;
   Sym *sym = arena_alloc_zeroed(sizeof(Sym));
   sym->kind = SY_FN;
   sym->name = mangled;
@@ -670,6 +714,9 @@ void check_reset(void) {
   g_instantiations = (Vec){0};
   g_instantiated = (Map){0};
   g_instantiation_depth = 0;
+  g_prim_methods = (Map){0};
+  g_inst_anchor_file = (Str){0};
+  g_inst_anchor_note = NULL;
 }
 
 bool g_prelude_wasm = false; // wasm32-wasi targets use the fd_write prelude
@@ -1853,6 +1900,25 @@ static CallTarget resolve_callee(Expr *callee) {
         }
       }
     }
+    // 4b) primitive receiver (`n.to_str()`): auto-deref through pointers,
+    // then the global primitive method table
+    if (!rec_t) {
+      Type *pt = bt;
+      while (pt && pt->kind == TY_PTR)
+        pt = pt->elem;
+      if (pt && ty_is_primitive(pt)) {
+        Sym *m = prim_method_find(pt, callee->sv);
+        if (m) {
+          ct.kind = CT_FN;
+          ct.sym = m;
+          ct.fn_type = m->type;
+          ct.is_method = true;
+          callee->sym = m;
+          callee->a->typed = bt;
+          return ct;
+        }
+      }
+    }
     if (getenv("RHO_DBG_M") && rec_t) {
       RecType *rr = rec_t->rec;
       RecType *tt = rr->decl->templ;
@@ -2067,6 +2133,9 @@ static Type *check_call(Expr *e, Type *expected) {
     return e->typed;
   }
   // generic call: infer the type arguments and specialize
+  Vec generic_arg_types = {0}; // args checked here must not be re-checked
+                               // below: re-checking re-declares match-arm
+                               // bindings and reports phantom shadowing
   if (ct.kind == CT_FN &&
       (ct.inst_rec || (ct.sym->decl->templated && ct.sym->decl->tparams.n))) {
     Map *env = arena_alloc_zeroed(sizeof(Map));
@@ -2093,6 +2162,7 @@ static Type *check_call(Expr *e, Type *expected) {
       ERR(e, "function takes %zu arguments, got %zu", nparams - first_arg, e->args.n);
     for (size_t i = 0; i < e->args.n; i++) {
       Type *at = check_expr(e->args.items[i], NULL);
+      vec_push(&generic_arg_types, at);
       infer_targs(fn_t->params.items[first_arg + i], at, env);
     }
     // untyped literals adapt through a direct `-> T` return
@@ -2245,12 +2315,20 @@ static Type *check_call(Expr *e, Type *expected) {
     }
     // accept receiver by value or pointer when self matches the other form
     bool ok = ty_eq(recv, self_param);
+    bool literal_recv = recv && (recv->kind == TY_INT_LIT || recv->kind == TY_FLOAT_LIT);
     if (!ok && recv && recv->kind == TY_PTR && self_param->kind != TY_PTR &&
         ty_eq(recv->elem, self_param))
       ok = true; // self: T, receiver *T: auto-deref (no auto-ref; there is no &)
+    if (!ok && literal_recv && self_param &&
+        ((recv->kind == TY_INT_LIT && ty_is_int(self_param)) ||
+         (recv->kind == TY_FLOAT_LIT && ty_is_float(self_param))))
+      ok = true; // untyped literal receiver adapts to self (`5.to_str()`)
     if (!ok)
       ERR(e->a, "method `%s` expects self as `%s`, receiver is `%s`",
           str_to_c(e->a->sv), ty_name(self_param), ty_name(recv));
+    else if (literal_recv)
+      // adapt it so lowering materializes the constant at self's width
+      require(recv, self_param, e->a->a, "method receiver");
     first_arg = 1;
   } else if (e->args.n != nparams) {
     ERR(e, "function takes %zu arguments, got %zu", nparams, e->args.n);
@@ -2260,7 +2338,9 @@ static Type *check_call(Expr *e, Type *expected) {
     if (ai >= e->args.n)
       break;
     Type *pt = fn_t->params.items[i];
-    require(check_expr(e->args.items[ai], pt), pt, (Expr *)e->args.items[ai], "argument");
+    Type *at = ai < generic_arg_types.n ? (Type *)generic_arg_types.items[ai]
+                                        : check_expr(e->args.items[ai], pt);
+    require(at, pt, (Expr *)e->args.items[ai], "argument");
   }
   e->typed = fn_t->ret;
   // never coercion: panic never returns, so a call to it is compatible with
@@ -2778,15 +2858,32 @@ static void resolve_sym_type(Sym *sym) {
       Type *pt = resolve_type_in_module(sym->owner, pa->ty);
       vec_push(&ps, pt);
       if (pa->is_self) {
-        // attach the method to its struct/enum
+        // attach the method to its struct/enum — or, for a primitive
+        // receiver (`fn i32.to_str`), to the global primitive table
         Type *rec_t = pt->kind == TY_PTR ? pt->elem : pt;
-        if (rec_t->kind != TY_STRUCT && rec_t->kind != TY_ENUM) {
-          err_at(d->file, d->line, d->col, "`self` must be a struct or enum");
-        } else {
+        if (rec_t->kind == TY_STRUCT || rec_t->kind == TY_ENUM) {
           vec_push(&rec_t->rec->methods, sym);
           if (getenv("RHO_DBG_M"))
             fprintf(stderr, "[reg] %s on %s\n", str_to_c(sym->name),
                     rec_t->rec->mangled.p ? rec_t->rec->mangled.p : "?");
+        } else if (ty_is_primitive(rec_t)) {
+          if (prim_method_find(rec_t, sym->name)) {
+            err_at(d->file, d->line, d->col,
+                   "duplicate method `%s` for primitive `%s` (primitive methods are global)",
+                   str_to_c(sym->name), rec_t->mangled);
+          } else {
+            Str key = str_from(rec_t->mangled);
+            Vec *v = map_get(&g_prim_methods, key);
+            if (!v) {
+              v = arena_alloc_zeroed(sizeof(Vec));
+              map_put(&g_prim_methods, key, v);
+            }
+            vec_push(v, sym);
+            if (getenv("RHO_DBG_M"))
+              fprintf(stderr, "[reg] %s on primitive %s\n", str_to_c(sym->name), rec_t->mangled);
+          }
+        } else {
+          err_at(d->file, d->line, d->col, "`self` must be a struct, enum, or primitive");
         }
       }
     }
@@ -2932,12 +3029,23 @@ int check_module(Decl *module) {
   }
   // instantiation worklist: each clone's body re-checked under its concrete
   // environment; checking may discover further instantiations, so the loop
-  // runs until the queue settles
+  // runs until the queue settles. Errors inside a clone re-anchor to the
+  // call site that demanded it — a `print(x)` on a type without `to_str`
+  // belongs at the user's `print`, not in the prelude.
   for (size_t wl = 0; wl < g_instantiations.n; wl++) {
     Sym *sym = g_instantiations.items[wl];
     Map *saved_env = g_tenv;
     g_tenv = (Map *)sym->decl->tenv;
+    bool anchored = sym->decl->inst_pretty.p != NULL;
+    if (anchored) {
+      g_inst_anchor_file = sym->decl->inst_site_file;
+      g_inst_anchor_line = sym->decl->inst_site_line;
+      g_inst_anchor_col = sym->decl->inst_site_col;
+      g_inst_anchor_note = str_to_c(sym->decl->inst_pretty);
+    }
     check_fn_body(sym->decl, sym);
+    if (anchored)
+      g_inst_anchor_note = NULL;
     g_tenv = saved_env;
   }
   cur_module = NULL;
@@ -2988,9 +3096,16 @@ const char *sym_symbol(Sym *s) {
   }
   Module *m = s->owner;
   // instantiation names carry type arguments (`swap$i32,i64`) — sanitize so
-  // the assembler sees one legal token
-  s->symbol = arena_printf("rho_%s__%s", rho_sanitize(str_to_c(m->path)),
-                           rho_sanitize_sym(str_to_c(s->name)));
+  // the assembler sees one legal token. Methods fold in the receiver name:
+  // `to_str` is defined once per type in a module and the bare name would
+  // collide.
+  if (s->decl && s->decl->is_method && s->decl->recv.n)
+    s->symbol = arena_printf("rho_%s__%s_%s", rho_sanitize(str_to_c(m->path)),
+                             rho_sanitize(str_to_c(s->decl->recv)),
+                             rho_sanitize_sym(str_to_c(s->name)));
+  else
+    s->symbol = arena_printf("rho_%s__%s", rho_sanitize(str_to_c(m->path)),
+                             rho_sanitize_sym(str_to_c(s->name)));
   return s->symbol;
 }
 

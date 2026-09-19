@@ -1,0 +1,583 @@
+// The rho prelude core — pure, target-independent, prepended to every
+// target's tail (hosted / wasi / esp32c3) at embed time. The tails provide
+// the four per-target hooks this core builds on:
+//
+//   __print_str(s: string)   stdout bytes
+//   __eprint_str(s: string)  stderr bytes
+//   __exit(code: i32)        terminal exit
+//   __alloc / __free         allocator hooks
+//
+// Printing is the to_str protocol (spec §10.1): a type is printable when
+// it has a method `to_str(self) -> string`; print/println/eprint are
+// generic over the value's type and call it. Every primitive gets to_str
+// here; floats go through an exact bigint formatter (the same algorithm
+// the self-hosted compiler uses for its canonical goldens) so the digits
+// are identical on every target, soft-float included.
+
+pub enum Option[T] {
+  Some(T),
+  None,
+}
+
+pub enum Result[T, E] {
+  Ok(T),
+  Err(E),
+}
+
+fn Option.is_some(self: Option) -> bool {
+  return match self {
+    Option.Some(_) => true,
+    Option.None => false,
+  };
+}
+
+fn Option.is_none(self: Option) -> bool {
+  return match self {
+    Option.Some(_) => false,
+    Option.None => true,
+  };
+}
+
+fn Result.is_ok(self: Result) -> bool {
+  return match self {
+    Result.Ok(_) => true,
+    Result.Err(_) => false,
+  };
+}
+
+fn Result.is_err(self: Result) -> bool {
+  return match self {
+    Result.Ok(_) => false,
+    Result.Err(_) => true,
+  };
+}
+
+// ------------------------------------------------------------ panics --
+
+fn panic(msg: string) {
+  __eprint_str("panic: ");
+  __eprint_str(msg);
+  __eprint_str("\n");
+  __exit(101);
+}
+
+fn assert(cond: bool) {
+  if !cond {
+    panic("assertion failed");
+  }
+}
+
+fn assert_eq[T](a: T, b: T) {
+  if !(a == b) {
+    panic(cat(cat("assert_eq failed: ", a.to_str()), cat(" != ", b.to_str())));
+  }
+}
+
+fn __panic_div() {
+  panic("division by zero");
+}
+
+fn __panic_oob() {
+  panic("index out of bounds");
+}
+
+fn __panic_null() {
+  panic("null dereference");
+}
+
+fn __streq(a: string, b: string) -> bool {
+  if len(a) != len(b) {
+    return false;
+  }
+  let mut i: usize = 0;
+  while i < len(a) {
+    if a[i] != b[i] {
+      return false;
+    }
+    i += 1;
+  }
+  return true;
+}
+
+// --------------------------------------------------------- strings --
+
+fn cat(a: string, b: string) -> string {
+  let buf: []u8 = make([]u8, len(a) + len(b));
+  let mut i: usize = 0;
+  while i < len(a) {
+    buf[i] = a[i];
+    i += 1;
+  }
+  let mut j: usize = 0;
+  while j < len(b) {
+    buf[i + j] = b[j];
+    j += 1;
+  }
+  return intrinsics.slice_string(buf);
+}
+
+fn __cat3(a: string, b: string, c: string) -> string {
+  return cat(a, cat(b, c));
+}
+
+fn __substr(s: string, a: usize, b: usize) -> string {
+  let buf: []u8 = make([]u8, b - a);
+  let mut i: usize = a;
+  while i < b {
+    buf[i - a] = s[i];
+    i += 1;
+  }
+  return intrinsics.slice_string(buf);
+}
+
+fn __rep0(cnt: usize) -> string {
+  let buf: []u8 = make([]u8, cnt);
+  let mut i: usize = 0;
+  while i < cnt {
+    buf[i] = 48;
+    i += 1;
+  }
+  return intrinsics.slice_string(buf);
+}
+
+// ------------------------------------------------------ integers --
+
+fn u64.to_str(self: u64) -> string {
+  return __fmt_u64(self);
+}
+
+fn i64.to_str(self: i64) -> string {
+  return __fmt_i64(self);
+}
+
+fn __fmt_u64(v: u64) -> string {
+  if v == 0 {
+    return "0";
+  }
+  let buf: []u8 = make([]u8, 24);
+  let mut n: usize = 24;
+  let mut x: u64 = v;
+  while x > 0 {
+    n -= 1;
+    buf[n] = 48 + (x % 10) as u8;
+    x /= 10;
+  }
+  return intrinsics.slice_string(buf[n..24]);
+}
+
+fn __fmt_i64(v: i64) -> string {
+  if v < 0 {
+    // wrapping negation: 0 - MIN is MIN again, whose u64 pattern is exactly
+    // the magnitude — correct at the edge where a plain negate would stay
+    // negative and corrupt every digit (the 0.2 print_int bug)
+    let mag: u64 = (0 - v) as u64;
+    return __cat3("-", __fmt_u64(mag), "");
+  }
+  return __fmt_u64(v as u64);
+}
+
+fn u8.to_str(self: u8) -> string {
+  return __fmt_u64(self as u64);
+}
+
+fn u16.to_str(self: u16) -> string {
+  return __fmt_u64(self as u64);
+}
+
+fn u32.to_str(self: u32) -> string {
+  return __fmt_u64(self as u64);
+}
+
+fn usize.to_str(self: usize) -> string {
+  return __fmt_u64(self as u64);
+}
+
+fn i8.to_str(self: i8) -> string {
+  return __fmt_i64(self as i64);
+}
+
+fn i16.to_str(self: i16) -> string {
+  return __fmt_i64(self as i64);
+}
+
+fn i32.to_str(self: i32) -> string {
+  return __fmt_i64(self as i64);
+}
+
+fn isize.to_str(self: isize) -> string {
+  return __fmt_i64(self as i64);
+}
+
+fn bool.to_str(self: bool) -> string {
+  if self {
+    return "true";
+  }
+  return "false";
+}
+
+fn string.to_str(self: string) -> string {
+  return self;
+}
+
+// --------------------------------------------------------- floats --
+//
+// Exact decimal formatting: the f64's exact value (m2 * 2^e2) is expanded
+// as a base-10^9 bigint, then correctly rounded (half to even) to D
+// significant digits — D = 17 for f64, 9 for f32, the counts that always
+// round-trip. Pure integer arithmetic; only f64_bits inspects the value.
+
+struct __Big {
+  w: []u32,
+  n: usize,
+}
+
+fn __big_new() -> *__Big {
+  return new __Big { w: make([]u32, 160), n: 1 };
+}
+
+fn __big_trim(b: *__Big) {
+  while b.n > 1 && b.w[b.n - 1] == 0 {
+    b.n -= 1;
+  }
+}
+
+fn __big_set_u64(b: *__Big, v: u64) {
+  b.w[0] = (v % 1000000000) as u32;
+  b.w[1] = ((v / 1000000000) % 1000000000) as u32;
+  b.w[2] = (v / 1000000000000000000) as u32;
+  b.n = 3;
+  __big_trim(b);
+}
+
+// schoolbook multiply by a factor < 1e9; products stay under 2^63
+fn __big_mul_u32(b: *__Big, m: u32) {
+  let mut carry: u64 = 0;
+  let mut i: usize = 0;
+  while i < b.n {
+    let cur: u64 = b.w[i] as u64 * m as u64 + carry;
+    b.w[i] = (cur % 1000000000) as u32;
+    carry = cur / 1000000000;
+    i += 1;
+  }
+  while carry > 0 {
+    b.w[b.n] = (carry % 1000000000) as u32;
+    carry = carry / 1000000000;
+    b.n += 1;
+  }
+}
+
+fn __big_get_u64(b: *__Big) -> u64 {
+  let mut v: u64 = 0;
+  let mut i: usize = b.n;
+  while i > 0 {
+    i -= 1;
+    v = v * 1000000000 + b.w[i] as u64;
+  }
+  return v;
+}
+
+fn __big_add_one(b: *__Big) {
+  let mut i: usize = 0;
+  loop {
+    if i >= b.n {
+      b.w[i] = 1;
+      b.n += 1;
+      return;
+    }
+    b.w[i] = b.w[i] + 1;
+    if b.w[i] < 1000000000 {
+      return;
+    }
+    b.w[i] = 0;
+    i += 1;
+  }
+}
+
+fn __big_cmp(a: *__Big, b: *__Big) -> i32 {
+  if a.n != b.n {
+    if a.n < b.n {
+      return 0 - 1;
+    }
+    return 1;
+  }
+  let mut i: usize = a.n;
+  while i > 0 {
+    i -= 1;
+    if a.w[i] != b.w[i] {
+      if a.w[i] < b.w[i] {
+        return 0 - 1;
+      }
+      return 1;
+    }
+  }
+  return 0;
+}
+
+fn __p10_u64(r: usize) -> u64 {
+  let mut v: u64 = 1;
+  let mut i: usize = 0;
+  while (i as i64) < r as i64 {
+    v = v * 10;
+    i += 1;
+  }
+  return v;
+}
+
+fn __pow2_u32(k: i64) -> u32 {
+  let mut v: u32 = 1;
+  let mut i: i64 = 0;
+  while i < k {
+    v = v * 2;
+    i += 1;
+  }
+  return v;
+}
+
+fn __pow5_u32(k: i64) -> u32 {
+  let mut v: u32 = 1;
+  let mut i: i64 = 0;
+  while i < k {
+    v = v * 5;
+    i += 1;
+  }
+  return v;
+}
+
+// strip trailing '0's ("1000" -> "1", "000" -> "")
+fn __strip0(fr: string) -> string {
+  let mut k: usize = len(fr);
+  while k > 0 && fr[k - 1] == 48 {
+    k -= 1;
+  }
+  return __substr(fr, 0, k);
+}
+
+fn __u32_digits(v: u32) -> i64 {
+  let mut d: i64 = 1;
+  let mut x: u32 = v;
+  while x >= 10 {
+    x = x / 10;
+    d += 1;
+  }
+  return d;
+}
+
+// 5 * 10^(cut-1): half of the divisor 10^cut
+fn __big_half(cut: usize) -> *__Big {
+  let h: *__Big = __big_new();
+  let pos: usize = cut - 1;
+  let l: usize = pos / 9;
+  let r: usize = pos % 9;
+  h.w[l] = (5 * __p10_u64(r)) as u32;
+  h.n = l + 1;
+  return h;
+}
+
+// Q = N div 10^cut (returned); N becomes N mod 10^cut
+fn __big_divmod_pow10(b: *__Big, cut: usize) -> *__Big {
+  let l: usize = cut / 9;
+  let r: usize = cut % 9;
+  let q: *__Big = __big_new();
+  if b.n <= l {
+    return q;
+  }
+  let qn: usize = b.n - l;
+  let p: u64 = __p10_u64(r);
+  let mut rem: u64 = 0;
+  let mut i: usize = qn;
+  while i > 0 {
+    i -= 1;
+    let cur: u64 = rem * 1000000000 + b.w[l + i] as u64;
+    q.w[i] = (cur / p) as u32;
+    rem = cur % p;
+  }
+  q.n = qn;
+  __big_trim(q);
+  if r > 0 {
+    b.w[l] = rem as u32;
+    b.n = l + 1;
+  } else {
+    b.n = l;
+  }
+  if b.n == 0 {
+    b.w[0] = 0;
+    b.n = 1;
+  }
+  __big_trim(b);
+  return q;
+}
+
+// sign prefix helper: the digits body works on the magnitude
+fn __sfmt(neg: bool, s: string) -> string {
+  if neg {
+    return __cat3("-", s, "");
+  }
+  return s;
+}
+
+fn __fmt_digits(x: f64, prec: i64) -> string {
+  let bits: u64 = intrinsics.f64_bits(x);
+  // everything below works on the magnitude bits: the sign of a NaN is
+  // hardware-defined (x86 invalid ops produce a negative "indefinite" NaN,
+  // arm64 a positive default one), so it is stripped here, reattached as
+  // text where it is meaningful, and NaN prints canonically unsigned
+  let neg: bool = (bits >> 63) == 1;
+  let m: u64 = bits & 9223372036854775807;
+  let be: u64 = (m >> 52) & 2047;
+  if be == 2047 {
+    if (m & 4503599627370495) == 0 {
+      if neg {
+        return "-inf";
+      }
+      return "inf";
+    }
+    return "nan";
+  }
+  if (m << 1) == 0 {
+    if neg {
+      return "-0.0";
+    }
+    return "0.0";
+  }
+  let mut m2: u64 = 0;
+  let mut e2: i64 = 0;
+  if be == 0 {
+    m2 = m & 4503599627370495;
+    e2 = (0 - 1074) as i64;
+  } else {
+    m2 = (m & 4503599627370495) | 4503599627370496;
+    e2 = be as i64 - 1075;
+  }
+  // exact integer N with x == N / 10^s
+  let b: *__Big = __big_new();
+  __big_set_u64(b, m2);
+  let mut s: i64 = 0;
+  if e2 >= 0 {
+    let mut k: i64 = e2;
+    while k >= 29 {
+      __big_mul_u32(b, 536870912);
+      k -= 29;
+    }
+    if k > 0 {
+      __big_mul_u32(b, __pow2_u32(k));
+    }
+  } else {
+    // x = m2 * 2^-k = (m2 * 5^k) / 10^k — powers of FIVE: multiplying by
+    // powers of ten here would smuggle extra factors of two into N
+    let mut k: i64 = 0 - e2;
+    while k >= 9 {
+      __big_mul_u32(b, 1953125);
+      s += 9;
+      k -= 9;
+    }
+    if k > 0 {
+      __big_mul_u32(b, __pow5_u32(k));
+      s += k;
+    }
+  }
+  // n: x = 0.<digits> * 10^n; cut at `prec` significant digits
+  let topd: i64 = __u32_digits(b.w[b.n - 1]);
+  let mut n: i64 = (b.n as i64 - 1) * 9 + topd - s;
+  let cut: i64 = s + n - prec;
+  let mut qv: u64 = 0;
+  if cut > 0 {
+    let q: *__Big = __big_divmod_pow10(b, cut as usize);
+    // round half to even on the exact remainder
+    let c: i32 = __big_cmp(b, __big_half(cut as usize));
+    if c > 0 || (c == 0 && (q.w[0] & 1) == 1) {
+      __big_add_one(q);
+    }
+    qv = __big_get_u64(q);
+  } else if cut == 0 {
+    qv = __big_get_u64(b);
+  } else {
+    let mut k: i64 = 0 - cut;
+    while k >= 9 {
+      __big_mul_u32(b, 1000000000);
+      k -= 9;
+    }
+    if k > 0 {
+      __big_mul_u32(b, __p10_u64(k as usize) as u32);
+    }
+    qv = __big_get_u64(b);
+  }
+  // round-up carry: 999...9.7 -> 10^prec -> re-exponent
+  if qv >= __p10_u64(prec as usize) {
+    qv = qv / 10;
+    n += 1;
+  }
+  let e10: i64 = n - 1;
+  let ds: string = __fmt_u64(qv);
+  if e10 >= (0 - 4) as i64 && e10 < prec {
+    if e10 >= 0 {
+      let ip: usize = e10 as usize + 1;
+      let frac: string = __strip0(__substr(ds, ip, prec as usize));
+      if len(frac) == 0 {
+        return __sfmt(neg, __substr(ds, 0, ip));
+      }
+      return __sfmt(neg, __cat3(__substr(ds, 0, ip), __cat3(".", frac, ""), ""));
+    }
+    let all: string = __strip0(__cat3(__rep0((0 - e10 - 1) as usize), ds, ""));
+    if len(all) == 0 {
+      return __sfmt(neg, "0");
+    }
+    return __sfmt(neg, __cat3("0.", all, ""));
+  }
+  let mut out: string = __substr(ds, 0, 1);
+  let frac: string = __strip0(__substr(ds, 1, prec as usize));
+  if len(frac) > 0 {
+    out = __cat3(out, __cat3(".", frac, ""), "");
+  }
+  let mut ae: i64 = e10;
+  if ae < 0 {
+    ae = 0 - ae;
+  }
+  let mut es: string = __fmt_i64(ae);
+  if ae < 10 {
+    es = __cat3("0", es, "");
+  }
+  if e10 < 0 {
+    return __sfmt(neg, __cat3(out, __cat3("e-", es, ""), ""));
+  }
+  return __sfmt(neg, __cat3(out, __cat3("e+", es, ""), ""));
+}
+
+// integral float results keep a visible fraction ("4" -> "4.0") so a float
+// never reads as an integer; inf/nan are complete as printed
+fn __with_frac(s: string) -> string {
+  if s == "inf" || s == "nan" || s == "-inf" || s == "-nan" {
+    return s;
+  }
+  let mut i: usize = 0;
+  while i < len(s) {
+    if s[i] == 46 || s[i] == 101 {
+      return s;
+    }
+    i += 1;
+  }
+  return cat(s, ".0");
+}
+
+fn f64.to_str(self: f64) -> string {
+  return __with_frac(__fmt_digits(self, 17));
+}
+
+fn f32.to_str(self: f32) -> string {
+  // f32 values are exact in f64; 9 significant digits round-trip f32
+  return __with_frac(__fmt_digits(self as f64, 9));
+}
+
+// --------------------------------------------------------- print --
+
+fn print[T](x: T) {
+  __print_str(x.to_str());
+}
+
+fn println[T](x: T) {
+  __print_str(x.to_str());
+  __print_str("\n");
+}
+
+fn eprint[T](x: T) {
+  __eprint_str(x.to_str());
+}

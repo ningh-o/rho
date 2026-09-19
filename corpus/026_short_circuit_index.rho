@@ -1,0 +1,29 @@
+// exit: 0
+// regression (0.3.0): a bounds-checked slice index in the right arm of &&
+// inside a loop mis-emitted on wasm32-wasi — the short-circuit false edge
+// fell through to the claimed join without its phi copy, the && result
+// went stale, and the loop ran the index out of bounds
+fn main() -> i32 {
+  let w: []u32 = make([]u32, 6);
+  w[0] = 9;
+  let mut n: usize = 6;
+  loop {
+    let c: bool = n > 1 && w[n - 1] == 0;
+    if !c {
+      break;
+    }
+    n -= 1;
+  }
+  println(n);
+  let mut m: usize = 6;
+  while m > 1 && w[m - 1] == 0 {
+    m -= 1;
+  }
+  println(m);
+  let mut k: usize = 0;
+  while k < 5 && w[k] != 9 {
+    k += 1;
+  }
+  println(k);
+  return 0;
+}

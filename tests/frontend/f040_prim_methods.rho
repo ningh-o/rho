@@ -1,0 +1,21 @@
+struct Point {
+  x: i32,
+  y: i32,
+}
+
+fn Point.to_str(self: *Point) -> string {
+  return cat("(", cat(self.x.to_str(), "))"));
+}
+
+fn i32.double(self: i32) -> i32 {
+  return self * 2;
+}
+
+fn main() -> i32 {
+  let n: i32 = 21;
+  println(n.double());
+  println(n);
+  let flag: bool = true;
+  println(flag);
+  return 0;
+}

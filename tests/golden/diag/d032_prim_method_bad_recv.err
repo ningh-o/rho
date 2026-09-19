@@ -1,0 +1,39 @@
+tests/diag/d032_prim_method_bad_recv.rho:1:4: error: expected function name, found integer
+tests/diag/d032_prim_method_bad_recv.rho:1:4: error: expected `(` (`(`), found integer
+tests/diag/d032_prim_method_bad_recv.rho:1:4: error: expected parameter name, found integer
+tests/diag/d032_prim_method_bad_recv.rho:1:4: error: expected `:` (`:`), found integer
+tests/diag/d032_prim_method_bad_recv.rho:1:4: error: expected a type, found integer
+tests/diag/d032_prim_method_bad_recv.rho:1:4: error: expected `)` (`)`), found integer
+tests/diag/d032_prim_method_bad_recv.rho:1:4: error: expected `{` (`{`), found integer
+tests/diag/d032_prim_method_bad_recv.rho:1:5: error: expected `;`, found identifier
+tests/diag/d032_prim_method_bad_recv.rho:1:16: error: expected `)` (`)`), found `:`
+tests/diag/d032_prim_method_bad_recv.rho:1:16: error: expected `;`, found `:`
+tests/diag/d032_prim_method_bad_recv.rho:1:16: error: expected an expression, found `:`
+tests/diag/d032_prim_method_bad_recv.rho:1:17: error: expected `;`, found identifier
+tests/diag/d032_prim_method_bad_recv.rho:1:21: error: expected `;`, found `)`
+tests/diag/d032_prim_method_bad_recv.rho:1:21: error: expected an expression, found `)`
+tests/diag/d032_prim_method_bad_recv.rho:1:24: error: expected `;`, found `->`
+tests/diag/d032_prim_method_bad_recv.rho:1:24: error: expected an expression, found `->`
+tests/diag/d032_prim_method_bad_recv.rho:1:25: error: expected `;`, found identifier
+tests/diag/d032_prim_method_bad_recv.rho:1:30: error: expected `;`, found `{`
+tests/diag/d032_prim_method_bad_recv.rho:5:4: error: expected `(` (`(`), found identifier
+tests/diag/d032_prim_method_bad_recv.rho:5:9: error: expected `:` (`:`), found `(`
+tests/diag/d032_prim_method_bad_recv.rho:5:9: error: expected a type, found `(`
+tests/diag/d032_prim_method_bad_recv.rho:5:9: error: expected `)` (`)`), found `(`
+tests/diag/d032_prim_method_bad_recv.rho:5:9: error: expected `{` (`{`), found `(`
+tests/diag/d032_prim_method_bad_recv.rho:5:10: error: expected an expression, found `)`
+tests/diag/d032_prim_method_bad_recv.rho:5:13: error: expected `)` (`)`), found `->`
+tests/diag/d032_prim_method_bad_recv.rho:5:13: error: expected `;`, found `->`
+tests/diag/d032_prim_method_bad_recv.rho:5:13: error: expected an expression, found `->`
+tests/diag/d032_prim_method_bad_recv.rho:5:14: error: expected `;`, found identifier
+tests/diag/d032_prim_method_bad_recv.rho:5:19: error: expected `;`, found `{`
+tests/diag/d032_prim_method_bad_recv.rho:8:1: error: expected `}` (`}`), found end of file
+tests/diag/d032_prim_method_bad_recv.rho:8:1: error: expected `;`, found end of file
+tests/diag/d032_prim_method_bad_recv.rho:8:1: error: expected `}` (`}`), found end of file
+tests/diag/d032_prim_method_bad_recv.rho:1:5: error: unknown name `x`
+tests/diag/d032_prim_method_bad_recv.rho:1:7: error: no method `bad` for `<error>`
+tests/diag/d032_prim_method_bad_recv.rho:1:17: error: unknown name `i32`
+tests/diag/d032_prim_method_bad_recv.rho:1:25: error: unknown name `i32`
+tests/diag/d032_prim_method_bad_recv.rho:2:3: error: this function returns nothing
+tests/diag/d032_prim_method_bad_recv.rho:5:14: error: unknown name `i32`
+tests/diag/d032_prim_method_bad_recv.rho:6:3: error: this function returns nothing

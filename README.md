@@ -19,6 +19,8 @@ rho check main.rho      # type-check only
 | 0.0.x   | Boot compiler, written in C (`boot/`), emits native + wasm directly |
 | 0.0.6   | Tutorial site + browser playground |
 | 0.1.0   | Self-hosting: compiler rewritten in rho (`self/`), zero C in the shipped toolchain |
+| 0.2.x   | esp32c3 target, soft-float prelude |
+| 0.3.0   | Printing by type: `to_str` on every primitive, generic `print`/`println`/`eprint`, one shared prelude core, dead-fn elimination, full-width f32/u8 codegen fixes on all backends. The self-hosted mirror of this work is the immediate next step (`docs/todo.md`) — until it lands, `boot` is the reference toolchain and the bootstrap gate is open. |
 
 The C compiler under `boot/` is the permanent bootstrap seed: it exists to
 compile the first self-hosted compiler and nothing else. Everything after

@@ -1,3 +1,7 @@
+// hosted prelude tail (amd64-linux / arm64-mac): libc externs, the four
+// per-target hooks the core builds on (__print_str / __eprint_str / __exit
+// / __alloc / __free), and the cc-runner externs the toolchain itself uses.
+
 extern fn malloc(n: usize) -> *u8;
 
 extern fn calloc(nm: usize, sz: usize) -> *u8;
@@ -8,43 +12,9 @@ extern fn system(cmd: *u8) -> i32;
 
 extern fn chmod(path: *u8, mode: i32) -> i32;
 
-pub enum Option[T] {
-  Some(T),
-  None,
-}
+extern fn write(fd: i32, buf: *u8, n: usize) -> isize;
 
-pub enum Result[T, E] {
-  Ok(T),
-  Err(E),
-}
-
-fn Option.is_some(self: Option) -> bool {
-  return match self {
-    Option.Some(_) => true,
-    Option.None => false,
-  };
-}
-
-fn Option.is_none(self: Option) -> bool {
-  return match self {
-    Option.Some(_) => false,
-    Option.None => true,
-  };
-}
-
-fn Result.is_ok(self: Result) -> bool {
-  return match self {
-    Result.Ok(_) => true,
-    Result.Err(_) => false,
-  };
-}
-
-fn Result.is_err(self: Result) -> bool {
-  return match self {
-    Result.Ok(_) => false,
-    Result.Err(_) => true,
-  };
-}
+extern fn exit(code: i32) -> void;
 
 fn __alloc(n: usize) -> *u8 {
   // zeroed: fresh element slots read as null references, so the first
@@ -57,85 +27,14 @@ fn __free(p: *u8) {
   free(p);
 }
 
-extern fn write(fd: i32, buf: *u8, n: usize) -> isize;
-
-extern fn exit(code: i32) -> void;
-
-fn print(s: string) {
+fn __print_str(s: string) {
   write(1, s.ptr, s.len);
 }
 
-fn eprint(s: string) {
+fn __eprint_str(s: string) {
   write(2, s.ptr, s.len);
 }
 
-fn panic(msg: string) {
-  eprint("panic: ");
-  eprint(msg);
-  eprint("\n");
-  exit(101);
-}
-
-fn assert(cond: bool) {
-  if (!cond) {
-    panic("assertion failed");
-  }
-}
-
-fn __panic_div() {
-  panic("division by zero");
-}
-
-fn __panic_oob() {
-  panic("index out of bounds");
-}
-
-fn __panic_null() {
-  panic("null dereference");
-}
-
-fn print_bytes(b: []u8) {
-  write(1, b.ptr, b.len);
-}
-
-fn print_int(v: i64) {
-  let buf: []u8 = make([]u8, 24);
-  let mut n: usize = 24;
-  let mut x: i64 = v;
-  let neg: bool = (x < 0);
-  if neg {
-    x = (0 - x);
-  }
-  loop {
-    n -= 1;
-    let d: i64 = (x % 10);
-    buf[n] = (48 + d) as u8;
-    x /= 10;
-    if (x == 0) {
-      break;
-    }
-  }
-  if neg {
-    n -= 1;
-    buf[n] = 45;
-  }
-  print_bytes(buf[n..24]);
-}
-
-fn print_ln() {
-  print("\n");
-}
-
-fn __streq(a: string, b: string) -> bool {
-  if len(a) != len(b) {
-    return false;
-  }
-  let mut i: usize = 0;
-  while i < len(a) {
-    if a[i] != b[i] {
-      return false;
-    }
-    i += 1;
-  }
-  return true;
+fn __exit(code: i32) {
+  exit(code);
 }

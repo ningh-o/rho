@@ -1,4 +1,4 @@
-// rho — the self-hosted compiler (0.2.1).
+// rho — the self-hosted compiler (0.3.0 era; see docs/todo.md for the mirror).
 //
 // One file, one module: the whole compiler, written in the frozen 0.0.5
 // language surface. Bootstrap invariant (spec §13): boot(self) == self(self)
@@ -2318,7 +2318,7 @@ fn diag_count() -> i32 {
 }
 
 fn usage() -> i32 {
-  eprint("rho 0.2.1\n");
+  eprint("rho 0.3.0\n");
   eprint("usage: rho <command> [args]\n");
   eprint("  check  <file>              parse + typecheck\n");
   eprint("  fmt    [-w] <file>         print canonical formatting\n");
@@ -2964,9 +2964,23 @@ fn golden_check(got: string, golden_path: string, name: string, update: bool) {
   }
 }
 
+fn read_prelude(tail: string) -> Result[string, string] {
+  // the prelude is the pure core plus a per-target tail (0.3.0): read both
+  // and concatenate, exactly as tools/embed.py does for the boot compiler
+  let cr: Result[string, string] = read_file("boot/prelude/core.rho");
+  if cr.is_err() {
+    return cr;
+  }
+  let tr: Result[string, string] = read_file(cat3("boot/prelude/", tail, ""));
+  if tr.is_err() {
+    return tr;
+  }
+  return Result.Ok(cat(cr.get_ok(), tr.get_ok()));
+}
+
 fn st_reset_with_prelude() {
   reset_compiler_state();
-  let pr: Result[string, string] = read_file("boot/prelude/hosted.rho");
+  let pr: Result[string, string] = read_prelude("hosted.rho");
   if pr.is_err() {
     return;
   }
@@ -3267,14 +3281,14 @@ fn build_to(path: string, target: i32, out_path: string, check_only: bool) -> i3
     path: path, ns: "", root: module, syms: sm_new(),
     is_prelude: false, checked: false,
   };
-  let mut prelude_path: string = "boot/prelude/hosted.rho";
+  let mut prelude_tail: string = "hosted.rho";
   if target == 3 {
-    prelude_path = "boot/prelude/wasi.rho";
+    prelude_tail = "wasi.rho";
   }
   if target == 4 {
-    prelude_path = "boot/prelude/esp32c3.rho";
+    prelude_tail = "esp32c3.rho";
   }
-  let prelude_r: Result[string, string] = read_file(prelude_path);
+  let prelude_r: Result[string, string] = read_prelude(prelude_tail);
   if !prelude_r.is_err() {
     let pparse: *Decl = parse_file("<prelude>", prelude_r.get_ok());
     let pmod: *Module = new Module {
@@ -3425,7 +3439,7 @@ fn main() -> i32 {
   }
   let cmd: string = args[1];
   if streq(cmd, "--version") || streq(cmd, "version") {
-    print("rho 0.2.1\n");
+    print("rho 0.3.0\n");
     return 0;
   }
   if streq(cmd, "selftest") {

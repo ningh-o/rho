@@ -185,10 +185,13 @@ static void emit_cmp64(Emitter64 *e, IRIns *i) {
 static void emit_divmod64(Emitter64 *e, IRIns *i, bool is_mod) {
   int64_t ao = vreg_off(e, i->a), bo = vreg_off(e, i->b), dof = vreg_off(e, i->dst);
   if (i->is_float) {
-    ld(e, ao, 8, true, "d0");
-    ld(e, bo, 8, true, "d1");
-    sb_printf(e->out, "  fdiv d0, d0, d1\n");
-    st_(e, dof, 8, true, "d0");
+    const char *r0 = i->dst->ty == IT_F32 ? "s0" : "d0";
+    const char *r1 = i->dst->ty == IT_F32 ? "s1" : "d1";
+    int64_t fw = i->dst->ty == IT_F32 ? 4 : 8;
+    ld(e, ao, fw, true, r0);
+    ld(e, bo, fw, true, r1);
+    sb_printf(e->out, "  fdiv %s, %s, %s\n", r0, r0, r1);
+    st_(e, dof, fw, true, r0);
     return;
   }
   int lbl = g_label64++;
@@ -227,8 +230,13 @@ static void emit_call64(Emitter64 *e, IRIns *i) {
     bool isf = a->ty && (a->ty->kind == TY_F32 || a->ty->kind == TY_F64);
     int64_t off = vreg_off(e, a->vreg);
     if (isf && fi < 8) {
+      // f32 args ride the low lane: ldr sN, never the 8-byte dN form
       addr_into(e, off);
-      sb_printf(e->out, "  ldr %s, [x12]\n", fregs[fi++]);
+      if (a->ty->kind == TY_F32)
+        sb_printf(e->out, "  ldr s%d, [x12]\n", fi);
+      else
+        sb_printf(e->out, "  ldr d%d, [x12]\n", fi);
+      fi++;
     } else if (!isf && ri < 8) {
       addr_into(e, off);
       sb_printf(e->out, "  ldr %s, [x12]\n", regs[ri++]);
@@ -281,15 +289,28 @@ static void emit_ins64(Emitter64 *e, IRIns *i) {
     break;
   }
   case IR_FCONST: {
-    // materialize the IEEE-754 bit pattern in x8, then move to d0
-    uint64_t bits;
-    __builtin_memcpy(&bits, &i->fimm, 8);
-    sb_printf(e->out, "  movz x8, #%llu\n", (unsigned long long)(bits & 0xFFFF));
-    sb_printf(e->out, "  movk x8, #%llu, lsl 16\n", (unsigned long long)((bits >> 16) & 0xFFFF));
-    sb_printf(e->out, "  movk x8, #%llu, lsl 32\n", (unsigned long long)((bits >> 32) & 0xFFFF));
-    sb_printf(e->out, "  movk x8, #%llu, lsl 48\n", (unsigned long long)((bits >> 48) & 0xFFFF));
-    sb_printf(e->out, "  fmov d0, x8\n");
-    st_(e, vreg_off(e, i->dst), 8, true, "d0");
+    // materialize the IEEE-754 bit pattern, then move into the float reg;
+    // f32 constants carry the FLOAT pattern (the double's low half is not
+    // the f32 encoding — 0.5 would become +0.0)
+    int64_t dof = vreg_off(e, i->dst);
+    if (i->dst->ty == IT_F32) {
+      float f = (float)i->fimm;
+      uint32_t bits;
+      __builtin_memcpy(&bits, &f, 4);
+      sb_printf(e->out, "  movz w8, #%llu\n", (unsigned long long)(bits & 0xFFFF));
+      sb_printf(e->out, "  movk w8, #%llu, lsl 16\n", (unsigned long long)((bits >> 16) & 0xFFFF));
+      sb_printf(e->out, "  fmov s0, w8\n");
+      st_(e, dof, 4, true, "s0");
+    } else {
+      uint64_t bits;
+      __builtin_memcpy(&bits, &i->fimm, 8);
+      sb_printf(e->out, "  movz x8, #%llu\n", (unsigned long long)(bits & 0xFFFF));
+      sb_printf(e->out, "  movk x8, #%llu, lsl 16\n", (unsigned long long)((bits >> 16) & 0xFFFF));
+      sb_printf(e->out, "  movk x8, #%llu, lsl 32\n", (unsigned long long)((bits >> 32) & 0xFFFF));
+      sb_printf(e->out, "  movk x8, #%llu, lsl 48\n", (unsigned long long)((bits >> 48) & 0xFFFF));
+      sb_printf(e->out, "  fmov d0, x8\n");
+      st_(e, dof, 8, true, "d0");
+    }
     break;
   }
   case IR_ADD:
@@ -300,11 +321,16 @@ static void emit_ins64(Emitter64 *e, IRIns *i) {
   case IR_XOR: {
     int64_t dof = vreg_off(e, i->dst);
     if (i->is_float) {
+      // f32 arithmetic rides the s registers (low lane); touching d0 here
+      // smears the spill slot's high half into the value
+      const char *r0 = i->dst->ty == IT_F32 ? "s0" : "d0";
+      const char *r1 = i->dst->ty == IT_F32 ? "s1" : "d1";
+      int64_t fw = i->dst->ty == IT_F32 ? 4 : 8;
       const char *mn = i->op == IR_ADD ? "fadd" : i->op == IR_SUB ? "fsub" : "fmul";
-      ld(e, vreg_off(e, i->a), 8, true, "d0");
-      ld(e, vreg_off(e, i->b), 8, true, "d1");
-      sb_printf(e->out, "  %s d0, d0, d1\n", mn);
-      st_(e, dof, 8, true, "d0");
+      ld(e, vreg_off(e, i->a), fw, true, r0);
+      ld(e, vreg_off(e, i->b), fw, true, r1);
+      sb_printf(e->out, "  %s %s, %s, %s\n", mn, r0, r0, r1);
+      st_(e, dof, fw, true, r0);
       break;
     }
     const char *mn = i->op == IR_ADD ? "add" : i->op == IR_SUB ? "sub" : i->op == IR_MUL ? "mul"
@@ -364,8 +390,9 @@ static void emit_ins64(Emitter64 *e, IRIns *i) {
     int64_t dof = vreg_off(e, i->dst);
     ld(e, vreg_off(e, i->addr), 8, false, "x8");
     if (i->is_float) {
-      sb_printf(e->out, "  ldr %s, [x8]\n", i->size == 8 ? "d0" : "s0");
-      st_(e, dof, i->size, true, "d0");
+      const char *fr = i->size == 8 ? "d0" : "s0";
+      sb_printf(e->out, "  ldr %s, [x8]\n", fr);
+      st_(e, dof, i->size, true, fr);
     } else {
       // zero-extend unsigned loads; the spill slot holds 8 bytes and
       // sign-extension of a u8/u16/u32 would poison high bits
@@ -381,17 +408,21 @@ static void emit_ins64(Emitter64 *e, IRIns *i) {
   }
   case IR_STORE: {
     ld(e, vreg_off(e, i->addr), 8, false, "x8");
-    ld(e, vreg_off(e, i->a), i->size, i->is_float, i->is_float ? "d0" : "x9");
-    if (i->is_float)
-      sb_printf(e->out, "  str d0, [x8]\n");
-    else if (i->size == 1)
-      sb_printf(e->out, "  strb w9, [x8]\n");
-    else if (i->size == 2)
-      sb_printf(e->out, "  strh w9, [x8]\n");
-    else if (i->size == 4)
-      sb_printf(e->out, "  str w9, [x8]\n");
-    else
-      sb_printf(e->out, "  str x9, [x8]\n");
+    if (i->is_float) {
+      const char *fr = i->size == 8 ? "d0" : "s0";
+      ld(e, vreg_off(e, i->a), i->size, true, fr);
+      sb_printf(e->out, "  str %s, [x8]\n", fr);
+    } else {
+      ld(e, vreg_off(e, i->a), i->size, false, "x9");
+      if (i->size == 1)
+        sb_printf(e->out, "  strb w9, [x8]\n");
+      else if (i->size == 2)
+        sb_printf(e->out, "  strh w9, [x8]\n");
+      else if (i->size == 4)
+        sb_printf(e->out, "  str w9, [x8]\n");
+      else
+        sb_printf(e->out, "  str x9, [x8]\n");
+    }
     break;
   }
   case IR_ADDRC: {
@@ -415,6 +446,7 @@ static void emit_ins64(Emitter64 *e, IRIns *i) {
   }
   case IR_CAST: {
     int64_t sof = vreg_off(e, i->a), dof = vreg_off(e, i->dst);
+    bool from_sgn = ty_is_signed_int(i->cast_from);
     switch (i->cast) {
     case CAST_TRUNC:
       // store full width: every spill-slot reader reloads 8 bytes, and a
@@ -423,24 +455,65 @@ static void emit_ins64(Emitter64 *e, IRIns *i) {
       st_(e, dof, 8, false, "x8");
       break;
     case CAST_SEXT:
-      ld(e, sof, ir_size_of(i->cast_from), false, "x8");
+      // sign-extend from the source width: ldrs* forms per size
+      addr_into(e, sof);
+      if (ir_size_of(i->cast_from) == 1)
+        sb_printf(e->out, "  ldrsb x8, [x12]\n");
+      else if (ir_size_of(i->cast_from) == 2)
+        sb_printf(e->out, "  ldrsh x8, [x12]\n");
+      else if (ir_size_of(i->cast_from) == 4)
+        sb_printf(e->out, "  ldrsw x8, [x12]\n");
+      else
+        sb_printf(e->out, "  ldr x8, [x12]\n");
       st_(e, dof, 8, false, "x8");
       break;
-    case CAST_ZEXT:
-      ld(e, sof, ir_size_of(i->cast_from), false, "x8"); // ldrsb/ldrsw? zero: use ldr w
+    case CAST_ZEXT: {
+      // zero-extend from the source width: the w-form loads zero their
+      // upper half; uxtw then lifts to 64 (a no-op after ldr w8)
+      addr_into(e, sof);
+      if (ir_size_of(i->cast_from) == 1)
+        sb_printf(e->out, "  ldrb w8, [x12]\n");
+      else if (ir_size_of(i->cast_from) == 2)
+        sb_printf(e->out, "  ldrh w8, [x12]\n");
+      else
+        sb_printf(e->out, "  ldr w8, [x12]\n");
       sb_printf(e->out, "  uxtw x8, w8\n");
       st_(e, dof, 8, false, "x8");
       break;
-    case CAST_I2F:
-      ld(e, sof, 8, false, "x8");
-      sb_printf(e->out, "  scvtf %s, x8\n", i->cast_to == IT_F32 ? "s0" : "d0");
-      st_(e, dof, i->cast_to == IT_F32 ? 4 : 8, true, "d0");
+    }
+    case CAST_I2F: {
+      // narrow ints load sign/zero-extended per their own type, then
+      // convert; unsigned 64-bit needs ucvtf (scvtf reads it as i64)
+      int64_t fw = ir_size_of(i->cast_from);
+      bool sgn = ty_is_signed_int(i->cast_from);
+      addr_into(e, sof);
+      if (fw == 1)
+        sb_printf(e->out, sgn ? "  ldrsb x8, [x12]\n" : "  ldrb w8, [x12]\n");
+      else if (fw == 2)
+        sb_printf(e->out, sgn ? "  ldrsh x8, [x12]\n" : "  ldrh w8, [x12]\n");
+      else if (fw == 4)
+        sb_printf(e->out, sgn ? "  ldrsw x8, [x12]\n" : "  ldr w8, [x12]\n");
+      else
+        sb_printf(e->out, "  ldr x8, [x12]\n");
+      if (fw == 1 || fw == 2)
+        sb_printf(e->out, "  uxtw x8, w8\n");
+      const char *dst = i->cast_to == IT_F32 ? "s0" : "d0";
+      sb_printf(e->out, "  %scvtf %s, x8\n", sgn ? "s" : "u", dst);
+      st_(e, dof, i->cast_to == IT_F32 ? 4 : 8, true, dst);
       break;
-    case CAST_F2I:
-      ld(e, sof, i->size, true, "d0");
-      sb_printf(e->out, "  fcvtzs x8, %s\n", i->cast_from == IT_F32 ? "s0" : "d0");
+    }
+    case CAST_F2I: {
+      const char *src = i->cast_from == IT_F32 ? "s0" : "d0";
+      int64_t sw = i->cast_from == IT_F32 ? 4 : 8;
+      ld(e, sof, sw, true, src);
+      // fcvtzs saturates (spec: out-of-range float→int saturates)
+      if (i->cast_to == IT_I64 || i->cast_to == IT_U64)
+        sb_printf(e->out, "  fcvtzs x8, %s\n", src);
+      else
+        sb_printf(e->out, "  fcvtzs w8, %s\n", src);
       st_(e, dof, 8, false, "x8");
       break;
+    }
     case CAST_F32_F64:
       ld(e, sof, 4, true, "s0");
       sb_printf(e->out, "  fcvt d0, s0\n");
@@ -562,7 +635,11 @@ static void emit_term64(Emitter64 *e, IRIns *t) {
   } else if (t->op == (IROp)OP_RET) {
     if (t->a) {
       bool f = ir_is_float(t->a->ty);
-      ld(e, vreg_off(e, t->a), 8, f, f ? "d0" : "x0");
+      if (f)
+        ld(e, vreg_off(e, t->a), t->a->ty == IT_F32 ? 4 : 8, true,
+           t->a->ty == IT_F32 ? "s0" : "d0");
+      else
+        ld(e, vreg_off(e, t->a), 8, false, "x0");
     }
     sb_printf(e->out, "  mov sp, x29\n  ldp x29, x30, [sp], #16\n  ret\n");
   }
@@ -602,7 +679,12 @@ static void emit_fn64(Emitter64 *e, IRFn *fn) {
     bool isf = pt && (pt->kind == TY_F32 || pt->kind == TY_F64);
     if (isf && fi < 8) {
       addr_into(e, slot_off(e, slot));
-      sb_printf(e->out, "  str %s, [x12]\n", fregs[fi++]);
+      // f32 params arrive in the s registers (low lane)
+      if (pt->kind == TY_F32)
+        sb_printf(e->out, "  str s%d, [x12]\n", fi);
+      else
+        sb_printf(e->out, "  str d%d, [x12]\n", fi);
+      fi++;
     } else if (!isf && ri < 8) {
       addr_into(e, slot_off(e, slot));
       sb_printf(e->out, "  str %s, [x12]\n", regs[ri++]);

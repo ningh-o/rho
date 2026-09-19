@@ -1,0 +1,2 @@
+tests/diag/d030_print_no_to_str.rho:8:9: error: no method `to_str` for `*tests/diag/d030_print_no_to_str.rho.Point` (in `print[T=*tests/diag/d030_print_no_to_str.rho.Point]`)
+tests/diag/d030_print_no_to_str.rho:8:9: error: argument: expected `string`, found `<error>` (in `print[T=*tests/diag/d030_print_no_to_str.rho.Point]`)

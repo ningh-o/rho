@@ -83,11 +83,15 @@ static int64_t vreg_off(Emitter *e, IRVreg *v) {
   return (long)e->slot_off.items[idx];
 }
 
-static void mov_slot_reg(Emitter *e, int64_t off, int64_t size, bool f64, const char *reg) {
-  // load from slot into reg
-  if (f64)
-    sb_printf(e->out, "  movsd %lld(%%rbp), %s\n", off, reg);
-  else if (size == 1)
+static void mov_slot_reg(Emitter *e, int64_t off, int64_t size, bool flt, const char *reg) {
+  // load from slot into reg; a float picks its width (movsd/movss) — an
+  // 8-byte move on an f32 slot smears the neighboring bytes into the value
+  if (flt) {
+    if (size == 4)
+      sb_printf(e->out, "  movss %lld(%%rbp), %s\n", off, reg);
+    else
+      sb_printf(e->out, "  movsd %lld(%%rbp), %s\n", off, reg);
+  } else if (size == 1)
     sb_printf(e->out, "  movsbq %lld(%%rbp), %s\n", off, reg);
   else if (size == 2)
     sb_printf(e->out, "  movswq %lld(%%rbp), %s\n", off, reg);
@@ -97,10 +101,13 @@ static void mov_slot_reg(Emitter *e, int64_t off, int64_t size, bool f64, const 
     sb_printf(e->out, "  movq %lld(%%rbp), %s\n", off, reg);
 }
 
-static void mov_reg_slot(Emitter *e, int64_t off, int64_t size, bool f64, const char *reg) {
-  if (f64)
-    sb_printf(e->out, "  movsd %s, %lld(%%rbp)\n", reg, off);
-  else if (size == 1)
+static void mov_reg_slot(Emitter *e, int64_t off, int64_t size, bool flt, const char *reg) {
+  if (flt) {
+    if (size == 4)
+      sb_printf(e->out, "  movss %s, %lld(%%rbp)\n", reg, off);
+    else
+      sb_printf(e->out, "  movsd %s, %lld(%%rbp)\n", reg, off);
+  } else if (size == 1)
     sb_printf(e->out, "  movb %s, %lld(%%rbp)\n", reg, off);
   else if (size == 2)
     sb_printf(e->out, "  movw %s, %lld(%%rbp)\n", reg, off);
@@ -182,10 +189,12 @@ static void emit_divmod(Emitter *e, IRIns *i, bool is_mod) {
   int64_t ao = vreg_off(e, i->a), bo = vreg_off(e, i->b), dof = vreg_off(e, i->dst);
   int lbl = g_label_counter++;
   if (i->is_float) {
-    mov_slot_reg(e, ao, 8, true, XMM0);
-    mov_slot_reg(e, bo, 8, true, XMM1);
-    sb_printf(e->out, "  divsd %s, %s\n", XMM1, XMM0);
-    mov_reg_slot(e, dof, 8, true, XMM0);
+    int64_t fw = i->dst->ty == IT_F32 ? 4 : 8;
+    const char *sfx = fw == 4 ? "ss" : "sd";
+    mov_slot_reg(e, ao, fw, true, XMM0);
+    mov_slot_reg(e, bo, fw, true, XMM1);
+    sb_printf(e->out, "  div%s %s, %s\n", sfx, XMM1, XMM0);
+    mov_reg_slot(e, dof, fw, true, XMM0);
     return;
   }
   const char *ext = i->signed_ops ? "cqo" : "xorl %edx, %edx";
@@ -282,7 +291,11 @@ static void emit_call(Emitter *e, IRIns *i) {
     bool is_float_arg = a->ty && (a->ty->kind == TY_F32 || a->ty->kind == TY_F64);
     int64_t off = vreg_off(e, a->vreg);
     if (is_float_arg && fi < 8) {
-      sb_printf(e->out, "  movsd %lld(%%rbp), %%xmm%d\n", off, fi++);
+      // f32 args ride the low lane: movss, never the 8-byte movsd form
+      if (a->ty->kind == TY_F32)
+        sb_printf(e->out, "  movss %lld(%%rbp), %%xmm%d\n", off, fi++);
+      else
+        sb_printf(e->out, "  movsd %lld(%%rbp), %%xmm%d\n", off, fi++);
     } else if (!is_float_arg && ri < 6) {
       sb_printf(e->out, "  movq %lld(%%rbp), %s\n", off, intregs[ri++]);
     } else {
@@ -312,16 +325,23 @@ static void emit_ins(Emitter *e, IRIns *i) {
     break;
   }
   case IR_FCONST: {
-    // materialize via a literal double in rodata
+    // materialize via a rodata literal at the constant's own width: an f32
+    // constant holds the FLOAT bits (the double's low half is not the f32
+    // encoding — 0.5 would become +0.0)
     int lbl = g_label_counter++;
-    sb_printf(e->out, "  movsd Lfconst%d(%%rip), %%xmm0\n", lbl);
-    mov_reg_slot(e, vreg_off(e, i->dst), 8, true, XMM0);
+    if (i->dst->ty == IT_F32) {
+      sb_printf(e->out, "  movss Lfconst%d(%%rip), %%xmm0\n", lbl);
+      mov_reg_slot(e, vreg_off(e, i->dst), 4, true, XMM0);
+    } else {
+      sb_printf(e->out, "  movsd Lfconst%d(%%rip), %%xmm0\n", lbl);
+      mov_reg_slot(e, vreg_off(e, i->dst), 8, true, XMM0);
+    }
     e->fn->literals.n = e->fn->literals.n; // no-op; float consts appended below
     IRIns *keep = i;
     (void)keep;
     // stash for the rodata pass
-    extern void amd64_note_fconst(int lbl, double v);
-    amd64_note_fconst(lbl, i->fimm);
+    extern void amd64_note_fconst(int lbl, double v, bool f32);
+    amd64_note_fconst(lbl, i->fimm, i->dst->ty == IT_F32);
     break;
   }
   case IR_ADD:
@@ -335,15 +355,18 @@ static void emit_ins(Emitter *e, IRIns *i) {
                                                             : i->op == IR_AND            ? "and"
                                                             : i->op == IR_OR             ? "or"
                                                                                           : "xor";
-    if (i->is_float) {
-      mov_slot_reg(e, ao, 8, true, XMM0);
-      mov_slot_reg(e, bo, 8, true, XMM1);
-      const char *fmn = i->op == IR_ADD ? "addsd" : i->op == IR_SUB ? "subsd"
-                                                    : i->op == IR_MUL ? "mulsd"
-                                                                      : "divsd";
-      sb_printf(e->out, "  %s %s, %s\n", fmn, XMM1, XMM0);
-      mov_reg_slot(e, dof, 8, true, XMM0);
-    } else {
+  if (i->is_float) {
+    // f32 arithmetic in the ss forms; the sd forms read 8 bytes off the
+    // spill slot and corrupt f32 values
+    int64_t fw = i->dst->ty == IT_F32 ? 4 : 8;
+    const char *sfx = fw == 4 ? "ss" : "sd";
+    mov_slot_reg(e, ao, fw, true, XMM0);
+    mov_slot_reg(e, bo, fw, true, XMM1);
+    const char *fmn = i->op == IR_ADD ? "add" : i->op == IR_SUB ? "sub" : i->op == IR_MUL ? "mul"
+                                                                      : "div";
+    sb_printf(e->out, "  %s%s %s, %s\n", fmn, sfx, XMM1, XMM0);
+    mov_reg_slot(e, dof, fw, true, XMM0);
+  } else {
       mov_slot_reg(e, ao, 8, false, RAX);
       mov_slot_reg(e, bo, 8, false, RCX);
       sb_printf(e->out, "  %s %s, %s\n", mn, RCX, RAX);
@@ -472,18 +495,47 @@ static void emit_ins(Emitter *e, IRIns *i) {
         sb_printf(e->out, "  movl %%eax, %%eax\n");
       mov_reg_slot(e, dof, 8, false, RAX);
       break;
-    case CAST_I2F:
-      mov_slot_reg(e, sof, 8, false, RAX);
-      sb_printf(e->out, "  %s %s, %s\n", i->cast_to == IT_F32 ? "cvtsi2ss" : "cvtsi2sd", RAX,
-                XMM0);
+    case CAST_I2F: {
+      // narrow ints load sign/zero-extended at their own width; a u64
+      // source needs the unsigned convert sequence (cvtsi2sd reads rax as
+      // i64 and would mangle values >= 2^63)
+      int64_t fw = ir_size_of(i->cast_from);
+      bool sgn = ty_is_signed_int(i->cast_from);
+      if (fw == 1)
+        sb_printf(e->out, "  %s %lld(%%rbp), %%rax\n", sgn ? "movsbq" : "movzbq", sof);
+      else if (fw == 2)
+        sb_printf(e->out, "  %s %lld(%%rbp), %%rax\n", sgn ? "movswq" : "movzwq", sof);
+      else if (fw == 4)
+        sb_printf(e->out, "  %s %lld(%%rbp), %%rax\n", sgn ? "movslq" : "movl", sof);
+      else
+        sb_printf(e->out, "  movq %lld(%%rbp), %%rax\n", sof);
+      const char *cvt = i->cast_to == IT_F32 ? "cvtsi2ss" : "cvtsi2sd";
+      int lbl = g_label_counter++;
+      if (!sgn && fw == 8) {
+        sb_printf(e->out, "  testq %%rax, %%rax\n  js Li2f%d_hi\n", lbl);
+        sb_printf(e->out, "  %s %%rax, %s\n  jmp Li2f%d_done\n", cvt, XMM0, lbl);
+        sb_printf(e->out, "Li2f%d_hi:\n", lbl);
+        sb_printf(e->out, "  movq %%rax, %%rcx\n  shrq $1, %%rcx\n  andq $1, %%rax\n  orq %%rcx, %%rax\n");
+        sb_printf(e->out, "  %s %%rax, %s\n", cvt, XMM0);
+        sb_printf(e->out, "  add%s %s, %s\n", i->cast_to == IT_F32 ? "ss" : "sd", XMM0, XMM0);
+        sb_printf(e->out, "Li2f%d_done:\n", lbl);
+      } else {
+        sb_printf(e->out, "  %s %%rax, %s\n", cvt, XMM0);
+      }
       mov_reg_slot(e, dof, i->cast_to == IT_F32 ? 4 : 8, true, XMM0);
       break;
-    case CAST_F2I:
-      mov_slot_reg(e, sof, i->size, true, XMM0);
-      sb_printf(e->out, "  %s %s, %s\n", i->cast_from == IT_F32 ? "cvttss2si" : "cvttsd2si", XMM0,
-                RAX);
+    }
+    case CAST_F2I: {
+      mov_slot_reg(e, sof, i->cast_from == IT_F32 ? 4 : 8, true, XMM0);
+      bool to32 = i->cast_to != IT_I64 && i->cast_to != IT_U64;
+      // the 32-bit form saturates at the 32-bit bounds (spec §4.2)
+      sb_printf(e->out, "  %s%s %s, %s\n", i->cast_from == IT_F32 ? "cvttss2si" : "cvttsd2si",
+                to32 ? "l" : "q", XMM0, to32 ? "%eax" : RAX);
+      if (to32)
+        sb_printf(e->out, "  movslq %%eax, %%rax\n");
       mov_reg_slot(e, dof, 8, false, RAX);
       break;
+    }
     case CAST_F32_F64:
       mov_slot_reg(e, sof, 4, true, XMM0);
       sb_printf(e->out, "  cvtss2sd %s, %s\n", XMM0, XMM0);
@@ -566,7 +618,10 @@ static void emit_terminator(Emitter *e, IRIns *t) {
     g_label_counter++;
   } else if (t->op == (IROp)OP_RET) {
     if (t->a) {
-      mov_slot_reg(e, vreg_off(e, t->a), 8, ir_is_float(t->a->ty), ir_is_float(t->a->ty) ? XMM0 : RAX);
+      bool f = ir_is_float(t->a->ty);
+      // f32 returns ride the low lane at 4 bytes
+      mov_slot_reg(e, vreg_off(e, t->a), f ? (t->a->ty == IT_F32 ? 4 : 8) : 8, f,
+                   f ? XMM0 : RAX);
     }
     sb_printf(e->out, "  movq %%rbp, %%rsp\n  popq %%rbp\n  ret\n");
   }
@@ -576,13 +631,15 @@ static void emit_terminator(Emitter *e, IRIns *t) {
 typedef struct FConstNote {
   int lbl;
   double v;
+  bool f32_;
 } FConstNote;
 static Vec g_fconsts = {0};
 
-void amd64_note_fconst(int lbl, double v) {
+void amd64_note_fconst(int lbl, double v, bool f32_) {
   FConstNote *n = arena_alloc(sizeof(FConstNote));
   n->lbl = lbl;
   n->v = v;
+  n->f32_ = f32_;
   vec_push(&g_fconsts, n);
 }
 
@@ -611,7 +668,11 @@ static void emit_fn(Emitter *e, IRFn *fn) {
     Type *pt = fn->param_types.items[p];
     bool isf = pt && (pt->kind == TY_F32 || pt->kind == TY_F64);
     if (isf && fi < 8) {
-      sb_printf(e->out, "  movsd %%xmm%d, %lld(%%rbp)\n", fi++, slot_off(e, slot));
+      // f32 params arrive in the low lane (movss); movsd would read 8 bytes
+      if (pt->kind == TY_F32)
+        sb_printf(e->out, "  movss %%xmm%d, %lld(%%rbp)\n", fi++, slot_off(e, slot));
+      else
+        sb_printf(e->out, "  movsd %%xmm%d, %lld(%%rbp)\n", fi++, slot_off(e, slot));
     } else if (!isf && ri < 6) {
       sb_printf(e->out, "  movq %s, %lld(%%rbp)\n", intregs[ri++], slot_off(e, slot));
     } else {
@@ -681,8 +742,13 @@ void emit_amd64(Target target, SB *out) {
   }
   for (size_t i = 0; i < g_fconsts.n; i++) {
     FConstNote *n = g_fconsts.items[i];
-    sb_printf(out, "  .p2align 3\nLfconst%d:\n  .quad %llu\n", n->lbl,
-              (unsigned long long)({ uint64_t b; __builtin_memcpy(&b, &n->v, 8); b; }));
+    if (n->f32_) {
+      sb_printf(out, "  .p2align 2\nLfconst%d:\n  .long %llu\n", n->lbl,
+                (unsigned long long)({ uint32_t b; float f = (float)n->v; __builtin_memcpy(&b, &f, 4); b; }));
+    } else {
+      sb_printf(out, "  .p2align 3\nLfconst%d:\n  .quad %llu\n", n->lbl,
+                (unsigned long long)({ uint64_t b; __builtin_memcpy(&b, &n->v, 8); b; }));
+    }
   }
 
   // globals

@@ -101,6 +101,11 @@ void render_diags(SB *sb);
 void flush_diags(void);
 void clear_diags(void);
 int diag_count(void);
+// set while checking a generic instantiation body: re-anchors diags to the
+// call site (util.c), with the `(in `print[...]`)` note
+extern Str g_inst_anchor_file;
+extern int g_inst_anchor_line, g_inst_anchor_col;
+extern const char *g_inst_anchor_note;
 
 // --------------------------------------------------------------- tokens ---
 
@@ -316,6 +321,9 @@ typedef struct Decl {
   void *tenv;        // checker: Map* name->Type* env this decl resolves under
   bool templated;    // checker: signature mentions a type parameter (never lowered)
   void *templ;       // checker: RecType* of the generic definition (struct/enum)
+  Str inst_pretty;    // instantiation clone: `print[T=*Point]` for diagnostics
+  Str inst_site_file; // instantiation clone: call site that demanded it
+  int inst_site_line, inst_site_col;
 } Decl;
 
 Decl *parse_file(Str path, Str src); // full module: parse + check happens later

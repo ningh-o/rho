@@ -233,15 +233,30 @@ void map_put(Map *m, Str key, void *val) {
 Vec diags = {0};
 bool any_error = false;
 
+// While the checker walks a generic instantiation's body, diagnostics
+// re-anchor to the call site that demanded the instantiation — otherwise a
+// `print(x)` on a type without `to_str` would point into the prelude. Set
+// by check.c around the instantiation worklist; NULL when inactive.
+Str g_inst_anchor_file = {0};
+int g_inst_anchor_line = 0, g_inst_anchor_col = 0;
+const char *g_inst_anchor_note = NULL;
+
 void err_at(Str file, int line, int col, const char *fmt, ...) {
   Diag *d = arena_alloc(sizeof(Diag));
-  d->file = file;
-  d->line = line;
-  d->col = col;
+  if (g_inst_anchor_note) {
+    d->file = g_inst_anchor_file;
+    d->line = g_inst_anchor_line;
+    d->col = g_inst_anchor_col;
+  } else {
+    d->file = file;
+    d->line = line;
+    d->col = col;
+  }
   va_list ap;
   va_start(ap, fmt);
-  d->msg = arena_printf_(fmt, ap);
+  char *msg = arena_printf_(fmt, ap);
   va_end(ap);
+  d->msg = g_inst_anchor_note ? arena_printf("%s (in `%s`)", msg, g_inst_anchor_note) : msg;
   vec_push(&diags, d);
   any_error = true;
 }

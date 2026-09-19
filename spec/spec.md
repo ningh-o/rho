@@ -1,4 +1,4 @@
-# The rho Language Specification (v0.0.x)
+# The rho Language Specification (v0.3)
 
 rho (ρ) is a small, statically typed, compiled systems language. It has one
 implementation goal per era: a boot compiler written in C through 0.0.x, and a
@@ -142,7 +142,7 @@ takes one retain, each destruction takes one release*:
 - Slice/string copies — the embedded `buf` is retained/released.
 
 This is purely local, syntactic insertion — no whole-program analysis is
-required for correctness. Redundant pairs are eliminated later (§11.2).
+required for correctness. Redundant pairs are eliminated later (§11.5).
 
 ### 3.3 weak references
 
@@ -211,6 +211,8 @@ of the left (no UB).
   `p.b` follows any number of pointers.
 - Method call `obj.m(args)`: sugar for `Type::m(obj, args..)` — `m` must be
   a function whose first parameter is named `self`. Auto-deref applies.
+  The receiver type may be a struct, an enum, or a **primitive** (§9.3);
+  methods on primitives resolve in that primitive's global method table.
 - `?` postfix (§8).
 - `new` (§4.4).
 
@@ -329,7 +331,9 @@ with code 101. On freestanding targets it writes to the target console.
 Panic unwinds nothing — there is no unwinding; `defer`s do not run on panic
 (this is deliberate: panic is for bugs, not control flow).
 
-`assert(cond)` and `assert_eq(a, b)` live in std and panic on failure.
+`assert(cond)` and `assert_eq[T](a: T, b: T)` live in the prelude and panic
+on failure; `assert_eq` prints both values (via `to_str`, §10.1) in the
+failure message.
 
 ## 9. Functions, generics, modules
 
@@ -342,6 +346,15 @@ fn Point.make(x: i32, y: i32) -> *Point { ... }         // associated fn
 Parameters are typed, passed by value, and are mutable local copies. The
 first parameter named `self` makes the function a method. Recursion is
 allowed; order of declaration does not matter within a module.
+
+### 9.3 Methods on primitive types
+
+`self` may name a primitive type: `fn i32.to_str(self: i32) -> string`.
+Primitive methods live in one global table per primitive — a second
+`fn <prim>.m` anywhere (including the prelude) is a duplicate-method error,
+unlike struct methods, which are scoped per defining module. The prelude
+registers `to_str` on every primitive (§10.1); user code may add new
+primitive methods but cannot silently replace a prelude one.
 
 ### 9.1 Generics
 
@@ -378,10 +391,45 @@ stores by width, `memcpy`, `mem_set`, `mem_move`, `grow_pages` (wasm) — the
 minimal unsafe kernel the std library is built on.
 
 The **prelude** is a per-target module the compiler embeds and imports
-everywhere. It defines `Result`, `Option`, `panic`, `assert*`, the target's
-allocator hooks (`__alloc`, `__free`), `rc_inc`/`rc_dec` (implemented in
-rho itself via intrinsics), and console I/O (`print(s: string)`,
-`eprint(s: string)`, `read_line()` on hosted targets).
+everywhere. It is composed of a pure, target-independent **core**
+(`boot/prelude/core.rho`) and a small per-target **tail** (the byte sinks
+and allocator hooks): the core defines `Result`, `Option`, `panic`,
+`assert*`, the `to_str` family (§10.1), `cat`, and the generic console
+verbs; the tail defines `__alloc`/`__free`, `rc_inc`/`rc_dec` (implemented
+in rho itself via intrinsics), `__print_str`/`__eprint_str`, and
+`read_line()` on hosted targets.
+
+### 10.1 Printing: the `to_str` protocol
+
+A type is **printable** when it has a method `to_str(self) -> string`. The
+console verbs are generic over the value's type:
+
+```
+fn print[T](x: T)     // writes x.to_str() to stdout
+fn println[T](x: T)   // writes x.to_str() + '\n' to stdout
+fn eprint[T](x: T)    // writes x.to_str() to stderr
+fn cat(a: string, b: string) -> string
+```
+
+Because generics monomorphize per call site (§9.1), `x.to_str()` inside
+`print[T]` binds to the concrete receiver type's method — printing IS the
+type's own `to_str`. Every primitive is printable via the prelude;
+user types print themselves by defining `to_str` (slices and arrays do not
+have one — print their elements in a loop). A `print` on a type without
+`to_str` is diagnosed at the triggering call site. `panic` takes a `string`
+only; compose with `cat`.
+
+Formatting rules (canonical, deterministic, identical on every target):
+
+- Integers: minimal two's-complement decimal, correct at `MIN` (the
+  magnitude is taken as `u64` after the wrapping negation).
+- `bool`: `true` / `false`. `string`: the string itself.
+- Floats: the value's exact decimal expansion, correctly rounded
+  (half-to-even) to the round-trip digit count — **17 significant digits
+  for `f64`, 9 for `f32`** — trailing zeros stripped, integral values keep
+  `.0`, fixed notation for decimal exponents in `[-4, D)`, scientific
+  (`d.dddde±XX`) otherwise, `inf`/`nan` as such. The digits always suffice
+  to recover the identical float.
 
 ## 11. Compilation model
 
@@ -418,7 +466,17 @@ to a caller-made temporary (a documented deviation from the C ABI, which
 only matters for `extern` functions — hosted externs in the prelude use
 scalars and pointers only).
 
-### 11.3 rc-pair elimination
+### 11.3 Emission: unreachable functions are dropped
+
+After lowering, a reachability pass over the IR keeps the entry function,
+every function referenced by static initializers, the per-target runtime
+helpers the backend calls by symbol (the esp32c3 soft-float set), and
+everything transitively reachable from them through call/address
+references. Dropped functions never appear in the artifact — prelude
+formatting machinery a program never prints with costs nothing. The pass
+preserves emission order, so determinism (§11.5) is untouched.
+
+### 11.4 rc-pair elimination
 
 After lowering, a peephole pass on the IR removes `rc_inc(x)` immediately
 followed by `rc_dec(x)` (same value, no intervening call that could release
@@ -427,7 +485,7 @@ escape analysis. This pass must preserve observable behavior: the only
 observable effect of rc traffic is death timing, which only weak references
 and finalizers can observe — and rho has neither before 0.2.
 
-### 11.4 Determinism
+### 11.5 Determinism
 
 Monomorphization order, symbol emission order, and data layout are
 canonically sorted. Compiling the same inputs twice yields byte-identical

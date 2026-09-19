@@ -1,51 +1,14 @@
-// esp32c3 target: no libc. The machine parks the heap bounds in two
+// esp32c3 prelude tail: no libc. The machine parks the heap bounds in two
 // statics at entry (a0/a1 of __entry), the console is semihost MMIO — a
 // byte stored to 0x80000000 goes to the host stdout, a word to
-// 0x80000004 ends the process with that exit code.
+// 0x80000004 ends the process with that exit code. Floats run soft-float
+// (RV32IM has no F/D extension) via the helpers below.
 
 static mut __heap_base: usize = 0;
 
 static mut __heap_top: usize = 0;
 
 static mut __heap_next: usize = 0;
-
-pub enum Option[T] {
-  Some(T),
-  None,
-}
-
-pub enum Result[T, E] {
-  Ok(T),
-  Err(E),
-}
-
-fn Option.is_some(self: Option) -> bool {
-  return match self {
-    Option.Some(_) => true,
-    Option.None => false,
-  };
-}
-
-fn Option.is_none(self: Option) -> bool {
-  return match self {
-    Option.Some(_) => false,
-    Option.None => true,
-  };
-}
-
-fn Result.is_ok(self: Result) -> bool {
-  return match self {
-    Result.Ok(_) => true,
-    Result.Err(_) => false,
-  };
-}
-
-fn Result.is_err(self: Result) -> bool {
-  return match self {
-    Result.Ok(_) => false,
-    Result.Err(_) => true,
-  };
-}
 
 fn __alloc(n: usize) -> *u8 {
   // bump allocator over the machine heap; zeroed: fresh element slots read
@@ -76,7 +39,7 @@ fn __free(p: *u8) {
   // bump allocation: nothing to free
 }
 
-fn print(s: string) {
+fn __print_str(s: string) {
   let mmio: usize = 0x80000000;
   let mut i: usize = 0;
   while i < s.len {
@@ -85,93 +48,15 @@ fn print(s: string) {
   }
 }
 
-fn eprint(s: string) {
-  print(s);
+fn __eprint_str(s: string) {
+  __print_str(s);
 }
 
-fn exit(code: i32) {
+fn __exit(code: i32) {
   let mmio: usize = 0x80000004;
   intrinsics.store_u32(mmio as *u8, code as u32);
   loop {}
 }
-
-fn panic(msg: string) {
-  eprint("panic: ");
-  eprint(msg);
-  eprint("\n");
-  exit(101);
-}
-
-fn assert(cond: bool) {
-  if (!cond) {
-    panic("assertion failed");
-  }
-}
-
-fn __panic_div() {
-  panic("division by zero");
-}
-
-fn __panic_oob() {
-  panic("index out of bounds");
-}
-
-fn __panic_null() {
-  panic("null dereference");
-}
-
-fn print_bytes(b: []u8) {
-  let mmio: usize = 0x80000000;
-  let mut i: usize = 0;
-  while i < b.len {
-    intrinsics.store_u8(mmio as *u8, b[i]);
-    i += 1;
-  }
-}
-
-fn print_int(v: i64) {
-  let buf: []u8 = make([]u8, 24);
-  let mut n: usize = 24;
-  let mut x: i64 = v;
-  let neg: bool = (x < 0);
-  if neg {
-    x = (0 - x);
-  }
-  loop {
-    n -= 1;
-    let d: i64 = (x % 10);
-    buf[n] = (48 + d) as u8;
-    x /= 10;
-    if (x == 0) {
-      break;
-    }
-  }
-  if neg {
-    n -= 1;
-    buf[n] = 45;
-  }
-  print_bytes(buf[n..24]);
-}
-
-fn print_ln() {
-  print("\n");
-}
-
-fn __streq(a: string, b: string) -> bool {
-  if len(a) != len(b) {
-    return false;
-  }
-  let mut i: usize = 0;
-  while i < len(a) {
-    if a[i] != b[i] {
-      return false;
-    }
-    i += 1;
-  }
-  return true;
-}
-
-
 
 // --------------------------------------------------------------- soft float
 // IEEE-754 double arithmetic in pure integer code (RV32IM has no F or D

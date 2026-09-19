@@ -1,0 +1,27 @@
+// exit: 0
+fn main() -> i32 {
+  println(2.5);
+  println(4.0);
+  println(0.1 + 0.2);
+  println(1.0 / 3.0);
+  println(1e300);
+  println(0.000025);
+  println(0.0 - 0.5);
+  println(100.0);
+  println(5e-324);
+  println(1.7976931348623157e308);
+  println(0.0 - 2.5e-9);
+  println(123.456);
+  println(1e16);
+  println(1e17);
+  println(1.0 / 0.0);
+  println(0.0 / 0.0);
+  println(0.0 - 1.0 / 0.0);
+  let f: f32 = 0.1;
+  println(f);
+  let g: f32 = 0.0 - 2.75;
+  println(g);
+  let h: f32 = 3.5;
+  println(h);
+  return 0;
+}
