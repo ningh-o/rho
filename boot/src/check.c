@@ -673,6 +673,7 @@ void check_reset(void) {
 }
 
 bool g_prelude_wasm = false; // wasm32-wasi targets use the fd_write prelude
+bool g_prelude_esp32 = false; // esp32c3 targets use the bump-alloc prelude
 
 void prelude_init(void) {
   if (prelude_loaded)
@@ -681,7 +682,10 @@ void prelude_init(void) {
   extern const char PRELUDE_SOURCE[];
   extern const char PRELUDE_WASI_SOURCE[];
   Str path = str_from("<prelude>");
-  Str src = str_from(g_prelude_wasm ? PRELUDE_WASI_SOURCE : PRELUDE_SOURCE);
+  extern const char PRELUDE_ESP32_SOURCE[];
+  Str src = str_from(g_prelude_esp32 ? PRELUDE_ESP32_SOURCE
+                     : g_prelude_wasm ? PRELUDE_WASI_SOURCE
+                                      : PRELUDE_SOURCE);
   Decl *root = parse_file(path, src);
   Module *m = arena_alloc_zeroed(sizeof(Module));
   m->path = path;

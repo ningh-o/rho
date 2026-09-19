@@ -1,4 +1,4 @@
-// rho — the self-hosted compiler (0.1.0).
+// rho — the self-hosted compiler (0.2.0).
 //
 // One file, one module: the whole compiler, written in the frozen 0.0.5
 // language surface. Bootstrap invariant (spec §13): boot(self) == self(self)
@@ -2318,7 +2318,7 @@ fn diag_count() -> i32 {
 }
 
 fn usage() -> i32 {
-  eprint("rho 0.1.3\n");
+  eprint("rho 0.2.0\n");
   eprint("usage: rho <command> [args]\n");
   eprint("  check  <file>              parse + typecheck\n");
   eprint("  fmt    [-w] <file>         print canonical formatting\n");
@@ -3183,7 +3183,11 @@ fn read_file_or_empty(path: string) -> string {
 }
 
 fn parse_target_name(s: string) -> i32 {
-  // 0 = amd64-linux, 1 = amd64-mac, 2 = arm64-mac (default), 3 = wasm32-wasi
+  // 0 = amd64-linux, 1 = amd64-mac, 2 = arm64-mac (default), 3 = wasm32-wasi,
+  // 4 = esp32c3 (RV32IM, flat image run by the boot-side simulator)
+  if streq(s, "esp32c3") {
+    return 4;
+  }
   if streq(s, "wasm32-wasi") {
     return 3;
   }
@@ -3224,6 +3228,11 @@ fn reset_compiler_state() {
   g_panic_site = 0;
   g_lit_counter = 0;
   g_closure_counter = 0;
+  g_label32 = 0;
+  g_uid32 = 0;
+  g_rv32_pair_pc = 0;
+  g_rv32_asm_fail = false;
+  g_rv32_last_size = 0;
   g_eq_fns = null;
   g_rel_fns = null;
   g_ret_fns = null;
@@ -3262,6 +3271,9 @@ fn build_to(path: string, target: i32, out_path: string, check_only: bool) -> i3
   if target == 3 {
     prelude_path = "boot/prelude/wasi.rho";
   }
+  if target == 4 {
+    prelude_path = "boot/prelude/esp32c3.rho";
+  }
   let prelude_r: Result[string, string] = read_file(prelude_path);
   if !prelude_r.is_err() {
     let pparse: *Decl = parse_file("<prelude>", prelude_r.get_ok());
@@ -3293,6 +3305,19 @@ fn build_to(path: string, target: i32, out_path: string, check_only: bool) -> i3
   if target == 3 {
     let bytes: []u8 = emit_wasm();
     write_file(out_path, bytes_as_string(bytes));
+    return 0;
+  }
+  if target == 4 {
+    // esp32c3: RV32IM text, then the in-tree assembler produces the flat
+    // load image; running it is the boot-side simulator's job
+    let text: []u8 = emit_riscv32_text();
+    let s_path: string = cat3(out_path, ".s", "");
+    write_file(s_path, bytes_as_string(text));
+    let image: []u8 = assemble_rv32(bytes_as_string(text));
+    if g_rv32_asm_fail {
+      return 1;
+    }
+    write_file(out_path, bytes_as_string(image));
     return 0;
   }
   // native: emit assembly, then hand it to cc exactly like boot's driver
@@ -3331,6 +3356,12 @@ fn cmd_test(args: []string) -> i32 {
       dir = args[i];
       i += 1;
     }
+  }
+  if target == 4 {
+    // the flat esp32c3 image has no host execution path here: running it
+    // is the boot compiler's in-tree simulator's job
+    eprint("rho: esp32c3 execution runs via the boot compiler's simulator\n");
+    return 2;
   }
   let files: *Vec[string] = list_dir_rho(dir);
   let mut failures: i32 = 0;
@@ -3394,7 +3425,7 @@ fn main() -> i32 {
   }
   let cmd: string = args[1];
   if streq(cmd, "--version") || streq(cmd, "version") {
-    print("rho 0.1.3\n");
+    print("rho 0.2.0\n");
     return 0;
   }
   if streq(cmd, "selftest") {
@@ -8249,12 +8280,12 @@ fn shim_for(fn_: *Sym) -> string {
   let lf: *IRFn = rc_new_fn(shim_name);
   lf.ret = ret;
   let cc: *LCtx = rc_ctx(lf);
+  // rc_new_fn already created and selected the entry block; creating
+  // another here would leave an empty leading block the emitters emit
   if agg_ret {
     lf.returns_aggregate = true;
     lf.out_slot = new_slot(cc, type_size(ret), type_align(ret), "out");
   }
-  lf.entry = new_block(cc);
-  use_block(cc, lf.entry);
 
   let mut args: []*IRVreg = make([]*IRVreg, 0);
   if agg_ret {
@@ -10561,8 +10592,10 @@ fn lower_program() {
       let mut k: usize = 0;
       while k < m.syms.n {
         let sym: *Sym = m.syms.items[k].val;
-        if sym.kind == SymKind.SyFn && sym.decl != null && sym.decl.body.n > 0 &&
-           !sym.decl.templated {
+        // lower real definitions only; externs declare without a body and
+        // an empty-bodied fn is still callable (esp32c3 __free is a no-op)
+        if sym.kind == SymKind.SyFn && sym.decl != null &&
+           sym.decl.kind == DeclKind.DkFn && !sym.decl.templated {
           g_ir_fns.push(lower_fn(sym));
         } else if sym.kind == SymKind.SyStatic {
           lower_static(sym);
@@ -15674,3 +15707,1876 @@ fn fmt_float(x: f64) {
 }
 
 
+
+// ================= RV32IM backend (esp32c3, target 4) ======================
+// mirror of boot/src/emit_riscv32.c: spill-everything RV32IM text assembly
+// fed to an in-tree two-pass assembler producing the flat load image the
+// boot-side simulator runs.
+//
+//   fp = s0 (x8); slots at negative s0 offsets; t0 (x5) is the dedicated
+//   address scratch; t1/t2 (x6/x7) hold the first value; a0-a7 are argument
+//   and call-clobber registers, free as temps between instructions.
+//
+// Widths follow the wasm precedent: pointers, usize and isize are 32-bit
+// (slot footprint stays 8 bytes, the low half carries the value); explicit
+// i64/u64 occupy register pairs and route to the fixed runtime stubs.
+// Float ops trap with ebreak until soft-float lands (0.2.1).
+
+struct RVCtx {
+  out: *Vec[u8],
+  fn_: *IRFn,
+  offs: []i64, // slot id -> negative offset from s0; vregs at slots.n + id
+  frame: i64,
+}
+
+static mut g_label32: i32 = 0;
+static mut g_uid32: i32 = 0;
+
+fn rv_is64(t: IRType) -> bool {
+  return t == IRType.ItI64 || t == IRType.ItU64;
+}
+
+fn rv_size_of(t: IRType) -> i64 {
+  if t == IRType.ItPtr || t == IRType.ItUsize {
+    return 4;
+  }
+  return ir_size_of(t);
+}
+
+fn rv_slot_off(e: *RVCtx, s: *IRSlot) -> i64 {
+  if s.id < len(e.offs) as i32 {
+    return e.offs[s.id as usize];
+  }
+  let mut off: i64 = e.frame;
+  let al: i64 = if s.align > 8 { 8 } else { s.align };
+  off = (off + al - 1) / al * al;
+  off += s.size;
+  e.frame = off;
+  while (len(e.offs) as i32) <= s.id {
+    e.offs = push_i64(e.offs, 0);
+  }
+  e.offs[s.id as usize] = 0 - off;
+  return 0 - off;
+}
+
+fn rv_vreg_off(e: *RVCtx, v: *IRVreg) -> i64 {
+  let idx: usize = len(e.fn_.slots) + v.id as usize;
+  while len(e.offs) <= idx {
+    e.offs = push_i64(e.offs, 0);
+  }
+  return e.offs[idx];
+}
+
+fn rv_layout(e: *RVCtx) {
+  e.offs = make([]i64, 0);
+  // the top 16 bytes of the frame are the save band (ra at s0-4, caller
+  // s0 at s0-8 — see prologue/epilogue); slots and vregs live below it,
+  // so the slot cursor starts at 16, not 0
+  e.frame = 16;
+  let mut i: usize = 0;
+  while i < len(e.fn_.slots) {
+    rv_slot_off(e, e.fn_.slots[i]);
+    i += 1;
+  }
+  let mut v: i32 = 0;
+  while v < e.fn_.next_vreg {
+    e.frame += 8;
+    e.offs = push_i64(e.offs, 0 - e.frame);
+    v += 1;
+  }
+  e.frame = (e.frame + 15) / 16 * 16;
+}
+
+// sign-extend the low 32 bits of a u64 into an i64
+fn rv_sext32(v: u64) -> i64 {
+  let mut r: i64 = v as i64;
+  if r >= 2147483648 {
+    r -= 4294967296;
+  }
+  return r;
+}
+
+// the lui/addi immediate pair for an arbitrary 32-bit address: hi is the
+// 20-bit LUI field, slo the sign-extended 12-bit ADDI field, so that
+// (hi << 12) + slo == addr exactly (mod 2^32)
+fn rv_hi20(u: u64) -> u64 {
+  return ((u + 0x800) & 0xFFFFFFFF) >> 12;
+}
+
+fn rv_lo12(u: u64) -> i64 {
+  let hi: u64 = rv_hi20(u);
+  let lo: u64 = (u - (hi << 12)) & 0xFFFFFFFF;
+  let mut slo: i64 = rv_sext32(lo);
+  if slo >= 2048 {
+    slo -= 4096;
+  }
+  return slo;
+}
+
+// t0 (x5) is the slot-address scratch; offsets beyond the 12-bit signed
+// immediate go through a lui+addi absolute in t0 itself
+fn rv_addr_into(e: *RVCtx, off: i64) {
+  if off >= -2048 && off <= 2047 {
+    bs(e.out, cat3("  addi t0, s0, ", cat3(itoa(off), "\n", ""), ""));
+    return;
+  }
+  let u: u64 = off as u64 & 0xFFFFFFFF;
+  bs(e.out, cat3("  lui t0, ", cat3(utoa(rv_hi20(u)), "\n", ""), ""));
+  let slo: i64 = rv_lo12(u);
+  if slo != 0 {
+    bs(e.out, cat3("  addi t0, t0, ", cat3(itoa(slo), "\n", ""), ""));
+  }
+  bs(e.out, "  add t0, s0, t0\n");
+}
+
+fn rv_ldop(size: i64, sgn: bool) -> string {
+  if size == 1 {
+    if sgn { return "lb"; }
+    return "lbu";
+  }
+  if size == 2 {
+    if sgn { return "lh"; }
+    return "lhu";
+  }
+  return "lw";
+}
+
+fn rv_ld(e: *RVCtx, off: i64, size: i64, sgn: bool, reg: string) {
+  rv_addr_into(e, off);
+  bs(e.out, cat5("  ", rv_ldop(size, sgn), " ", reg, ", 0(t0)\n"));
+}
+
+// load reg from a slot WITHOUT disturbing t0 — the mirror of st_keep_t0,
+// for ops that hold a pointer in t0 across the load (IR_STORE/COPYMEM
+// fetch their data value after computing the store target into t0)
+fn rv_ld_keep_t0(e: *RVCtx, off: i64, size: i64, sgn: bool, reg: string) {
+  if off >= -2048 && off <= 2047 {
+    bs(e.out, cat5("  ", rv_ldop(size, sgn), " ", reg, cat4(", ", itoa(off), "(s0)\n", "")));
+    return;
+  }
+  let u: u64 = off as u64 & 0xFFFFFFFF;
+  bs(e.out, cat3("  lui t6, ", cat3(utoa(rv_hi20(u)), "\n", ""), ""));
+  let slo: i64 = rv_lo12(u);
+  if slo != 0 {
+    bs(e.out, cat3("  addi t6, t6, ", cat3(itoa(slo), "\n", ""), ""));
+  }
+  bs(e.out, "  add t6, s0, t6\n");
+  bs(e.out, cat5("  ", rv_ldop(size, sgn), " ", reg, ", 0(t6)\n"));
+}
+
+fn rv_st(e: *RVCtx, off: i64, size: i64, reg: string) {
+  rv_addr_into(e, off);
+  let mut op: string = "sw";
+  if size == 1 {
+    op = "sb";
+  } else if size == 2 {
+    op = "sh";
+  }
+  bs(e.out, cat5("  ", op, " ", reg, ", 0(t0)\n"));
+}
+
+// store reg into a slot WITHOUT disturbing t0 — for the ops that keep a
+// computed value (an address, a compare bit) in t0 as data. s0-relative
+// immediates cover most slots; beyond that the address is built in t6,
+// which nothing holds across instructions except an indirect IR_CALL.
+fn rv_st_keep_t0(e: *RVCtx, off: i64, size: i64, reg: string) {
+  let mut op: string = "sw";
+  if size == 1 {
+    op = "sb";
+  } else if size == 2 {
+    op = "sh";
+  }
+  if off >= -2048 && off <= 2047 {
+    bs(e.out, cat5("  ", op, " ", reg, cat4(", ", itoa(off), "(s0)\n", "")));
+    return;
+  }
+  let u: u64 = off as u64 & 0xFFFFFFFF;
+  bs(e.out, cat3("  lui t6, ", cat3(utoa(rv_hi20(u)), "\n", ""), ""));
+  let slo: i64 = rv_lo12(u);
+  if slo != 0 {
+    bs(e.out, cat3("  addi t6, t6, ", cat3(itoa(slo), "\n", ""), ""));
+  }
+  bs(e.out, "  add t6, s0, t6\n");
+  bs(e.out, cat5("  ", op, " ", reg, ", 0(t6)\n"));
+}
+
+fn rv_ld_pair(e: *RVCtx, off: i64, lo: string, hi: string) {
+  rv_addr_into(e, off);
+  bs(e.out, cat5("  lw ", lo, ", 0(t0)\n", "", ""));
+  bs(e.out, cat5("  lw ", hi, ", 4(t0)\n", "", ""));
+}
+
+fn rv_st_pair(e: *RVCtx, off: i64, lo: string, hi: string) {
+  rv_addr_into(e, off);
+  bs(e.out, cat5("  sw ", lo, ", 0(t0)\n", "", ""));
+  bs(e.out, cat5("  sw ", hi, ", 4(t0)\n", "", ""));
+}
+
+fn rv_li32(e: *RVCtx, reg: string, v: u64) {
+  if v <= 2047 {
+    bs(e.out, cat5("  addi ", reg, ", zero, ", cat3(utoa(v), "\n", ""), ""));
+    return;
+  }
+  let hi: u64 = rv_hi20(v);
+  let slo: i64 = rv_lo12(v);
+  bs(e.out, cat3("  lui ", cat3(reg, cat3(", ", cat3(utoa(hi), "\n", ""), ""), ""), ""));
+  if slo != 0 {
+    bs(e.out, cat5("  addi ", reg, ", ", reg, cat3(", ", cat3(itoa(slo), "\n", ""), "")));
+  }
+}
+
+// canonicalize a 32-bit narrow result to its own width (spec: wraparound)
+fn rv_canon32(e: *RVCtx, reg: string, ty: IRType) {
+  let w: i64 = rv_size_of(ty);
+  if w >= 4 {
+    return;
+  }
+  let sgn: bool = ty_is_signed_int(ty);
+  let sh: i64 = 32 - w * 8;
+  bs(e.out, cat5("  slli ", reg, ", ", reg, cat3(", ", cat3(itoa(sh), "\n", ""), "")));
+  let mut op: string = "srli";
+  if sgn {
+    op = "srai";
+  }
+  bs(e.out, cat5("  ", op, " ", reg, cat3(", ", cat3(reg, cat3(", ", cat3(itoa(sh), "\n", ""), ""), ""), "")));
+}
+
+fn rv_call_helper(e: *RVCtx, name: string, alo: i64, ahi: i64, blo: i64, bhi: i64, dlo: i64) {
+  rv_ld(e, alo, 4, false, "a0");
+  rv_ld(e, ahi, 4, false, "a1");
+  rv_ld(e, blo, 4, false, "a2");
+  rv_ld(e, bhi, 4, false, "a3");
+  bs(e.out, cat5("  auipc ra, %hi(", name, ")\n", "", ""));
+  bs(e.out, cat5("  jalr ra, ra, %lo(", name, ")\n", "", ""));
+  rv_st_pair(e, dlo, "a0", "a1");
+}
+
+fn rv_ins(e: *RVCtx, i: *IRIns) {
+  if i.op == IROp.IrConst {
+    let dof: i64 = rv_vreg_off(e, i.dst);
+    let v: u64 = i.imm as u64 & 0xFFFFFFFFFFFFFFFF;
+    if rv_is64(i.dst.ty) {
+      rv_li32(e, "t1", v & 0xFFFFFFFF);
+      rv_li32(e, "t2", (v >> 32) & 0xFFFFFFFF);
+      rv_st_pair(e, dof, "t1", "t2");
+    } else {
+      rv_li32(e, "t1", v & 0xFFFFFFFF);
+      rv_st(e, dof, 4, "t1");
+    }
+    return;
+  }
+  if i.op == IROp.IrFconst {
+    // soft-float lands in 0.2.1
+    bs(e.out, "  ebreak #900\n");
+    return;
+  }
+  if i.op == IROp.IrAdd || i.op == IROp.IrSub || i.op == IROp.IrAnd || i.op == IROp.IrOr || i.op == IROp.IrXor {
+    let dof: i64 = rv_vreg_off(e, i.dst);
+    if rv_is64(i.dst.ty) {
+      let ao: i64 = rv_vreg_off(e, i.a);
+      let bo: i64 = rv_vreg_off(e, i.b);
+      rv_ld_pair(e, ao, "t1", "t2");
+      rv_ld_pair(e, bo, "t3", "t4");
+      if i.op == IROp.IrAdd {
+        bs(e.out, "  add t1, t1, t3\n");
+        bs(e.out, "  sltu t5, t1, t3\n");
+        bs(e.out, "  add t2, t2, t4\n");
+        bs(e.out, "  add t2, t2, t5\n");
+      } else if i.op == IROp.IrSub {
+        bs(e.out, "  sltu t5, t1, t3\n");
+        bs(e.out, "  sub t1, t1, t3\n");
+        bs(e.out, "  sub t2, t2, t4\n");
+        bs(e.out, "  sub t2, t2, t5\n");
+      } else {
+        let mut op: string = "xor";
+        if i.op == IROp.IrAnd {
+          op = "and";
+        } else if i.op == IROp.IrOr {
+          op = "or";
+        }
+        bs(e.out, cat5("  ", op, " t1, t1, t3\n", "", ""));
+        bs(e.out, cat5("  ", op, " t2, t2, t4\n", "", ""));
+      }
+      rv_st_pair(e, dof, "t1", "t2");
+      return;
+    }
+    let mut op2: string = "xor";
+    if i.op == IROp.IrAdd {
+      op2 = "add";
+    } else if i.op == IROp.IrSub {
+      op2 = "sub";
+    } else if i.op == IROp.IrAnd {
+      op2 = "and";
+    } else if i.op == IROp.IrOr {
+      op2 = "or";
+    }
+    rv_ld(e, rv_vreg_off(e, i.a), rv_size_of(i.a.ty), ty_is_signed_int(i.a.ty), "t1");
+    rv_ld(e, rv_vreg_off(e, i.b), rv_size_of(i.b.ty), ty_is_signed_int(i.b.ty), "t2");
+    bs(e.out, cat5("  ", op2, " t1, t1, t2\n", "", ""));
+    rv_canon32(e, "t1", i.a.ty);
+    rv_st(e, dof, 4, "t1");
+    return;
+  }
+  if i.op == IROp.IrMul {
+    let dof: i64 = rv_vreg_off(e, i.dst);
+    if rv_is64(i.dst.ty) {
+      // lower 64 bits of the product: lo = alo*blo,
+      // hi = alo*bhi + ahi*blo + hi(alo*blo) — mod 2^64 correct signed too
+      let ao: i64 = rv_vreg_off(e, i.a);
+      let bo: i64 = rv_vreg_off(e, i.b);
+      rv_ld_pair(e, ao, "t1", "t2");
+      rv_ld_pair(e, bo, "t3", "t4");
+      bs(e.out, "  mul t5, t1, t3\n");
+      bs(e.out, "  mulhu t6, t1, t3\n");
+      bs(e.out, "  mul t2, t1, t4\n");
+      bs(e.out, "  mul t3, t2, t3\n");
+      bs(e.out, "  add t2, t2, t3\n");
+      bs(e.out, "  add t2, t2, t6\n");
+      bs(e.out, "  mv t1, t5\n");
+      rv_st_pair(e, dof, "t1", "t2");
+      return;
+    }
+    rv_ld(e, rv_vreg_off(e, i.a), rv_size_of(i.a.ty), true, "t1");
+    rv_ld(e, rv_vreg_off(e, i.b), rv_size_of(i.b.ty), true, "t2");
+    bs(e.out, "  mul t1, t1, t2\n");
+    rv_canon32(e, "t1", i.a.ty);
+    rv_st(e, dof, 4, "t1");
+    return;
+  }
+  if i.op == IROp.IrDiv || i.op == IROp.IrMod {
+    let dof: i64 = rv_vreg_off(e, i.dst);
+    let is64: bool = rv_is64(i.dst.ty);
+    let sgn: bool = ty_is_signed_int(i.a.ty);
+    // RISC-V division defines x/0 = -1 and overflow as wraparound, but the
+    // language panics on /0 — guard before the hardware op or the stub
+    let psym: string = prelude_symbol("__panic_div");
+    let lbl: i32 = g_label32;
+    g_label32 += 1;
+    if is64 {
+      let ao: i64 = rv_vreg_off(e, i.a);
+      let bo: i64 = rv_vreg_off(e, i.b);
+      rv_ld(e, bo, 4, false, "t2");
+      rv_ld(e, bo + 4, 4, false, "t3");
+      bs(e.out, cat3("  or t2, t2, t3\n  bne t2, zero, Ldz", cat3(itoa(lbl as i64), "\n", ""), ""));
+      bs(e.out, cat5("  auipc ra, %hi(", psym, ")\n", "", ""));
+      bs(e.out, cat5("  jalr ra, ra, %lo(", psym, ")\n", "", ""));
+      bs(e.out, cat3("Ldz", cat4(itoa(lbl as i64), ":\n", "", ""), ""));
+      let mut hname: string = "__divu64";
+      if sgn {
+        hname = "__div64";
+      }
+      if i.op == IROp.IrMod {
+        hname = "__remu64";
+        if sgn {
+          hname = "__rem64";
+        }
+      }
+      rv_call_helper(e, hname, ao, ao + 4, bo, bo + 4, dof);
+      return;
+    }
+    rv_ld(e, rv_vreg_off(e, i.a), 4, sgn, "t1");
+    rv_ld(e, rv_vreg_off(e, i.b), 4, sgn, "t2");
+    bs(e.out, cat3("  bne t2, zero, Ldz", cat3(itoa(lbl as i64), "\n", ""), ""));
+    bs(e.out, cat5("  auipc ra, %hi(", psym, ")\n", "", ""));
+    bs(e.out, cat5("  jalr ra, ra, %lo(", psym, ")\n", "", ""));
+    bs(e.out, cat3("Ldz", cat4(itoa(lbl as i64), ":\n", "", ""), ""));
+    let mut op: string = "divu";
+    if sgn {
+      op = "div";
+    }
+    if i.op == IROp.IrMod {
+      op = "remu";
+      if sgn {
+        op = "rem";
+      }
+    }
+    bs(e.out, cat5("  ", op, " t1, t1, t2\n", "", ""));
+    rv_st(e, dof, 4, "t1");
+    return;
+  }
+  if i.op == IROp.IrShl || i.op == IROp.IrShr {
+    let dof: i64 = rv_vreg_off(e, i.dst);
+    if rv_is64(i.dst.ty) {
+      let ao: i64 = rv_vreg_off(e, i.a);
+      let bo: i64 = rv_vreg_off(e, i.b);
+      let mut h: string = "__srl64";
+      if i.op == IROp.IrShl {
+        h = "__shl64";
+      } else if i.signed_ops {
+        h = "__sar64";
+      }
+      rv_call_helper(e, h, ao, ao + 4, bo, bo + 4, dof);
+      return;
+    }
+    rv_ld(e, rv_vreg_off(e, i.a), rv_size_of(i.a.ty), ty_is_signed_int(i.a.ty), "t1");
+    rv_ld(e, rv_vreg_off(e, i.b), rv_size_of(i.b.ty), false, "t2");
+    let mut op: string = "srl";
+    if i.op == IROp.IrShl {
+      op = "sll";
+    } else if i.signed_ops {
+      op = "sra";
+    }
+    bs(e.out, cat5("  ", op, " t1, t1, t2\n", "", ""));
+    if i.op == IROp.IrShl {
+      rv_canon32(e, "t1", i.a.ty);
+    }
+    rv_st(e, dof, 4, "t1");
+    return;
+  }
+  if i.op == IROp.IrCmp {
+    if rv_is64(i.a.ty) {
+      // pair compare, branchless: less = hi_less | (hi_eq & lo_less)
+      let ao: i64 = rv_vreg_off(e, i.a);
+      let bo: i64 = rv_vreg_off(e, i.b);
+      let dof: i64 = rv_vreg_off(e, i.dst);
+      let sgn: bool = ty_is_signed_int(i.a.ty);
+      let mut cmp: string = "sltu";
+      if sgn {
+        cmp = "slt";
+      }
+      rv_ld_pair(e, ao, "t1", "t2");
+      rv_ld_pair(e, bo, "t3", "t4");
+      bs(e.out, cat5("  ", cmp, " t5, t2, t4\n", "", ""));
+      bs(e.out, cat5("  ", cmp, " t6, t4, t2\n", "", ""));
+      bs(e.out, "  sltu t0, t1, t3\n");
+      bs(e.out, "  sub t6, zero, t6\n");
+      bs(e.out, "  not t6, t6\n");
+      bs(e.out, "  and t0, t0, t6\n");
+      bs(e.out, "  or t0, t5, t0\n");
+      bs(e.out, "  xor t1, t1, t3\n");
+      bs(e.out, "  xor t2, t2, t4\n");
+      bs(e.out, "  or t1, t1, t2\n");
+      bs(e.out, "  seqz t2, t1\n");
+      // t0 = less, t2 = equal — pick per condition code
+      if i.cc == IRCC.CcLt {
+        bs(e.out, "  mv t0, t0\n");
+      } else if i.cc == IRCC.CcLe {
+        bs(e.out, "  or t0, t0, t2\n");
+      } else if i.cc == IRCC.CcGt {
+        bs(e.out, "  or t0, t0, t2\n  xori t0, t0, 1\n");
+      } else if i.cc == IRCC.CcGe {
+        bs(e.out, "  xori t0, t0, 1\n");
+      } else if i.cc == IRCC.CcEq {
+        bs(e.out, "  mv t0, t2\n");
+      } else {
+        bs(e.out, "  xori t2, t2, 1\n  mv t0, t2\n");
+      }
+      rv_st_keep_t0(e, dof, 1, "t0");
+      return;
+    }
+    // 32-bit compare
+    let ao: i64 = rv_vreg_off(e, i.a);
+    let bo: i64 = rv_vreg_off(e, i.b);
+    let dof: i64 = rv_vreg_off(e, i.dst);
+    let sgn: bool = ty_is_signed_int(i.a.ty);
+    let mut lt: string = "sltu";
+    if sgn {
+      lt = "slt";
+    }
+    rv_ld(e, ao, rv_size_of(i.a.ty), sgn, "t1");
+    rv_ld(e, bo, rv_size_of(i.b.ty), sgn, "t2");
+    if i.cc == IRCC.CcEq {
+      bs(e.out, "  xor t1, t1, t2\n  seqz t1, t1\n");
+    } else if i.cc == IRCC.CcNe {
+      bs(e.out, "  xor t1, t1, t2\n  snez t1, t1\n");
+    } else if i.cc == IRCC.CcLt {
+      bs(e.out, cat5("  ", lt, " t1, t1, t2\n", "", ""));
+    } else if i.cc == IRCC.CcGt {
+      bs(e.out, cat5("  ", lt, " t1, t2, t1\n", "", ""));
+    } else if i.cc == IRCC.CcLe {
+      bs(e.out, cat5("  ", lt, " t1, t2, t1\n  xori t1, t1, 1\n", "", ""));
+    } else {
+      bs(e.out, cat5("  ", lt, " t1, t1, t2\n  xori t1, t1, 1\n", "", ""));
+    }
+    rv_st(e, dof, 1, "t1");
+    return;
+  }
+  if i.op == IROp.IrLoad {
+    let dof: i64 = rv_vreg_off(e, i.dst);
+    rv_ld(e, rv_vreg_off(e, i.addr), 4, false, "t0");
+    if i.size == 8 && rv_is64(i.dst.ty) {
+      bs(e.out, "  lw t1, 0(t0)\n");
+      bs(e.out, "  lw t2, 4(t0)\n");
+      rv_st_pair(e, dof, "t1", "t2");
+      return;
+    }
+    let sgn: bool = ty_is_signed_int(i.dst.ty);
+    bs(e.out, cat5("  ", rv_ldop(i.size, sgn), " t1, 0(t0)\n", "", ""));
+    rv_st(e, dof, 4, "t1");
+    return;
+  }
+  if i.op == IROp.IrStore {
+    rv_ld(e, rv_vreg_off(e, i.addr), 4, false, "t0");
+    if i.size == 8 && i.a != null && rv_is64(i.a.ty) {
+      rv_ld_keep_t0(e, rv_vreg_off(e, i.a), 4, false, "t1");
+      rv_ld_keep_t0(e, rv_vreg_off(e, i.a) + 4, 4, false, "t2");
+      bs(e.out, "  sw t1, 0(t0)\n");
+      bs(e.out, "  sw t2, 4(t0)\n");
+      return;
+    }
+    rv_ld_keep_t0(e, rv_vreg_off(e, i.a), i.size, false, "t1");
+    let mut op: string = "sw";
+    if i.size == 1 {
+      op = "sb";
+    } else if i.size == 2 {
+      op = "sh";
+    }
+    bs(e.out, cat5("  ", op, " t1, 0(t0)\n", "", ""));
+    return;
+  }
+  if i.op == IROp.IrAddrc {
+    let dof: i64 = rv_vreg_off(e, i.dst);
+    if i.lit == -1 {
+      bs(e.out, cat5("  auipc t0, %hi(", i.callee, ")\n", "", ""));
+      bs(e.out, cat5("  addi t0, t0, %lo(", i.callee, ")\n", "", ""));
+    } else {
+      rv_addr_into(e, rv_slot_off(e, i.slot));
+    }
+    rv_st_keep_t0(e, dof, 4, "t0");
+    return;
+  }
+  if i.op == IROp.IrAddi {
+    let dof: i64 = rv_vreg_off(e, i.dst);
+    rv_ld(e, rv_vreg_off(e, i.a), 4, false, "t1");
+    if i.imm >= -2048 && i.imm <= 2047 {
+      bs(e.out, cat3("  addi t1, t1, ", cat3(itoa(i.imm), "\n", ""), ""));
+    } else {
+      rv_li32(e, "t2", i.imm as u64 & 0xFFFFFFFF);
+      bs(e.out, "  add t1, t1, t2\n");
+    }
+    rv_st(e, dof, 4, "t1");
+    return;
+  }
+  if i.op == IROp.IrCast {
+    let sof: i64 = rv_vreg_off(e, i.a);
+    let dof: i64 = rv_vreg_off(e, i.dst);
+    if i.cast == IRCastKind.CastTrunc {
+      // i64 -> i32: the low half IS the truncated value
+      let mut sz: i64 = rv_size_of(i.cast_from);
+      if rv_is64(i.a.ty) {
+        sz = 4;
+      }
+      rv_ld(e, sof, sz, false, "t1");
+      rv_st(e, dof, 4, "t1");
+      return;
+    }
+    if i.cast == IRCastKind.CastSext {
+      if rv_is64(i.dst.ty) && !rv_is64(i.a.ty) {
+        rv_ld(e, sof, 4, true, "t1");
+        bs(e.out, "  srai t2, t1, 31\n");
+        rv_st_pair(e, dof, "t1", "t2");
+      } else if rv_is64(i.dst.ty) {
+        rv_ld_pair(e, sof, "t1", "t2");
+        rv_st_pair(e, dof, "t1", "t2");
+      } else {
+        rv_ld(e, sof, rv_size_of(i.cast_from), true, "t1");
+        rv_st(e, dof, 4, "t1");
+      }
+      return;
+    }
+    if i.cast == IRCastKind.CastZext {
+      if rv_is64(i.dst.ty) && !rv_is64(i.a.ty) {
+        rv_ld(e, sof, 4, false, "t1");
+        rv_li32(e, "t2", 0);
+        rv_st_pair(e, dof, "t1", "t2");
+      } else {
+        rv_ld(e, sof, rv_size_of(i.cast_from), false, "t1");
+        rv_st(e, dof, 4, "t1");
+      }
+      return;
+    }
+    if i.cast == IRCastKind.CastBitcopy || i.cast == IRCastKind.CastReinterp {
+      // same-size bit moves (usize<->ptr, f32/f64 bit pattern extraction) —
+      // no FP arithmetic involved, so these work without soft-float
+      if rv_is64(i.dst.ty) {
+        rv_ld_pair(e, sof, "t1", "t2");
+        rv_st_pair(e, dof, "t1", "t2");
+      } else {
+        rv_ld(e, sof, rv_size_of(i.cast_from), false, "t1");
+        rv_st(e, dof, 4, "t1");
+      }
+      return;
+    }
+    // I2F / F2I / F32_F64 / F64_F32: soft-float lands in 0.2.1
+    bs(e.out, "  ebreak #901\n");
+    return;
+  }
+  if i.op == IROp.IrCopymem {
+    rv_ld(e, rv_vreg_off(e, i.addr), 4, false, "t0");
+    rv_ld_keep_t0(e, rv_vreg_off(e, i.a), 4, false, "t1");
+    if i.size < 0 {
+      rv_ld_keep_t0(e, rv_vreg_off(e, i.b), 4, false, "t2");
+    } else {
+      rv_li32(e, "t2", i.size as u64 & 0xFFFFFFFF);
+    }
+    let lbl: i32 = g_label32;
+    g_label32 += 1;
+    // count==0 must not enter the loop (empty slice_string is everyday)
+    bs(e.out, cat3("  beq t2, zero, Lcpyd", cat3(itoa(lbl as i64), "\n", ""), ""));
+    bs(e.out, cat3("Lcpy", cat4(itoa(lbl as i64), ":\n", "", ""), ""));
+    bs(e.out, "  lb t3, 0(t1)\n");
+    bs(e.out, "  sb t3, 0(t0)\n");
+    bs(e.out, "  addi t0, t0, 1\n");
+    bs(e.out, "  addi t1, t1, 1\n");
+    bs(e.out, "  addi t2, t2, -1\n");
+    bs(e.out, cat3("  bne t2, zero, Lcpy", cat3(itoa(lbl as i64), "\n", ""), ""));
+    bs(e.out, cat3("Lcpyd", cat4(itoa(lbl as i64), ":\n", "", ""), ""));
+    return;
+  }
+  if i.op == IROp.IrZero {
+    rv_ld(e, rv_vreg_off(e, i.addr), 4, false, "t0");
+    rv_li32(e, "t2", i.size as u64 & 0xFFFFFFFF);
+    let lbl: i32 = g_label32;
+    g_label32 += 1;
+    bs(e.out, cat3("Lzro", cat4(itoa(lbl as i64), ":\n", "", ""), ""));
+    bs(e.out, "  sb zero, 0(t0)\n");
+    bs(e.out, "  addi t0, t0, 1\n");
+    bs(e.out, "  addi t2, t2, -1\n");
+    bs(e.out, cat3("  bne t2, zero, Lzro", cat3(itoa(lbl as i64), "\n", ""), ""));
+    return;
+  }
+  if i.op == IROp.IrLitaddr {
+    let dof: i64 = rv_vreg_off(e, i.dst);
+    let l: *IRLit = e.fn_.literals[i.lit as usize];
+    bs(e.out, cat5("  auipc t0, %hi(L", l.label, ")\n", "", ""));
+    bs(e.out, cat5("  addi t0, t0, %lo(L", l.label, ")\n", "", ""));
+    rv_st_keep_t0(e, dof, 4, "t0");
+    return;
+  }
+  if i.op == IROp.IrCall {
+    if i.callee_vreg != null {
+      // indirect target in t6, outside the argument registers
+      rv_ld(e, rv_vreg_off(e, i.callee_vreg), 4, false, "t6");
+    }
+    let mut ri: i32 = 0;
+    let mut k: usize = 0;
+    while k < len(i.args) && ri < 8 {
+      let av: *IRVreg = i.args[k];
+      let off: i64 = rv_vreg_off(e, av);
+      let is64arg: bool = rv_is64(av.ty);
+      let mut rlo: string = "a0";
+      if ri == 1 {
+        rlo = "a1";
+      } else if ri == 2 {
+        rlo = "a2";
+      } else if ri == 3 {
+        rlo = "a3";
+      } else if ri == 4 {
+        rlo = "a4";
+      } else if ri == 5 {
+        rlo = "a5";
+      } else if ri == 6 {
+        rlo = "a6";
+      } else if ri == 7 {
+        rlo = "a7";
+      }
+      if is64arg && ri + 2 <= 8 {
+        let mut rhi: string = "a1";
+        if ri == 1 {
+          rhi = "a2";
+        } else if ri == 2 {
+          rhi = "a3";
+        } else if ri == 3 {
+          rhi = "a4";
+        } else if ri == 4 {
+          rhi = "a5";
+        } else if ri == 5 {
+          rhi = "a6";
+        } else if ri == 6 {
+          rhi = "a7";
+        }
+        rv_ld(e, off, 4, false, rlo);
+        rv_ld(e, off + 4, 4, false, rhi);
+        ri += 2;
+      } else {
+        rv_ld(e, off, 4, false, rlo);
+        ri += 1;
+      }
+      k += 1;
+    }
+    if i.callee != "" {
+      bs(e.out, cat5("  auipc ra, %hi(", i.callee, ")\n", "", ""));
+      bs(e.out, cat5("  jalr ra, ra, %lo(", i.callee, ")\n", "", ""));
+    } else {
+      bs(e.out, "  jalr ra, 0(t6)\n");
+    }
+    if i.dst != null {
+      if rv_is64(i.dst.ty) {
+        rv_st_pair(e, rv_vreg_off(e, i.dst), "a0", "a1");
+      } else {
+        rv_st(e, rv_vreg_off(e, i.dst), 4, "a0");
+      }
+    }
+    return;
+  }
+}
+
+fn rv_edge(e: *RVCtx, succ: *IRBlock) {
+  let mut p: usize = 0;
+  while p < len(succ.phis) {
+    let phi: *IRPhi = succ.phis[p];
+    let mut k: usize = 0;
+    while k < len(phi.preds) {
+      if phi.preds[k] == e.fn_.cur {
+        let val: *IRVreg = phi.args[k];
+        if val != null && phi.dst != null {
+          let d: i64 = rv_vreg_off(e, phi.dst);
+          let s: i64 = rv_vreg_off(e, val);
+          rv_ld(e, s, 4, false, "t1");
+          rv_st(e, d, 4, "t1");
+        }
+        k = len(phi.preds); // the C breaks on the first matching pred
+      }
+      k += 1;
+    }
+    p += 1;
+  }
+}
+
+fn rv_epilogue(e: *RVCtx) {
+  // mirror of the prologue: ra at s0-4, caller s0 at s0-8 (the reserved
+  // band at the top of the frame), then pop the frame and return
+  rv_ld(e, -4, 4, false, "ra");
+  rv_ld(e, -8, 4, false, "s0");
+  rv_li32(e, "t0", e.frame as u64 & 0xFFFFFFFF);
+  bs(e.out, "  add sp, sp, t0\n");
+  bs(e.out, "  jalr zero, 0(ra)\n");
+}
+
+fn rv_term(e: *RVCtx, b: *IRBlock) {
+  if b.term_op == 100 {
+    // br
+    rv_edge(e, b.br_true);
+    bs(e.out, cat5("  jal zero, L", itoa(e.fn_.uid as i64), "_", cat3(itoa(b.br_true.id as i64), "\n", ""), ""));
+  } else if b.term_op == 101 {
+    // cbr
+    let tt: *IRBlock = b.br_true;
+    let ff: *IRBlock = b.br_false;
+    let cof: i64 = rv_vreg_off(e, b.cbr_cond);
+    let lbl: i32 = g_label32;
+    g_label32 += 1;
+    rv_ld(e, cof, 1, false, "t1");
+    bs(e.out, cat3("  beq t1, zero, Lcbf", cat3(itoa(lbl as i64), "\n", ""), ""));
+    rv_edge(e, tt);
+    bs(e.out, cat5("  jal zero, L", itoa(e.fn_.uid as i64), "_", cat3(itoa(tt.id as i64), "\n", ""), ""));
+    bs(e.out, cat3("Lcbf", cat4(itoa(lbl as i64), ":\n", "", ""), ""));
+    rv_edge(e, ff);
+    bs(e.out, cat5("  jal zero, L", itoa(e.fn_.uid as i64), "_", cat3(itoa(ff.id as i64), "\n", ""), ""));
+  } else if b.term_op == 102 {
+    // ret
+    if b.ret_val != null {
+      if rv_is64(b.ret_val.ty) {
+        rv_ld(e, rv_vreg_off(e, b.ret_val), 4, false, "a0");
+        rv_ld(e, rv_vreg_off(e, b.ret_val) + 4, 4, false, "a1");
+      } else {
+        rv_ld(e, rv_vreg_off(e, b.ret_val), 4, false, "a0");
+      }
+    }
+    rv_epilogue(e);
+  } else {
+    rv_epilogue(e);
+  }
+}
+
+fn rv_fn(e: *RVCtx, fn_: *IRFn) {
+  e.fn_ = fn_;
+  fn_.uid = g_uid32;
+  g_uid32 += 1;
+  rv_layout(e);
+  bs(e.out, cat5("\n  .globl ", fn_.symbol, "\n", fn_.symbol, ":\n"));
+  // frame reservation through a temp: FRAME may exceed the 12-bit immediate.
+  // caller s0 + ra go into the frame's RESERVED 16-byte band at the very top
+  // (s0-4 = ra, s0-8 = caller s0 — the same addresses the epilogue's s0-
+  // relative ld32 uses); t1 walks down from the future s0 while s0 still
+  // holds the caller's value, so the saves cannot use s0-relative addressing
+  rv_li32(e, "t0", e.frame as u64 & 0xFFFFFFFF);
+  bs(e.out, "  sub sp, sp, t0\n");
+  bs(e.out, "  add t1, sp, t0\n");
+  bs(e.out, "  addi t1, t1, -4\n");
+  bs(e.out, "  sw ra, 0(t1)\n");
+  bs(e.out, "  addi t1, t1, -4\n");
+  bs(e.out, "  sw s0, 0(t1)\n");
+  bs(e.out, "  add s0, sp, t0\n");
+  let mut ri: i32 = 0;
+  if fn_.returns_aggregate {
+    ri += 1;
+    rv_addr_into(e, rv_slot_off(e, fn_.out_slot));
+    bs(e.out, "  sw a0, 0(t0)\n");
+  }
+  let mut p: usize = 0;
+  while p < len(fn_.params) && ri < 8 {
+    let slot: *IRSlot = fn_.params[p];
+    let mut pt: *Type = null;
+    if p < len(fn_.param_types) {
+      pt = fn_.param_types[p];
+    }
+    let isw: bool = pt != null && (pt.kind == TypeKind.TyI64 || pt.kind == TypeKind.TyU64);
+    let mut an: string = "a0";
+    if ri == 1 {
+      an = "a1";
+    } else if ri == 2 {
+      an = "a2";
+    } else if ri == 3 {
+      an = "a3";
+    } else if ri == 4 {
+      an = "a4";
+    } else if ri == 5 {
+      an = "a5";
+    } else if ri == 6 {
+      an = "a6";
+    } else if ri == 7 {
+      an = "a7";
+    }
+    if isw && ri + 2 <= 8 {
+      let mut an2: string = "a1";
+      if ri == 1 {
+        an2 = "a2";
+      } else if ri == 2 {
+        an2 = "a3";
+      } else if ri == 3 {
+        an2 = "a4";
+      } else if ri == 4 {
+        an2 = "a5";
+      } else if ri == 5 {
+        an2 = "a6";
+      } else if ri == 6 {
+        an2 = "a7";
+      }
+      rv_addr_into(e, rv_slot_off(e, slot));
+      bs(e.out, cat5("  sw ", an, ", 0(t0)\n", "", ""));
+      bs(e.out, cat5("  sw ", an2, ", 4(t0)\n", "", ""));
+      ri += 2;
+    } else {
+      rv_addr_into(e, rv_slot_off(e, slot));
+      bs(e.out, cat5("  sw ", an, ", 0(t0)\n", "", ""));
+      ri += 1;
+    }
+    p += 1;
+  }
+  let mut bi: usize = 0;
+  while bi < len(fn_.blocks) {
+    let b: *IRBlock = fn_.blocks[bi];
+    e.fn_.cur = b;
+    bs(e.out, cat5("L", itoa(fn_.uid as i64), "_", cat3(itoa(b.id as i64), ":\n", ""), ""));
+    let mut ii: usize = 0;
+    while ii < len(b.ins) {
+      rv_ins(e, b.ins[ii]);
+      ii += 1;
+    }
+    rv_term(e, b);
+    bi += 1;
+  }
+  if len(fn_.blocks) == 0 {
+    rv_epilogue(e); // empty-bodied fn: fall off the end into a return
+  }
+}
+
+// ------------------------------------------------- runtime stubs ----
+
+// __udivmod64: unsigned core; q -> (a0,a1), r -> (a2,a3). The 64 restoring
+// iterations are unrolled: no loop bookkeeping to get wrong, and the
+// emitter generates the repetition.
+fn rv_rt_stubs(out: *Vec[u8]) {
+  bs(out, "\n  .globl __udivmod64\n__udivmod64:\n");
+  bs(out, "  mv t0, a0\n  mv t1, a1\n  addi t2, zero, 0\n  addi t3, zero, 0\n");
+  let mut it: i32 = 0;
+  while it < 64 {
+    bs(out, "  srli t4, t1, 31\n");
+    bs(out, "  slli t1, t1, 1\n");
+    bs(out, "  srli t5, t0, 31\n");
+    bs(out, "  or t1, t1, t5\n");
+    bs(out, "  slli t0, t0, 1\n");
+    bs(out, "  slli t3, t3, 1\n");
+    bs(out, "  srli t5, t2, 31\n");
+    bs(out, "  or t3, t3, t5\n");
+    bs(out, "  slli t2, t2, 1\n");
+    bs(out, "  or t2, t2, t4\n");
+    // if R >= B: R -= B; Q |= 1   (unsigned 64-bit pair compare)
+    // lt = (R_hi < D_hi) | ((R_hi == D_hi) & (R_lo < D_lo))
+    bs(out, "  sltu t5, t3, a3\n"); // lt_hi
+    bs(out, "  sltu t6, a3, t3\n"); // gt_hi
+    bs(out, "  or t6, t5, t6\n");   // ne_hi
+    bs(out, "  seqz t6, t6\n");     // eq_hi
+    bs(out, "  sltu t4, t2, a2\n"); // lo_lt
+    bs(out, "  and t4, t4, t6\n");  // lo_lt & eq_hi
+    bs(out, "  or t4, t5, t4\n");   // lt
+    bs(out, cat3("  bne t4, zero, Ldvs", cat3(itoa(it as i64), "\n", ""), ""));
+    // subtract D from R with borrow taken before the low subtract
+    bs(out, "  sltu t5, t2, a2\n"); // borrow = R_lo < D_lo
+    bs(out, "  sub t2, t2, a2\n");
+    bs(out, "  sub t3, t3, a3\n");
+    bs(out, "  sub t3, t3, t5\n");
+    bs(out, "  ori t0, t0, 1\n");
+    bs(out, cat3("Ldvs", cat4(itoa(it as i64), ":\n", "", ""), ""));
+    it += 1;
+  }
+  bs(out, "  mv a0, t0\n  mv a1, t1\n");
+  bs(out, "  mv a2, t2\n  mv a3, t3\n");
+  bs(out, "  jalr zero, 0(ra)\n");
+
+  // the core call goes through ra, so the caller's return address parks
+  // in s11 (and __div64/__rem64 park their sign flag in s10); s10/s11 are
+  // callee-saved registers this emitter never allocates
+  bs(out, "\n  .globl __divu64\n__divu64:\n");
+  bs(out, "  mv s11, ra\n");
+  bs(out, "  auipc ra, %hi(__udivmod64)\n");
+  bs(out, "  jalr ra, ra, %lo(__udivmod64)\n");
+  bs(out, "  mv ra, s11\n");
+  bs(out, "  jalr zero, 0(ra)\n");
+  bs(out, "\n  .globl __remu64\n__remu64:\n");
+  bs(out, "  mv s11, ra\n");
+  bs(out, "  auipc ra, %hi(__udivmod64)\n");
+  bs(out, "  jalr ra, ra, %lo(__udivmod64)\n");
+  bs(out, "  mv a0, a2\n  mv a1, a3\n");
+  bs(out, "  mv ra, s11\n");
+  bs(out, "  jalr zero, 0(ra)\n");
+
+  // signed division: magnitudes, core, sign fixups.
+  // negate pair X=(x0,x1): sub x0, zero, x0; borrow = zero < old_x0;
+  //                        x1 = ~x1 + borrow
+  bs(out, "\n  .globl __div64\n__div64:\n");
+  bs(out, "  xor t0, a1, a3\n");
+  bs(out, "  slti t0, t0, 0\n");
+  bs(out, "  mv s10, t0\n");
+  bs(out, "  slti t1, a1, 0\n");
+  bs(out, "  beq t1, zero, Ldivnap\n");
+  bs(out, "  sltu t2, zero, a0\n");
+  bs(out, "  sub a0, zero, a0\n");
+  bs(out, "  not a1, a1\n");
+  bs(out, "  add a1, a1, t2\n");
+  bs(out, "Ldivnap:\n");
+  bs(out, "  slti t1, a3, 0\n");
+  bs(out, "  beq t1, zero, Ldivnbp\n");
+  bs(out, "  sltu t2, zero, a2\n");
+  bs(out, "  sub a2, zero, a2\n");
+  bs(out, "  not a3, a3\n");
+  bs(out, "  add a3, a3, t2\n");
+  bs(out, "Ldivnbp:\n");
+  bs(out, "  mv s11, ra\n");
+  bs(out, "  auipc ra, %hi(__udivmod64)\n");
+  bs(out, "  jalr ra, ra, %lo(__udivmod64)\n");
+  bs(out, "  beq s10, zero, Ldivdone\n");
+  bs(out, "  sltu t2, zero, a0\n");
+  bs(out, "  sub a0, zero, a0\n");
+  bs(out, "  not a1, a1\n");
+  bs(out, "  add a1, a1, t2\n");
+  bs(out, "Ldivdone:\n");
+  bs(out, "  mv ra, s11\n");
+  bs(out, "  jalr zero, 0(ra)\n");
+
+  bs(out, "\n  .globl __rem64\n__rem64:\n");
+  bs(out, "  slti t0, a1, 0\n");
+  bs(out, "  slti t1, a3, 0\n");
+  bs(out, "  beq t1, zero, Lremnb\n");
+  bs(out, "  sltu t2, zero, a2\n");
+  bs(out, "  sub a2, zero, a2\n");
+  bs(out, "  not a3, a3\n");
+  bs(out, "  add a3, a3, t2\n");
+  bs(out, "Lremnb:\n");
+  bs(out, "  beq t0, zero, Lrempa\n");
+  bs(out, "  sltu t2, zero, a0\n");
+  bs(out, "  sub a0, zero, a0\n");
+  bs(out, "  not a1, a1\n");
+  bs(out, "  add a1, a1, t2\n");
+  bs(out, "Lrempa:\n");
+  bs(out, "  mv s10, t0\n");
+  bs(out, "  mv s11, ra\n");
+  bs(out, "  auipc ra, %hi(__udivmod64)\n");
+  bs(out, "  jalr ra, ra, %lo(__udivmod64)\n");
+  bs(out, "  mv a0, a2\n  mv a1, a3\n");
+  bs(out, "  beq s10, zero, Lremdone\n");
+  bs(out, "  sltu t2, zero, a0\n");
+  bs(out, "  sub a0, zero, a0\n");
+  bs(out, "  not a1, a1\n");
+  bs(out, "  add a1, a1, t2\n");
+  bs(out, "Lremdone:\n");
+  bs(out, "  mv ra, s11\n");
+  bs(out, "  jalr zero, 0(ra)\n");
+
+  bs(out, "\n  .globl __shl64\n__shl64:\n");
+  bs(out, "  andi a2, a2, 63\n");
+  let mut it2: i32 = 0;
+  while it2 < 63 {
+    bs(out, "  beq a2, zero, Lshl63\n");
+    bs(out, "  srli t4, a1, 31\n");
+    bs(out, "  slli a1, a1, 1\n");
+    bs(out, "  srli t5, a0, 31\n");
+    bs(out, "  or a1, a1, t5\n");
+    bs(out, "  slli a0, a0, 1\n");
+    bs(out, "  addi a2, a2, -1\n");
+    it2 += 1;
+  }
+  bs(out, "Lshl63:\n  jalr zero, 0(ra)\n");
+
+  bs(out, "\n  .globl __srl64\n__srl64:\n");
+  bs(out, "  andi a2, a2, 63\n");
+  let mut it3: i32 = 0;
+  while it3 < 63 {
+    bs(out, "  beq a2, zero, Lsrl63\n");
+    bs(out, "  srli t4, a0, 1\n");
+    bs(out, "  andi t4, t4, 0x40000000\n");
+    bs(out, "  srli a0, a0, 1\n");
+    bs(out, "  slli t5, a1, 31\n");
+    bs(out, "  or a0, a0, t5\n");
+    bs(out, "  srli a1, a1, 1\n");
+    bs(out, "  or a1, a1, t4\n");
+    bs(out, "  addi a2, a2, -1\n");
+    it3 += 1;
+  }
+  bs(out, "Lsrl63:\n  jalr zero, 0(ra)\n");
+
+  bs(out, "\n  .globl __sar64\n__sar64:\n");
+  bs(out, "  andi a2, a2, 63\n");
+  let mut it4: i32 = 0;
+  while it4 < 63 {
+    bs(out, "  beq a2, zero, Lsar63\n");
+    bs(out, "  srli t4, a0, 1\n");
+    bs(out, "  andi t4, t4, 0x40000000\n");
+    bs(out, "  srli a0, a0, 1\n");
+    bs(out, "  slli t5, a1, 31\n");
+    bs(out, "  or a0, a0, t5\n");
+    bs(out, "  srai a1, a1, 1\n");
+    bs(out, "  or a1, a1, t4\n");
+    bs(out, "  addi a2, a2, -1\n");
+    it4 += 1;
+  }
+  bs(out, "Lsar63:\n  jalr zero, 0(ra)\n");
+}
+
+// prelude statics arrive mangled (rho__prelude___heap_base); the entry
+// stub must reference the same mangled symbols
+fn rv_ends_with(s: string, suffix: string) -> bool {
+  if len(suffix) > len(s) {
+    return false;
+  }
+  let off: usize = len(s) - len(suffix);
+  let mut i: usize = 0;
+  while i < len(suffix) {
+    if s[off + i] != suffix[i] {
+      return false;
+    }
+    i += 1;
+  }
+  return true;
+}
+
+fn rv32_heap_sym(suffix: string) -> string {
+  let mut i: usize = 0;
+  while i < g_ir_globals.n {
+    let g: *IRGlobal = g_ir_globals.items[i];
+    if rv_ends_with(g.symbol, suffix) {
+      return g.symbol;
+    }
+    i += 1;
+  }
+  return suffix;
+}
+
+fn emit_riscv32_text() -> []u8 {
+  let out: *Vec[u8] = new Vec[u8] { items: make([]u8, 1024), n: 0 };
+  let e: *RVCtx = new RVCtx { out: out, fn_: null, offs: make([]i64, 0), frame: 0 };
+  let heap_base_sym: string = rv32_heap_sym("__heap_base");
+  let heap_top_sym: string = rv32_heap_sym("__heap_top");
+
+  // entry stub: park the machine-provided heap bounds, call main, exit
+  bs(out, "  .globl __entry\n__entry:\n");
+  bs(out, cat5("  auipc t0, %hi(", heap_base_sym, ")\n", "", ""));
+  bs(out, cat5("  addi t0, t0, %lo(", heap_base_sym, ")\n", "", ""));
+  bs(out, "  sw a0, 0(t0)\n");
+  bs(out, cat5("  auipc t0, %hi(", heap_top_sym, ")\n", "", ""));
+  bs(out, cat5("  addi t0, t0, %lo(", heap_top_sym, ")\n", "", ""));
+  bs(out, "  sw a1, 0(t0)\n");
+  if g_main_cell != null && g_main_cell.items[0] != "" {
+    bs(out, cat5("  auipc ra, %hi(", g_main_cell.items[0], ")\n", "", ""));
+    bs(out, cat5("  jalr ra, ra, %lo(", g_main_cell.items[0], ")\n", "", ""));
+  }
+  bs(out, "  lui t0, 0x80000\n");
+  bs(out, "  sw a0, 4(t0)\n");
+  bs(out, "__idle:\n");
+  bs(out, "  jal zero, __idle\n");
+
+  let mut i: usize = 0;
+  while i < g_ir_fns.n {
+    rv_fn(e, g_ir_fns.items[i]);
+    i += 1;
+  }
+
+  rv_rt_stubs(out);
+
+  // literals: 24-byte header block + raw bytes (buf/ptr/len stride stays 8)
+  i = 0;
+  while i < g_ir_fns.n {
+    let fn_: *IRFn = g_ir_fns.items[i];
+    let mut j: usize = 0;
+    while j < len(fn_.literals) {
+      let l: *IRLit = fn_.literals[j];
+      // 24-byte header (3 quads, low word carries each 8-byte field) so the
+      // bytes begin at litaddr + 24, the stride the lower hard-codes
+      bs(out, cat5("  .p2align 2\nL", l.label, ":\n  .word 0x80000000\n  .word 0\n  .word 0\n  .word 0\n", "  .word 0\n  .word 0\n", ""));
+      bs(out, cat5("L", l.label, "_b:\n  .ascii \"", "", ""));
+      let mut k: usize = 0;
+      while k < len(l.bytes) {
+        let ch: u8 = l.bytes[k];
+        if ch >= 0x20 && ch < 0x7F && ch != 34 && ch != 92 {
+          b8(out, ch);
+        } else {
+          bs(out, cat3("\\", oct3(ch), ""));
+        }
+        k += 1;
+      }
+      bs(out, "\"\n");
+      j += 1;
+    }
+    i += 1;
+  }
+
+  // globals: same 24-byte static-slice header shape as arm64 (each relocated
+  // quad emits as a .word pair; the low word carries the 32-bit pointer)
+  i = 0;
+  while i < g_ir_globals.n {
+    let g: *IRGlobal = g_ir_globals.items[i];
+    bs(out, cat5("\n  .globl ", g.symbol, "\n  .p2align 2\n", g.symbol, ":\n"));
+    if len(g.relocs) > 0 {
+      let mut w: i32 = 0;
+      while w < 3 {
+        let wi: usize = w as usize;
+        if wi < len(g.relocs) && g.relocs[wi] != "" {
+          bs(out, cat5("  .word ", g.relocs[wi], "\n  .word 0\n", "", ""));
+        } else {
+          let mut v: u64 = 0;
+          let mut b: i32 = 0;
+          while b < 4 {
+            v = v | ((g.init[wi * 8 + b as usize] as u64) << (8 * b));
+            b += 1;
+          }
+          bs(out, cat3("  .word ", cat3(utoa(v), "\n", ""), ""));
+          v = 0;
+          b = 4;
+          while b < 8 {
+            v = v | ((g.init[wi * 8 + b as usize] as u64) << (8 * (b - 4)));
+            b += 1;
+          }
+          bs(out, cat3("  .word ", cat3(utoa(v), "\n", ""), ""));
+        }
+        w += 1;
+      }
+    } else if len(g.init) > 0 {
+      let mut b: usize = 0;
+      while b < len(g.init) {
+        bs(out, cat3("  .byte ", cat3(itoa(g.init[b] as i64), "\n", ""), ""));
+        b += 1;
+      }
+      if g.size as usize > len(g.init) {
+        bs(out, cat3("  .zero ", cat3(itoa(g.size - len(g.init) as i64), "\n", ""), ""));
+      }
+    } else {
+      bs(out, cat3("  .zero ", cat3(itoa(g.size), "\n", ""), ""));
+    }
+    i += 1;
+  }
+  return out.items[0..out.n];
+}
+
+// ------------------------------------------------------------ assembler ----
+
+// two-pass assembler for the restricted RV32IM dialect the emitter prints:
+// ABI register names, decimal/hex immediates, labels, %hi/%lo symbol refs,
+// and the directives .globl/.p2align/.word/.byte/.zero/.ascii
+
+struct RVLabel {
+  name: string,
+  addr: u64,
+}
+
+static mut g_rv32_labels: *Vec[*RVLabel] = 0 as *Vec[*RVLabel];
+static mut g_rv32_pair_pc: u64 = 0;
+static mut g_rv32_asm_fail: bool = false;
+static mut g_rv32_last_size: u64 = 0;
+
+fn rv_reg(s: string) -> i32 {
+  // index 0..31 in ABI order; s10/s11 must be present — the div stubs
+  // park ra and the sign flag there
+  if streq(s, "zero") { return 0; }
+  if streq(s, "ra") { return 1; }
+  if streq(s, "sp") { return 2; }
+  if streq(s, "gp") { return 3; }
+  if streq(s, "tp") { return 4; }
+  if streq(s, "t0") { return 5; }
+  if streq(s, "t1") { return 6; }
+  if streq(s, "t2") { return 7; }
+  if streq(s, "s0") { return 8; }
+  if streq(s, "s1") { return 9; }
+  if streq(s, "a0") { return 10; }
+  if streq(s, "a1") { return 11; }
+  if streq(s, "a2") { return 12; }
+  if streq(s, "a3") { return 13; }
+  if streq(s, "a4") { return 14; }
+  if streq(s, "a5") { return 15; }
+  if streq(s, "a6") { return 16; }
+  if streq(s, "a7") { return 17; }
+  if streq(s, "s2") { return 18; }
+  if streq(s, "s3") { return 19; }
+  if streq(s, "s4") { return 20; }
+  if streq(s, "s5") { return 21; }
+  if streq(s, "s6") { return 22; }
+  if streq(s, "s7") { return 23; }
+  if streq(s, "s8") { return 24; }
+  if streq(s, "s9") { return 25; }
+  if streq(s, "s10") { return 26; }
+  if streq(s, "s11") { return 27; }
+  if streq(s, "t3") { return 28; }
+  if streq(s, "t4") { return 29; }
+  if streq(s, "t5") { return 30; }
+  if streq(s, "t6") { return 31; }
+  return -1;
+}
+
+fn rv_enc_r(f7: u64, rs2: u64, rs1: u64, f3: u64, rd: u64, op: u64) -> u64 {
+  return ((f7 << 25) | (rs2 << 20) | (rs1 << 15) | (f3 << 12) | (rd << 7) | op) & 0xFFFFFFFF;
+}
+
+fn rv_enc_i(imm: u64, rs1: u64, f3: u64, rd: u64, op: u64) -> u64 {
+  return ((imm & 0xFFF) << 20) | (rs1 << 15) | (f3 << 12) | (rd << 7) | op;
+}
+
+fn rv_enc_s(imm: u64, rs2: u64, rs1: u64, f3: u64, op: u64) -> u64 {
+  return (((imm >> 5) << 25) | (rs2 << 20) | (rs1 << 15) | (f3 << 12) | ((imm & 0x1F) << 7) | op) & 0xFFFFFFFF;
+}
+
+fn rv_enc_b(imm: u64, rs2: u64, rs1: u64, f3: u64, op: u64) -> u64 {
+  return ((((imm >> 12) & 1) << 31) | (((imm >> 5) & 0x3F) << 25) | (rs2 << 20) | (rs1 << 15) |
+          (f3 << 12) | (((imm >> 1) & 0xF) << 8) | (((imm >> 11) & 1) << 7) | op) & 0xFFFFFFFF;
+}
+
+fn rv_enc_u(imm20: u64, rd: u64, op: u64) -> u64 {
+  return ((imm20 & 0xFFFFF) << 12) | (rd << 7) | op;
+}
+
+fn rv_enc_j(imm: u64, rd: u64, op: u64) -> u64 {
+  return ((((imm >> 20) & 1) << 31) | (((imm >> 1) & 0x3FF) << 21) | (((imm >> 11) & 1) << 20) |
+          (((imm >> 12) & 0xFF) << 12) | (rd << 7) | op) & 0xFFFFFFFF;
+}
+
+fn rv_sym_hi(addr: u64) -> u64 {
+  return ((addr + 0x800) & 0xFFFFFFFF) >> 12;
+}
+
+fn rv_sym_lo(addr: u64) -> u64 {
+  let hi: u64 = rv_sym_hi(addr);
+  return (addr - (hi << 12)) & 0xFFFFFFFF;
+}
+
+// pc-relative pair resolution: the auipc's delta decides both halves
+fn rv_pair_hi(sym: u64, pc: u64) -> u64 {
+  let delta: u64 = (sym - pc) & 0xFFFFFFFF;
+  return ((delta + 0x800) >> 12) & 0xFFFFF;
+}
+
+fn rv_pair_lo(sym: u64, pc: u64) -> u64 {
+  let delta: u64 = (sym - pc) & 0xFFFFFFFF;
+  let hi: u64 = (delta + 0x800) >> 12;
+  return (delta - (hi << 12)) & 0xFFFFFFFF;
+}
+
+// label lookup that names its misses: a symbol unresolved by pass 2 (the
+// label table is complete by then) would otherwise silently encode as 0
+// and the machine would jump to address 0
+fn rv_label_addr(name: string) -> u64 {
+  let mut i: usize = 0;
+  while i < g_rv32_labels.n {
+    let l: *RVLabel = g_rv32_labels.items[i];
+    if streq(l.name, name) {
+      return l.addr;
+    }
+    i += 1;
+  }
+  eprint(cat5("rho: rv32 asm: unresolved symbol '", name, "'\n", "", ""));
+  g_rv32_asm_fail = true;
+  return 0;
+}
+
+// ---- small string helpers for the assembler ------------------------------
+
+fn asm_find_ch(s: string, from: i64, ch: u8) -> i64 {
+  let mut i: i64 = from;
+  while i < len(s) as i64 {
+    if s[i as usize] == ch {
+      return i;
+    }
+    i += 1;
+  }
+  return -1;
+}
+
+fn asm_starts_with(s: string, pre: string) -> bool {
+  if len(pre) > len(s) {
+    return false;
+  }
+  let mut i: usize = 0;
+  while i < len(pre) {
+    if s[i] != pre[i] {
+      return false;
+    }
+    i += 1;
+  }
+  return true;
+}
+
+fn asm_trim(s: string) -> string {
+  let mut a: usize = 0;
+  let mut b: usize = len(s);
+  while a < b && (s[a] == 32 || s[a] == 9) {
+    a += 1;
+  }
+  while b > a && (s[b - 1] == 32 || s[b - 1] == 9) {
+    b -= 1;
+  }
+  return s[a..b];
+}
+
+// strtoul/strtoll base 0: optional sign, optional 0x prefix, digits
+fn asm_parse_i64(s: string) -> i64 {
+  let mut i: usize = 0;
+  let mut neg: bool = false;
+  while i < len(s) && (s[i] == 32 || s[i] == 9) {
+    i += 1;
+  }
+  if i < len(s) && (s[i] == 45 || s[i] == 43) {
+    neg = s[i] == 45;
+    i += 1;
+  }
+  let mut base: i64 = 10;
+  if i + 1 < len(s) && s[i] == 48 && (s[i + 1] == 120 || s[i + 1] == 88) {
+    base = 16;
+    i += 2;
+  }
+  let mut v: i64 = 0;
+  while i < len(s) {
+    let c: i64 = s[i] as i64;
+    let mut d: i64 = -1;
+    if c >= 48 && c <= 57 {
+      d = c - 48;
+    } else if base == 16 && c >= 97 && c <= 102 {
+      d = c - 87;
+    } else if base == 16 && c >= 65 && c <= 70 {
+      d = c - 55;
+    }
+    if d < 0 {
+      break;
+    }
+    v = v * base + d;
+    i += 1;
+  }
+  if neg {
+    return 0 - v;
+  }
+  return v;
+}
+
+// split "imm(reg)" — the mem operand form; base -1 on malformed
+struct MemSplit {
+  ok: bool,
+  imm: i64,
+  base: i32,
+}
+
+fn rv_mem_split(s: string) -> *MemSplit {
+  let lp: i64 = asm_find_ch(s, 0, 40); // '('
+  if lp < 0 {
+    return new MemSplit { ok: false, imm: 0, base: -1 };
+  }
+  let rp: i64 = asm_find_ch(s, lp + 1, 41); // ')'
+  if rp < 0 {
+    return new MemSplit { ok: false, imm: 0, base: -1 };
+  }
+  let basen: string = s[(lp + 1) as usize..rp as usize];
+  let base: i32 = rv_reg(basen);
+  if base < 0 {
+    return new MemSplit { ok: false, imm: 0, base: -1 };
+  }
+  return new MemSplit { ok: true, imm: asm_parse_i64(s), base: base };
+}
+
+// operand pieces after the mnemonic: separated by spaces/commas
+struct OpLine {
+  mn: string,
+  o1: string,
+  o2: string,
+  o3: string,
+}
+
+fn asm_split_ops(s: string) -> *OpLine {
+  let mut mne: i64 = 0;
+  while mne < len(s) as i64 && s[mne as usize] != 32 && s[mne as usize] != 9 {
+    mne += 1;
+  }
+  let mn: string = s[0..mne as usize];
+  let mut pieces: []string = make([]string, 0);
+  let mut q: i64 = mne;
+  while q < len(s) as i64 {
+    while q < len(s) as i64 && (s[q as usize] == 32 || s[q as usize] == 44) {
+      q += 1;
+    }
+    if q >= len(s) as i64 {
+      break;
+    }
+    let start: i64 = q;
+    while q < len(s) as i64 && s[q as usize] != 44 {
+      q += 1;
+    }
+    let mut end: i64 = q;
+    while end > start && s[(end - 1) as usize] == 32 {
+      end -= 1;
+    }
+    pieces = push_str(pieces, s[start as usize..end as usize]);
+  }
+  let ol: *OpLine = new OpLine { mn: mn, o1: "", o2: "", o3: "" };
+  if len(pieces) > 0 {
+    ol.o1 = pieces[0];
+  }
+  if len(pieces) > 1 {
+    ol.o2 = pieces[1];
+  }
+  if len(pieces) > 2 {
+    ol.o3 = pieces[2];
+  }
+  return ol;
+}
+
+// %hi(sym) / %lo(sym): symbol name between index 4 and the closing paren
+fn asm_sym_of(o: string) -> string {
+  let r: i64 = asm_find_ch(o, 4, 41); // ')'
+  if r < 0 {
+    return "";
+  }
+  return o[4..r as usize];
+}
+
+fn asm_is_hi(o: string) -> bool {
+  return len(o) > 4 && o[1] == 104; // 'h'
+}
+
+fn asm_emit_word(image: []u8, addr: i64, w: u64) {
+  image[addr as usize] = (w & 0xFF) as u8;
+  image[(addr + 1) as usize] = ((w >> 8) & 0xFF) as u8;
+  image[(addr + 2) as usize] = ((w >> 16) & 0xFF) as u8;
+  image[(addr + 3) as usize] = ((w >> 24) & 0xFF) as u8;
+}
+
+// encode one instruction line (pass 2); ok=false on an unknown mnemonic
+fn asm_encode(ol: *OpLine, addr: u64) -> *MemSplit {
+  let mn: string = ol.mn;
+  // lui rd, %hi(sym)|%lo(sym)|imm — absolute pair halves
+  if streq(mn, "lui") {
+    let mut v: u64 = 0;
+    if len(ol.o2) > 0 && ol.o2[0] == 37 { // '%'
+      let name: string = asm_sym_of(ol.o2);
+      let value: u64 = rv_label_addr(name);
+      if asm_is_hi(ol.o2) {
+        v = rv_sym_hi(value);
+      } else {
+        v = rv_sym_lo(value);
+      }
+    } else {
+      v = asm_parse_i64(ol.o2) as u64 & 0xFFFFFFFF;
+    }
+    return new MemSplit { ok: true, imm: rv_enc_u(v, rv_reg(ol.o1) as u64, 0x37) as i64, base: 0 };
+  }
+  if streq(mn, "auipc") {
+    let mut v: u64 = 0;
+    if len(ol.o2) > 0 && ol.o2[0] == 37 {
+      let name: string = asm_sym_of(ol.o2);
+      let value: u64 = rv_label_addr(name);
+      v = rv_pair_hi(value, addr);
+      g_rv32_pair_pc = addr;
+    } else {
+      v = asm_parse_i64(ol.o2) as u64 & 0xFFFFFFFF;
+    }
+    return new MemSplit { ok: true, imm: rv_enc_u(v, rv_reg(ol.o1) as u64, 0x17) as i64, base: 0 };
+  }
+  if streq(mn, "jal") {
+    let target: u64 = rv_label_addr(ol.o2);
+    let delta: u64 = (target - addr) & 0xFFFFFFFF;
+    return new MemSplit { ok: true, imm: rv_enc_j(delta, rv_reg(ol.o1) as u64, 0x6F) as i64, base: 0 };
+  }
+  if streq(mn, "jalr") {
+    let rd: i32 = rv_reg(ol.o1);
+    let ms: *MemSplit = rv_mem_split(ol.o2);
+    let mut imm: u64 = 0;
+    let mut base: i64 = -1;
+    // mirror the C driver: the register form is chosen whenever the mem
+    // split fails OR yields a negative immediate
+    if !ms.ok || ms.imm < 0 {
+      base = rv_reg(ol.o2) as i64;
+      if len(ol.o3) > 0 && ol.o3[0] == 37 {
+        let name: string = asm_sym_of(ol.o3);
+        let value: u64 = rv_label_addr(name);
+        imm = rv_pair_lo(value, g_rv32_pair_pc) & 0xFFF;
+      } else {
+        imm = asm_parse_i64(ol.o3) as u64 & 0xFFF;
+      }
+    } else {
+      imm = ms.imm as u64 & 0xFFF;
+      base = ms.base as i64;
+    }
+    return new MemSplit { ok: true, imm: rv_enc_i(imm, base as u64, 0, rd as u64, 0x67) as i64, base: 0 };
+  }
+  if streq(mn, "beq") || streq(mn, "bne") || streq(mn, "blt") || streq(mn, "bge") || streq(mn, "bltu") || streq(mn, "bgeu") {
+    let mut f3: u64 = 0;
+    if streq(mn, "bne") {
+      f3 = 1;
+    } else if streq(mn, "blt") {
+      f3 = 4;
+    } else if streq(mn, "bge") {
+      f3 = 5;
+    } else if streq(mn, "bltu") {
+      f3 = 6;
+    } else if streq(mn, "bgeu") {
+      f3 = 7;
+    }
+    let target: u64 = rv_label_addr(ol.o3);
+    let delta: u64 = (target - addr) & 0xFFFFFFFF;
+    return new MemSplit { ok: true, imm: rv_enc_b(delta, rv_reg(ol.o2) as u64, rv_reg(ol.o1) as u64, f3, 0x63) as i64, base: 0 };
+  }
+  if streq(mn, "lb") || streq(mn, "lh") || streq(mn, "lw") || streq(mn, "lbu") || streq(mn, "lhu") {
+    let mut f3: u64 = 2;
+    if streq(mn, "lb") {
+      f3 = 0;
+    } else if streq(mn, "lh") {
+      f3 = 1;
+    } else if streq(mn, "lbu") {
+      f3 = 4;
+    } else if streq(mn, "lhu") {
+      f3 = 5;
+    }
+    let ms: *MemSplit = rv_mem_split(ol.o2);
+    return new MemSplit { ok: true, imm: rv_enc_i(ms.imm as u64 & 0xFFF, ms.base as u64, f3, rv_reg(ol.o1) as u64, 0x03) as i64, base: 0 };
+  }
+  if streq(mn, "sb") || streq(mn, "sh") || streq(mn, "sw") {
+    let mut f3: u64 = 2;
+    if streq(mn, "sb") {
+      f3 = 0;
+    } else if streq(mn, "sh") {
+      f3 = 1;
+    }
+    let ms: *MemSplit = rv_mem_split(ol.o2);
+    return new MemSplit { ok: true, imm: rv_enc_s(ms.imm as u64 & 0xFFF, rv_reg(ol.o1) as u64, ms.base as u64, f3, 0x23) as i64, base: 0 };
+  }
+  if streq(mn, "addi") || streq(mn, "slti") || streq(mn, "sltiu") || streq(mn, "xori") || streq(mn, "ori") || streq(mn, "andi") {
+    let mut f3: u64 = 0;
+    if streq(mn, "slti") {
+      f3 = 2;
+    } else if streq(mn, "sltiu") {
+      f3 = 3;
+    } else if streq(mn, "xori") {
+      f3 = 4;
+    } else if streq(mn, "ori") {
+      f3 = 6;
+    } else if streq(mn, "andi") {
+      f3 = 7;
+    }
+    // addi rd, rs1, imm — imm may be %lo(sym) paired with the
+    // preceding auipc (absolute %hi also works for lui pairs)
+    let mut imm: u64 = 0;
+    if len(ol.o3) > 0 && ol.o3[0] == 37 {
+      let name: string = asm_sym_of(ol.o3);
+      let value: u64 = rv_label_addr(name);
+      if asm_is_hi(ol.o3) {
+        imm = rv_sym_hi(value);
+      } else {
+        imm = rv_pair_lo(value, g_rv32_pair_pc);
+      }
+    } else {
+      imm = asm_parse_i64(ol.o3) as u64 & 0xFFF;
+    }
+    return new MemSplit { ok: true, imm: rv_enc_i(imm, rv_reg(ol.o2) as u64, f3, rv_reg(ol.o1) as u64, 0x13) as i64, base: 0 };
+  }
+  if streq(mn, "slli") || streq(mn, "srli") || streq(mn, "srai") {
+    let mut f7: u64 = 0x00;
+    if streq(mn, "srli") {
+      f7 = 0x20;
+    } else if streq(mn, "srai") {
+      f7 = 0x60;
+    }
+    let mut f3: u64 = 1;
+    if !streq(mn, "slli") {
+      f3 = 5;
+    }
+    let sh: u64 = asm_parse_i64(ol.o3) as u64 & 0x1F;
+    let w: u64 = ((f7 << 25) | (sh << 20) | ((rv_reg(ol.o2) as u64) << 15) | (f3 << 12) | ((rv_reg(ol.o1) as u64) << 7) | 0x13) & 0xFFFFFFFF;
+    return new MemSplit { ok: true, imm: w as i64, base: 0 };
+  }
+  if streq(mn, "add") || streq(mn, "sub") || streq(mn, "sll") || streq(mn, "slt") || streq(mn, "sltu") || streq(mn, "xor") || streq(mn, "srl") || streq(mn, "sra") || streq(mn, "or") || streq(mn, "and") || streq(mn, "mul") || streq(mn, "mulh") || streq(mn, "mulhsu") || streq(mn, "mulhu") || streq(mn, "div") || streq(mn, "divu") || streq(mn, "rem") || streq(mn, "remu") {
+    let mut f3: u64 = 0;
+    let mut f7: u64 = 0;
+    if streq(mn, "sub") {
+      f3 = 0;
+      f7 = 0x20;
+    } else if streq(mn, "sll") {
+      f3 = 1;
+    } else if streq(mn, "slt") {
+      f3 = 2;
+    } else if streq(mn, "sltu") {
+      f3 = 3;
+    } else if streq(mn, "xor") {
+      f3 = 4;
+    } else if streq(mn, "srl") {
+      f3 = 5;
+    } else if streq(mn, "sra") {
+      f3 = 5;
+      f7 = 0x20;
+    } else if streq(mn, "or") {
+      f3 = 6;
+    } else if streq(mn, "and") {
+      f3 = 7;
+    } else if streq(mn, "mul") {
+      f3 = 0;
+      f7 = 1;
+    } else if streq(mn, "mulh") {
+      f3 = 1;
+      f7 = 1;
+    } else if streq(mn, "mulhsu") {
+      f3 = 2;
+      f7 = 1;
+    } else if streq(mn, "mulhu") {
+      f3 = 3;
+      f7 = 1;
+    } else if streq(mn, "div") {
+      f3 = 4;
+      f7 = 1;
+    } else if streq(mn, "divu") {
+      f3 = 5;
+      f7 = 1;
+    } else if streq(mn, "rem") {
+      f3 = 6;
+      f7 = 1;
+    } else if streq(mn, "remu") {
+      f3 = 7;
+      f7 = 1;
+    }
+    return new MemSplit { ok: true, imm: rv_enc_r(f7, rv_reg(ol.o3) as u64, rv_reg(ol.o2) as u64, f3, rv_reg(ol.o1) as u64, 0x33) as i64, base: 0 };
+  }
+  if streq(mn, "seqz") {
+    // sltiu rd, rs, 1
+    return new MemSplit { ok: true, imm: rv_enc_i(1, rv_reg(ol.o2) as u64, 3, rv_reg(ol.o1) as u64, 0x13) as i64, base: 0 };
+  }
+  if streq(mn, "snez") {
+    // sltu rd, zero, rs
+    return new MemSplit { ok: true, imm: rv_enc_r(0, rv_reg(ol.o2) as u64, 0, 3, rv_reg(ol.o1) as u64, 0x33) as i64, base: 0 };
+  }
+  if streq(mn, "mv") {
+    return new MemSplit { ok: true, imm: rv_enc_i(0, rv_reg(ol.o2) as u64, 0, rv_reg(ol.o1) as u64, 0x13) as i64, base: 0 };
+  }
+  if streq(mn, "not") {
+    return new MemSplit { ok: true, imm: rv_enc_i(0xFFF, rv_reg(ol.o2) as u64, 4, rv_reg(ol.o1) as u64, 0x13) as i64, base: 0 };
+  }
+  if streq(mn, "ebreak") {
+    return new MemSplit { ok: true, imm: 0x00100073, base: 0 };
+  }
+  return new MemSplit { ok: false, imm: 0, base: -1 };
+}
+
+// write one .ascii body's decoded bytes into the image at addr; returns
+// the byte count (the mirror of the emitter's escaping: three-digit octal,
+// plus the \\ and \" forms)
+fn asm_ascii_bytes(body: string, image: []u8, at: i64) -> i64 {
+  let mut i: usize = 0;
+  let mut n: i64 = 0;
+  while i < len(body) {
+    let c: u8 = body[i];
+    if c == 92 && i + 1 < len(body) { // backslash
+      let e2: u8 = body[i + 1];
+      if e2 == 110 {
+        image[(at + n) as usize] = 10;
+        i += 2;
+      } else if e2 == 116 {
+        image[(at + n) as usize] = 9;
+        i += 2;
+      } else if e2 == 114 {
+        image[(at + n) as usize] = 13;
+        i += 2;
+      } else if e2 == 92 {
+        image[(at + n) as usize] = 92;
+        i += 2;
+      } else if e2 == 34 {
+        image[(at + n) as usize] = 34;
+        i += 2;
+      } else if e2 >= 48 && e2 <= 55 && i + 3 < len(body) {
+        let v: i64 = (e2 - 48) as i64 * 64 + (body[i + 2] - 48) as i64 * 8 + (body[i + 3] - 48) as i64;
+        image[(at + n) as usize] = v as u8;
+        i += 4;
+      } else {
+        image[(at + n) as usize] = c;
+        i += 1;
+      }
+    } else {
+      image[(at + n) as usize] = c;
+      i += 1;
+    }
+    n += 1;
+  }
+  return n;
+}
+
+// pass-1 size of one .ascii body (decoded byte count)
+fn asm_ascii_len(body: string) -> i64 {
+  let mut n: i64 = 0;
+  let mut i: usize = 0;
+  while i < len(body) {
+    let c: u8 = body[i];
+    if c == 92 && i + 1 < len(body) {
+      let e2: u8 = body[i + 1];
+      if e2 >= 48 && e2 <= 55 && i + 3 < len(body) {
+        i += 4;
+      } else {
+        i += 2;
+      }
+    } else {
+      i += 1;
+    }
+    n += 1;
+  }
+  return n;
+}
+
+fn assemble_rv32(text: string) -> []u8 {
+  // pass 1: sizes + labels
+  let mut addr: u64 = 0;
+  g_rv32_labels = new Vec[*RVLabel] { items: make([]*RVLabel, 256), n: 0 };
+  g_rv32_asm_fail = false;
+  let mut pos: usize = 0;
+  while pos < len(text) {
+    let mut eol: usize = pos;
+    while eol < len(text) && text[eol] != 10 {
+      eol += 1;
+    }
+    if eol == pos {
+      pos = eol + 1;
+      continue;
+    }
+    let line: string = text[pos..eol];
+    pos = eol + 1;
+    let mut s: usize = 0;
+    while s < len(line) && (line[s] == 32 || line[s] == 9) {
+      s += 1;
+    }
+    if s >= len(line) {
+      continue;
+    }
+    let t: string = line[s..len(line)];
+    if asm_starts_with(t, ".p2align") {
+      let k: i64 = asm_parse_i64(t[8..len(t)]);
+      let mask: u64 = ((1 << k) - 1) as u64;
+      addr = (addr + mask) & (~mask);
+    } else if asm_starts_with(t, ".zero") {
+      addr = addr + (asm_parse_i64(t[5..len(t)]) as u64);
+    } else if asm_starts_with(t, ".word") {
+      addr += 4;
+    } else if asm_starts_with(t, ".byte") {
+      // the emitter writes one byte per line; count commas for safety
+      let mut cnt: i64 = 1;
+      let mut ci: usize = 5;
+      while ci < len(t) {
+        if t[ci] == 44 {
+          cnt += 1;
+        }
+        ci += 1;
+      }
+      addr += cnt as u64;
+    } else if asm_starts_with(t, ".ascii") {
+      let q1: i64 = asm_find_ch(t, 0, 34);
+      let q2: i64 = asm_find_ch(t, q1 + 1, 34);
+      if q1 < 0 || q2 < 0 {
+        eprint("rho: rv32asm bad .ascii\n");
+        g_rv32_asm_fail = true;
+        return make([]u8, 0);
+      }
+      if q2 > q1 + 1 {
+        addr += asm_ascii_len(t[(q1 + 1) as usize..q2 as usize]) as u64;
+      }
+    } else {
+      let colon: i64 = asm_find_ch(t, 0, 58);
+      if colon > 0 {
+        let l: *RVLabel = new RVLabel { name: t[0..colon as usize], addr: addr };
+        g_rv32_labels.push(l);
+      } else if !asm_starts_with(t, ".globl") {
+        addr += 4; // every instruction is 4 bytes in our dialect
+      }
+    }
+  }
+
+  let image: []u8 = make([]u8, addr as usize);
+  // pass 2: emit
+  addr = 0;
+  pos = 0;
+  while pos < len(text) {
+    let mut eol: usize = pos;
+    while eol < len(text) && text[eol] != 10 {
+      eol += 1;
+    }
+    if eol == pos {
+      pos = eol + 1;
+      continue;
+    }
+    let line: string = text[pos..eol];
+    pos = eol + 1;
+    let mut s: usize = 0;
+    while s < len(line) && (line[s] == 32 || line[s] == 9) {
+      s += 1;
+    }
+    if s >= len(line) {
+      continue;
+    }
+    let t: string = line[s..len(line)];
+    if len(t) == 0 || asm_starts_with(t, ".globl") {
+      continue;
+    }
+    if asm_starts_with(t, ".p2align") {
+      let k: i64 = asm_parse_i64(t[8..len(t)]);
+      let mask: u64 = ((1 << k) - 1) as u64;
+      addr = (addr + mask) & (~mask);
+    } else if asm_starts_with(t, ".word") {
+      let rest: string = asm_trim(t[5..len(t)]);
+      if len(rest) > 0 && rest[0] >= 48 && rest[0] <= 57 {
+        asm_emit_word(image, addr as i64, asm_parse_i64(rest) as u64 & 0xFFFFFFFF);
+      } else {
+        asm_emit_word(image, addr as i64, rv_label_addr(rest) & 0xFFFFFFFF);
+      }
+      addr += 4;
+    } else if asm_starts_with(t, ".zero") {
+      addr = addr + (asm_parse_i64(t[5..len(t)]) as u64);
+    } else if asm_starts_with(t, ".byte") {
+      let rest: string = asm_trim(t[5..len(t)]);
+      image[addr as usize] = (asm_parse_i64(rest) & 0xFF) as u8;
+      addr += 1;
+    } else if asm_starts_with(t, ".ascii") {
+      let q1: i64 = asm_find_ch(t, 0, 34);
+      let q2: i64 = asm_find_ch(t, q1 + 1, 34);
+      let mut nb: i64 = 0;
+      if q2 > q1 + 1 {
+        nb = asm_ascii_bytes(t[(q1 + 1) as usize..q2 as usize], image, addr as i64);
+      }
+      addr += nb as u64;
+    } else {
+      let colon: i64 = asm_find_ch(t, 0, 58);
+      if colon >= 0 {
+        // label: binds in pass 1
+      } else if len(t) > 0 {
+        let ol: *OpLine = asm_split_ops(t);
+        let enc: *MemSplit = asm_encode(ol, addr);
+        if !enc.ok {
+          eprint(cat5("rho: rv32asm unknown instruction: ", t, "\n", "", ""));
+          g_rv32_asm_fail = true;
+        } else {
+          asm_emit_word(image, addr as i64, enc.imm as u64 & 0xFFFFFFFF);
+        }
+        addr += 4;
+      }
+    }
+  }
+  if g_rv32_asm_fail {
+    return make([]u8, 0);
+  }
+  g_rv32_last_size = addr;
+  return image;
+}

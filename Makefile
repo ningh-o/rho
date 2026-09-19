@@ -19,7 +19,8 @@ boot/src/%.o: boot/src/%.c boot/src/rho.h boot/src/prelude_data.c
 boot/src/prelude_data.c: boot/prelude/hosted.rho boot/prelude/wasi.rho tools/embed.py
 	python3 tools/embed.py boot/prelude/hosted.rho PRELUDE_SOURCE boot/src/prelude_data.c
 	python3 tools/embed.py boot/prelude/wasi.rho PRELUDE_WASI_SOURCE boot/src/prelude_wasi_data.inc
-	cat boot/src/prelude_wasi_data.inc >> boot/src/prelude_data.c
+	python3 tools/embed.py boot/prelude/esp32c3.rho PRELUDE_ESP32_SOURCE boot/src/prelude_esp32_data.inc
+	cat boot/src/prelude_wasi_data.inc boot/src/prelude_esp32_data.inc >> boot/src/prelude_data.c
 
 # the compiler itself as wasm32-wasi: the browser playground runs this
 build/rho-boot.wasm: $(BOOT_SRC) boot/src/rho.h

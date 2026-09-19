@@ -151,11 +151,14 @@ typedef enum Target {
   TGT_AMD64_MAC, // Rosetta test vehicle for the SysV backend
   TGT_ARM64_MAC,
   TGT_WASM32_WASI,
+  TGT_ESP32C3,   // RV32IM, flat image run by the in-tree simulator
 } Target;
 
 void emit_amd64(Target target, SB *out);
 void emit_arm64(Target target, SB *out);   // 0.0.3
 void emit_wasm(Target target, SB *out);    // 0.0.4
+void emit_riscv32(SB *out);                // 0.2.0: esp32c3
+int assemble_rv32(const char *text, unsigned char **image_out); // text -> flat image
 
 // statics + string literals collected during lowering
 typedef struct IRGlobal {

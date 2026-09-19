@@ -404,11 +404,15 @@ source grammar, which keeps wasm lowering direct and the CFG reducible.
 | `amd64-linux` | AT&T assembly → `cc -m64` (assemble + link) | system `cc` |
 | `arm64-mac` | Apple assembly → `cc` (assemble + link, ad-hoc signed) | system `cc` |
 | `wasm32-wasi` | binary module, WASI preview1 imports | none (runs on wasmtime/node/browser) |
-| `esp32c3` (0.2+) | RISC-V RV32IMC assembly + linker script | `riscv32-esp-elf` toolchain |
+| `esp32c3` (0.2) | RV32IM text assembly → in-tree two-pass assembler → flat load image; the in-tree simulator (boot compiler only) executes it: pc=0 entry, `a0`/`a1` = heap base/size, semihost exit via stores to `0x80000000` (stdout byte) / `0x80000004` (exit code) | none — no external toolchain, no linker |
 
 Register allocation starts as spill-everything (every virtual register gets
 a stack slot; each instruction reloads operands); a linear-scan allocator
-replaces it after self-hosting. Structs and arrays are passed by reference
+replaces it after self-hosting. On `esp32c3`, pointers/`usize`/`isize` are
+32-bit (8-byte slot footprint, low half carries the value), `i64`/`u64` run
+as register pairs over fixed runtime stubs, and floating-point operations
+trap (`ebreak`) until soft-float lands in 0.2.1 — same-size bit moves
+(`usize`↔pointer, f32/f64 bit extraction) are plain copies and work. Structs and arrays are passed by reference
 to a caller-made temporary (a documented deviation from the C ABI, which
 only matters for `extern` functions — hosted externs in the prelude use
 scalars and pointers only).

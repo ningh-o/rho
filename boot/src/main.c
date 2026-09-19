@@ -1,5 +1,12 @@
 #include "ir.h"
 
+// RV32 simulator (rv32sim.c) for the esp32c3 flat images
+#define RV32_STACK_TOP 0x01000000u
+#define RV32_HEAP_BASE 0x00100000u
+#define RV32_HEAP_SIZE 0x00800000u
+int sim_run(unsigned char *image, uint32_t image_size, uint32_t entry,
+            uint32_t heap_base, uint32_t heap_size, int *faulted);
+
 void lower_dump_ir(void);
 void lower_dump_ir_if_requested(void);
 #if !defined(__wasm__)
@@ -198,7 +205,6 @@ static int run_selftest(bool update, bool fmt_only) {
         render_diags(&dsb);
         fail(arena_printf("%s fmt", name), "fmt output does not reparse:\n%.*s", (int)dsb.n,
              sb_finish(&dsb).p);
-      } else {
         Str twice = fmt_module(reparsed);
         if (!str_eq(once, twice))
           fail(arena_printf("%s fmt", name), "fmt is not idempotent");
@@ -267,6 +273,8 @@ static Target parse_target(const char *s) {
     return TGT_ARM64_MAC;
   if (!strcmp(s, "wasm32-wasi"))
     return TGT_WASM32_WASI;
+  if (!strcmp(s, "esp32c3"))
+    return TGT_ESP32C3;
   fprintf(stderr, "rho: unknown target `%s`\n", s);
   exit(2);
 }
@@ -287,7 +295,9 @@ static const char *target_cc(Target t) {
 // the built artifact (arena). On any failure prints diagnostics, returns NULL.
 static const char *build_to(const char *file, Target target, const char *out_path) {
   extern bool g_prelude_wasm;
+  extern bool g_prelude_esp32;
   g_prelude_wasm = target == TGT_WASM32_WASI;
+  g_prelude_esp32 = target == TGT_ESP32C3;
   Decl *root = compile_root(str_from(file));
   if (!root)
     return NULL;
@@ -308,9 +318,36 @@ static const char *build_to(const char *file, Target target, const char *out_pat
   } else if (target == TGT_ARM64_MAC) {
     lower_dump_ir_if_requested();
     emit_arm64(target, &emitted);
-  } else {
-    // wasm: emit the binary module directly, no assembler step
+  } else if (target == TGT_ESP32C3) {
+    // esp32c3: emit RV32IM text, assemble in-tree, write the flat image;
+    // the built-in simulator runs it directly (no external toolchain)
     lower_dump_ir_if_requested();
+    emit_riscv32(&emitted);
+    const char *s_path32 = arena_printf("%s.s", out_path);
+    Str dump_text = sb_finish(&emitted);
+    write_file(str_from(s_path32), dump_text);
+    emitted = (SB){0};
+    emitted.buf = dump_text.p;
+    emitted.n = dump_text.n;
+    emitted.cap = dump_text.n;
+    extern uint32_t g_rv32_last_size;
+    unsigned char *image = NULL;
+    if (assemble_rv32(str_to_c(sb_finish(&emitted)), &image) != 0) {
+      fprintf(stderr, "rho: rv32 assembly failed\n");
+      return NULL;
+    }
+    FILE *f = fopen(out_path, "wb");
+    if (!f) {
+      fprintf(stderr, "rho: cannot write %s\n", out_path);
+      return NULL;
+    }
+    fwrite(image, 1, g_rv32_last_size, f);
+    fclose(f);
+    free(image);
+    printf("built %s\n", out_path);
+    return out_path;
+  } else if (target == TGT_WASM32_WASI) {
+    // wasm: the emitter produces the binary module directly
     emit_wasm(target, &emitted);
     if (!write_file(str_from(out_path), sb_finish(&emitted))) {
       fprintf(stderr, "rho: cannot write %s\n", out_path);
@@ -319,6 +356,7 @@ static const char *build_to(const char *file, Target target, const char *out_pat
     printf("built %s\n", out_path);
     return out_path;
   }
+  // shared native tail (amd64 + arm64): write the .s and hand it to cc
   const char *s_path = arena_printf("%s.s", out_path);
   if (!write_file(str_from(s_path), sb_finish(&emitted))) {
     fprintf(stderr, "rho: cannot write %s\n", s_path);
@@ -368,14 +406,36 @@ static int cmd_build_run_test(const char *cmd, int argc, char **argv) {
       // use a fixed temp name for determinism
       const char *tmpout = arena_printf("/tmp/rho_out_%s", name);
       SB rc = {0};
-      if (tt == TGT_WASM32_WASI) {
+      int code;
+      if (tt == TGT_ESP32C3) {
+        // flat image: run it on the in-tree RV32 simulator
+        FILE *f = fopen(built, "rb");
+        if (!f) {
+          printf("FAIL %s (no image)\n", name);
+          failures++;
+          continue;
+        }
+        fseek(f, 0, SEEK_END);
+        long sz = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        uint8_t *img = malloc(sz ? (size_t)sz : 1);
+        fread(img, 1, (size_t)sz, f);
+        fclose(f);
+        int faulted = 0;
+        code = sim_run(img, (uint32_t)sz, 0, RV32_HEAP_BASE, RV32_HEAP_SIZE, &faulted);
+        if (faulted)
+          code = 200;
+        free(img);
+      } else if (tt == TGT_WASM32_WASI) {
         // wasmtime prints stdout to fd 1; panic exit 101 propagates
         sb_printf(&rc, "wasmtime run %s > %s 2>/dev/null", built, tmpout);
+        int status = system(str_to_c(sb_finish(&rc)));
+        code = WEXITSTATUS(status);
       } else {
         sb_printf(&rc, "%s > %s", built, tmpout);
+        int status = system(str_to_c(sb_finish(&rc)));
+        code = WEXITSTATUS(status);
       }
-      int status = system(str_to_c(sb_finish(&rc)));
-      int code = WEXITSTATUS(status);
       // expected exit
       int want_code = 0;
       Str src = read_file_or_die(str_from(path));
@@ -454,7 +514,7 @@ static int cmd_build_run_test(const char *cmd, int argc, char **argv) {
 
 static void usage(void) {
   fprintf(stderr,
-          "rho 0.0.1\n"
+          "rho 0.2.0\n"
           "usage: rho <command> [args]\n"
           "  check  <file>              parse + typecheck\n"
           "  fmt    [-w] <file>         print canonical formatting\n"
@@ -472,7 +532,7 @@ int main(int argc, char **argv) {
   const char *cmd = argv[1];
 
   if (!strcmp(cmd, "--version") || !strcmp(cmd, "version")) {
-    printf("rho 0.0.1\n");
+    printf("rho 0.2.0\n");
     return 0;
   }
 

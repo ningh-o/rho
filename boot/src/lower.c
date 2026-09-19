@@ -2917,7 +2917,10 @@ void lower_program(void) {
     for (size_t k = 0; k < m->syms.keys.n; k++) {
       Str *key = m->syms.keys.items[k];
       Sym *sym = map_get(&m->syms, *key);
-      if (sym->kind == SY_FN && sym->decl && sym->decl->body.n && !sym->decl->templated)
+      // lower real definitions only; externs declare without a body and an
+      // empty-bodied fn is still callable (e.g. esp32c3 __free is a no-op)
+      if (sym->kind == SY_FN && sym->decl && sym->decl->kind == DK_FN &&
+          !sym->decl->templated)
         vec_push(&g_ir_fns, lower_fn(sym));
       else if (sym->kind == SY_STATIC)
         lower_static(sym);
