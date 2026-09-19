@@ -1239,7 +1239,12 @@ static Type *check_expr(Expr *e, Type *expected) {
   case EX_CAST: {
     check_expr(e->a, NULL);
     Type *target = resolve_type_in_module(cur_module, e->ty);
-    Type *src = e->a->typed;
+    // untyped literals retype to the cast's target at full width — leaving
+    // them INT_LIT (i32) truncates constants like (0x1000000000000 as u64)
+    Type *src = (Type *)e->a->typed;
+    if (src && (src->kind == TY_INT_LIT || src->kind == TY_FLOAT_LIT))
+      e->a->typed = target;
+    src = (Type *)e->a->typed;
     bool ok = (ty_is_int(target) || ty_is_float(target)) &&
               (ty_is_int(src) || ty_is_float(src) || src->kind == TY_ENUM ||
                src->kind == TY_INT_LIT || src->kind == TY_FLOAT_LIT);

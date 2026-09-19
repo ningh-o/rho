@@ -18,6 +18,8 @@
 #include <string.h>
 
 static int g_label32 = 0;
+
+char *arena_printf(const char *fmt, ...);
 static int g_uid32 = 0;
 
 typedef struct Emitter32 {
@@ -28,8 +30,10 @@ typedef struct Emitter32 {
   IRBlock *cur;
 } Emitter32;
 
+// "occupies a 64-bit register pair": i64/u64 AND f64 (whose soft-float
+// representation travels as its 64-bit bit pattern)
 static int rv_is64(IRType t) {
-  return t == IT_I64 || t == IT_U64;
+  return t == IT_I64 || t == IT_U64 || t == IT_F64;
 }
 
 static int rv_size_of(IRType t) {
@@ -208,6 +212,17 @@ static void call_helper(Emitter32 *e, const char *name, int64_t alo, int64_t ahi
   (void)dhi;
 }
 
+// scalar call: 64-bit args in (a0,a1)/(a2,a3), u64 result left in a0
+static void call_scal2(Emitter32 *e, const char *name, int64_t alo, int64_t ahi,
+                       int64_t blo, int64_t bhi) {
+  ld32(e, alo, 4, false, "a0");
+  ld32(e, ahi, 4, false, "a1");
+  ld32(e, blo, 4, false, "a2");
+  ld32(e, bhi, 4, false, "a3");
+  sb_printf(e->out, "  auipc ra, %%hi(%s)\n", name);
+  sb_printf(e->out, "  jalr ra, ra, %%lo(%s)\n", name);
+}
+
 static void emit_ins32(Emitter32 *e, IRIns *i) {
   switch (i->op) {
   case IR_CONST: {
@@ -223,16 +238,39 @@ static void emit_ins32(Emitter32 *e, IRIns *i) {
     }
     break;
   }
-  case IR_FCONST:
-    // soft-float lands in 0.2.1
-    sb_printf(e->out, "  ebreak #900\n");
+  case IR_FCONST: {
+    int64_t dof = vreg_off32(e, i->dst);
+    uint64_t bits;
+    __builtin_memcpy(&bits, &i->fimm, 8);
+    li32(e, "t1", (uint32_t)bits);
+    li32(e, "t2", (uint32_t)(bits >> 32));
+    st_pair(e, dof, "t1", "t2");
+    if (i->dst->ty == IT_F32) {
+      // narrow the constant through the prelude's f64->f32 pack
+      ld32(e, dof, 4, false, "a0");
+      ld32(e, dof + 4, 4, false, "a1");
+      const char *nm = prelude_symbol("__f64_f32");
+      sb_printf(e->out, "  auipc ra, %%hi(%s)\n", nm);
+      sb_printf(e->out, "  jalr ra, ra, %%lo(%s)\n", nm);
+      st32(e, dof, 4, "a0");
+    }
     break;
+  }
   case IR_ADD:
   case IR_SUB:
   case IR_AND:
   case IR_OR:
   case IR_XOR: {
     int64_t dof = vreg_off32(e, i->dst);
+    if (i->is_float) {
+      // soft-float: route to the prelude helpers
+      int64_t ao = vreg_off32(e, i->a), bo = vreg_off32(e, i->b);
+      bool f32 = i->a->ty == IT_F32;
+      const char *nm = arena_printf("%s%s", i->op == IR_ADD ? "__fadd" : "__fsub",
+                                    f32 ? "32" : "64");
+      call_helper(e, prelude_symbol(nm), ao, ao + 4, bo, bo + 4, dof, dof + 4);
+      break;
+    }
     if (rv_is64(i->dst->ty)) {
       int64_t ao = vreg_off32(e, i->a), bo = vreg_off32(e, i->b);
       ld_pair(e, ao, "t1", "t2");
@@ -271,20 +309,29 @@ static void emit_ins32(Emitter32 *e, IRIns *i) {
   }
   case IR_MUL: {
     int64_t dof = vreg_off32(e, i->dst);
+    if (i->is_float) {
+      int64_t ao = vreg_off32(e, i->a), bo = vreg_off32(e, i->b);
+      bool f32 = i->a->ty == IT_F32;
+      const char *nm = arena_printf("__fmul%s", f32 ? "32" : "64");
+      call_helper(e, prelude_symbol(nm), ao, ao + 4, bo, bo + 4, dof, dof + 4);
+      break;
+    }
     if (rv_is64(i->dst->ty)) {
       // lower 64 bits of the product: lo = alo*blo,
       // hi = alo*bhi + ahi*blo + hi(alo*blo) — mod 2^64 correct signed too
       int64_t ao = vreg_off32(e, i->a), bo = vreg_off32(e, i->b);
       ld_pair(e, ao, "t1", "t2");
       ld_pair(e, bo, "t3", "t4");
+      // low 64 bits of the 64x64 product: lo = alo*blo,
+      // hi = p00_hi + (ahi*blo + alo*bhi) — the mid carry drops mod 2^64
       sb_printf(e->out, "  mul t5, t1, t3\n");
       sb_printf(e->out, "  mulhu t6, t1, t3\n");
+      sb_printf(e->out, "  mul t0, t2, t3\n");
       sb_printf(e->out, "  mul t2, t1, t4\n");
-      sb_printf(e->out, "  mul t3, t2, t3\n");
-      sb_printf(e->out, "  add t2, t2, t3\n");
-      sb_printf(e->out, "  add t2, t2, t6\n");
+      sb_printf(e->out, "  add t0, t0, t2\n");
+      sb_printf(e->out, "  add t6, t6, t0\n");
       sb_printf(e->out, "  mv t1, t5\n");
-      st_pair(e, dof, "t1", "t2");
+      st_pair(e, dof, "t1", "t6");
       break;
     }
     ld32(e, vreg_off32(e, i->a), rv_size_of(i->a->ty), true, "t1");
@@ -299,6 +346,14 @@ static void emit_ins32(Emitter32 *e, IRIns *i) {
     int64_t dof = vreg_off32(e, i->dst);
     bool is64 = rv_is64(i->dst->ty);
     bool sgn = ty_is_signed_int(i->a->ty);
+    if (i->is_float) {
+      // IEEE: x/0 is inf, not a trap — no zero guard on the float path
+      int64_t ao = vreg_off32(e, i->a), bo = vreg_off32(e, i->b);
+      bool f32 = i->a->ty == IT_F32;
+      const char *nm = arena_printf("__fdiv%s", f32 ? "32" : "64");
+      call_helper(e, prelude_symbol(nm), ao, ao + 4, bo, bo + 4, dof, dof + 4);
+      break;
+    }
     // RISC-V division defines x/0 = -1 and overflow as wraparound, but the
     // language panics on /0 — guard before the hardware op or the stub
     const char *psym = prelude_symbol("__panic_div");
@@ -349,6 +404,39 @@ static void emit_ins32(Emitter32 *e, IRIns *i) {
     break;
   }
   case IR_CMP: {
+    if (i->is_float) {
+      // soft-float compares: EQ/NE via __feq, LT/GT/LE/GE via __flt with
+      // operand order and inversion per condition code
+      int64_t ao = vreg_off32(e, i->a), bo = vreg_off32(e, i->b);
+      int64_t dof = vreg_off32(e, i->dst);
+      bool f32 = i->a->ty == IT_F32;
+      const char *eq = prelude_symbol(f32 ? "__feq32" : "__feq64");
+      const char *lt = prelude_symbol(f32 ? "__flt32" : "__flt64");
+      bool inv = false;
+      bool swap = false;
+      if (i->cc == CC_NE) {
+        inv = true;
+      } else if (i->cc == CC_GT) {
+        swap = true;
+      } else if (i->cc == CC_LE) {
+        swap = true;
+        inv = true;
+      } else if (i->cc == CC_GE) {
+        inv = true;
+      }
+      if (i->cc == CC_EQ || i->cc == CC_NE) {
+        call_scal2(e, eq, ao, ao + 4, bo, bo + 4);
+      } else if (!swap) {
+        call_scal2(e, lt, ao, ao + 4, bo, bo + 4);
+      } else {
+        call_scal2(e, lt, bo, bo + 4, ao, ao + 4);
+      }
+      if (inv) {
+        sb_printf(e->out, "  xori a0, a0, 1\n");
+      }
+      st32(e, dof, 1, "a0");
+      break;
+    }
     if (rv_is64(i->a->ty)) {
       // pair compare, branchless: less = hi_less | (hi_eq & lo_less)
       int64_t ao = vreg_off32(e, i->a), bo = vreg_off32(e, i->b), dof = vreg_off32(e, i->dst);
@@ -499,8 +587,74 @@ static void emit_ins32(Emitter32 *e, IRIns *i) {
         st32(e, dof, 4, "t1");
       }
       break;
+    case CAST_I2F: {
+      // signed int -> float: widen to i64 in (t1,t2), call, store
+      bool src32 = rv_size_of(i->cast_from) < 8;
+      if (src32) {
+        ld32(e, sof, 4, true, "t1");
+        sb_printf(e->out, "  srai t2, t1, 31\n");
+        st_pair(e, dof, "t1", "t2");
+      } else {
+        ld_pair(e, sof, "t1", "t2");
+      }
+      // args already in (t1,t2) — move into (a0,a1)
+      sb_printf(e->out, "  mv a0, t1\n  mv a1, t2\n");
+      sb_printf(e->out, "  auipc ra, %%hi(%s)\n", prelude_symbol("__i2f64"));
+      sb_printf(e->out, "  jalr ra, ra, %%lo(%s)\n", prelude_symbol("__i2f64"));
+      if (i->cast_to == IT_F32) {
+        // narrow through __f64_f32 with the f64 bits already in (a0,a1)
+        sb_printf(e->out, "  auipc ra, %%hi(%s)\n", prelude_symbol("__f64_f32"));
+        sb_printf(e->out, "  jalr ra, ra, %%lo(%s)\n", prelude_symbol("__f64_f32"));
+        st32(e, dof, 4, "a0");
+      } else {
+        st_pair(e, dof, "a0", "a1");
+      }
+      break;
+    }
+    case CAST_F2I: {
+      if (rv_is64(i->dst->ty)) {
+        if (i->cast_from == IT_F64) {
+          ld_pair(e, sof, "a0", "a1");
+          sb_printf(e->out, "  auipc ra, %%hi(%s)\n", prelude_symbol("__f2i64"));
+          sb_printf(e->out, "  jalr ra, ra, %%lo(%s)\n", prelude_symbol("__f2i64"));
+        } else {
+          ld32(e, sof, 4, false, "a0");
+          sb_printf(e->out, "  auipc ra, %%hi(%s)\n", prelude_symbol("__f32_f64"));
+          sb_printf(e->out, "  jalr ra, ra, %%lo(%s)\n", prelude_symbol("__f32_f64"));
+          sb_printf(e->out, "  auipc ra, %%hi(%s)\n", prelude_symbol("__f2i64"));
+          sb_printf(e->out, "  jalr ra, ra, %%lo(%s)\n", prelude_symbol("__f2i64"));
+        }
+        st_pair(e, dof, "a0", "a1");
+      } else {
+        // narrow int targets go through i64 then truncate
+        if (i->cast_from == IT_F64) {
+          ld_pair(e, sof, "a0", "a1");
+          sb_printf(e->out, "  auipc ra, %%hi(%s)\n", prelude_symbol("__f2i64"));
+          sb_printf(e->out, "  jalr ra, ra, %%lo(%s)\n", prelude_symbol("__f2i64"));
+        } else {
+          ld32(e, sof, 4, false, "a0");
+          sb_printf(e->out, "  auipc ra, %%hi(%s)\n", prelude_symbol("__f32_f64"));
+          sb_printf(e->out, "  jalr ra, ra, %%lo(%s)\n", prelude_symbol("__f32_f64"));
+          sb_printf(e->out, "  auipc ra, %%hi(%s)\n", prelude_symbol("__f2i64"));
+          sb_printf(e->out, "  jalr ra, ra, %%lo(%s)\n", prelude_symbol("__f2i64"));
+        }
+        st32(e, dof, 4, "a0");
+      }
+      break;
+    }
+    case CAST_F32_F64:
+      ld32(e, sof, 4, false, "a0");
+      sb_printf(e->out, "  auipc ra, %%hi(%s)\n", prelude_symbol("__f32_f64"));
+      sb_printf(e->out, "  jalr ra, ra, %%lo(%s)\n", prelude_symbol("__f32_f64"));
+      st_pair(e, dof, "a0", "a1");
+      break;
+    case CAST_F64_F32:
+      ld_pair(e, sof, "a0", "a1");
+      sb_printf(e->out, "  auipc ra, %%hi(%s)\n", prelude_symbol("__f64_f32"));
+      sb_printf(e->out, "  jalr ra, ra, %%lo(%s)\n", prelude_symbol("__f64_f32"));
+      st32(e, dof, 4, "a0");
+      break;
     default:
-      // I2F / F2I / F32_F64 / F64_F32: soft-float lands in 0.2.1
       sb_printf(e->out, "  ebreak #901\n");
       break;
     }
@@ -556,7 +710,8 @@ static void emit_ins32(Emitter32 *e, IRIns *i) {
     for (size_t k = 0; k < i->args.n && ri < 8; k++) {
       IRArg *a = (IRArg *)i->args.items[k];
       int64_t off = vreg_off32(e, a->vreg);
-      bool is64arg = a->ty && (a->ty->kind == TY_I64 || a->ty->kind == TY_U64);
+      bool is64arg = a->ty && (a->ty->kind == TY_I64 || a->ty->kind == TY_U64 ||
+                               a->ty->kind == TY_F64);
       if (is64arg && ri + 2 <= 8) {
         ld32(e, off, 4, false, aregs[ri]);
         ld32(e, off + 4, 4, false, aregs[ri + 1]);
@@ -595,8 +750,10 @@ static void emit_edge32(Emitter32 *e, IRBlock *succ) {
         if (!val || !phi->dst)
           continue;
         int64_t d = vreg_off32(e, phi->dst), s = vreg_off32(e, val);
-        ld32(e, s, 4, false, "t1");
-        st32(e, d, 4, "t1");
+        // every vreg slot is 8 bytes: copy the whole slot unconditionally —
+        // 64-bit loop-carried values lose their high half on a 4-byte copy
+        ld_pair(e, s, "t1", "t2");
+        st_pair(e, d, "t1", "t2");
         break;
       }
     }

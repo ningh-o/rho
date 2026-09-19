@@ -1,4 +1,4 @@
-// rho — the self-hosted compiler (0.2.0).
+// rho — the self-hosted compiler (0.2.1).
 //
 // One file, one module: the whole compiler, written in the frozen 0.0.5
 // language surface. Bootstrap invariant (spec §13): boot(self) == self(self)
@@ -2318,7 +2318,7 @@ fn diag_count() -> i32 {
 }
 
 fn usage() -> i32 {
-  eprint("rho 0.2.0\n");
+  eprint("rho 0.2.1\n");
   eprint("usage: rho <command> [args]\n");
   eprint("  check  <file>              parse + typecheck\n");
   eprint("  fmt    [-w] <file>         print canonical formatting\n");
@@ -3425,7 +3425,7 @@ fn main() -> i32 {
   }
   let cmd: string = args[1];
   if streq(cmd, "--version") || streq(cmd, "version") {
-    print("rho 0.2.0\n");
+    print("rho 0.2.1\n");
     return 0;
   }
   if streq(cmd, "selftest") {
@@ -4528,6 +4528,12 @@ fn check_expr(e: *Expr, expected: *Type) -> *Type {
   if e.kind == ExprKind.ExCast {
     check_expr(e.a, null);
     let target: *Type = resolve_type_in_module(cur_module, e.ty);
+    // untyped literals retype to the cast's target at full width — leaving
+    // them INT_LIT (i32) truncates constants like (0x1000000000000 as u64)
+    if e.a.typed != null && (e.a.typed.kind == TypeKind.TyIntLit ||
+                             e.a.typed.kind == TypeKind.TyFloatLit) {
+      e.a.typed = target;
+    }
     let srct: *Type = e.a.typed;
     let mut ok: bool = (ty_is_int(target) || ty_is_flt(target)) &&
         (ty_is_int(srct) || ty_is_flt(srct) || srct.kind == TypeKind.TyEnum ||
@@ -15732,8 +15738,10 @@ struct RVCtx {
 static mut g_label32: i32 = 0;
 static mut g_uid32: i32 = 0;
 
+// "occupies a 64-bit register pair": i64/u64 AND f64 (whose soft-float
+// representation travels as its 64-bit bit pattern)
 fn rv_is64(t: IRType) -> bool {
-  return t == IRType.ItI64 || t == IRType.ItU64;
+  return t == IRType.ItI64 || t == IRType.ItU64 || t == IRType.ItF64;
 }
 
 fn rv_size_of(t: IRType) -> i64 {
@@ -15951,6 +15959,16 @@ fn rv_call_helper(e: *RVCtx, name: string, alo: i64, ahi: i64, blo: i64, bhi: i6
   rv_st_pair(e, dlo, "a0", "a1");
 }
 
+// scalar call: 64-bit args in (a0,a1)/(a2,a3), u64 result left in a0
+fn rv_call_scal2(e: *RVCtx, name: string, alo: i64, ahi: i64, blo: i64, bhi: i64) {
+  rv_ld(e, alo, 4, false, "a0");
+  rv_ld(e, ahi, 4, false, "a1");
+  rv_ld(e, blo, 4, false, "a2");
+  rv_ld(e, bhi, 4, false, "a3");
+  bs(e.out, cat5("  auipc ra, %hi(", name, ")\n", "", ""));
+  bs(e.out, cat5("  jalr ra, ra, %lo(", name, ")\n", "", ""));
+}
+
 fn rv_ins(e: *RVCtx, i: *IRIns) {
   if i.op == IROp.IrConst {
     let dof: i64 = rv_vreg_off(e, i.dst);
@@ -15966,12 +15984,41 @@ fn rv_ins(e: *RVCtx, i: *IRIns) {
     return;
   }
   if i.op == IROp.IrFconst {
-    // soft-float lands in 0.2.1
-    bs(e.out, "  ebreak #900\n");
+    let dof: i64 = rv_vreg_off(e, i.dst);
+    let bits: u64 = intrinsics.f64_bits(i.fimm);
+    rv_li32(e, "t1", bits as u64 & 0xFFFFFFFF);
+    rv_li32(e, "t2", (bits >> 32) as u64 & 0xFFFFFFFF);
+    rv_st_pair(e, dof, "t1", "t2");
+    if i.dst.ty == IRType.ItF32 {
+      // narrow the constant through the prelude's f64->f32 pack
+      rv_ld(e, dof, 4, false, "a0");
+      rv_ld(e, dof + 4, 4, false, "a1");
+      let nm: string = prelude_symbol("__f64_f32");
+      bs(e.out, cat5("  auipc ra, %hi(", nm, ")\n", "", ""));
+      bs(e.out, cat5("  jalr ra, ra, %lo(", nm, ")\n", "", ""));
+      rv_st(e, dof, 4, "a0");
+    }
     return;
   }
   if i.op == IROp.IrAdd || i.op == IROp.IrSub || i.op == IROp.IrAnd || i.op == IROp.IrOr || i.op == IROp.IrXor {
     let dof: i64 = rv_vreg_off(e, i.dst);
+    if i.is_float {
+      // soft-float: route to the prelude helpers
+      let ao: i64 = rv_vreg_off(e, i.a);
+      let bo: i64 = rv_vreg_off(e, i.b);
+      let f32v: bool = i.a.ty == IRType.ItF32;
+      let mut nm: string = "__fadd";
+      if i.op == IROp.IrSub {
+        nm = "__fsub";
+      }
+      if f32v {
+        nm = cat3(nm, "32", "");
+      } else {
+        nm = cat3(nm, "64", "");
+      }
+      rv_call_helper(e, prelude_symbol(nm), ao, ao + 4, bo, bo + 4, dof);
+      return;
+    }
     if rv_is64(i.dst.ty) {
       let ao: i64 = rv_vreg_off(e, i.a);
       let bo: i64 = rv_vreg_off(e, i.b);
@@ -16019,6 +16066,16 @@ fn rv_ins(e: *RVCtx, i: *IRIns) {
   }
   if i.op == IROp.IrMul {
     let dof: i64 = rv_vreg_off(e, i.dst);
+    if i.is_float {
+      let ao: i64 = rv_vreg_off(e, i.a);
+      let bo: i64 = rv_vreg_off(e, i.b);
+      let mut nm: string = "__fmul64";
+      if i.a.ty == IRType.ItF32 {
+        nm = "__fmul32";
+      }
+      rv_call_helper(e, prelude_symbol(nm), ao, ao + 4, bo, bo + 4, dof);
+      return;
+    }
     if rv_is64(i.dst.ty) {
       // lower 64 bits of the product: lo = alo*blo,
       // hi = alo*bhi + ahi*blo + hi(alo*blo) — mod 2^64 correct signed too
@@ -16026,14 +16083,16 @@ fn rv_ins(e: *RVCtx, i: *IRIns) {
       let bo: i64 = rv_vreg_off(e, i.b);
       rv_ld_pair(e, ao, "t1", "t2");
       rv_ld_pair(e, bo, "t3", "t4");
+      // low 64 bits of the 64x64 product: lo = alo*blo,
+      // hi = p00_hi + (ahi*blo + alo*bhi) — the mid carry drops mod 2^64
       bs(e.out, "  mul t5, t1, t3\n");
       bs(e.out, "  mulhu t6, t1, t3\n");
+      bs(e.out, "  mul t0, t2, t3\n");
       bs(e.out, "  mul t2, t1, t4\n");
-      bs(e.out, "  mul t3, t2, t3\n");
-      bs(e.out, "  add t2, t2, t3\n");
-      bs(e.out, "  add t2, t2, t6\n");
+      bs(e.out, "  add t0, t0, t2\n");
+      bs(e.out, "  add t6, t6, t0\n");
       bs(e.out, "  mv t1, t5\n");
-      rv_st_pair(e, dof, "t1", "t2");
+      rv_st_pair(e, dof, "t1", "t6");
       return;
     }
     rv_ld(e, rv_vreg_off(e, i.a), rv_size_of(i.a.ty), true, "t1");
@@ -16047,6 +16106,17 @@ fn rv_ins(e: *RVCtx, i: *IRIns) {
     let dof: i64 = rv_vreg_off(e, i.dst);
     let is64: bool = rv_is64(i.dst.ty);
     let sgn: bool = ty_is_signed_int(i.a.ty);
+    if i.is_float {
+      // IEEE: x/0 is inf, not a trap — no zero guard on the float path
+      let ao: i64 = rv_vreg_off(e, i.a);
+      let bo: i64 = rv_vreg_off(e, i.b);
+      let mut nm: string = "__fdiv64";
+      if i.a.ty == IRType.ItF32 {
+        nm = "__fdiv32";
+      }
+      rv_call_helper(e, prelude_symbol(nm), ao, ao + 4, bo, bo + 4, dof);
+      return;
+    }
     // RISC-V division defines x/0 = -1 and overflow as wraparound, but the
     // language panics on /0 — guard before the hardware op or the stub
     let psym: string = prelude_symbol("__panic_div");
@@ -16124,6 +16194,44 @@ fn rv_ins(e: *RVCtx, i: *IRIns) {
     return;
   }
   if i.op == IROp.IrCmp {
+    if i.is_float {
+      // soft-float compares: EQ/NE via __feq, LT/GT/LE/GE via __flt with
+      // operand order and inversion per condition code
+      let ao: i64 = rv_vreg_off(e, i.a);
+      let bo: i64 = rv_vreg_off(e, i.b);
+      let dof: i64 = rv_vreg_off(e, i.dst);
+      let f32v: bool = i.a.ty == IRType.ItF32;
+      let mut eq: string = prelude_symbol("__feq64");
+      let mut lt: string = prelude_symbol("__flt64");
+      if f32v {
+        eq = prelude_symbol("__feq32");
+        lt = prelude_symbol("__flt32");
+      }
+      let mut inv: bool = false;
+      let mut swap: bool = false;
+      if i.cc == IRCC.CcNe {
+        inv = true;
+      } else if i.cc == IRCC.CcGt {
+        swap = true;
+      } else if i.cc == IRCC.CcLe {
+        swap = true;
+        inv = true;
+      } else if i.cc == IRCC.CcGe {
+        inv = true;
+      }
+      if i.cc == IRCC.CcEq || i.cc == IRCC.CcNe {
+        rv_call_scal2(e, eq, ao, ao + 4, bo, bo + 4);
+      } else if !swap {
+        rv_call_scal2(e, lt, ao, ao + 4, bo, bo + 4);
+      } else {
+        rv_call_scal2(e, lt, bo, bo + 4, ao, ao + 4);
+      }
+      if inv {
+        bs(e.out, "  xori a0, a0, 1\n");
+      }
+      rv_st(e, dof, 1, "a0");
+      return;
+    }
     if rv_is64(i.a.ty) {
       // pair compare, branchless: less = hi_less | (hi_eq & lo_less)
       let ao: i64 = rv_vreg_off(e, i.a);
@@ -16297,7 +16405,71 @@ fn rv_ins(e: *RVCtx, i: *IRIns) {
       }
       return;
     }
-    // I2F / F2I / F32_F64 / F64_F32: soft-float lands in 0.2.1
+    if i.cast == IRCastKind.CastI2f {
+      // signed int -> float: widen to i64 in (t1,t2), call, store
+      let src32: bool = rv_size_of(i.cast_from) < 8;
+      if src32 {
+        rv_ld(e, sof, 4, true, "t1");
+        bs(e.out, "  srai t2, t1, 31\n");
+        rv_st_pair(e, dof, "t1", "t2");
+      } else {
+        rv_ld_pair(e, sof, "t1", "t2");
+      }
+      // args already in (t1,t2) — move into (a0,a1)
+      bs(e.out, "  mv a0, t1\n  mv a1, t2\n");
+      bs(e.out, cat5("  auipc ra, %hi(", prelude_symbol("__i2f64"), ")\n", "", ""));
+      bs(e.out, cat5("  jalr ra, ra, %lo(", prelude_symbol("__i2f64"), ")\n", "", ""));
+      if i.cast_to == IRType.ItF32 {
+        // narrow through __f64_f32 with the f64 bits already in (a0,a1)
+        bs(e.out, cat5("  auipc ra, %hi(", prelude_symbol("__f64_f32"), ")\n", "", ""));
+        bs(e.out, cat5("  jalr ra, ra, %lo(", prelude_symbol("__f64_f32"), ")\n", "", ""));
+        rv_st(e, dof, 4, "a0");
+      } else {
+        rv_st_pair(e, dof, "a0", "a1");
+      }
+      return;
+    }
+    if i.cast == IRCastKind.CastF2i {
+      if rv_is64(i.dst.ty) {
+        if i.cast_from == IRType.ItF64 {
+          rv_ld_pair(e, sof, "a0", "a1");
+        } else {
+          rv_ld(e, sof, 4, false, "a0");
+          bs(e.out, cat5("  auipc ra, %hi(", prelude_symbol("__f32_f64"), ")\n", "", ""));
+          bs(e.out, cat5("  jalr ra, ra, %lo(", prelude_symbol("__f32_f64"), ")\n", "", ""));
+        }
+        bs(e.out, cat5("  auipc ra, %hi(", prelude_symbol("__f2i64"), ")\n", "", ""));
+        bs(e.out, cat5("  jalr ra, ra, %lo(", prelude_symbol("__f2i64"), ")\n", "", ""));
+        rv_st_pair(e, dof, "a0", "a1");
+      } else {
+        // narrow int targets go through i64 then truncate
+        if i.cast_from == IRType.ItF64 {
+          rv_ld_pair(e, sof, "a0", "a1");
+        } else {
+          rv_ld(e, sof, 4, false, "a0");
+          bs(e.out, cat5("  auipc ra, %hi(", prelude_symbol("__f32_f64"), ")\n", "", ""));
+          bs(e.out, cat5("  jalr ra, ra, %lo(", prelude_symbol("__f32_f64"), ")\n", "", ""));
+        }
+        bs(e.out, cat5("  auipc ra, %hi(", prelude_symbol("__f2i64"), ")\n", "", ""));
+        bs(e.out, cat5("  jalr ra, ra, %lo(", prelude_symbol("__f2i64"), ")\n", "", ""));
+        rv_st(e, dof, 4, "a0");
+      }
+      return;
+    }
+    if i.cast == IRCastKind.CastF32F64 {
+      rv_ld(e, sof, 4, false, "a0");
+      bs(e.out, cat5("  auipc ra, %hi(", prelude_symbol("__f32_f64"), ")\n", "", ""));
+      bs(e.out, cat5("  jalr ra, ra, %lo(", prelude_symbol("__f32_f64"), ")\n", "", ""));
+      rv_st_pair(e, dof, "a0", "a1");
+      return;
+    }
+    if i.cast == IRCastKind.CastF64F32 {
+      rv_ld_pair(e, sof, "a0", "a1");
+      bs(e.out, cat5("  auipc ra, %hi(", prelude_symbol("__f64_f32"), ")\n", "", ""));
+      bs(e.out, cat5("  jalr ra, ra, %lo(", prelude_symbol("__f64_f32"), ")\n", "", ""));
+      rv_st(e, dof, 4, "a0");
+      return;
+    }
     bs(e.out, "  ebreak #901\n");
     return;
   }
@@ -16422,8 +16594,9 @@ fn rv_edge(e: *RVCtx, succ: *IRBlock) {
         if val != null && phi.dst != null {
           let d: i64 = rv_vreg_off(e, phi.dst);
           let s: i64 = rv_vreg_off(e, val);
-          rv_ld(e, s, 4, false, "t1");
-          rv_st(e, d, 4, "t1");
+          // every vreg slot is 8 bytes: copy the whole slot unconditionally
+          rv_ld_pair(e, s, "t1", "t2");
+          rv_st_pair(e, d, "t1", "t2");
         }
         k = len(phi.preds); // the C breaks on the first matching pred
       }

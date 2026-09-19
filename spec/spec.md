@@ -410,9 +410,10 @@ Register allocation starts as spill-everything (every virtual register gets
 a stack slot; each instruction reloads operands); a linear-scan allocator
 replaces it after self-hosting. On `esp32c3`, pointers/`usize`/`isize` are
 32-bit (8-byte slot footprint, low half carries the value), `i64`/`u64` run
-as register pairs over fixed runtime stubs, and floating-point operations
-trap (`ebreak`) until soft-float lands in 0.2.1 — same-size bit moves
-(`usize`↔pointer, f32/f64 bit extraction) are plain copies and work. Structs and arrays are passed by reference
+as register pairs over fixed runtime stubs, and floating-point arithmetic
+is soft-float: pure-integer IEEE-754 helpers in the prelude
+(round-to-nearest-even, overflow to inf, invalid to quiet NaN). Same-size
+bit moves (`usize`↔pointer, f32/f64 bit extraction) are plain copies. Structs and arrays are passed by reference
 to a caller-made temporary (a documented deviation from the C ABI, which
 only matters for `extern` functions — hosted externs in the prelude use
 scalars and pointers only).

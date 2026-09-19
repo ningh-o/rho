@@ -170,3 +170,548 @@ fn __streq(a: string, b: string) -> bool {
   }
   return true;
 }
+
+
+
+// --------------------------------------------------------------- soft float
+// IEEE-754 double arithmetic in pure integer code (RV32IM has no F or D
+// extension). Float values travel as their 64-bit bit patterns; the
+// compiler lowers float IR ops to calls into these functions. Rounding is
+// round-to-nearest-even; overflow goes to inf, division by zero to inf,
+// invalid operations to the quiet NaN 0x7FF8000000000000. f32 arithmetic
+// runs through the f64 core (f32 values are exact in f64; one final
+// rounding on the pack).
+
+fn __fnan() -> u64 {
+  return 0x7FF8000000000000;
+}
+
+fn __f64_is_nan(x: u64) -> bool {
+  return ((x >> 52) & (0x7FF as u64)) == 0x7FF && (x & (0x000FFFFFFFFFFFFF as u64)) != 0;
+}
+
+fn __f64_is_inf(x: u64) -> bool {
+  return ((x >> 52) & (0x7FF as u64)) == 0x7FF && (x & 0x000FFFFFFFFFFFFF) == 0;
+}
+
+fn __f64_is_zero(x: u64) -> bool {
+  return (x & (0x7FFFFFFFFFFFFFFF as u64)) == 0;
+}
+
+// highest set bit position (0..63); 0 for zero
+fn __f64_hb(v: u64) -> i64 {
+  if v == 0 {
+    return 0;
+  }
+  let mut n: i64 = 0;
+  let mut v2: u64 = v;
+  loop {
+    v2 = v2 >> 1;
+    if v2 == 0 {
+      break;
+    }
+    n += 1;
+  }
+  return n;
+}
+
+// unpack: returns the 53-bit mantissa with the implicit bit restored
+// (subnormals keep their raw mantissa, their effective exponent is 1)
+fn __f64_mant(x: u64) -> u64 {
+  let e: i64 = ((x >> 52) & 0x7FF) as i64;
+  let m: u64 = x & 0x000FFFFFFFFFFFFF;
+  if e == 0 {
+    return m;
+  }
+  return m | (0x0010000000000000 as u64);
+}
+
+fn __f64_exp(x: u64) -> i64 {
+  return ((x >> 52) & 0x7FF) as i64;
+}
+
+// add or subtract the two float values exactly in a 128-bit (hi, lo) pair
+// and round. sub = magnitudes subtracted (opposite signs). Keeps the ABI at
+// bool + two 64-bit pairs — the RV32 call convention has only a0-a7, and
+// wider signatures would have their trailing pair arguments dropped.
+fn __faddmag(sub: bool, a: u64, b: u64) -> u64 {
+  let mut sA: u64 = a >> 63;
+  let mut sB: u64 = b >> 63;
+  let mut eA: i64 = __f64_exp(a);
+  let mut eB: i64 = __f64_exp(b);
+  let mut mA: u64 = __f64_mant(a);
+  let mut mB: u64 = __f64_mant(b);
+  if eA == 0 {
+    eA = 1;
+  }
+  if eB == 0 {
+    eB = 1;
+  }
+  // order so that (eA, mA) >= (eB, mB); the result sign follows the larger
+  if eB > eA || (eB == eA && mB > mA) {
+    let te: i64 = eA;
+    eA = eB;
+    eB = te;
+    let tm: u64 = mA;
+    mA = mB;
+    mB = tm;
+    let ts: u64 = sA;
+    sA = sB;
+    sB = ts;
+  }
+  let s: u64 = sA;
+  let shift: i64 = eA - eB;
+  let mut hi: u64 = 0;
+  if shift >= 64 {
+    hi = mA;
+  } else if shift > 0 {
+    hi = mA >> (64 - shift);
+  }
+  let mut lo: u64 = 0;
+  if shift < 64 {
+    lo = mA << shift;
+  }
+  if sub {
+    let before: u64 = lo;
+    lo = lo - mB;
+    if lo > before {
+      hi -= 1;
+    }
+  } else {
+    let before: u64 = lo;
+    lo = lo + mB;
+    if lo < before {
+      hi += 1;
+    }
+  }
+  // exact cancellation: round-to-nearest gives +0
+  if hi == 0 && lo == 0 {
+    return 0;
+  }
+  let bitlen: i64 = if hi != 0 { 65 + __f64_hb(hi) } else { __f64_hb(lo) + 1 };
+  let drop: i64 = bitlen - 53;
+  let mut man: u64 = 0;
+  let mut g: bool = false;
+  let mut r: bool = false;
+  let mut st: bool = false;
+  if drop <= 0 {
+    man = lo << (0 - drop);
+    if hi != 0 {
+      man = man | (hi << (64 + drop));
+    }
+  } else if drop >= 64 {
+    man = hi >> (drop - 64);
+    if drop >= 65 {
+      g = ((hi >> (drop - 65)) & 1) != 0;
+    }
+    if drop >= 66 {
+      r = ((hi >> (drop - 66)) & 1) != 0;
+    }
+    if drop >= 67 {
+      st = (hi & (((1 << (drop - 66)) - 1) as u64)) != 0;
+    }
+  } else {
+    man = (hi << (64 - drop)) | (lo >> drop);
+    if drop >= 1 {
+      g = ((lo >> (drop - 1)) & 1) != 0;
+    }
+    if drop >= 2 {
+      r = ((lo >> (drop - 2)) & 1) != 0;
+    }
+    if drop >= 3 {
+      st = (lo & (((1 << (drop - 2)) - 1) as u64)) != 0;
+    }
+  }
+  // round to nearest even
+  if g && (r || st || (man & 1) != 0) {
+    man += 1;
+    if (man >> 53) != 0 {
+      man = man >> 1;
+      return (s << 63) | (((eA + 1) as u64 & 0x7FF) << 52) | (man & (0x000FFFFFFFFFFFFF as u64));
+    }
+  }
+  let e: i64 = eB + (bitlen - 53);
+  if e >= 2047 {
+    return (s << 63) | 0x7FF0000000000000;
+  }
+  return (s << 63) | ((e as u64 & 0x7FF) << 52) | (man & (0x000FFFFFFFFFFFFF as u64));
+}
+
+fn __fadd64(a: u64, b: u64) -> u64 {
+  if __f64_is_nan(a) || __f64_is_nan(b) {
+    return __fnan();
+  }
+  if __f64_is_inf(a) {
+    if __f64_is_inf(b) && (a >> 63) != (b >> 63) {
+      return __fnan();
+    }
+    return a;
+  }
+  if __f64_is_inf(b) {
+    return b;
+  }
+  if __f64_is_zero(a) && __f64_is_zero(b) {
+    return (a & b) & (0x8000000000000000 as u64); // sign AND: (+0)+(-0) = +0
+  }
+  if __f64_is_zero(a) {
+    return b;
+  }
+  if __f64_is_zero(b) {
+    return a;
+  }
+  let same: bool = (a >> 63) == (b >> 63);
+  return __faddmag(!same, a, b);
+}
+
+fn __fsub64(a: u64, b: u64) -> u64 {
+  return __fadd64(a, (b ^ 0x8000000000000000));
+}
+
+fn __fmul64(a: u64, b: u64) -> u64 {
+  if __f64_is_nan(a) || __f64_is_nan(b) {
+    return __fnan();
+  }
+  let s: u64 = (a >> 63) ^ (b >> 63);
+  let ainf: bool = __f64_is_inf(a);
+  let binf: bool = __f64_is_inf(b);
+  let az: bool = __f64_is_zero(a);
+  let bz: bool = __f64_is_zero(b);
+  if ainf || binf {
+    if az || bz || (ainf && binf && (a >> 63) != (b >> 63)) {
+      return __fnan();
+    }
+    if (ainf && __f64_is_nan(b)) || (binf && __f64_is_nan(a)) {
+      return __fnan();
+    }
+    return (s << 63) | 0x7FF0000000000000;
+  }
+  if az || bz {
+    return s << 63;
+  }
+  let eA: i64 = __f64_exp(a);
+  let eB: i64 = __f64_exp(b);
+  let mut mA: u64 = __f64_mant(a);
+  let mut mB: u64 = __f64_mant(b);
+  if eA == 0 {
+    mA = __f64_mant(a);
+  }
+  // 53x53 -> 106-bit product via 32-bit limbs
+  let a1: u64 = mA >> 32;
+  let a0: u64 = mA & 0xFFFFFFFF;
+  let b1: u64 = mB >> 32;
+  let b0: u64 = mB & 0xFFFFFFFF;
+  let mid: u64 = a1 * b0 + a0 * b1;
+  let mut hi: u64 = a1 * b1;
+  let mut lo: u64 = a0 * b0;
+  let before: u64 = lo;
+  lo = lo + (mid << 32);
+  if lo < before {
+    hi += 1;
+  }
+  hi = hi + (mid >> 32);
+  let bitlen: i64 = if hi != 0 { 65 + __f64_hb(hi) } else { __f64_hb(lo) + 1 };
+  let drop: i64 = bitlen - 53;
+  let mut man: u64 = 0;
+  let mut g: bool = false;
+  let mut r: bool = false;
+  let mut st: bool = false;
+  if drop == 0 {
+    man = lo;
+  } else {
+    man = (hi << (64 - drop)) | (lo >> drop);
+    g = ((lo >> (drop - 1)) & 1 as u64) != 0;
+    if drop >= 2 {
+      r = ((lo >> (drop - 2)) & 1 as u64) != 0;
+    }
+    if drop >= 3 {
+      st = (lo & (((1 << (drop - 2)) - 1) as u64)) != 0;
+    }
+  }
+  if g && (r || st || (man & 1 as u64) != 0) {
+    man += 1;
+    if (man >> 53) != 0 {
+      man = man >> 1;
+      let e2: i64 = eA + eB + bitlen - 1127;
+      if e2 >= 2047 {
+        return (s << 63) | 0x7FF0000000000000;
+      }
+      return (s << 63) | ((e2 as u64 & 0x7FF) << 52) | (man & (0x000FFFFFFFFFFFFF as u64));
+    }
+  }
+  let e: i64 = eA + eB + bitlen - 1128;
+  if e >= 2047 {
+    return (s << 63) | 0x7FF0000000000000;
+  }
+  return (s << 63) | ((e as u64 & 0x7FF) << 52) | (man & (0x000FFFFFFFFFFFFF as u64));
+}
+
+fn __fdiv64(a: u64, b: u64) -> u64 {
+  if __f64_is_nan(a) || __f64_is_nan(b) {
+    return __fnan();
+  }
+  let s: u64 = (a >> 63) ^ (b >> 63);
+  let ainf: bool = __f64_is_inf(a);
+  let binf: bool = __f64_is_inf(b);
+  let az: bool = __f64_is_zero(a);
+  let bz: bool = __f64_is_zero(b);
+  if ainf || binf || az || bz {
+    if (ainf && binf) || (az && bz) {
+      return __fnan();
+    }
+    if ainf {
+      return (s << 63) | 0x7FF0000000000000;
+    }
+    if binf {
+      return s << 63;
+    }
+    if bz {
+      return (s << 63) | 0x7FF0000000000000;
+    }
+    return s << 63;
+  }
+  let eA: i64 = __f64_exp(a);
+  let eB: i64 = __f64_exp(b);
+  let mA: u64 = __f64_mant(a);
+  let mB: u64 = __f64_mant(b);
+  // restoring long division: q = floor(mA*2^57 / mB), 57 quotient bits
+  let mut q: u64 = 0;
+  let mut r: u64 = 0;
+  let mut i: i64 = 0;
+  while i < 110 {
+    let mut bit: u64 = 0;
+    if i < 53 {
+      bit = (mA >> (52 - i)) & 1;
+    }
+    r = r * 2 + bit;
+    if r >= mB {
+      r -= mB;
+      q = q * 2 + 1;
+    } else {
+      q = q * 2;
+    }
+    i += 1;
+  }
+  let bitlen: i64 = __f64_hb(q) + 1;
+  let drop: i64 = bitlen - 53;
+  let man: u64 = q >> drop;
+  let g: bool = ((q >> (drop - 1)) & 1 as u64) != 0;
+  let r2: bool = ((q >> (drop - 2)) & 1 as u64) != 0;
+  let st: bool = ((q & (((1 << (drop - 2)) - 1) as u64)) != 0) || (r != 0);
+  let mut man2: u64 = man;
+  if g && (r2 || st || (man2 & 1 as u64) != 0) {
+    man2 += 1;
+  }
+  let e: i64 = eA - eB + bitlen + 965 + (if man2 >> 53 != 0 { 1 } else { 0 });
+  if man2 >> 53 != 0 {
+    man2 = man2 >> 1;
+  }
+  if e >= 2047 {
+    return (s << 63) | 0x7FF0000000000000;
+  }
+  return (s << 63) | ((e as u64 & 0x7FF) << 52) | (man2 & 0x000FFFFFFFFFFFFF);
+}
+
+fn __feq64(a: u64, b: u64) -> u64 {
+  if __f64_is_nan(a) || __f64_is_nan(b) {
+    return 0;
+  }
+  if a == b {
+    return 1;
+  }
+  if __f64_is_zero(a) && __f64_is_zero(b) {
+    return 1;
+  }
+  return 0;
+}
+
+fn __flt64(a: u64, b: u64) -> u64 {
+  if __f64_is_nan(a) || __f64_is_nan(b) {
+    return 0;
+  }
+  if __f64_is_zero(a) && __f64_is_zero(b) {
+    return 0;
+  }
+  let sa: u64 = a >> 63;
+  let sb: u64 = b >> 63;
+  if sa != sb {
+    if sa == 1 {
+      return 1;
+    }
+    return 0;
+  }
+  if sa == 1 {
+    if a > b {
+      return 1;
+    }
+    return 0;
+  }
+  if a < b {
+      return 1;
+    }
+    return 0;
+}
+
+fn __f2i64(x: u64) -> i64 {
+  // i64::MAX is the largest positive literal; MIN comes from wraparound
+  let maxi: i64 = 9223372036854775807;
+  let mini: i64 = maxi + 1;
+  if __f64_is_nan(x) {
+    return 0;
+  }
+  let s: u64 = x >> 63;
+  let e: i64 = __f64_exp(x);
+  let m: u64 = __f64_mant(x);
+  if __f64_is_inf(x) {
+    if s == 1 {
+      return mini;
+    }
+    return maxi;
+  }
+  if e < 1023 {
+    return 0;
+  }
+  let shift: i64 = e - 1075;
+  let mut mag: u64 = 0;
+  if shift >= 11 {
+    if s == 1 {
+      return mini;
+    }
+    return maxi;
+  }
+  if shift >= 0 {
+    mag = m << shift;
+  } else {
+    mag = m >> (0 - shift);
+  }
+  if s == 1 {
+    return 0 - (mag as i64);
+  }
+  return mag as i64;
+}
+
+fn __i2f64(v: i64) -> u64 {
+  if v == 0 {
+    return 0;
+  }
+  let s: u64 = if v < 0 { 1 } else { 0 };
+  let mut mag: u64 = v as u64;
+  if s == 1 {
+    mag = 0 - mag;
+  }
+  let n: i64 = __f64_hb(mag);
+  let mut e: i64 = 1023 + n;
+  let mut man: u64 = 0;
+  if n >= 53 {
+    let drop: i64 = n - 52;
+    man = mag >> drop;
+    let g: bool = ((mag >> (drop - 1)) & 1 as u64) != 0;
+    let r: bool = drop >= 2 && ((mag >> (drop - 2)) & 1 as u64) != 0;
+    let st: bool = drop >= 2 && (mag & (((1 << (drop - 2)) - 1) as u64)) != 0;
+    if g && (r || st || (man & 1 as u64) != 0) {
+      man += 1;
+      if (man >> 53) != 0 {
+        man = man >> 1;
+        e += 1;
+      }
+    }
+  } else {
+    man = mag << (52 - n);
+  }
+  return (s << 63) | ((e as u64 & 0x7FF) << 52) | (man & (0x000FFFFFFFFFFFFF as u64));
+}
+
+fn __f32_f64(x: u64) -> u64 {
+  let s: u64 = (x >> 31) & 1;
+  let e8: i64 = ((x >> 23) & 0xFF) as i64;
+  let m: u64 = x & (0x7FFFFF as u64);
+  if e8 == 255 {
+    if m != 0 {
+      return __fnan();
+    }
+    return (s << 63) | 0x7FF0000000000000;
+  }
+  if e8 == 0 {
+    if m == 0 {
+      return s << 63;
+    }
+    let mut mm: u64 = m;
+    let mut k: i64 = 0;
+    loop {
+      if (mm >> 23) != 0 {
+        break;
+      }
+      mm = mm << 1;
+      k += 1;
+    }
+    let e11: i64 = 897 - k;
+    return (s << 63) | ((e11 as u64 & 0x7FF) << 52) | ((mm & (0x7FFFFF as u64)) << 29);
+  }
+  return (s << 63) | (((e8 + 896) as u64 & 0x7FF) << 52) | (m << 29);
+}
+
+fn __f64_f32(x: u64) -> u64 {
+  let s: u64 = x >> 63;
+  let e: i64 = __f64_exp(x);
+  let m: u64 = __f64_mant(x);
+  if e == 0x7FF {
+    if (x & (0x000FFFFFFFFFFFFF as u64)) != 0 {
+      return (s << 31) | 0x7F800000 | 0x400000;
+    }
+    return (s << 31) | 0x7F800000;
+  }
+  if e == 0 && m == 0 {
+    return s << 31;
+  }
+  let mut e32: i64 = e - 1023 + 127;
+  if e == 0 {
+    // f64 subnormal: magnitude below every f32 subnormal unless huge m
+    if __f64_hb(m) + (-1074) < -149 + 22 {
+      return s << 31;
+    }
+    e32 = 1;
+  }
+  if e32 >= 255 {
+    return (s << 31) | 0x7F800000;
+  }
+  let mut man: u64 = m >> 29;
+  let g: bool = ((m >> 28) & 1 as u64) != 0;
+  let r: bool = ((m >> 27) & 1 as u64) != 0;
+  let st: bool = (m & (0x7FFFFFF as u64)) != 0;
+  if g && (r || st || (man & 1 as u64) != 0) {
+    man += 1;
+    if man >> 23 != 0 {
+      man = 0;
+      e32 += 1;
+      if e32 >= 255 {
+        return (s << 31) | 0x7F800000;
+      }
+    }
+  }
+  return (s << 31) | ((e32 as u64 & 0xFF) << 23) | (man & 0x7FFFFF);
+}
+
+// f32 arithmetic wrappers: f32 values are exact in f64, so +- and * get one
+// final rounding on the pack; / double-rounds in rare cases (documented)
+fn __fadd32(a: u64, b: u64) -> u64 {
+  return __f64_f32(__fadd64(__f32_f64(a), __f32_f64(b)));
+}
+
+fn __fsub32(a: u64, b: u64) -> u64 {
+  return __f64_f32(__fsub64(__f32_f64(a), __f32_f64(b)));
+}
+
+fn __fmul32(a: u64, b: u64) -> u64 {
+  return __f64_f32(__fmul64(__f32_f64(a), __f32_f64(b)));
+}
+
+fn __fdiv32(a: u64, b: u64) -> u64 {
+  return __f64_f32(__fdiv64(__f32_f64(a), __f32_f64(b)));
+}
+
+fn __feq32(a: u64, b: u64) -> u64 {
+  return __feq64(__f32_f64(a), __f32_f64(b));
+}
+
+fn __flt32(a: u64, b: u64) -> u64 {
+  return __flt64(__f32_f64(a), __f32_f64(b));
+}
