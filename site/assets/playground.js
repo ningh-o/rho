@@ -49,9 +49,9 @@ function armCap(ms, phase) {
     runBtn.disabled = false;
     const seconds = ((performance.now() - capStart) / 1000).toFixed(0);
     showOut(
-      `stopped after ${seconds} s — still ${phaseLabel}. Some programs just run ` +
-        `that long: naive recursion is exponential (fib(100) is ~10^21 calls — ` +
-        `try fib(30); rho's i64 wraps past fib(92)).`,
+      `stopped after ${seconds} s — the program was still ${phaseLabel} and has ` +
+        `been terminated. rho runs programs for as long as they take; if ` +
+        `this surprised you, look for runaway recursion or an unbounded loop.`,
       "err",
     );
     setStatus(`<span class="bad">stopped</span> at the ${phaseLabel === "compiling" ? "compile" : "run"} cap`);
@@ -64,6 +64,7 @@ const hl = document.getElementById("highlight");
 const out = document.getElementById("output");
 const status = document.getElementById("status");
 const runBtn = document.getElementById("run");
+const loadbar = document.getElementById("loadbar");
 const exampleSel = document.getElementById("example");
 const stats = document.getElementById("stats");
 
@@ -133,25 +134,51 @@ async function doRun() {
   worker.postMessage({ id, source: ta.value });
 }
 
+function fmtBytes(n) {
+  return n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.round(n / 1024) + " KB";
+}
+
+function showProgress(loaded, total, done) {
+  loadbar.hidden = false;
+  const fill = loadbar.firstElementChild;
+  if (total) {
+    loadbar.classList.remove("indet");
+    fill.style.width = done ? "100%" : Math.min(99, (loaded / total) * 100) + "%";
+  } else {
+    loadbar.classList.add("indet");
+    fill.style.width = "";
+  }
+  setStatus(
+    `loading the compiler… ${fmtBytes(loaded)}${total ? " / " + fmtBytes(total) : ""}`,
+  );
+}
+
+function hideProgress() {
+  loadbar.hidden = true;
+}
+
 function onWorkerMessage(m) {
+  if (m.kind === "progress") {
+    showProgress(m.loaded, m.total, m.done);
+    return;
+  }
   if (m.kind === "ready") {
+    hideProgress();
     if (!running.current) {
       setStatus(`<span class="dim">ready — press <kbd>⌘</kbd><kbd>↵</kbd> to run</span>`);
     }
     return;
   }
   if (m.kind === "boot-error") {
+    hideProgress();
     setStatus(`<span class="bad">could not load the compiler</span>`);
     showOut(m.stderr, "err");
     return;
   }
   if (m.id !== workerId) return;
-  if (m.kind === "phase" && m.phase === "boot") {
-    setStatus("loading the compiler…");
-    return;
-  }
-  if (m.kind === "phase" && m.phase === "compile") {
-    setStatus("compiling…");
+  if (m.kind === "phase" && (m.phase === "boot" || m.phase === "compile")) {
+    hideProgress(); // the download is over; the rest is compute
+    setStatus(m.phase === "boot" ? "loading the compiler…" : "compiling…");
     return;
   }
   if (m.kind === "phase" && m.phase === "run") {

@@ -7,10 +7,12 @@ import { initCompiler, compile, runProgram } from "./compiler.js";
 // the page warms the worker at load; runs queue behind it in message order
 self.onmessage = async (e) => {
   const msg = e.data;
+  const onProgress = (loaded, total, done) =>
+    postMessage({ kind: "progress", loaded, total, done });
   if (msg.kind === "warm") {
     try {
       postMessage({ kind: "phase", phase: "boot" });
-      await initCompiler();
+      await initCompiler(onProgress);
       postMessage({ kind: "ready" });
     } catch (err) {
       postMessage({ kind: "boot-error", stderr: String(err.message || err) });
@@ -20,7 +22,7 @@ self.onmessage = async (e) => {
   const { id, source } = msg;
   try {
     postMessage({ kind: "phase", id, phase: "boot" });
-    await initCompiler();
+    await initCompiler(onProgress);
     postMessage({ kind: "phase", id, phase: "compile" });
     const compiled = await compile(source);
     if (!compiled.ok) {
