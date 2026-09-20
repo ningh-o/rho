@@ -1,7 +1,14 @@
 # rho (ρ)
 
 A small, hand-forged systems language. One binary toolchain, direct machine
-code emission, reference-counted memory, zero undefined behavior. Targets:
+code emission, reference-counted memory, zero undefined behavior.
+
+**[Try it in the browser](https://ningh-o.github.io/rho/)** — the official
+site runs the real compiler as wasm: a tour through every construct, a
+playground, and the spec. The course lives separately at
+[rho.ningh.org](https://rho.ningh.org).
+
+Targets:
 
 - `wasm32-wasi` — a runnable module, end to end through any WASI runtime;
 - `arm64-mac` — a static, ad-hoc-signed Mach-O built entirely in-tree
