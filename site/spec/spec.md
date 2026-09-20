@@ -183,6 +183,9 @@ artifacts — a tested invariant (corpus builds are compared twice).
   and `eprint` are removed.
 - 0.3.4 — `format(fmt, ...) -> string`: the same desugar pointed at a
   string sink, so a `to_str` body is one format line.
+- 0.4.0 — traits, bounds, and `dyn`: name-satisfied requirements,
+  `[T: Trait]` verified per instantiation, and runtime dispatch through
+  per-trait vtables riding the closure ABI (docs/traits.md).
 - Bootstrap invariant, tested continuously once the mirror catches up
   (0.3.x, see `docs/todo.md`): `boot(self) == self(self)` byte for byte
   (stage2 == stage3), and `boot(corpus) == self(corpus)`.

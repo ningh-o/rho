@@ -14,6 +14,14 @@
 // algorithm the self-hosted compiler uses for its canonical goldens) so
 // the digits are identical on every target, soft-float included.
 
+// The print protocol as a named trait (0.4.0): satisfaction is computed
+// from the method tables, so every primitive's to_str below already
+// implements it, and a user type joins by defining to_str — no impl
+// block needed unless you want the eager check.
+pub trait Show {
+  fn to_str(self) -> string,
+}
+
 pub enum Option[T] {
   Some(T),
   None,
@@ -65,7 +73,7 @@ fn assert(cond: bool) {
   }
 }
 
-fn assert_eq[T](a: T, b: T) {
+fn assert_eq[T: Show](a: T, b: T) {
   if !(a == b) {
     panic(cat(cat("assert_eq failed: ", a.to_str()), cat(" != ", b.to_str())));
   }

@@ -1,5 +1,33 @@
 # todo
 
+## 0.4.0 — traits, bounds, and dyn; the mirror set grows again
+
+Boot-only (design in `docs/traits.md`): `trait`/`impl`/`dyn`/`for`
+keywords, computed satisfaction over the method tables, `[T: Trait]`
+bounds verified per instantiation, TY_DYN fat pointers with dyn shims +
+eager inline vtables, and the prelude's `Show` (its own to_str methods
+satisfy it). Mirror items for the self-hosted compiler, on top of the
+0.3.x/0.3.4 sets below:
+
+1. lex/parse/fmt: the four keywords; trait and impl declarations;
+   `dyn Trait` type syntax; `[T: Bound]` tparams; the EX_DYNBOX node.
+2. checker: SY_TRAIT carriers with ordered requirements; computed
+   satisfaction (method_satisfies over struct/enum/prim tables); the
+   require()/assignment coercion rewriting into EX_DYNBOX; dyn-receiver
+   method resolution (case 4z) with receiver-less signatures; bounds at
+   instantiation; eager impl checks with ownership.
+3. lower: dyn shims (receiver folded into the hidden env), the inline
+   vtable build (immortal block + ADDRC slots — operands BEFORE their
+   stores), the virtual-call path in both the scalar and aggregate
+   entry points, and the TY_DYN value walker (plain count ops — the RC
+   header owns the drop glue).
+4. the corpus file 030 and the diag set d039–d041.
+
+Known follow-up (not a mirror item): memoize vtables in .bss globals —
+a hand-built null-check diamond misdispatched on arm64 when two lived
+in one function; needs an emitter-native shape first.
+
+
 ## 0.3.4 — format: the printf desugar pointed at a string sink
 
 Boot-only (`__fmt_build` joins the prelude sinks; zero placeholders is the

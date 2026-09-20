@@ -1,0 +1,1 @@
+tests/diag/d039_impl_missing_method.rho:10:1: error: `tests/diag/d039_impl_missing_method.rho.P` does not implement `Show`: missing or mismatched `to_str`

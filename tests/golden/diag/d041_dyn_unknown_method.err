@@ -1,0 +1,3 @@
+tests/diag/d041_dyn_unknown_method.rho:17:18: error: trait `Show` has no method `nothing`
+tests/diag/d041_dyn_unknown_method.rho:17:26: error: no method `to_str` for `<error>`
+tests/diag/d041_dyn_unknown_method.rho:17:26: error: argument: expected `string`, found `<error>`

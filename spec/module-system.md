@@ -80,3 +80,11 @@ compiled as one unit: monomorphization and reachability run over the
 whole graph (spec §11), so unused prelude machinery costs nothing. The
 entry point is `fn main() -> i32` in the root module; its return value is
 the exit code.
+
+## Impl ownership
+
+An `impl Trait for Type` block must live in the module that owns the
+trait or the type (the prelude counts as the owner of its traits and
+primitives). A module cannot implement a foreign trait for a foreign
+type — with satisfaction computed from method tables, the rule keeps
+two modules from racing to satisfy the same requirement differently.

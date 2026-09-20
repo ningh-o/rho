@@ -1,0 +1,18 @@
+// an impl that misses a required method is diagnosed
+trait Show {
+  fn to_str(self) -> string,
+}
+
+struct P {
+  n: i32,
+}
+
+impl Show for P {
+  fn wrong_name(self: *P) -> string {
+    return "x";
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}

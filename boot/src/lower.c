@@ -42,6 +42,15 @@ typedef struct LCtx {
 
 static IRVreg *lv_expr(LCtx *c, Expr *e);
 static IRVreg *fconst(LCtx *c, double v, IRType ty);
+static bool is_dyn_virtual_call(Expr *e) {
+  return e->kind == EX_CALL && e->a && e->a->kind == EX_FIELD && e->a->a &&
+         e->a->a->typed && ((Type *)e->a->a->typed)->kind == TY_DYN &&
+         e->a->sym && ((Sym *)e->a->sym)->kind == SY_TRAIT_METHOD;
+}
+// load {vtable, obj}, fetch the slot, call through the closure ABI with
+// the object as the hidden env (i.e. self). `out` (when given) receives
+// an aggregate return directly.
+static IRVreg *dyn_virtual_call(LCtx *c, Expr *e, IRVreg *out);
 static IRVreg *compute_call_value(LCtx *c, Expr *e);
 static IRVreg *call_prelude1(LCtx *c, const char *name, IRVreg *arg0, IRType ret);
 static const char *value_fn_for(Type *t, bool retain);
@@ -511,6 +520,7 @@ static bool ty_is_aggregate(Type *t) {
   switch (t->kind) {
   case TY_STRUCT: case TY_ENUM: case TY_ARRAY: case TY_SLICE: case TY_STRING:
   case TY_FN: // closure pair {code, env}
+  case TY_DYN: // trait-object pair {vtable, obj}
     return true;
   default:
     return false;
@@ -530,6 +540,7 @@ static bool expr_owned(Expr *e) {
   switch (e->kind) {
   case EX_NEW:
   case EX_CLOSURE:
+  case EX_DYNBOX:
     return true;
   case EX_CALL:
     // weak.get() lends the object without taking a count: it is a borrow
@@ -681,6 +692,161 @@ static const char *shim_for(Sym *fn) {
   emit_ret(&cc, rv);
   vec_push(&g_ir_fns, lf);
   return shim_name;
+}
+
+// ------------------------------------------------------------ dyn ------
+//
+// A dyn Trait value is {vtable, obj}. Method calls load the slot and use
+// the closure ABI with the object as the hidden env; the vtable itself is
+// built once per (trait, type) into an immortal heap block and cached in a
+// .bss global — the same stores `new` uses for its header drop glue.
+
+static Sym *dyn_method_on(Type *t, Str name) {
+  if (t->kind == TY_PTR)
+    t = t->elem;
+  if (t->kind != TY_STRUCT && t->kind != TY_ENUM)
+    return NULL;
+  for (size_t i = 0; i < t->rec->methods.n; i++) {
+    Sym *m = t->rec->methods.items[i];
+    if (str_eq(m->name, name))
+      return m;
+  }
+  return NULL;
+}
+
+// the vtable slot for an impl method: signature (args..., env) where env
+// arrives as self — a sibling of shim_for with the receiver folded into
+// the hidden parameter
+static Map g_dyn_shims; // shim symbol -> built marker
+
+static const char *dyn_shim_for(Sym *fn) {
+  const char *shim_name = arena_printf("rho__dshim_%s", sym_symbol(fn));
+  if (map_has(&g_dyn_shims, str_from(shim_name)))
+    return shim_name;
+  map_put(&g_dyn_shims, str_from(shim_name), (void *)1);
+  Type *ft = fn->type; // fn(self, rest...) -> ret
+  Type *ret = ft->ret;
+  bool agg_ret = ret && ty_is_aggregate(ret);
+
+  IRFn *lf = arena_alloc_zeroed(sizeof(IRFn));
+  lf->symbol = shim_name;
+  lf->ret = ret;
+  LCtx cc = {0};
+  cc.fn = lf;
+  if (agg_ret) {
+    lf->returns_aggregate = true;
+    lf->out_slot = new_slot(&cc, type_size(ret), type_align(ret), "out");
+  }
+  lf->entry = new_block(&cc);
+  use_block(&cc, lf->entry);
+
+  Vec args = {0};
+  if (agg_ret) {
+    IRVreg *outp = v_load(&cc, v_slotaddr(&cc, lf->out_slot), IT_PTR);
+    IRArg *a = arena_alloc(sizeof(IRArg));
+    a->vreg = outp;
+    a->ty = NULL;
+    vec_push(&args, a);
+  }
+  // the receiver slot: env arrives LAST in the ABI and is forwarded FIRST
+  IRSlot *env = new_slot(&cc, 8, 8, "env");
+  vec_push(&lf->params, env);
+  vec_push(&lf->param_types, NULL);
+  IRVreg *envv = v_load(&cc, v_slotaddr(&cc, env), IT_PTR);
+  IRArg *sa = arena_alloc(sizeof(IRArg));
+  sa->vreg = envv;
+  sa->ty = ft->params.n ? ft->params.items[0] : NULL;
+  vec_push(&args, sa);
+  for (size_t i = 1; i < ft->params.n; i++) {
+    Type *pt = ft->params.items[i];
+    IRSlot *sl = new_slot(&cc, type_size(pt), type_align(pt), "p");
+    vec_push(&lf->params, sl);
+    vec_push(&lf->param_types, pt);
+    IRVreg *pv = v_load(&cc, v_slotaddr(&cc, sl),
+                        ty_is_aggregate(pt) ? IT_PTR : ir_type_of(pt));
+    IRArg *a = arena_alloc(sizeof(IRArg));
+    a->vreg = pv;
+    a->ty = pt;
+    vec_push(&args, a);
+  }
+  IRIns *call = emit(&cc, IR_CALL);
+  call->callee = sym_symbol(fn);
+  call->args = args;
+  IRVreg *rv = NULL;
+  if (ret && !agg_ret && ret->kind != TY_VOID) {
+    call->dst = new_vreg(&cc, ir_type_of(ret));
+    rv = call->dst;
+  }
+  emit_ret(&cc, rv);
+  vec_push(&g_ir_fns, lf);
+  return shim_name;
+}
+
+// register (or find) the .bss cache global for a (trait, concrete type)
+// vtable; the block itself is materialized lazily at the coercion site
+static const char *vtable_global_for(Type *conc, RecType *tr) {
+  const char *sym = arena_printf("rho__vt$%s$%s", tr->mangled.p ? tr->mangled.p : "?",
+                                 conc->mangled ? conc->mangled : "?");
+  for (size_t i = 0; i < g_ir_globals.n; i++) {
+    IRGlobal *g = g_ir_globals.items[i];
+    if (strcmp(g->symbol, sym) == 0)
+      return sym;
+  }
+  IRGlobal *g = arena_alloc_zeroed(sizeof(IRGlobal));
+  g->symbol = sym;
+  g->size = 8;
+  g->align = 8;
+  vec_push(&g_ir_globals, g);
+  return sym;
+}
+
+// build the vtable inline, in the current block: an immortal heap block
+// whose words are the dyn shims. Eager and branch-free on purpose: the
+// per-target emitters recover control flow from structured shapes, and a
+// hand-built null-check diamond twice in one function misdispatched on
+// arm64 — one small allocation per coercion site is the honest v1 cost;
+// the .bss memoization returns when the emitters grow a shape for it.
+static IRVreg *vtable_ensure(LCtx *c, Type *conc, RecType *tr) {
+  size_t n = tr->methods.n;
+  IRVreg *sz = v_const(c, (uint64_t)(n * 8 + 24), IT_USIZE);
+  IRVreg *blk = call_prelude1(c, "__alloc", sz, IT_PTR);
+  // operands first, stores second: the emitters are straight-line, so a
+  // value computed inside an assignment to i->a after emit() lands BELOW
+  // its use and reads a stale local
+  IRVreg *immortal = v_const(c, (uint64_t)1 << 63, IT_USIZE);
+  IRIns *rc = emit(c, IR_STORE);
+  rc->addr = blk;
+  rc->a = immortal;
+  rc->size = 8;
+  IRVreg *h8 = v_addi(c, blk, 8);
+  IRVreg *zero = v_const(c, 0, IT_USIZE);
+  IRIns *wrc = emit(c, IR_STORE);
+  wrc->addr = h8;
+  wrc->a = zero;
+  wrc->size = 8;
+  IRVreg *h16 = v_addi(c, blk, 16);
+  IRVreg *nullp = v_const(c, 0, IT_PTR);
+  IRIns *dz = emit(c, IR_STORE);
+  dz->addr = h16;
+  dz->a = nullp;
+  dz->size = 8;
+  for (size_t i = 0; i < n; i++) {
+    Sym *req = tr->methods.items[i];
+    Sym *impl = dyn_method_on(conc, req->name);
+    if (!impl)
+      panic_call(c, "internal: trait method has no impl at vtable build");
+    IRIns *la = emit(c, IR_ADDRC);
+    la->dst = new_vreg(c, IT_PTR);
+    la->callee = dyn_shim_for(impl);
+    la->lit = -1;
+    IRVreg *slot_addr = v_addi(c, blk, 24 + (int64_t)i * 8);
+    IRIns *st = emit(c, IR_STORE);
+    st->addr = slot_addr;
+    st->a = la->dst;
+    st->size = 8;
+  }
+  (void)vtable_global_for; // kept for the memoization follow-up
+  return v_addi(c, blk, 24);
 }
 
 // a fn value for a named function: {shim, null env}
@@ -987,6 +1153,7 @@ static const char *value_fn_for(Type *t, bool retain) {
   case TY_ENUM: kindp = "e_"; break;
   case TY_STRUCT: kindp = "r_"; break;
   case TY_FN: kindp = "f_"; break;
+  case TY_DYN: kindp = "y_"; break;
   case TY_WEAK: kindp = "w_"; break;
   default: kindp = "x_"; break;
   }
@@ -1032,6 +1199,15 @@ static void value_walk(LCtx *c, Type *t, IRVreg *addr, bool retain) {
       rc_inc_v(c, e);
     else
       rc_dec_v(c, e);
+    return;
+  }
+  case TY_DYN: {
+    // the object's RC header carries its own drop glue — plain count ops
+    IRVreg *o = v_load(c, v_addi(c, addr, 8), IT_PTR);
+    if (retain)
+      rc_inc_v(c, o);
+    else
+      rc_dec_v(c, o);
     return;
   }
   case TY_SLICE:
@@ -1775,6 +1951,28 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
     s2->size = 8;
     return addr;
   }
+  case EX_DYNBOX: {
+    IRVreg *obj = lv_expr(c, e->a);
+    bool owned = expr_owned(e->a);
+    Type *boxed = (Type *)e->a->typed; // *T
+    IRVreg *vt = vtable_ensure(c, boxed->elem, ((Type *)e->typed)->rec);
+    IRSlot *tmp = new_slot(c, 16, 8, "dynval");
+    IRVreg *addr = v_slotaddr(c, tmp);
+    IRVreg *obj_addr = v_addi(c, addr, 8); // operands before their stores
+    IRIns *s1 = emit(c, IR_STORE);
+    s1->addr = addr;
+    s1->a = vt;
+    s1->size = 8;
+    IRIns *s2 = emit(c, IR_STORE);
+    s2->addr = obj_addr;
+    s2->a = obj;
+    s2->size = 8;
+    // the box owns one count on the object: borrowed operands get a +1,
+    // owned producers hand over their single count
+    if (!owned)
+      rc_inc_v(c, obj);
+    return addr;
+  }
   case EX_MAKE:
     if (t && ty_is_aggregate(t))
       return compute_addr(c, e);
@@ -2335,6 +2533,74 @@ static IRVreg *lower_enum_ctor(LCtx *c, Expr *e, IRVreg *dest) {
   return dest;
 }
 
+static IRVreg *dyn_virtual_call(LCtx *c, Expr *e, IRVreg *out_given) {
+  Type *recv_t = (Type *)e->a->a->typed;
+  Sym *csym = e->a->sym;
+  IRVreg *fat = lv_expr(c, e->a->a); // the RECEIVER, not the field node
+  IRVreg *vt = v_load(c, fat, IT_PTR);
+  IRVreg *obj = v_load(c, v_addi(c, fat, 8), IT_PTR);
+  int slot = 0;
+  for (size_t i = 0; i < recv_t->rec->methods.n; i++) {
+    if (recv_t->rec->methods.items[i] == csym) {
+      slot = (int)i;
+      break;
+    }
+  }
+  IRVreg *code = v_load(c, v_addi(c, vt, slot * 8), IT_PTR);
+  Type *ft = csym->type; // fn(args...) -> ret — no receiver
+  Type *ret = ft->ret;
+  bool agg = ret && ty_is_aggregate(ret);
+  Vec args = {0};
+  IRVreg *out = out_given;
+  if (agg) {
+    if (!out) {
+      IRSlot *tmp = new_slot(c, type_size(ret), type_align(ret), "out");
+      out = v_slotaddr(c, tmp);
+    }
+    IRArg *a = arena_alloc(sizeof(IRArg));
+    a->vreg = out;
+    a->ty = NULL;
+    vec_push(&args, a);
+  }
+  Vec owned_args = {0};
+  Vec owned_slots = {0};
+  for (size_t i = 0; i < e->args.n && i < ft->params.n; i++) {
+    Expr *arg = e->args.items[i];
+    Type *pt = ft->params.items[i];
+    IRArg *a = arena_alloc(sizeof(IRArg));
+    a->vreg = lv_expr(c, arg);
+    a->ty = pt;
+    vec_push(&args, a);
+    if (pt && ty_is_managed(pt) && expr_owned(arg)) {
+      vec_push(&owned_args, arg);
+      vec_push(&owned_slots, (void *)(long)(args.n - 1));
+    }
+  }
+  IRArg *ea = arena_alloc(sizeof(IRArg));
+  ea->vreg = obj;
+  ea->ty = NULL;
+  vec_push(&args, ea); // the object rides as env, i.e. self
+  IRIns *call = emit(c, IR_CALL);
+  call->callee_vreg = code;
+  call->args = args;
+  for (size_t i = 0; i < owned_args.n; i++) {
+    Expr *arg = owned_args.items[i];
+    Type *at = arg->typed;
+    IRVreg *pv = ((IRArg *)args.items[(long)owned_slots.items[i]])->vreg;
+    if (ty_is_aggregate(at))
+      release_addr(c, at, pv);
+    else
+      rc_dec_v(c, pv);
+  }
+  if (agg)
+    return out;
+  if (ret && ret->kind != TY_VOID) {
+    call->dst = new_vreg(c, ir_type_of(ret));
+    return call->dst;
+  }
+  return v_const(c, 0, IT_PTR);
+}
+
 static IRVreg *compute_call_value(LCtx *c, Expr *e) {
   // builtins
   if (e->a->kind == EX_NAME && str_eq_c(e->a->sv, "len")) {
@@ -2463,6 +2729,10 @@ static IRVreg *compute_call_value(LCtx *c, Expr *e) {
     IRSlot *tmp = new_slot(c, type_size(et), type_align(et), "enumval");
     return lower_enum_ctor(c, e, v_slotaddr(c, tmp));
   }
+  // dyn virtual call: detected by the RECEIVER's type + the requirement
+  // sym — the callee field itself carries no type
+  if (is_dyn_virtual_call(e))
+    return dyn_virtual_call(c, e, NULL);
   // closure-value call: load {code, env} and call code(args..., env)
   Type *callee_t = e->a->typed;
   Sym *csym = e->a->sym;
@@ -2569,6 +2839,10 @@ static void lv_agg(LCtx *c, Expr *e, IRVreg *dest) {
     }
     if (is_variant_ctor(e)) {
       lower_enum_ctor(c, e, dest);
+      return;
+    }
+    if (is_dyn_virtual_call(e)) {
+      dyn_virtual_call(c, e, dest); // the string lands directly in dest
       return;
     }
     Sym *fn = e->a->sym;
@@ -2956,6 +3230,7 @@ static void lower_static(Sym *sym) {
 }
 
 void lower_program(void) {
+  g_dyn_shims = (Map){0}; // dyn shims belong to this program only
   g_ir_fns = (Vec){0};
   g_ir_globals = (Vec){0};
   // per-compile caches: stale symbols would point at previous compiles'

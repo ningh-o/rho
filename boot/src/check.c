@@ -77,7 +77,7 @@ bool ty_is_managed(Type *t) {
   // a pointer is reference-counted exactly when it points at a `new` object
   case TY_PTR:
     return t->elem && (t->elem->kind == TY_STRUCT || t->elem->kind == TY_ENUM);
-  case TY_WEAK: case TY_SLICE: case TY_STRING: case TY_FN:
+  case TY_WEAK: case TY_SLICE: case TY_STRING: case TY_FN: case TY_DYN:
     return true;
   case TY_ARRAY: return ty_is_managed(t->elem);
   case TY_STRUCT:
@@ -220,6 +220,9 @@ static Sym *prim_method_find(Type *prim, Str name) {
   }
   return NULL;
 }
+
+static Map g_dyn_types; // trait mangled Str -> the interned TY_DYN
+static Type *dyn_type_for(Sym *trait_sym);
 
 static Type *ty_param_(char *name) {
   Type *t = ty_newk(TY_PARAM);
@@ -466,6 +469,8 @@ static Decl *clone_fn_decl(Decl *d) {
   c->body = clone_ptr_vec(&d->body, (void *(*)(void *))clone_stmt);
   c->is_method = d->is_method;
   c->recv = d->recv;
+  c->tparams = d->tparams;
+  c->tparam_bounds = d->tparam_bounds;
   return c;
 }
 
@@ -626,6 +631,44 @@ static Str read_file_or_exit(Str path) {
   return str_from_len(buf, (size_t)n);
 }
 
+// impl methods become ordinary module methods keyed `Type.name`, with
+// recv synthesized from the impl target so every downstream path (phase 2
+// attach, fmt, dump) treats them like hand-written `fn Type.m` decls
+static void register_impl_methods(Module *m, Decl *d) {
+  TypeAst *tgt = d->target;
+  while (tgt && tgt->kind == TA_PTR)
+    tgt = tgt->elem;
+  if (!tgt || tgt->kind != TA_NAMED || tgt->path.n != 1) {
+    err_at(d->file, d->line, d->col,
+           "impl targets a named type (module-qualified or local)");
+    return;
+  }
+  const char *tname = tgt->path.items[0];
+  for (size_t i = 0; i < d->decls.n; i++) {
+    Decl *md = d->decls.items[i];
+    md->recv = str_from(tname);
+    Sym *sym = arena_alloc_zeroed(sizeof(Sym));
+    sym->kind = SY_FN;
+    sym->name = md->name;
+    sym->decl = md;
+    sym->owner = m;
+    Str key = str_from(arena_printf("%s.%.*s", tname, (int)md->name.n, md->name.p));
+    if (map_has(&m->syms, key)) {
+      err_at(md->file, md->line, md->col, "duplicate method `%s`", str_to_c(key));
+      continue;
+    }
+    map_put(&m->syms, key, sym);
+  }
+  // the impl itself becomes a symbol so phase 2 runs the eager
+  // satisfaction check once all types exist; keyed to avoid collisions
+  Sym *isym = arena_alloc_zeroed(sizeof(Sym));
+  isym->kind = SY_IMPL;
+  isym->name = str_from(arena_printf("impl$%.*s$%s", (int)d->name.n, d->name.p, tname));
+  isym->decl = d;
+  isym->owner = m;
+  map_put(&m->syms, isym->name, isym);
+}
+
 static Module *load_module(Str path, Str ns, bool is_prelude) {
   Module *existing = map_get(&modules_by_path, path);
   if (existing)
@@ -665,6 +708,10 @@ static Module *load_module(Str path, Str ns, bool is_prelude) {
         map_put(&m->syms, ns_name, sym);
       continue;
     }
+    if (d->kind == DK_IMPL) {
+      register_impl_methods(m, d);
+      continue;
+    }
     Sym *sym = arena_alloc_zeroed(sizeof(Sym));
     switch (d->kind) {
     case DK_FN: sym->kind = SY_FN; break;
@@ -673,6 +720,7 @@ static Module *load_module(Str path, Str ns, bool is_prelude) {
     case DK_ENUM: sym->kind = SY_ENUM; break;
     case DK_STATIC: sym->kind = SY_STATIC; break;
     case DK_CONST: sym->kind = SY_CONST; break;
+    case DK_TRAIT: sym->kind = SY_TRAIT; break;
     default: continue;
     }
     sym->name = d->name;
@@ -715,6 +763,7 @@ void check_reset(void) {
   g_instantiated = (Map){0};
   g_instantiation_depth = 0;
   g_prim_methods = (Map){0};
+  g_dyn_types = (Map){0}; // trait carriers die with their program
   g_inst_anchor_file = (Str){0};
   g_inst_anchor_note = NULL;
 }
@@ -746,6 +795,10 @@ void prelude_init(void) {
     Decl *d = root->decls.items[i];
     if (d->kind == DK_USE)
       continue;
+    if (d->kind == DK_IMPL) {
+      register_impl_methods(m, d);
+      continue;
+    }
     Sym *sym = arena_alloc_zeroed(sizeof(Sym));
     switch (d->kind) {
     case DK_FN: sym->kind = SY_FN; break;
@@ -754,6 +807,7 @@ void prelude_init(void) {
     case DK_ENUM: sym->kind = SY_ENUM; break;
     case DK_STATIC: sym->kind = SY_STATIC; break;
     case DK_CONST: sym->kind = SY_CONST; break;
+    case DK_TRAIT: sym->kind = SY_TRAIT; break;
     default: continue;
     }
     sym->name = d->name;
@@ -990,6 +1044,33 @@ static Type *resolve_type_in_module(Module *m, TypeAst *ta) {
     result = named_type(sym, mod->module, ta);
     break;
   }
+  case TA_DYN: {
+    Str last = str_from(ta->path.items[ta->path.n - 1]);
+    Sym *tsym = map_get(&m->syms, last);
+    if (!tsym || tsym->kind != SY_TRAIT) {
+      if (prelude_module && prelude_module != m) {
+        Sym *ps = map_get(&prelude_module->syms, last);
+        if (ps && ps->kind == SY_TRAIT)
+          tsym = ps;
+      }
+    }
+    if (!tsym || tsym->kind != SY_TRAIT) {
+      err_at(ta->file, ta->line, ta->col, "unknown trait `%s`", str_to_c(last));
+      break;
+    }
+    if (ta->path.n == 2) {
+      Str ns = str_from(ta->path.items[0]);
+      Sym *mod = map_get(&m->syms, ns);
+      if (!mod || mod->kind != SY_MODULE ||
+          !map_get(&((Module *)mod->module)->syms, last)) {
+        err_at(ta->file, ta->line, ta->col, "unknown trait `%s` in module `%s`",
+               str_to_c(last), str_to_c(ns));
+        break;
+      }
+    }
+    result = dyn_type_for(tsym);
+    break;
+  }
   case TA_FN: {
     Vec ps = {0};
     for (size_t i = 0; i < ta->params.n; i++)
@@ -1117,6 +1198,86 @@ CV const_eval(Expr *e, Module *m) {
   return r;
 }
 
+// ------------------------------------------------------------ traits ---
+
+// The dyn type is interned per trait (ty_eq is pointer equality): one
+// Type per trait carrier, mangled `dyn$Name`.
+static Type *dyn_type_for_impl(Sym *trait_sym) {
+  RecType *rec = (RecType *)trait_sym->trait_rec;
+  if (!rec)
+    return ty_err_;
+  Type *hit = map_get(&g_dyn_types, rec->mangled);
+  if (hit)
+    return hit;
+  Type *t = ty_newk(TY_DYN);
+  t->rec = rec;
+  t->mangled = arena_printf("dyn$%.*s", (int)rec->mangled.n, rec->mangled.p);
+  map_put(&g_dyn_types, rec->mangled, t);
+  return t;
+}
+static Type *dyn_type_for(Sym *trait_sym) { return dyn_type_for_impl(trait_sym); }
+
+// one method on `t` by name: struct/enum method tables (template methods
+// included) or the global primitive table
+static Sym *method_on_type(Type *t, Str name) {
+  if (!t)
+    return NULL;
+  if (t->kind == TY_PTR)
+    t = t->elem;
+  if (t->kind == TY_STRUCT || t->kind == TY_ENUM) {
+    for (size_t i = 0; i < t->rec->methods.n; i++) {
+      Sym *m = t->rec->methods.items[i];
+      if (str_eq(m->name, name))
+        return m;
+    }
+    if (!t->rec->is_template && t->rec->decl->templ) {
+      RecType *tmpl = t->rec->decl->templ;
+      for (size_t i = 0; i < tmpl->methods.n; i++) {
+        Sym *m = tmpl->methods.items[i];
+        if (str_eq(m->name, name))
+          return m;
+      }
+    }
+    return NULL;
+  }
+  if (t->kind == TY_INT_LIT)
+    t = ty_prim(PRIM_I32);
+  else if (t->kind == TY_FLOAT_LIT)
+    t = ty_prim(PRIM_F64);
+  if (ty_is_primitive(t))
+    return prim_method_find(t, name);
+  return NULL;
+}
+
+// does `m` satisfy the requirement `req`? receiver aside, the signatures
+// must agree exactly (param count, each ty_eq, return ty_eq)
+static bool method_satisfies(Sym *m, Sym *req) {
+  Type *mt = m->type;     // fn(self, rest...) -> R
+  Type *rt = req->type;   // fn(rest...) -> R (receiver implicit)
+  if (!mt || !rt || mt->kind != TY_FN || rt->kind != TY_FN)
+    return false;
+  if (mt->params.n != rt->params.n + 1)
+    return false;
+  for (size_t i = 0; i < rt->params.n; i++)
+    if (mt->params.items[i + 1] != rt->params.items[i])
+      return false;
+  return mt->ret == rt->ret;
+}
+
+// the whole satisfaction relation, computed from the method tables
+static bool trait_satisfied(RecType *tr, Type *t, Str *missing) {
+  for (size_t i = 0; i < tr->methods.n; i++) {
+    Sym *req = tr->methods.items[i];
+    Sym *m = method_on_type(t, req->name);
+    if (!m || !method_satisfies(m, req)) {
+      if (missing)
+        *missing = req->name;
+      return false;
+    }
+  }
+  return true;
+}
+
 // ============================================================ checking ======
 
 static int next_local_id;
@@ -1137,8 +1298,41 @@ static bool types_compatible(Type *got, Type *expected) {
   return ty_eq(got, expected);
 }
 
+// *T -> dyn Trait, in place: the expr node becomes an EX_DYNBOX wrapping
+// a shallow copy of itself, so every caller holding the pointer sees the
+// box. Runs only where an expected type is known — require() and the
+// assignment gate.
+static bool ty_is_or_has_err(Type *t);
+static bool try_dyn_coerce(Expr *e, Type *got, Type *expected) {
+  if (!e || !expected || expected->kind != TY_DYN || !got)
+    return false;
+  if (got->kind != TY_PTR || !got->elem || got->elem->kind != TY_STRUCT)
+    return false; // dyn rides new-allocated struct pointers only
+  Str missing;
+  if (!trait_satisfied(expected->rec, got->elem, &missing)) {
+    ERR(e, "`%s` does not implement `%s`: missing or mismatched `%s`",
+        ty_name(got->elem), str_to_c(expected->rec->mangled), str_to_c(missing));
+    e->typed = ty_err_;
+    return true; // handled (as an error) — don't double-report below
+  }
+  Expr *inner = arena_alloc(sizeof(Expr));
+  *inner = *e; // shallow: children move with it
+  e->kind = EX_DYNBOX;
+  e->a = inner;
+  e->b = NULL;
+  e->args = (Vec){0};
+  e->arg_names = (Vec){0};
+  e->typed = expected;
+  return true;
+}
+
 static void require(Type *got, Type *expected, Expr *e, const char *what) {
   got = adapt_literal(got, expected);
+  if (e && e->kind != EX_DYNBOX && expected && expected->kind == TY_DYN &&
+      got->kind != TY_DYN && !ty_is_or_has_err(got)) {
+    if (try_dyn_coerce(e, got, expected))
+      return; // rewritten in place (or already diagnosed inside)
+  }
   e->typed = got;
   if (!types_compatible(got, expected))
     ERR(e, "%s: expected `%s`, found `%s`", what, ty_name(expected), ty_name(got));
@@ -1443,6 +1637,8 @@ static Type *check_expr(Expr *e, Type *expected) {
     return check_field_access(e, expected);
   case EX_CALL:
     return check_call(e, expected);
+  case EX_DYNBOX:
+    return e->typed ? e->typed : ty_err_;
   case EX_NEW:
     return check_new(e);
   case EX_IF: {
@@ -1880,6 +2076,28 @@ static CallTarget resolve_callee(Expr *callee) {
     }
     // 4) method call: `receiver.name(...)` — receiver typed by now?
     Type *bt = check_expr(callee->a, NULL);
+    // 4z) dyn receiver: the name must be one of the trait's requirements;
+    // the callee sym is the requirement itself (SY_TRAIT_METHOD) and the
+    // receiver stays the fat value — lowering emits the virtual call
+    if (bt && bt->kind == TY_DYN) {
+      RecType *tr = bt->rec;
+      for (size_t i = 0; i < tr->methods.n; i++) {
+        Sym *m = tr->methods.items[i];
+        if (str_eq(m->name, callee->sv)) {
+          ct.kind = CT_FN;
+          ct.sym = m;
+          ct.fn_type = m->type;
+          ct.is_method = true;
+          callee->sym = m;
+          callee->typed = m->type->ret;
+          callee->a->typed = bt;
+          return ct;
+        }
+      }
+      ERR(callee, "trait `%s` has no method `%s`", str_to_c(tr->mangled),
+          str_to_c(callee->sv));
+      return ct;
+    }
     Type *rec_t = deref_to_struct(bt);
     if (rec_t) {
       RecType *rec = rec_t->rec;
@@ -2460,7 +2678,20 @@ static Type *check_call(Expr *e, Type *expected) {
         "`...` spread needs a variadic parameter to fill");
   (void)0;
   size_t first_arg = 0;
-  if (ct.is_method) {
+  // a dyn call's signature already excludes the receiver — the virtual
+  // call passes the object as the hidden env, so args align with params
+  bool dyn_call = ct.sym && ct.sym->kind == SY_TRAIT_METHOD;
+  if (ct.is_method && dyn_call) {
+    if (!variadic || spread) {
+      if (e->args.n != nparams)
+        ERR(e, "method takes %zu arguments, got %zu", nparams, e->args.n);
+    } else {
+      if (e->args.n < nparams)
+        ERR(e, "method takes at least %zu arguments, got %zu", nparams, e->args.n);
+    }
+    if (variadic) // fall into the element-wise checks below
+      first_arg = 0;
+  } else if (ct.is_method) {
     if (!variadic || spread) {
       if (e->args.n + 1 != nparams)
         ERR(e, "method takes %zu arguments, got %zu", nparams - 1, e->args.n);
@@ -2808,6 +3039,11 @@ void check_stmt(Stmt *s) {
       }
     } else {
       value = adapt_literal(check_expr(s->b, target), target);
+      if (value != target && target->kind == TY_DYN && value->kind != TY_DYN &&
+          !ty_is_or_has_err(value)) {
+        try_dyn_coerce(s->b, value, target);
+        value = target;
+      }
       s->b->typed = value;
       if (!ty_eq(target, value)) {
         ERR(s, "cannot assign `%s` to `%s`", ty_name(value), ty_name(target));
@@ -3022,6 +3258,57 @@ static void resolve_sym_type(Sym *sym) {
   Map *saved_env = g_tenv;
   cur_module = sym->owner;
   switch (sym->kind) {
+  case SY_TRAIT: {
+    // the carrier: methods are the ordered requirement list; the order IS
+    // the vtable layout. Method types exclude the receiver — that is the
+    // signature dyn calls and impl checks agree on.
+    RecType *rec = arena_alloc_zeroed(sizeof(RecType));
+    rec->decl = d;
+    rec->owner = sym->owner;
+    rec->is_trait = true;
+    rec->mangled = str_from(arena_printf("%.*s", (int)d->name.n, d->name.p));
+    sym->trait_rec = rec;
+    sym->type = ty_err_; // a trait is not a value type; dyn_type_for builds it
+    for (size_t i = 0; i < d->decls.n; i++) {
+      Decl *md = d->decls.items[i];
+      Sym *ms = arena_alloc_zeroed(sizeof(Sym));
+      ms->kind = SY_TRAIT_METHOD;
+      ms->name = md->name;
+      ms->decl = md;
+      ms->owner = sym->owner;
+      Vec ps = {0};
+      for (size_t k = 1; k < md->params.n; k++) // skip the receiver
+        vec_push(&ps, resolve_type_in_module((Module *)sym->owner,
+                                             ((Param *)md->params.items[k])->ty));
+      Type *ret = md->ret ? resolve_type_in_module((Module *)sym->owner, md->ret)
+                          : ty_void_;
+      ms->type = ty_fn(ps, ret);
+      vec_push(&rec->methods, ms);
+    }
+    break;
+  }
+  case SY_IMPL: {
+    // eager satisfaction: the impl block names the pair, so a missing or
+    // mismatched method is an error HERE, anchored in the impl itself
+    Sym *tsym = map_get(&((Module *)sym->owner)->syms, d->name);
+    if (!tsym || tsym->kind != SY_TRAIT) {
+      if (prelude_module)
+        tsym = map_get(&prelude_module->syms, d->name);
+    }
+    if (!tsym || tsym->kind != SY_TRAIT) {
+      err_at(d->file, d->line, d->col, "unknown trait `%s` in impl",
+             str_to_c(d->name));
+      break;
+    }
+    Type *tt = resolve_type_in_module((Module *)sym->owner, d->target);
+    Str missing;
+    if (!trait_satisfied((RecType *)tsym->trait_rec, tt, &missing)) {
+      err_at(d->file, d->line, d->col,
+             "`%s` does not implement `%s`: missing or mismatched `%s`",
+             ty_name(tt), str_to_c(d->name), str_to_c(missing));
+    }
+    break;
+  }
   case SY_FN:
   case SY_EXTERN: {
     Vec ps = {0};
@@ -3029,7 +3316,8 @@ static void resolve_sym_type(Sym *sym) {
       fprintf(stderr, "[res] %s recv=%.*s tparams=%u is_self=%u\n", str_to_c(sym->name),
               (int)d->recv.n, d->recv.p ? d->recv.p : "", (unsigned)d->tparams.n,
               (unsigned)(d->params.n ? ((Param *)d->params.items[0])->is_self : 0));
-    if (d->tparams.n) {
+    if (d->tparams.n && !d->tenv) {
+      // clones carry tparams for bounds checking but own a concrete env
       g_tenv = template_env_of(d);
       d->templated = true;
     }
@@ -3186,6 +3474,10 @@ int check_module(Decl *module) {
           map_put(&m->syms, ns_name, sym);
         continue;
       }
+      if (d->kind == DK_IMPL) {
+        register_impl_methods(m, d);
+        continue;
+      }
       Sym *sym = arena_alloc_zeroed(sizeof(Sym));
       switch (d->kind) {
       case DK_FN: sym->kind = SY_FN; break;
@@ -3194,6 +3486,7 @@ int check_module(Decl *module) {
       case DK_ENUM: sym->kind = SY_ENUM; break;
       case DK_STATIC: sym->kind = SY_STATIC; break;
       case DK_CONST: sym->kind = SY_CONST; break;
+      case DK_TRAIT: sym->kind = SY_TRAIT; break;
       default: continue;
       }
       sym->name = d->name;
@@ -3249,6 +3542,46 @@ int check_module(Decl *module) {
     Sym *sym = g_instantiations.items[wl];
     Map *saved_env = g_tenv;
     g_tenv = (Map *)sym->decl->tenv;
+    // bounds: each `[T: Trait]` is verified against the concrete type this
+    // clone was instantiated with, anchored at the call site
+    {
+      Decl *cd = sym->decl;
+      for (size_t bi = 0; bi < cd->tparams.n && bi < cd->tparam_bounds.n; bi++) {
+        TypeAst *ba = cd->tparam_bounds.items[bi];
+        if (!ba)
+          continue;
+        // a bound is written as the bare trait name — resolve it as a
+        // trait, not through the general type path (which only knows
+        // structs and enums)
+        RecType *tr = NULL;
+        if (ba->kind == TA_NAMED && ba->path.n == 1) {
+          Str bname = str_from(ba->path.items[0]);
+          Sym *tsym = map_get(&((Module *)sym->owner)->syms, bname);
+          if (!tsym && prelude_module)
+            tsym = map_get(&prelude_module->syms, bname);
+          if (tsym && tsym->kind == SY_TRAIT)
+            tr = (RecType *)tsym->trait_rec;
+        } else if (ba->kind == TA_DYN) {
+          Str bname = str_from(ba->path.items[ba->path.n - 1]);
+          Sym *tsym = map_get(&((Module *)sym->owner)->syms, bname);
+          if (!tsym && prelude_module)
+            tsym = map_get(&prelude_module->syms, bname);
+          if (tsym && tsym->kind == SY_TRAIT)
+            tr = (RecType *)tsym->trait_rec;
+        }
+        if (!tr)
+          continue;
+        Type *conc = map_get(g_tenv, str_from(cd->tparams.items[bi]));
+        if (!conc || conc->kind == TY_PARAM)
+          continue;
+        Str missing;
+        if (!trait_satisfied(tr, conc, &missing))
+          err_at(sym->decl->inst_site_file.p ? sym->decl->inst_site_file : str_from(""),
+                 sym->decl->inst_site_line, sym->decl->inst_site_col,
+                 "`%s` does not implement `%s`: missing or mismatched `%s`",
+                 ty_name(conc), str_to_c(tr->mangled), str_to_c(missing));
+      }
+    }
     bool anchored = sym->decl->inst_pretty.p != NULL;
     if (anchored) {
       g_inst_anchor_file = sym->decl->inst_site_file;
@@ -3332,6 +3665,7 @@ int64_t type_align(Type *t) {
   case TY_I64: case TY_U64: case TY_F64: case TY_ISIZE: case TY_USIZE:
     return 8;
   case TY_PTR: case TY_WEAK: case TY_SLICE: case TY_STRING: case TY_FN:
+  case TY_DYN:
     return 8;
   case TY_ARRAY: return type_align(t->elem);
   case TY_STRUCT: case TY_ENUM:
@@ -3354,6 +3688,7 @@ int64_t type_size(Type *t) {
   case TY_PTR: case TY_WEAK: return 8;
   case TY_SLICE: case TY_STRING: return 24; // {buf, ptr, len}
   case TY_FN: return 16;                    // {code, env}
+  case TY_DYN: return 16;                   // {vtable, obj}
   case TY_ARRAY: return (int64_t)t->len * type_size(t->elem);
   case TY_STRUCT: case TY_ENUM:
     layout_rec(t->rec);

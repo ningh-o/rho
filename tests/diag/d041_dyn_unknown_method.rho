@@ -1,0 +1,19 @@
+// calling a method the trait does not require is diagnosed
+trait Show {
+  fn to_str(self) -> string,
+}
+
+struct P {
+  n: i32,
+}
+
+fn P.to_str(self: *P) -> string {
+  return "p";
+}
+
+fn main() -> i32 {
+  let p = new P { n: 1 };
+  let d: dyn Show = p;
+  printf("{}", d.nothing());
+  return 0;
+}

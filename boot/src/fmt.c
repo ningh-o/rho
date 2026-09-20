@@ -74,6 +74,14 @@ static void f_type(SB *sb, TypeAst *t) {
     }
     f_type(sb, t->elem);
     break;
+  case TA_DYN:
+    sb_append_c(sb, "dyn ");
+    for (size_t i = 0; i < t->path.n; i++) {
+      if (i)
+        sb_push(sb, '.');
+      sb_append_c(sb, t->path.items[i]);
+    }
+    break;
   case TA_PTR:
     sb_push(sb, '*');
     f_type(sb, t->elem);
@@ -194,6 +202,9 @@ static void f_expr(SB *sb, Expr *e, int parent_bp) {
     f_expr(sb, e->a, 13);
     sb_append_c(sb, " as ");
     f_type(sb, e->ty);
+    break;
+  case EX_DYNBOX: // a coercion the checker synthesized; print the operand
+    f_expr(sb, e->a, 13);
     break;
   case EX_NEW:
     sb_append_c(sb, "new ");
@@ -472,7 +483,7 @@ static void f_pre(SB *sb, Vec *pre) {
   }
 }
 
-static void f_tparams(SB *sb, Vec *tparams) {
+static void f_tparams(SB *sb, Vec *tparams, Vec *bounds) {
   if (!tparams || tparams->n == 0)
     return;
   sb_push(sb, '[');
@@ -480,6 +491,10 @@ static void f_tparams(SB *sb, Vec *tparams) {
     if (i)
       sb_append_c(sb, ", ");
     sb_append_c(sb, tparams->items[i]);
+    if (bounds && i < bounds->n && bounds->items[i]) {
+      sb_append_c(sb, ": ");
+      f_type(sb, bounds->items[i]);
+    }
   }
   sb_push(sb, ']');
 }
@@ -491,8 +506,10 @@ static void f_params(SB *sb, Vec *params) {
     if (i)
       sb_append_c(sb, ", ");
     sb_append(sb, pa->name);
-    sb_append_c(sb, ": ");
-    f_type(sb, pa->ty);
+    if (pa->ty) { // a trait requirement's receiver has no type yet
+      sb_append_c(sb, ": ");
+      f_type(sb, pa->ty);
+    }
     if (pa->is_variadic)
       sb_append_c(sb, "...");
   }
@@ -530,7 +547,7 @@ static void f_decl(SB *sb, Decl *d) {
       sb_push(sb, '.');
     }
     sb_append(sb, d->name);
-    f_tparams(sb, &d->tparams);
+    f_tparams(sb, &d->tparams, &d->tparam_bounds);
     f_params(sb, &d->params);
     if (d->ret) {
       sb_append_c(sb, " -> ");
@@ -543,12 +560,65 @@ static void f_decl(SB *sb, Decl *d) {
     f_line(sb);
     sb_push(sb, '}');
     break;
+  case DK_TRAIT: {
+    if (d->pub_)
+      sb_append_c(sb, "pub ");
+    sb_append_c(sb, "trait ");
+    sb_append(sb, d->name);
+    sb_append_c(sb, " {");
+    f_indent++;
+    for (size_t i = 0; i < d->decls.n; i++) {
+      Decl *m = d->decls.items[i];
+      f_line(sb);
+      sb_append_c(sb, "fn ");
+      sb_append(sb, m->name);
+      f_params(sb, &m->params);
+      if (m->ret) {
+        sb_append_c(sb, " -> ");
+        f_type(sb, m->ret);
+      }
+      sb_append_c(sb, ",");
+    }
+    f_indent--;
+    f_line(sb);
+    sb_push(sb, '}');
+    break;
+  }
+  case DK_IMPL: {
+    sb_append_c(sb, "impl ");
+    sb_append(sb, d->name);
+    sb_append_c(sb, " for ");
+    f_type(sb, d->target);
+    sb_append_c(sb, " {");
+    f_indent++;
+    for (size_t i = 0; i < d->decls.n; i++) {
+      Decl *m = d->decls.items[i];
+      f_line(sb);
+      sb_append_c(sb, "fn ");
+      sb_append(sb, m->name);
+      f_params(sb, &m->params);
+      if (m->ret) {
+        sb_append_c(sb, " -> ");
+        f_type(sb, m->ret);
+      }
+      sb_append_c(sb, " {");
+      f_indent++;
+      f_stmts(sb, &m->body);
+      f_indent--;
+      f_line(sb);
+      sb_push(sb, '}');
+    }
+    f_indent--;
+    f_line(sb);
+    sb_push(sb, '}');
+    break;
+  }
   case DK_STRUCT:
     if (d->pub_)
       sb_append_c(sb, "pub ");
     sb_append_c(sb, "struct ");
     sb_append(sb, d->name);
-    f_tparams(sb, &d->tparams);
+    f_tparams(sb, &d->tparams, &d->tparam_bounds);
     if (d->fields.n == 0) {
       sb_append_c(sb, " {}");
       break;
@@ -572,7 +642,7 @@ static void f_decl(SB *sb, Decl *d) {
       sb_append_c(sb, "pub ");
     sb_append_c(sb, "enum ");
     sb_append(sb, d->name);
-    f_tparams(sb, &d->tparams);
+    f_tparams(sb, &d->tparams, &d->tparam_bounds);
     sb_append_c(sb, " {");
     f_indent++;
     for (size_t i = 0; i < d->variants.n; i++) {

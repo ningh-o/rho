@@ -119,7 +119,7 @@ typedef enum Tok {
   KW_FN, KW_LET, KW_MUT, KW_IF, KW_ELSE, KW_WHILE, KW_LOOP, KW_BREAK,
   KW_CONTINUE, KW_RETURN, KW_DEFER, KW_STRUCT, KW_ENUM, KW_USE, KW_PUB,
   KW_STATIC, KW_CONST, KW_MATCH, KW_AS, KW_NEW, KW_NULL, KW_TRUE, KW_FALSE,
-  KW_WEAK, KW_SELF, KW_EXTERN,
+  KW_WEAK, KW_SELF, KW_EXTERN, KW_TRAIT, KW_IMPL, KW_FOR, KW_DYN,
   // punctuation & operators
   P_LPAREN, P_RPAREN, P_LBRACE, P_RBRACE, P_LBRACKET, P_RBRACKET,
   P_COMMA, P_COLON, P_SEMI, P_DOT, P_ARROW, P_FATARROW, P_ELLIPSIS2,
@@ -173,6 +173,7 @@ typedef enum TypeAstKind {
   TA_WEAK,   // weak[elem]
   TA_NAMED,  // path.Name[targs...]
   TA_FN,     // fn(params) -> ret
+  TA_DYN,    // dyn Trait
   TA_INFER,  // omitted annotation
 } TypeAstKind;
 
@@ -194,7 +195,7 @@ typedef enum ExprKind {
   EX_INT, EX_FLOAT, EX_STR, EX_BOOL, EX_NULL, EX_NAME, EX_TYPE,
   EX_BIN, EX_UN, EX_CALL, EX_INDEX, EX_SLICE, EX_FIELD, EX_METHOD,
   EX_CAST, EX_NEW, EX_MAKE, EX_CLOSURE, EX_MATCH, EX_QMARK, EX_ENUM_CTOR,
-  EX_IF, EX_BLOCK,
+  EX_IF, EX_BLOCK, EX_DYNBOX,
 } ExprKind;
 
 typedef struct MatchArm {
@@ -300,7 +301,8 @@ typedef struct VariantAst {
 } VariantAst;
 
 typedef struct Decl {
-  enum { DK_FN, DK_STRUCT, DK_ENUM, DK_STATIC, DK_CONST, DK_USE, DK_EXTERN } kind;
+  enum { DK_FN, DK_STRUCT, DK_ENUM, DK_STATIC, DK_CONST, DK_USE, DK_EXTERN,
+         DK_TRAIT, DK_IMPL } kind;
   Str file;
   int line, col;
   Vec pre;           // leading line comments (fmt re-emits them)
@@ -315,9 +317,11 @@ typedef struct Decl {
   Expr *init;        // STATIC/CONST
   Vec body;          // FN: Stmt*
   Vec tparams;       // FN/STRUCT/ENUM: char* type parameter names
+  Vec tparam_bounds; // FN: TypeAst* per tparam (NULL = unbounded)
   bool is_method;    // FN: first param named self
   Str recv;          // FN method: receiver type name (`fn Point.sum`)
-  Vec decls;         // module root only: Decl*
+  Vec decls;         // module root / TRAIT / IMPL: nested Decl*
+  TypeAst *target;   // IMPL: the `for` type
   Map *symbols;      // checker: module-level symbols
   void *ceval_cache; // const-eval memo (checker-owned struct)
   bool ceval_cache_ok;
@@ -348,7 +352,7 @@ typedef enum TypeKind {
   TY_U64, TY_F32, TY_F64, TY_STRING, TY_USIZE, TY_ISIZE,
   TY_INT_LIT, TY_FLOAT_LIT, TY_NULL,
   TY_ARRAY, TY_SLICE, TY_PTR, TY_WEAK, TY_FN, TY_STRUCT, TY_ENUM, TY_ERR,
-  TY_MODULE, TY_PARAM,
+  TY_MODULE, TY_PARAM, TY_DYN,
 } TypeKind;
 
 typedef struct RecType RecType;
@@ -364,6 +368,7 @@ struct RecType {
   bool fields_done;
   bool resolving;
   bool is_template; // the unsubstituted generic definition
+  bool is_trait;    // TRAIT: methods is an ordered requirement list
   Vec methods;      // Sym*
   Vec offsets;      // int64_t field offsets (structs), stored as long
   Vec var_poff;     // ENUM: int64_t payload base offset per variant (as long)
@@ -377,7 +382,7 @@ struct Type {
   TypeKind kind;
   Type *elem;   // ARRAY/SLICE/PTR/WEAK
   uint64_t len; // ARRAY
-  RecType *rec; // STRUCT/ENUM
+  RecType *rec; // STRUCT/ENUM; DYN: the trait carrier
   Vec params;   // FN: Type*
   Type *ret;    // FN
   const char *mangled;
@@ -385,7 +390,7 @@ struct Type {
 
 typedef enum SymKind {
   SY_LOCAL, SY_PARAM, SY_FN, SY_STRUCT, SY_ENUM, SY_STATIC, SY_CONST,
-  SY_MODULE, SY_EXTERN, SY_VARIANT,
+  SY_MODULE, SY_EXTERN, SY_VARIANT, SY_TRAIT, SY_TRAIT_METHOD, SY_IMPL,
 } SymKind;
 
 typedef struct Sym {
@@ -398,6 +403,7 @@ typedef struct Sym {
   void *module;      // SY_MODULE: Module*
   int variant_index; // SY_VARIANT
   int local_id;      // slot index within function (params first)
+  void *trait_rec;   // SY_TRAIT: RecType* carrier (methods in decl order)
   const char *symbol; // codegen symbol (fns/externs), set after check
 } Sym;
 

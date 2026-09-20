@@ -54,6 +54,14 @@ static void d_type(SB *sb, TypeAst *t) {
     sb_push(sb, '*');
     d_type(sb, t->elem);
     break;
+  case TA_DYN:
+    sb_append_c(sb, "dyn ");
+    for (size_t i = 0; i < t->path.n; i++) {
+      if (i)
+        sb_push(sb, '.');
+      sb_append_c(sb, t->path.items[i]);
+    }
+    break;
   case TA_WEAK:
     sb_append_c(sb, "weak[");
     d_type(sb, t->elem);
@@ -174,6 +182,11 @@ static void d_expr(SB *sb, Expr *e) {
     sb_append_c(sb, "(cast ");
     d_type(sb, e->ty);
     sb_push(sb, ' ');
+    d_expr(sb, e->a);
+    sb_push(sb, ')');
+    break;
+  case EX_DYNBOX:
+    sb_append_c(sb, "(dynbox ");
     d_expr(sb, e->a);
     sb_push(sb, ')');
     break;
@@ -406,6 +419,54 @@ static void d_decl(SB *sb, Decl *d) {
       FieldAst *fa = d->fields.items[i];
       sb_printf(sb, " (%.*s ", (int)fa->name.n, fa->name.p);
       d_type(sb, fa->ty);
+      sb_push(sb, ')');
+    }
+    sb_push(sb, ')');
+    break;
+  case DK_TRAIT:
+    sb_printf(sb, " (trait%s %.*s", d->pub_ ? " pub" : "", (int)d->name.n, d->name.p);
+    for (size_t i = 0; i < d->decls.n; i++) {
+      Decl *m = d->decls.items[i];
+      sb_printf(sb, " (method %.*s", (int)m->name.n, m->name.p);
+      for (size_t k = 0; k < m->params.n; k++) {
+        Param *pa = m->params.items[k];
+        sb_printf(sb, " (%.*s", (int)pa->name.n, pa->name.p);
+        if (pa->ty) {
+          sb_push(sb, ' ');
+          d_type(sb, pa->ty);
+        }
+        sb_push(sb, ')');
+      }
+      if (m->ret) {
+        sb_append_c(sb, " (ret ");
+        d_type(sb, m->ret);
+        sb_push(sb, ')');
+      }
+      sb_push(sb, ')');
+    }
+    sb_push(sb, ')');
+    break;
+  case DK_IMPL:
+    sb_printf(sb, " (impl %.*s for", (int)d->name.n, d->name.p);
+    if (d->target) {
+      sb_push(sb, ' ');
+      d_type(sb, d->target);
+    }
+    for (size_t i = 0; i < d->decls.n; i++) {
+      Decl *m = d->decls.items[i];
+      sb_printf(sb, " (method %.*s", (int)m->name.n, m->name.p);
+      for (size_t k = 0; k < m->params.n; k++) {
+        Param *pa = m->params.items[k];
+        sb_printf(sb, " (%.*s ", (int)pa->name.n, pa->name.p);
+        if (pa->ty)
+          d_type(sb, pa->ty);
+        sb_push(sb, ')');
+      }
+      if (m->ret) {
+        sb_append_c(sb, " (ret ");
+        d_type(sb, m->ret);
+        sb_push(sb, ')');
+      }
       sb_push(sb, ')');
     }
     sb_push(sb, ')');

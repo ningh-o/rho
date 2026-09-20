@@ -626,7 +626,7 @@ static int cmd_build_run_test(const char *cmd, int argc, char **argv) {
 
 static void usage(void) {
   fprintf(stderr,
-          "rho 0.3.4\n"
+          "rho 0.4.0\n"
           "usage: rho <command> [args]\n"
           "  check  <file>              parse + typecheck\n"
           "  fmt    [-w] <file>         print canonical formatting\n"
@@ -651,7 +651,7 @@ int main(int argc, char **argv) {
   const char *cmd = argv[1];
 
   if (!strcmp(cmd, "--version") || !strcmp(cmd, "version")) {
-    printf("rho 0.3.4\n");
+    printf("rho 0.4.0\n");
     return 0;
   }
 

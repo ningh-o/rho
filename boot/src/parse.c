@@ -3,6 +3,7 @@
 typedef struct Parser {
   Token **toks;
   size_t n, i;
+  bool bare_self_ok; // inside a trait: requirement receivers have no type
 } Parser;
 
 static Token *peek(Parser *p) { return p->toks[p->i]; }
@@ -111,6 +112,17 @@ static TypeAst *parse_type(Parser *p) {
       t->ret = parse_type(p);
     return t;
   }
+  if (at(p, KW_DYN)) {
+    advance(p);
+    NODE(t, TA_DYN);
+    Token *id = expect_ident(p, "trait name");
+    vec_push(&t->path, str_to_c(id->text));
+    while (accept(p, P_DOT)) {
+      Token *seg = expect_ident(p, "trait name");
+      vec_push(&t->path, str_to_c(seg->text));
+    }
+    return t;
+  }
   if (at(p, TK_IDENT)) {
     Token *id = advance(p);
     int prim = prim_from_name(id->text);
@@ -147,10 +159,14 @@ static Param *parse_param(Parser *p) {
   pa->file = start->file;
   pa->line = start->line;
   pa->col = start->col;
+  bool bare_self_ok = p->bare_self_ok;
   if (at(p, KW_SELF)) {
     advance(p);
     pa->name = str_from("self");
     pa->is_self = true;
+    // inside a trait, the receiver has no type yet — the impl decides it
+    if (bare_self_ok && !at(p, P_COLON))
+      return pa;
   } else {
     Token *id = expect_ident(p, "parameter name");
     pa->name = id->text;
@@ -196,13 +212,19 @@ static void parse_param_list(Parser *p, Vec *out, bool allow_variadic) {
 }
 
 // optional `[T, U]` type-parameter list (fn/struct/enum declarations)
-static void parse_tparams(Parser *p, Vec *out) {
+// `[T, U: Bound]` — names into `out`, bounds (TypeAst*, NULL when
+// unbounded) into `bounds` parallel to it
+static void parse_tparams(Parser *p, Vec *out, Vec *bounds) {
   if (!accept(p, P_LBRACKET))
     return;
   if (!at(p, P_RBRACKET)) {
     do {
       Token *id = expect_ident(p, "type parameter name");
       vec_push(out, str_to_c(id->text));
+      TypeAst *b = NULL;
+      if (accept(p, P_COLON))
+        b = parse_type(p);
+      vec_push(bounds, b);
     } while (accept(p, P_COMMA));
   }
   expect(p, P_RBRACKET, "`]`");
@@ -789,7 +811,7 @@ Decl *parse_file(Str path, Str src) {
         Token *m = expect_ident(&p, "method name");
         d->name = m->text;
       }
-      parse_tparams(&p, &d->tparams);
+      parse_tparams(&p, &d->tparams, &d->tparam_bounds);
       parse_param_list(&p, &d->params, true);
       if (accept(&p, P_ARROW))
         d->ret = parse_type(&p);
@@ -800,7 +822,7 @@ Decl *parse_file(Str path, Str src) {
       d->kind = DK_STRUCT;
       Token *id = expect_ident(&p, "struct name");
       d->name = id->text;
-      parse_tparams(&p, &d->tparams);
+      parse_tparams(&p, &d->tparams, &d->tparam_bounds);
       expect(&p, P_LBRACE, "`{`");
       while (!at(&p, P_RBRACE) && !at(&p, TK_EOF)) {
         Token *fn = expect_ident(&p, "field name");
@@ -820,7 +842,7 @@ Decl *parse_file(Str path, Str src) {
       d->kind = DK_ENUM;
       Token *id = expect_ident(&p, "enum name");
       d->name = id->text;
-      parse_tparams(&p, &d->tparams);
+      parse_tparams(&p, &d->tparams, &d->tparam_bounds);
       expect(&p, P_LBRACE, "`{`");
       uint64_t next_disc = 0;
       while (!at(&p, P_RBRACE) && !at(&p, TK_EOF)) {
@@ -871,6 +893,59 @@ Decl *parse_file(Str path, Str src) {
         vec_push(&d->variants, v);
         if (!accept(&p, P_COMMA))
           break;
+      }
+      expect(&p, P_RBRACE, "`}`");
+    } else if (accept(&p, KW_TRAIT)) {
+      d->kind = DK_TRAIT;
+      Token *id = expect_ident(&p, "trait name");
+      d->name = id->text;
+      expect(&p, P_LBRACE, "`{`");
+      p.bare_self_ok = true;
+      while (at(&p, KW_FN)) {
+        Decl *m = arena_alloc_zeroed(sizeof(Decl));
+        m->kind = DK_FN;
+        m->file = peek(&p)->file;
+        m->line = peek(&p)->line;
+        m->col = peek(&p)->col;
+        expect(&p, KW_FN, "`fn`");
+        Token *mn = expect_ident(&p, "trait method name");
+        m->name = mn->text;
+        parse_param_list(&p, &m->params, true);
+        if (accept(&p, P_ARROW))
+          m->ret = parse_type(&p);
+        if (m->params.n && ((Param *)m->params.items[0])->is_self)
+          m->is_method = true;
+        vec_push(&d->decls, m);
+        // requirements separate by `,` or `;` (either reads well)
+        if (accept(&p, P_COMMA) || accept(&p, P_SEMI))
+          continue;
+        break;
+      }
+      p.bare_self_ok = false;
+      expect(&p, P_RBRACE, "`}`");
+    } else if (accept(&p, KW_IMPL)) {
+      d->kind = DK_IMPL;
+      Token *id = expect_ident(&p, "trait name");
+      d->name = id->text;
+      expect(&p, KW_FOR, "`for`");
+      d->target = parse_type(&p);
+      expect(&p, P_LBRACE, "`{`");
+      while (at(&p, KW_FN)) {
+        Decl *m = arena_alloc_zeroed(sizeof(Decl));
+        m->kind = DK_FN;
+        m->file = peek(&p)->file;
+        m->line = peek(&p)->line;
+        m->col = peek(&p)->col;
+        expect(&p, KW_FN, "`fn`");
+        Token *mn = expect_ident(&p, "method name");
+        m->name = mn->text;
+        parse_param_list(&p, &m->params, true);
+        if (accept(&p, P_ARROW))
+          m->ret = parse_type(&p);
+        if (m->params.n && ((Param *)m->params.items[0])->is_self)
+          m->is_method = true;
+        m->body = parse_block(&p);
+        vec_push(&d->decls, m);
       }
       expect(&p, P_RBRACE, "`}`");
     } else if (accept(&p, KW_STATIC) || accept(&p, KW_CONST)) {

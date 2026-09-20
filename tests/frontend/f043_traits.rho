@@ -1,0 +1,54 @@
+// traits and dyn: requirements, impl blocks, computed satisfaction,
+// bounds, and fat-pointer coercion
+trait Show {
+  fn to_str(self) -> string,
+}
+
+trait Sum2 {
+  fn total(self) -> i32,
+  fn count(self) -> i32,
+}
+
+struct Point {
+  x: i32,
+  y: i32,
+}
+
+impl Show for Point {
+  fn to_str(self: *Point) -> string {
+    return format("({}, {})", self.x, self.y);
+  }
+}
+
+impl Sum2 for Point {
+  fn total(self: *Point) -> i32 {
+    return self.x + self.y;
+  }
+  fn count(self: *Point) -> i32 {
+    return 2;
+  }
+}
+
+struct Bare {
+  n: i64,
+}
+
+fn Bare.to_str(self: *Bare) -> string {
+  return format("bare {}", self.n);
+}
+
+fn describe[T: Show](v: *T) -> string {
+  return v.to_str();
+}
+
+fn main() -> i32 {
+  let p = new Point { x: 1, y: 2 };
+  let d: dyn Show = p;
+  let s: dyn Sum2 = p;
+  let items: []dyn Show = make([]dyn Show, 2);
+  items[0] = p;
+  let b = new Bare { n: 9 };
+  items[1] = b;
+  let z: string = format("{} {} {}", d, s.total(), describe(b));
+  return 0;
+}

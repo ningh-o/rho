@@ -4,6 +4,7 @@ const KEYWORDS = new Set([
   "fn", "let", "mut", "if", "else", "while", "loop", "break", "continue",
   "return", "defer", "struct", "enum", "use", "pub", "static", "const",
   "match", "as", "new", "null", "true", "false", "weak", "self", "extern",
+  "trait", "impl", "for", "dyn",
 ]);
 const TYPES = new Set([
   "bool", "i8", "i16", "i32", "i64", "isize", "u8", "u16", "u32", "u64",

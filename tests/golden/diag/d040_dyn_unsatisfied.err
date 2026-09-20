@@ -1,0 +1,1 @@
+tests/diag/d040_dyn_unsatisfied.rho:12:21: error: `tests/diag/d040_dyn_unsatisfied.rho.P` does not implement `Show`: missing or mismatched `to_str`

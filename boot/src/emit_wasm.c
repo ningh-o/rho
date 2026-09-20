@@ -543,6 +543,9 @@ static void emit_ins(WFnCtx *c, IRIns *i) {
     if (i->lit == -1 && i->callee) {
       if (ir_fn_for_symbol(i->callee)) {
         table_index_of(i->callee);
+        if (getenv("RHO_DBG_VT"))
+          fprintf(stderr, "[vt-addrc] %s -> table %ld\n", i->callee,
+                  (long)map_get(&W.table_idx, str_from(i->callee)) - 1);
         i32c(c, (long)map_get(&W.table_idx, str_from(i->callee)) - 1);
       } else {
         i32c(c, (long)map_get(&W.global_addr, str_from(i->callee)));
@@ -1217,6 +1220,8 @@ void emit_wasm(Target target, SB *out) {
     wf->fn = fn;
     wf->index = (int)(2 + i);
     wf->type = w_type_of_fn(fn);
+    if (getenv("RHO_DBG_VT"))
+      fprintf(stderr, "[vt-fn] %d %s type=%d\n", wf->index, fn->symbol, wf->type);
     vec_push(&W.fns, wf);
     map_put(&W.fn_by_symbol, str_from(fn->symbol), wf);
   }

@@ -37,6 +37,7 @@ rho check main.rho      # type-check only
 | 0.3.2   | Native images, end to end: in-tree assemblers (arm64 + amd64), a static ELF writer for the linux targets, a static Mach-O writer with the ad-hoc code signature for arm64-mac, freestanding runtime blobs. The bootstrap gate reopens while the mirror catches up (`docs/todo.md`) — `boot` remains the reference toolchain. |
 | 0.3.3   | Formatted printing: `printf`/`eprintf` with `{}` placeholders over the `to_str` protocol, variadic functions (`rest: T...`, spread `xs...`) for every program, and the `print`/`println`/`eprint` trio removed. The spec splits into [spec/syntax.md](spec/syntax.md), [spec/type-system.md](spec/type-system.md), and [spec/module-system.md](spec/module-system.md). |
 | 0.3.4   | `format(fmt, ...) -> string` — the printf desugar pointed at a string sink; `to_str` bodies become one format line. |
+| 0.4.0   | Traits and `dyn`: name-satisfied requirements (`impl` blocks are eager checks), `[T: Show]` bounds, and `dyn Trait` fat pointers with runtime dispatch through per-trait vtables — design in [docs/traits.md](docs/traits.md). |
 
 The C compiler under `boot/` is the permanent bootstrap seed: it exists to
 compile the first self-hosted compiler and nothing else. Everything after

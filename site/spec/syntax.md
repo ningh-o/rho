@@ -19,9 +19,10 @@ struct enum use pub static const match as new null true false weak self
 extern
 ```
 
-Identifiers: `[A-Za-z_][A-Za-z0-9_]*`. Reserved: the keywords above, the
-primitive type names (§2 of the spec), and the builtin names (`make`, `len`,
-`panic`, `printf`, `eprintf`, `format`, `size_of`).
+Identifiers: `[A-Za-z_][A-Za-z0-9_]*`. Reserved: the keywords above
+(`trait`, `impl`, `for`, and `dyn` included), the primitive type names (§2
+of the spec), and the builtin names (`make`, `len`, `panic`, `printf`,
+`eprintf`, `format`, `size_of`).
 
 Integer literals: decimal (`12345`), hex (`0xFF`), binary (`0b1010`), with
 `_` separators (`1_000_000`). An unsuffixed integer literal has no fixed

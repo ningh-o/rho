@@ -157,6 +157,50 @@ Formatting is canonical, deterministic, identical on every target:
 `panic(msg)` takes a `string` only; compose with `cat`. `assert_eq` prints
 both values (via `to_str`) in its failure message.
 
+## Traits, bounds, and `dyn`
+
+A trait declares requirements; a type implements it when every requirement
+has a matching method (docs/traits.md has the design):
+
+```
+trait Show {
+  fn to_str(self) -> string,
+}
+
+impl Show for Point {
+  fn to_str(self: *Point) -> string {
+    return format("({}, {})", self.x, self.y);
+  }
+}
+```
+
+- Satisfaction is **computed from the method tables**: a hand-written
+  `fn Point.to_str(...)` implements `Show` with no impl block, and every
+  primitive implements the prelude's `Show` the moment it is declared.
+  An `impl` block is method definitions plus an eager check — a missing
+  or mismatched method is an error at the impl, named. The impl lives in
+  the module owning the trait or the type; foreign × foreign is rejected.
+- The receiver is implicit in a requirement (`fn m(self) -> R` has no
+  type); the implementing method decides it. Signatures must agree
+  exactly apart from the receiver.
+- **Bounds**: `fn f[T: Show](v: *T)` documents the contract and is
+  verified at each instantiation — a `T` without the required method
+  fails anchored at the call site that demanded it. Bounds do not change
+  codegen: monomorphization and static dispatch proceed as before.
+- **`dyn Trait`** is a two-word value `{vtable, obj}` — the closure
+  pair's shape. Coercion from `*T` is implicit wherever an expected type
+  is known (let annotations, arguments, returns, field initializers,
+  assignments), and only from pointer types whose element satisfies the
+  trait; enums and primitives are not dyn-able yet (they are values, not
+  heap objects). Method calls load the vtable slot and dispatch at
+  runtime through the closure ABI; `==` on two dyn values compares the
+  object pointers. The vtable is an immortal heap block built once per
+  coercion site (one small allocation — the honest v1 cost); releasing a
+  dyn value is a plain count operation, because every object's RC header
+  already carries its own drop glue.
+- `[]dyn Trait` works: slices stride by the 16-byte element, so
+  heterogeneous collections dispatch correctly.
+
 ## Errors: Result, Option, `?`, panic
 
 ```

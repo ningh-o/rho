@@ -2320,7 +2320,7 @@ fn diag_count() -> i32 {
 }
 
 fn usage() -> i32 {
-  eprintf("{}", "rho 0.3.4\n");
+  eprintf("{}", "rho 0.4.0\n");
   eprintf("{}", "usage: rho <command> [args]\n");
   eprintf("{}", "  check  <file>              parse + typecheck\n");
   eprintf("{}", "  fmt    [-w] <file>         print canonical formatting\n");
@@ -3401,7 +3401,7 @@ fn main() -> i32 {
   }
   let cmd: string = args[1];
   if streq(cmd, "--version") || streq(cmd, "version") {
-    printf("{}", "rho 0.3.4\n");
+    printf("{}", "rho 0.4.0\n");
     return 0;
   }
   if streq(cmd, "selftest") {

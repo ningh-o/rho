@@ -22,6 +22,8 @@ static const struct {
     {"as", KW_AS},         {"new", KW_NEW},       {"null", KW_NULL},
     {"true", KW_TRUE},     {"false", KW_FALSE},   {"weak", KW_WEAK},
     {"self", KW_SELF},     {"extern", KW_EXTERN},
+    {"trait", KW_TRAIT},   {"impl", KW_IMPL},     {"for", KW_FOR},
+    {"dyn", KW_DYN},
 };
 
 static Tok ident_or_keyword(Str s) {
@@ -351,6 +353,10 @@ const char *tok_name(Tok t) {
   case KW_WEAK: return "`weak`";
   case KW_SELF: return "`self`";
   case KW_EXTERN: return "`extern`";
+  case KW_TRAIT: return "`trait`";
+  case KW_IMPL: return "`impl`";
+  case KW_FOR: return "`for`";
+  case KW_DYN: return "`dyn`";
   case P_LPAREN: return "`(`";
   case P_RPAREN: return "`)`";
   case P_LBRACE: return "`{`";

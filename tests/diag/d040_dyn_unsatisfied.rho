@@ -1,0 +1,14 @@
+// coercing a type that does not implement the trait is diagnosed
+trait Show {
+  fn to_str(self) -> string,
+}
+
+struct P {
+  n: i32,
+}
+
+fn main() -> i32 {
+  let p = new P { n: 1 };
+  let d: dyn Show = p;
+  return 0;
+}
