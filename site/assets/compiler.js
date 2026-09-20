@@ -7,7 +7,9 @@ let cachedBytes = null;
 
 function fetchCompiler() {
   if (!compilerBytesPromise) {
-    compilerBytesPromise = fetch("assets/rho-boot.wasm").then((r) => {
+    // anchored to this module's URL: the same path resolves on the page and
+  // inside a worker (whose relative base is /assets/, not /)
+  compilerBytesPromise = fetch(new URL("rho-boot.wasm", import.meta.url)).then((r) => {
       if (!r.ok) throw new Error("cannot load the compiler (" + r.status + ")");
       return r.arrayBuffer();
     }).then((buf) => {

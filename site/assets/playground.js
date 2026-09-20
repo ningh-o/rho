@@ -1,9 +1,60 @@
 // Playground wiring: editor with highlight overlay, compile + run pipeline,
 // example picker, localStorage persistence, shareable URL hash.
 
-import { initCompiler, compile, runProgram } from "./compiler.js";
 import { highlightRho } from "./highlight.js";
 import { EXAMPLES, STARTER } from "./examples.js";
+
+// Compile + run happen in a worker: a long-running program can then never
+// freeze the page. The worker is terminated on Stop and after the caps.
+const COMPILE_CAP_MS = 20000; // cold fetch + compiling the compiler itself
+const RUN_CAP_MS = 10000;
+
+let worker = null;
+let workerId = 0;
+let capTimer = null;
+let capPhase = null;
+let capStart = 0;
+
+function stopWorker() {
+  if (capTimer) {
+    clearTimeout(capTimer);
+    capTimer = null;
+  }
+  capPhase = null;
+  if (worker) {
+    worker.terminate();
+    worker = null;
+  }
+}
+
+function spawnWorker() {
+  worker = new Worker("assets/worker.js", { type: "module" });
+  worker.onmessage = (e) => onWorkerMessage(e.data);
+  worker.onerror = (e) => onWorkerError(e);
+  return worker;
+}
+
+function armCap(ms, phase) {
+  if (capTimer) clearTimeout(capTimer);
+  capPhase = phase;
+  capStart = performance.now();
+  capTimer = setTimeout(() => {
+    const phaseLabel = capPhase === "compile" ? "compiling" : "running";
+    stopWorker();
+    running = false;
+    runBtn.textContent = "Run";
+    runBtn.disabled = false;
+    const seconds = ((performance.now() - capStart) / 1000).toFixed(0);
+    showOut(
+      `stopped after ${seconds} s — still ${phaseLabel}. Some programs just run ` +
+        `that long: naive recursion is exponential (fib(100) is ~10^21 calls — ` +
+        `try fib(30); rho's i64 wraps past fib(92)).`,
+      "err",
+    );
+    setStatus(`<span class="bad">stopped</span> at the ${phaseLabel === "compiling" ? "compile" : "run"} cap`);
+    render();
+  }, ms);
+}
 
 const ta = document.getElementById("input");
 const hl = document.getElementById("highlight");
@@ -52,41 +103,67 @@ function showOut(text, cls) {
 
 let running = false;
 
+function stopRun() {
+  stopWorker();
+  running = false;
+  runBtn.textContent = "Run";
+  runBtn.disabled = false;
+  showOut("stopped — the worker was terminated.", "err");
+  setStatus(`<span class="bad">stopped</span> by hand`);
+  render();
+}
+
 async function doRun() {
-  if (running) return;
+  if (running) {
+    stopRun();
+    return;
+  }
   running = true;
-  runBtn.disabled = true;
+  runBtn.textContent = "Stop";
   out.textContent = "";
   setStatus("compiling…");
-  const t0 = performance.now();
-  try {
-    const compiled = await compile(ta.value);
-    if (compiled.stale) return;
-    if (!compiled.ok) {
-      showOut(compiled.stderr || "compilation failed", "err");
-      setStatus(`<span class="bad">compile error</span> in ${compiled.ms.toFixed(0)} ms`);
-      return;
-    }
-    const run = await runProgram(compiled.program);
-    showOut(run.stdout);
-    if (run.stderr) showOut(run.stderr, "err");
-    const tail = [];
-    if (run.stderr) tail.push("stderr");
-    const exitNote =
-      run.exitCode === 0
-        ? `<span class="ok">exit 0</span>`
-        : `<span class="bad">exit ${run.exitCode}</span>`;
-    setStatus(
-      `${exitNote} <span>·</span> compiled ${compiled.ms.toFixed(0)} ms <span>·</span> ran ${run.ms.toFixed(0)} ms <span>·</span> ${compiled.program.length.toLocaleString()} bytes`,
-    );
-  } catch (e) {
-    showOut("runtime error: " + (e.message || e), "err");
-    setStatus(`<span class="bad">failed</span> after ${(performance.now() - t0).toFixed(0)} ms`);
-  } finally {
+  const id = ++workerId;
+  if (!worker) spawnWorker();
+  armCap(COMPILE_CAP_MS, "compile");
+  worker.postMessage({ id, source: ta.value });
+}
+
+function onWorkerMessage(m) {
+  if (m.id !== workerId) return;
+  if (m.kind === "phase" && m.phase === "run") {
+    setStatus(`running… <span>·</span> compiled ${m.compileMs.toFixed(0)} ms <span>·</span> ${m.bytes.toLocaleString()} bytes`);
+    armCap(RUN_CAP_MS, "run");
+    return;
+  }
+  if (m.kind === "done") {
+    stopWorker();
     running = false;
-    runBtn.disabled = false;
+    runBtn.textContent = "Run";
+    if (!m.ok) {
+      showOut(m.stderr, "err");
+      setStatus(`<span class="bad">compile error</span> in ${(m.compileMs || 0).toFixed(0)} ms`);
+    } else {
+      showOut(m.stdout);
+      if (m.stderr) showOut(m.stderr, "err");
+      const exitNote =
+        m.exitCode === 0
+          ? `<span class="ok">exit 0</span>`
+          : `<span class="bad">exit ${m.exitCode}</span>`;
+      setStatus(
+        `${exitNote} <span>·</span> compiled ${m.compileMs.toFixed(0)} ms <span>·</span> ran ${m.runMs.toFixed(0)} ms <span>·</span> ${m.bytes.toLocaleString()} bytes`,
+      );
+    }
     render();
   }
+}
+
+function onWorkerError(e) {
+  stopWorker();
+  running = false;
+  runBtn.textContent = "Run";
+  showOut("runtime error: " + (e.message || "worker failed"), "err");
+  setStatus(`<span class="bad">failed</span>`);
+  render();
 }
 
 // populate the example picker
@@ -160,13 +237,6 @@ ta.value = initial;
 if (initialEx) exampleSel.value = initialEx;
 render();
 
-setStatus(`<span class="dim">loading the compiler…</span>`);
-initCompiler()
-  .then(() => {
-    setStatus(`<span class="dim">ready — press <kbd>⌘</kbd><kbd>↵</kbd> to run</span>`);
-    if (fromHash || fromQuery) doRun();
-  })
-  .catch((e) => {
-    setStatus(`<span class="bad">could not load the compiler</span>`);
-    showOut(String(e), "err");
-  });
+// the compiler lives in the worker and is fetched on the first run
+setStatus(`<span class="dim">ready — press <kbd>⌘</kbd><kbd>↵</kbd> to run</span>`);
+if (fromHash || fromQuery) doRun();
