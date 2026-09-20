@@ -51,7 +51,7 @@ fn main() -> i32 {
     title: "Hello, rho",
     code: `// Every rho program starts at main.
 fn main() -> i32 {
-  printf("{}", "hello, world\\n");
+  printf("hello, world\\n");
   return 0;
 }
 `,
@@ -366,10 +366,7 @@ fn fib(n: i32) -> i32 {
 fn main() -> i32 {
   let mut i: i32 = 0;
   while i <= 10 {
-    printf("{}", "fib(");
-    printf("{}", i.to_str());
-    printf("{}", ") = ");
-    printf("{}\\n", fib(i));
+    printf("fib({}) = {}\\n", i, fib(i));
     i += 1;
   }
   return 0;
