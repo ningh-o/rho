@@ -1,5 +1,8 @@
+import { highlightRho } from "./highlight.js";
+
 // The spec reader: fetches the markdown and renders it in place — no
-// dependencies, no build step. The subset below is what the four spec
+// dependencies, no build step. Loaded as a module so the rho highlighter
+// is imported, exactly the way the tutorial and playground do it. The subset below is what the four spec
 // documents actually use: headings, fenced code (highlighted as rho),
 // paragraphs, inline code / bold / links, unordered and ordered lists
 // (nested), pipe tables, --- rules, and > quotes. The raw .md stays
@@ -244,3 +247,5 @@ document.addEventListener("click", (e) => {
   window.scrollTo(0, 0);
 });
 window.addEventListener("popstate", loadSpec);
+
+loadSpec();
