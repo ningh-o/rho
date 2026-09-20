@@ -31,6 +31,9 @@ function spawnWorker() {
   worker = new Worker("assets/worker.js", { type: "module" });
   worker.onmessage = (e) => onWorkerMessage(e.data);
   worker.onerror = (e) => onWorkerError(e);
+  // warm immediately: fetch + instantiate the compiler now, so the first
+  // Run doesn't pay for it
+  worker.postMessage({ kind: "warm" });
   return worker;
 }
 
@@ -125,11 +128,32 @@ async function doRun() {
   const id = ++workerId;
   if (!worker) spawnWorker();
   armCap(COMPILE_CAP_MS, "compile");
+  // queues behind the boot warm in worker message order: even a cold first
+  // click waits for the compiler, then compiles
   worker.postMessage({ id, source: ta.value });
 }
 
 function onWorkerMessage(m) {
+  if (m.kind === "ready") {
+    if (!running.current) {
+      setStatus(`<span class="dim">ready — press <kbd>⌘</kbd><kbd>↵</kbd> to run</span>`);
+    }
+    return;
+  }
+  if (m.kind === "boot-error") {
+    setStatus(`<span class="bad">could not load the compiler</span>`);
+    showOut(m.stderr, "err");
+    return;
+  }
   if (m.id !== workerId) return;
+  if (m.kind === "phase" && m.phase === "boot") {
+    setStatus("loading the compiler…");
+    return;
+  }
+  if (m.kind === "phase" && m.phase === "compile") {
+    setStatus("compiling…");
+    return;
+  }
   if (m.kind === "phase" && m.phase === "run") {
     setStatus(`running… <span>·</span> compiled ${m.compileMs.toFixed(0)} ms <span>·</span> ${m.bytes.toLocaleString()} bytes`);
     armCap(RUN_CAP_MS, "run");
@@ -237,6 +261,7 @@ ta.value = initial;
 if (initialEx) exampleSel.value = initialEx;
 render();
 
-// the compiler lives in the worker and is fetched on the first run
-setStatus(`<span class="dim">ready — press <kbd>⌘</kbd><kbd>↵</kbd> to run</span>`);
+// the compiler lives in the worker — warm it now, at page load
+setStatus(`<span class="dim">loading the compiler…</span>`);
+spawnWorker();
 if (fromHash || fromQuery) doRun();
