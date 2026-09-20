@@ -350,3 +350,64 @@ kbd {
   .hero h1 { font-size: 32px; }
   .hero .glyph { font-size: 72px; }
 }
+
+/* ---- spec reader ---- */
+
+.spec-page { padding: 40px 0 72px; max-width: 880px; }
+
+.spec-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 28px; flex-wrap: wrap; }
+.spec-tab {
+  padding: 8px 14px 9px;
+  font: 500 14px var(--sans);
+  color: var(--ink-dim);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.spec-tab:hover { color: var(--ink); text-decoration: none; }
+.spec-tab.on { color: var(--accent); border-bottom-color: var(--accent); }
+
+.spec-body { font: 15px/1.65 var(--sans); color: var(--ink); min-height: 40vh; }
+.spec-body h2 { font: 600 26px var(--serif); margin: 40px 0 14px; }
+.spec-body h2:first-child { margin-top: 0; }
+.spec-body h3 { font: 600 19px var(--sans); margin: 30px 0 10px; }
+.spec-body h4 { font: 600 15px var(--sans); margin: 24px 0 8px; color: var(--ink-dim); }
+.spec-body p { margin: 10px 0; }
+.spec-body a { color: var(--accent); }
+.spec-body a:hover { text-decoration: underline; }
+.spec-body ul, .spec-body ol { margin: 10px 0; padding-left: 26px; }
+.spec-body ul ul, .spec-body ol ul, .spec-body ul ol, .spec-body ol ol { margin: 4px 0; }
+.spec-body li { margin: 5px 0; }
+.spec-body code {
+  font: 12.5px var(--mono, ui-monospace, monospace);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: var(--ink);
+}
+.spec-body pre.code {
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.55;
+  margin: 14px 0;
+}
+.spec-body pre.code code { background: none; border: none; padding: 0; }
+.spec-body table { border-collapse: collapse; margin: 14px 0; width: 100%; font-size: 13.5px; }
+.spec-body th, .spec-body td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; }
+.spec-body th { background: var(--bg-raised); font-weight: 600; }
+.spec-body blockquote {
+  border-left: 3px solid var(--accent-dim);
+  margin: 14px 0;
+  padding: 2px 16px;
+  color: var(--ink-dim);
+}
+.spec-body hr { border: none; border-top: 1px solid var(--line); margin: 28px 0; }
+.spec-body h2[id]:hover, .spec-body h3[id]:hover { cursor: pointer; }
+.spec-body h2[id]:hover::after { content: " #"; color: var(--ink-faint); }
+
+.spec-loading { color: var(--ink-faint); }
+.spec-foot { margin-top: 48px; font-size: 13px; color: var(--ink-faint); }
