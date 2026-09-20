@@ -1,0 +1,1 @@
+tests/diag/d038_format_not_literal.rho:4:26: error: the format string passed to format must be a string literal

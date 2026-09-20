@@ -1,2 +1,2 @@
 tests/diag/d034_printf_mismatch.rho:4:10: error: the format string has 2 `{}` but 1 values were given
-tests/diag/d034_printf_mismatch.rho:5:10: error: the printf format string must be a string literal
+tests/diag/d034_printf_mismatch.rho:5:10: error: the format string passed to printf must be a string literal

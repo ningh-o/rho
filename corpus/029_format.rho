@@ -1,0 +1,52 @@
+// exit: 0
+// 0.3.4: format — printf's desugar pointed at a string sink, so a
+// to_str body reads as one format line instead of a cat pyramid
+struct Point {
+  x: i32,
+  y: i32,
+}
+
+fn Point.to_str(self: *Point) -> string {
+  return format("({}, {})", self.x, self.y);
+}
+
+enum Shape {
+  Circle(f64),
+  Unit,
+}
+
+fn Shape.to_str(self: Shape) -> string {
+  return match self {
+    Shape.Circle(r) => format("circle({})", r),
+    Shape.Unit => "unit",
+  };
+}
+
+struct Line {
+  a: *Point,
+  b: *Point,
+}
+
+fn Line.to_str(self: *Line) -> string {
+  return format("{} -> {}", self.a, self.b);
+}
+
+fn main() -> i32 {
+  let p = new Point { x: 3, y: 0 - 4 };
+  assert_eq(format("{}", p), "(3, -4)");
+  printf("{}\n", p);
+  let c: Shape = Shape.Circle(2.5);
+  printf("{}\n", c);
+  let u: Shape = Shape.Unit;
+  printf("{}\n", u);
+  let q = new Point { x: 1, y: 2 };
+  let l = new Line { a: p, b: q };
+  printf("{}\n", l);
+  let s: string = format("sum={} half={}", 7 + 8, 0 - 2);
+  assert_eq(s, "sum=15 half=-2");
+  printf("{}\n", s);
+  printf("{}\n", cat("[", cat(format("{}", 5), "]")));
+  let z: string = format("no holes at all");
+  assert_eq(z, "no holes at all");
+  return 0;
+}

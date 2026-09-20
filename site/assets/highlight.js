@@ -10,7 +10,7 @@ const TYPES = new Set([
   "usize", "f32", "f64", "string",
 ]);
 const BUILTINS = new Set([
-  "printf", "eprintf", "panic", "make", "len", "assert", "assert_eq",
+  "printf", "eprintf", "format", "panic", "make", "len", "assert", "assert_eq",
   "cat", "read_line", "size_of",
 ]);
 

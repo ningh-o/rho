@@ -1998,22 +1998,26 @@ static bool split_format(Expr *at, Str fmt, Vec *parts, size_t *holes) {
 
 static Type *check_call(Expr *e, Type *expected) {
   (void)expected;
-  // printf/eprintf builtins: each `{}` takes the next value's to_str. The
-  // call desugars here into `__fmt_print("...", x.to_str(), ...)` — a
-  // variadic string join in the prelude — or, with no placeholders, into
-  // the raw byte sink; then the regular path checks the rewritten call
-  if (e->a->kind == EX_NAME &&
-      (str_eq_c(e->a->sv, "printf") || str_eq_c(e->a->sv, "eprintf"))) {
+  // printf/eprintf/format builtins: each `{}` takes the next value's
+  // to_str. The printing pair desugars here into `__fmt_print("...",
+  // x.to_str(), ...)` — a variadic string join in the prelude — or, with
+  // no placeholders, into the raw byte sink; format desugars the same way
+  // into `__fmt_build(...) -> string` (no placeholders: the literal
+  // itself); then the regular path checks the rewritten call
+  if (e->a->kind == EX_NAME && (str_eq_c(e->a->sv, "printf") ||
+                                str_eq_c(e->a->sv, "eprintf") ||
+                                str_eq_c(e->a->sv, "format"))) {
     bool err_sink = str_eq_c(e->a->sv, "eprintf");
-    const char *verb = err_sink ? "eprintf" : "printf";
+    bool to_value = str_eq_c(e->a->sv, "format");
+    const char *verb = err_sink ? "eprintf" : (to_value ? "format" : "printf");
     if (!e->args.n) {
-      ERR(e, "%s needs a format string", verb);
+      ERR(e, "a call to %s needs a format string", verb);
       e->typed = ty_err_;
       return e->typed;
     }
     Expr *fmt = e->args.items[0];
     if (fmt->kind != EX_STR) {
-      ERR(fmt, "the %s format string must be a string literal", verb);
+      ERR(fmt, "the format string passed to %s must be a string literal", verb);
       e->typed = ty_err_;
       return e->typed;
     }
@@ -2030,6 +2034,12 @@ static Type *check_call(Expr *e, Type *expected) {
       return e->typed;
     }
     Vec nargs = {0};
+    if (holes == 0 && to_value) {
+      // format with no placeholders is the literal itself: no call, no copy
+      e->kind = EX_STR;
+      e->sv = *(Str *)parts.items[0];
+      return check_expr(e, NULL);
+    }
     if (holes == 0) {
       Expr *lit = arena_alloc_zeroed(sizeof(Expr));
       lit->kind = EX_STR;
@@ -2066,12 +2076,14 @@ static Type *check_call(Expr *e, Type *expected) {
         call->col = recv->col;
         vec_push(&nargs, call);
       }
-      e->a->sv = str_from(err_sink ? "__fmt_eprint" : "__fmt_print");
+      e->a->sv = str_from(to_value   ? "__fmt_build"
+                          : err_sink ? "__fmt_eprint"
+                                     : "__fmt_print");
     }
     e->args = nargs;
     e->arg_names = (Vec){0};
     e->a->sym = NULL;
-    // fall through: __fmt_print is variadic, so each value is checked
+    // fall through: the sink is variadic, so each value is checked
     // against string; a value without to_str reports its own error there
   }
   // builtins: make / len

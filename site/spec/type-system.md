@@ -111,12 +111,14 @@ unlike struct methods, which are scoped per defining module. Method calls
 auto-deref through pointers; untyped literal receivers (`5.to_str()`)
 resolve at their default width (i32 / f64).
 
-## Printing: `printf`, the `to_str` protocol
+## Printing: `printf`, `format`, the `to_str` protocol
 
-`printf` and `eprintf` are compiler builtins (stdout / stderr):
+`printf`, `eprintf`, and `format` are compiler builtins (stdout, stderr,
+and a string value):
 
 ```
-printf("x = {}, y = {}\n", x, y);
+printf("x = {}, y = {}\n", x, y);        // write to stdout
+let s: string = format("({}, {})", x, y); // build the same string
 ```
 
 - The format string must be a **string literal**.
@@ -124,12 +126,22 @@ printf("x = {}, y = {}\n", x, y);
   brace is a compile error, as is a `{}`/value count mismatch.
 - Every value must be **printable**: it has a method `to_str(self) ->
   string`. Every primitive is printable via the prelude; user types print
-  themselves by defining `to_str`. Slices and arrays are not printable —
-  print their elements in a loop.
+  themselves by defining `to_str` — `format` is the canonical way to write
+  that body:
+
+  ```
+  fn Point.to_str(self: *Point) -> string {
+    return format("({}, {})", self.x, self.y);
+  }
+  ```
+
+  Slices and arrays are not printable — print their elements in a loop.
 - The call desugars in the checker to the prelude's variadic sinks
-  (`__fmt_print("...", x.to_str(), ...)`), so printing rides the same
-  slice machinery user variadics do. With no `{}` at all it lowers to the
-  raw byte sink and allocates nothing.
+  (`__fmt_print` / `__fmt_eprint` / `__fmt_build`, each called as
+  `sink("...", x.to_str(), ...)`), so all three ride the same slice
+  machinery user variadics do. With no `{}` at all, `printf`/`eprintf`
+  lower to the raw byte sink and allocate nothing, and `format` is the
+  literal itself — no call, no copy.
 
 Formatting is canonical, deterministic, identical on every target:
 

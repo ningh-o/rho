@@ -1,4 +1,4 @@
-# printf, variadics, and printing by type (0.3.3)
+# printf, format, variadics, and printing by type (0.3.3–0.3.4)
 
 0.3.0 made printing type-directed (`to_str` on every primitive, generic
 `print`/`println`/`eprint` — the design history is in git). 0.3.3 replaces
@@ -75,11 +75,12 @@ Because the desugared parameter is an ordinary slice, **no backend changes
 at all** — wasm, arm64, amd64 pass one more aggregate argument, which they
 already knew how to do.
 
-### 2. printf / eprintf (the surface)
+### 2. printf / eprintf / format (the surface)
 
 ```
 printf("x = {}, y = {}\n", x, y);   // stdout
 eprintf("bad: {} (code {})\n", why, n); // stderr
+let s: string = format("({}, {})", x, y); // the same string, as a value
 ```
 
 - The format string must be a **literal**. The checker splits it at
@@ -93,6 +94,20 @@ eprintf("bad: {} (code {})\n", why, n); // stderr
   (prelude, variadic over `string`) — or, with zero placeholders, the raw
   byte sink `__print_str(lit)`, so `printf("hello, world\n")` allocates
   nothing.
+- **`format` is the same desugar pointed at a string sink** (0.3.4): the
+  call becomes `__fmt_build(...) -> string`, a two-pass join (total
+  length, then one copy) with no intermediate strings; with zero
+  placeholders the call is the literal itself — no call, no copy. It is
+  the canonical way to write a `to_str` body:
+
+  ```
+  fn Point.to_str(self: *Point) -> string {
+    return format("({}, {})", self.x, self.y);
+  }
+  ```
+
+  `cat` stays binary and low-level on purpose — one way to assemble a
+  string at the surface, and it is not `cat`.
 - `print`, `println`, `eprint` are **removed**. They were the 0.3.0
   surface; `printf("{}", x)` is the same call with one honest syntax.
 
@@ -131,10 +146,12 @@ hand-written source, which it quietly was not before.
 ### 5. Testing (the referee)
 
 - Corpus: `027_variadics` (user variadics incl. zero-arg, spread,
-  fixed+variadic mix, a variadic returning a string) and `028_printf`
-  (every printable kind, brace escapes, expressions, eprintf) run on
-  `wasm32-wasi` and the native image targets; the 0.3.0 print matrix
-  files were rewritten in place with byte-identical outputs.
+  fixed+variadic mix, a variadic returning a string), `028_printf`
+  (every printable kind, brace escapes, expressions, eprintf) and
+  `029_format` (struct/enum/nested `to_str` via `format`, string
+  asserts, the zero-placeholder literal) run on `wasm32-wasi` and the
+  native image targets; the 0.3.0 print matrix files were rewritten in
+  place with byte-identical outputs.
 - Diag goldens: variadic arity, printf placeholder/value mismatch,
   non-literal format, stray brace, spread type mismatch,
   not-the-last-parameter, no-`to_str` (call-site anchored).

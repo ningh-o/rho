@@ -5,7 +5,7 @@ struct Point {
 }
 
 fn Point.to_str(self: *Point) -> string {
-  return cat("(", cat(self.x.to_str(), cat(", ", cat(self.y.to_str(), ")"))));
+  return format("({}, {})", self.x, self.y);
 }
 
 enum Shape {
@@ -15,7 +15,7 @@ enum Shape {
 
 fn Shape.to_str(self: Shape) -> string {
   return match self {
-    Shape.Circle(r) => cat("circle(", cat(r.to_str(), ")")),
+    Shape.Circle(r) => format("circle({})", r),
     Shape.Unit => "unit",
   };
 }

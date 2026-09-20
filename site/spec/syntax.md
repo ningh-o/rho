@@ -21,7 +21,7 @@ extern
 
 Identifiers: `[A-Za-z_][A-Za-z0-9_]*`. Reserved: the keywords above, the
 primitive type names (§2 of the spec), and the builtin names (`make`, `len`,
-`panic`, `printf`, `eprintf`, `size_of`).
+`panic`, `printf`, `eprintf`, `format`, `size_of`).
 
 Integer literals: decimal (`12345`), hex (`0xFF`), binary (`0b1010`), with
 `_` separators (`1_000_000`). An unsuffixed integer literal has no fixed

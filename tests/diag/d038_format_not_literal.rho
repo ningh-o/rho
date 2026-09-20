@@ -1,0 +1,6 @@
+// a non-literal format string passed to format is diagnosed
+fn main() -> i32 {
+  let s: string = "hi";
+  let t: string = format(s);
+  return 0;
+}

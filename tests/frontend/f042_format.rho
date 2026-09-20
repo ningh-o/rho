@@ -1,0 +1,21 @@
+// format: printf's machinery pointed at a string sink
+struct P {
+  a: i32,
+  b: bool,
+}
+
+fn P.to_str(self: *P) -> string {
+  return format("P({}, {})", self.a, self.b);
+}
+
+fn greet(name: string, n: i32) -> string {
+  return format("hi {}, {} time(s)", name, n);
+}
+
+fn main() -> i32 {
+  let s: string = greet("rho", 3);
+  let p = new P { a: 1, b: true };
+  let t: string = format("[{}] [{}]", s, p);
+  let z: string = format("nothing to fill");
+  return 0;
+}

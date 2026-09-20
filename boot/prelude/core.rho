@@ -567,10 +567,12 @@ fn f32.to_str(self: f32) -> string {
 
 // --------------------------------------------------------- print --
 //
-// printf/eprintf are compiler builtins: each `{}` in the literal format
-// takes the next value's to_str (spec §10.1). A call desugars into the
-// variadic sinks below — one string run per placeholder, one to_str call
-// per value — so printing rides the same slice plumbing user variadics do.
+// printf/eprintf/format are compiler builtins: each `{}` in the literal
+// format takes the next value's to_str (spec §10.1). A printing call
+// desugars into the variadic sinks below — one string run per
+// placeholder, one to_str call per value — so printing rides the same
+// slice plumbing user variadics do; format desugars into __fmt_build and
+// returns the joined string as a value.
 
 fn __fmt_print(parts: string...) {
   let mut i: usize = 0;
@@ -586,4 +588,27 @@ fn __fmt_eprint(parts: string...) {
     __eprint_str(parts[i]);
     i += 1;
   }
+}
+
+fn __fmt_build(parts: string...) -> string {
+  let mut n: usize = 0;
+  let mut i: usize = 0;
+  while i < len(parts) {
+    n += len(parts[i]);
+    i += 1;
+  }
+  let buf: []u8 = make([]u8, n);
+  let mut o: usize = 0;
+  i = 0;
+  while i < len(parts) {
+    let p: string = parts[i];
+    let mut j: usize = 0;
+    while j < len(p) {
+      buf[o] = p[j];
+      o += 1;
+      j += 1;
+    }
+    i += 1;
+  }
+  return intrinsics.slice_string(buf);
 }

@@ -8,7 +8,7 @@ struct Pt {
 }
 
 fn Pt.to_str(self: *Pt) -> string {
-  return cat("(", cat(self.x.to_str(), cat(",", cat(self.y.to_str(), ")"))));
+  return format("({},{})", self.x, self.y);
 }
 
 fn main() -> i32 {

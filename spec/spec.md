@@ -104,7 +104,7 @@ parse(x)`.
 ### 3.1 Pipeline
 
 ```
-lex → parse → resolve+monomorphize+typecheck (+ printf desugar)
+lex → parse → resolve+monomorphize+typecheck (+ printf/format desugar)
     → lower to SSA IR → per-target codegen
 ```
 
@@ -113,10 +113,10 @@ register; control-flow joins use φ nodes. Control flow in the IR is
 structured (if/else diamonds, while loops, returns) — a consequence of the
 source grammar, which keeps wasm lowering direct and the CFG reducible.
 
-`printf`/`eprintf` calls are rewritten during checking (type-system.md):
-each `{}` becomes the corresponding value's `to_str()`, and the call becomes
-a variadic `__fmt_print(...)` / `__fmt_eprint(...)` — so no backend knows
-the verb exists.
+`printf`/`eprintf`/`format` calls are rewritten during checking
+(type-system.md): each `{}` becomes the corresponding value's `to_str()`,
+and the call becomes a variadic `__fmt_print(...)` / `__fmt_eprint(...)` /
+`__fmt_build(...) -> string` — so no backend knows the verbs exist.
 
 ### 3.2 Backends
 
@@ -181,6 +181,8 @@ artifacts — a tested invariant (corpus builds are compared twice).
 - 0.3.3 — formatted printing: `printf`/`eprintf` with `{}` placeholders,
   and variadic functions (`rest: T...`, spread `xs...`). `print`, `println`
   and `eprint` are removed.
+- 0.3.4 — `format(fmt, ...) -> string`: the same desugar pointed at a
+  string sink, so a `to_str` body is one format line.
 - Bootstrap invariant, tested continuously once the mirror catches up
   (0.3.x, see `docs/todo.md`): `boot(self) == self(self)` byte for byte
   (stage2 == stage3), and `boot(corpus) == self(corpus)`.

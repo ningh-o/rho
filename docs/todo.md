@@ -1,5 +1,17 @@
 # todo
 
+## 0.3.4 — format: the printf desugar pointed at a string sink
+
+Boot-only (`__fmt_build` joins the prelude sinks; zero placeholders is the
+literal itself). `to_str` bodies become one format line — corpus 029 pins
+struct/enum/nested cases, and 024/028 now author their `to_str` bodies
+through `format`. Mirror items, on top of the 0.3.3 set below:
+
+1. checker: accept the `format` verb in the desugar block; rewrite to
+   `__fmt_build(...)` (or `EX_STR` with zero placeholders).
+2. prelude: `__fmt_build(parts: string...) -> string`.
+3. the corpus file 029 and the diag d038.
+
 ## 0.3.3 — printf + variadics; the mirror set grows
 
 Boot-only this round (`docs/print-and-printf.md` has the design): variadic
