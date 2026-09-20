@@ -157,8 +157,9 @@ static void emit_cmp(Emitter *e, IRIns *i) {
     sb_printf(e->out, "  movq %%rax, %lld(%%rbp)\n", dof);
     return;
   }
-  // floats: NaN-safe comparisons
-  bool size64 = i->size == 8;
+  // floats: NaN-safe comparisons — the width rides the OPERAND type
+  // (a CMP instruction carries no meaningful i->size)
+  bool size64 = i->a->ty == IT_F64;
   const char *sfx = size64 ? "sd" : "ss";
   mov_slot_reg(e, ao, size64 ? 8 : 4, true, XMM0);
   mov_slot_reg(e, bo, size64 ? 8 : 4, true, XMM1);

@@ -123,6 +123,7 @@ typedef enum Tok {
   // punctuation & operators
   P_LPAREN, P_RPAREN, P_LBRACE, P_RBRACE, P_LBRACKET, P_RBRACKET,
   P_COMMA, P_COLON, P_SEMI, P_DOT, P_ARROW, P_FATARROW, P_ELLIPSIS2,
+  P_ELLIPSIS3,
   P_PLUS, P_MINUS, P_STAR, P_SLASH, P_PERCENT, P_BANG, P_TILDE, P_AMP,
   P_PIPE, P_CARET, P_SHL, P_SHR, P_ANDAND, P_OROR, P_EQ, P_NE, P_LT, P_GT,
   P_LE, P_GE, P_ASSIGN, P_PLUSEQ, P_MINUSEQ, P_STAREQ, P_SLASHEQ,
@@ -240,6 +241,7 @@ typedef struct Expr {
   Vec caps;        // CLOSURE: checker — Sym* of captured outer locals, in
                    // first-use order (copy captures)
   bool fnval;      // checker: a fn reference materialized as a value
+  bool spread;     // CALL: this argument is `xs...` — passes a slice whole
 
   // filled by checker
   void *typed;     // Type* — computed type of this expression
@@ -274,6 +276,7 @@ typedef struct Param {
   Str name;
   TypeAst *ty;
   bool is_self;
+  bool is_variadic; // `rest: T...` — the body sees a []T, the last parameter only
   Str file;
   int line, col;
 } Param;

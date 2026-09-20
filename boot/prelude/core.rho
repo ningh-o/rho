@@ -1,5 +1,5 @@
 // The rho prelude core — pure, target-independent, prepended to every
-// target's tail (hosted / wasi / esp32c3) at embed time. The tails provide
+// target's tail (hosted / wasi) at embed time. The tails provide
 // the four per-target hooks this core builds on:
 //
 //   __print_str(s: string)   stdout bytes
@@ -8,11 +8,11 @@
 //   __alloc / __free         allocator hooks
 //
 // Printing is the to_str protocol (spec §10.1): a type is printable when
-// it has a method `to_str(self) -> string`; print/println/eprint are
-// generic over the value's type and call it. Every primitive gets to_str
-// here; floats go through an exact bigint formatter (the same algorithm
-// the self-hosted compiler uses for its canonical goldens) so the digits
-// are identical on every target, soft-float included.
+// it has a method `to_str(self) -> string`; printf/eprintf fill each `{}`
+// in a literal format with the next value's to_str. Every primitive gets
+// to_str here; floats go through an exact bigint formatter (the same
+// algorithm the self-hosted compiler uses for its canonical goldens) so
+// the digits are identical on every target, soft-float included.
 
 pub enum Option[T] {
   Some(T),
@@ -55,9 +55,7 @@ fn Result.is_err(self: Result) -> bool {
 // ------------------------------------------------------------ panics --
 
 fn panic(msg: string) {
-  __eprint_str("panic: ");
-  __eprint_str(msg);
-  __eprint_str("\n");
+  eprintf("panic: {}\n", msg);
   __exit(101);
 }
 
@@ -568,16 +566,24 @@ fn f32.to_str(self: f32) -> string {
 }
 
 // --------------------------------------------------------- print --
+//
+// printf/eprintf are compiler builtins: each `{}` in the literal format
+// takes the next value's to_str (spec §10.1). A call desugars into the
+// variadic sinks below — one string run per placeholder, one to_str call
+// per value — so printing rides the same slice plumbing user variadics do.
 
-fn print[T](x: T) {
-  __print_str(x.to_str());
+fn __fmt_print(parts: string...) {
+  let mut i: usize = 0;
+  while i < len(parts) {
+    __print_str(parts[i]);
+    i += 1;
+  }
 }
 
-fn println[T](x: T) {
-  __print_str(x.to_str());
-  __print_str("\n");
-}
-
-fn eprint[T](x: T) {
-  __eprint_str(x.to_str());
+fn __fmt_eprint(parts: string...) {
+  let mut i: usize = 0;
+  while i < len(parts) {
+    __eprint_str(parts[i]);
+    i += 1;
+  }
 }

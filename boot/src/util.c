@@ -119,7 +119,7 @@ void sb_printf(SB *sb, const char *fmt, ...) {
   va_copy(ap2, ap);
   int n = vsnprintf(NULL, 0, fmt, ap);
   va_end(ap);
-  sb_grow(sb, (size_t)n);
+  sb_grow(sb, (size_t)n + 1); // the terminator writes buf[n] — room for it
   vsnprintf(sb->buf + sb->n, (size_t)n + 1, fmt, ap2);
   sb->n += (size_t)n;
   va_end(ap2);

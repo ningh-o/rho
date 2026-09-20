@@ -1,0 +1,8 @@
+// a variadic call must fill the fixed parameters
+fn f(a: i32, rest: i64...) -> i32 {
+  return a;
+}
+
+fn main() -> i32 {
+  return f();
+}

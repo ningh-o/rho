@@ -169,6 +169,43 @@ header.site nav a.active { color: var(--accent); }
   cursor: pointer;
 }
 .example .run:hover { border-color: var(--accent-dim); }
+.example .bar a.runlink { font: 600 12.5px var(--sans); }
+.example .bar a.runlink:hover { text-decoration: none; color: var(--ink); }
+
+/* code tokens — shared by the home showcase and the tutorial examples
+   (the playground editor defines the same palette under .editor) */
+pre.code .kw { color: #d886c8; }
+pre.code .bi { color: #d08770; }
+pre.code .ty { color: #7fb3d5; }
+pre.code .str { color: #a3be8c; }
+pre.code .num { color: #e8a04c; }
+pre.code .com { color: #6b6862; font-style: italic; }
+
+/* ---- home ---- */
+
+.duo {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+.caption {
+  color: var(--ink-faint);
+  font-size: 13.5px;
+  margin-top: 12px;
+  max-width: 640px;
+}
+
+/* ---- standalone pages (tutorial) ---- */
+
+.page-head { padding-top: 44px; }
+.page-head h1 {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: 34px;
+  margin: 0 0 8px;
+}
+.page-head p { color: var(--ink-dim); max-width: 640px; margin: 0; }
 .example pre.code {
   margin: 0;
   padding: 16px;
@@ -263,6 +300,7 @@ select#example {
   color: var(--ink);
 }
 .editor pre.highlight .kw { color: #d886c8; }
+.editor pre.highlight .bi { color: #d08770; }
 .editor pre.highlight .ty { color: #7fb3d5; }
 .editor pre.highlight .str { color: #a3be8c; }
 .editor pre.highlight .num { color: #e8a04c; }
@@ -308,6 +346,7 @@ kbd {
   .play-main { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1.1fr) minmax(0, 1fr); }
   .pane + .pane { border-left: none; border-top: 1px solid var(--line); }
   .toc { columns: 1; }
+  .duo { grid-template-columns: 1fr; }
   .hero h1 { font-size: 32px; }
   .hero .glyph { font-size: 72px; }
 }

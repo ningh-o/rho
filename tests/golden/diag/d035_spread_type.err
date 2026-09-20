@@ -1,0 +1,1 @@
+tests/diag/d035_spread_type.rho:9:12: error: spread needs `[]i64`, found `[]string`

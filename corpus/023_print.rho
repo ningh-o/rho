@@ -1,28 +1,26 @@
 // exit: 0
 fn main() -> i32 {
-  print("i32: ");
-  println(42);
-  println(-7);
-  println(0);
+  printf("i32: {}\n", 42);
+  printf("{}\n", -7);
+  printf("{}\n", 0);
   let almost: i64 = 9223372036854775807;
-  println(almost + 1);
+  printf("{}\n", almost + 1);
   let umax: u64 = 18446744073709551615;
-  println(umax);
+  printf("{}\n", umax);
   let u8v: u8 = 255;
-  println(u8v);
+  printf("{}\n", u8v);
   let i8v: i8 = (0 - 128) as i8;
-  println(i8v);
+  printf("{}\n", i8v);
   let u16v: u16 = 65535;
-  println(u16v);
+  printf("{}\n", u16v);
   let i16v: i16 = (0 - 32768) as i16;
-  println(i16v);
+  printf("{}\n", i16v);
   let u32v: u32 = 4000000000;
-  println(u32v);
-  println(true);
-  println(false);
-  println("a string");
-  eprint("stderr line\n");
-  print(cat("con", cat("cat", "enated")));
-  print("\n");
+  printf("{}\n", u32v);
+  printf("{}\n", true);
+  printf("{}\n", false);
+  printf("{}\n", "a string");
+  eprintf("stderr line\n");
+  printf("{}\n", cat("con", cat("cat", "enated")));
   return 0;
 }

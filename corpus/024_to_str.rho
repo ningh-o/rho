@@ -22,13 +22,13 @@ fn Shape.to_str(self: Shape) -> string {
 
 fn main() -> i32 {
   let p = new Point { x: 3, y: 0 - 4 };
-  println(p);
+  printf("{}\n", p);
   let c: Shape = Shape.Circle(2.5);
-  println(c);
+  printf("{}\n", c);
   let u: Shape = Shape.Unit;
-  println(u);
+  printf("{}\n", u);
   assert_eq(1 + 1, 2);
   let n: i32 = 5;
-  println(n.to_str());
+  printf("{}\n", n);
   return 0;
 }

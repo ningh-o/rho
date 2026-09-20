@@ -1,0 +1,5 @@
+// a stray brace in the format string is diagnosed
+fn main() -> i32 {
+  printf("bad } brace\n");
+  return 0;
+}

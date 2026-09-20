@@ -150,15 +150,39 @@ typedef enum Target {
   TGT_AMD64_LINUX,
   TGT_AMD64_MAC, // Rosetta test vehicle for the SysV backend
   TGT_ARM64_MAC,
+  TGT_ARM64_LINUX,
   TGT_WASM32_WASI,
-  TGT_ESP32C3,   // RV32IM, flat image run by the in-tree simulator
 } Target;
 
 void emit_amd64(Target target, SB *out);
 void emit_arm64(Target target, SB *out);   // 0.0.3
 void emit_wasm(Target target, SB *out);    // 0.0.4
-void emit_riscv32(SB *out);                // 0.2.0: esp32c3
-int assemble_rv32(const char *text, unsigned char **image_out); // text -> flat image
+
+// in-tree arm64 assembler + static Mach-O writer (arm64-mac, 0.3.1):
+// rho's own assembly format straight to a runnable image — no external
+// assembler, linker, or codesign tool
+int asm64_assemble(char *text, uint64_t base, uint64_t page, uint64_t heap_override,
+                   SB out[3], uint64_t *str_va, uint64_t *data_va, uint64_t *heap_va);
+int asm64_test(const char *text, const char *out_path); // dev oracle (asmtest)
+int macho64_write(const SB secs[3], uint64_t text_vaddr,
+                  uint64_t data_vaddr, uint64_t heap_vaddr, const char *out_path);
+
+// in-tree amd64 assembler (AT&T dialect, linux targets) + static ELF64
+// writer shared by both Linux machines — same in-tree pipeline, one more
+// image format
+int asm86_assemble(char *text, uint64_t base, uint64_t page, uint64_t heap_override,
+                   SB out[3], uint64_t *str_va, uint64_t *data_va, uint64_t *heap_va);
+int elf64_write(const SB secs[3], int machine, uint64_t text_vaddr,
+                uint64_t data_vaddr, uint64_t heap_vaddr, const char *out_path);
+
+// arm64-mac images: vaddr of the first text byte = VM base + this fixed
+// load-command block (header + PAGEZERO + TEXT + DATA + LINKEDIT + MAIN +
+// CODESIGNATURE); macho64.c writes exactly this block
+#define ARM64_MAC_HDR 856
+
+// linux images: ehdr (64) + 3 program headers (56 each); the first text
+// byte sits at 0x400000 + this
+#define ELF64_HDR 232
 
 // statics + string literals collected during lowering
 typedef struct IRGlobal {

@@ -399,6 +399,12 @@ static void emit_cmp(WFnCtx *c, IRIns *i) {
     w8(c->body, i->a->ty == IT_F32 ? f32ops[idx] : f64ops[idx]);
   } else {
     bool is64 = w_is64(i->a->ty);
+    // pointer(+/-)usize comparisons mix i32 and i64 on wasm32: unify to
+    // the a-side's width, same contract as the ADD/SUB family
+    if (is64 && !w_is64(i->b->ty))
+      w8(c->body, 0xAD); // i64.extend_i32_u
+    else if (!is64 && w_is64(i->b->ty))
+      w8(c->body, 0xA7); // i32.wrap_i64
     int base = is64 ? 0x51 : 0x46;
     int idx;
     switch (i->cc) {

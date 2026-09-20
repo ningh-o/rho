@@ -1,5 +1,5 @@
 CC ?= cc
-CFLAGS ?= -std=c11 -O2 -Wall -Wextra -Wno-unused-parameter
+CFLAGS ?= -std=c11 -D_POSIX_C_SOURCE=200809L -O2 -Wall -Wextra -Wno-unused-parameter
 # prelude_data.c is listed explicitly: after `make clean` the wildcard cannot
 # see it, and the explicit entry forces generation before compiling; sort
 # dedupes once the generated file shows up in the wildcard too
@@ -13,16 +13,16 @@ build/rho-boot: $(BOOT_OBJ)
 	@mkdir -p build
 	$(CC) $(CFLAGS) -o $@ $(BOOT_OBJ)
 
-boot/src/%.o: boot/src/%.c boot/src/rho.h boot/src/prelude_data.c
+boot/src/%.o: boot/src/%.c boot/src/rho.h boot/src/ir.h boot/src/prelude_data.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 CORE := boot/prelude/core.rho
 
-boot/src/prelude_data.c: $(CORE) boot/prelude/hosted.rho boot/prelude/wasi.rho boot/prelude/esp32c3.rho tools/embed.py
+boot/src/prelude_data.c: $(CORE) boot/prelude/hosted.rho boot/prelude/wasi.rho boot/prelude/mac.rho tools/embed.py
 	python3 tools/embed.py PRELUDE_SOURCE boot/src/prelude_data.c $(CORE) boot/prelude/hosted.rho
 	python3 tools/embed.py PRELUDE_WASI_SOURCE boot/src/prelude_wasi_data.inc $(CORE) boot/prelude/wasi.rho
-	python3 tools/embed.py PRELUDE_ESP32_SOURCE boot/src/prelude_esp32_data.inc $(CORE) boot/prelude/esp32c3.rho
-	cat boot/src/prelude_wasi_data.inc boot/src/prelude_esp32_data.inc >> boot/src/prelude_data.c
+	python3 tools/embed.py PRELUDE_MAC_SOURCE boot/src/prelude_mac_data.inc $(CORE) boot/prelude/mac.rho
+	cat boot/src/prelude_wasi_data.inc boot/src/prelude_mac_data.inc >> boot/src/prelude_data.c
 
 # the compiler itself as wasm32-wasi: the browser playground runs this
 build/rho-boot.wasm: $(BOOT_SRC) boot/src/rho.h

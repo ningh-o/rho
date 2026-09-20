@@ -157,7 +157,42 @@ static Param *parse_param(Parser *p) {
   }
   expect(p, P_COLON, "`:`");
   pa->ty = parse_type(p);
+  if (accept(p, P_ELLIPSIS3))
+    pa->is_variadic = true;
   return pa;
+}
+
+// one call argument; `xs...` (spread) is only legal as the final argument
+static Expr *parse_arg_expr(Parser *p) {
+  Expr *arg = parse_expr(p);
+  if (accept(p, P_ELLIPSIS3)) {
+    arg->spread = true;
+    if (!at(p, P_RPAREN)) {
+      Token *t = peek(p);
+      err_at(t->file, t->line, t->col, "`...` spread must be the last argument");
+    }
+  }
+  return arg;
+}
+
+// a full `(params)` list. A variadic parameter (`rest: T...`) must be the
+// last one; externs and closures take none (the fn-value type has no
+// spelling for "and then more").
+static void parse_param_list(Parser *p, Vec *out, bool allow_variadic) {
+  expect(p, P_LPAREN, "`(`");
+  if (!at(p, P_RPAREN)) {
+    do {
+      Param *pa = parse_param(p);
+      if (out->n && ((Param *)out->items[out->n - 1])->is_variadic)
+        err_at(pa->file, pa->line, pa->col,
+               "only the last parameter can be variadic");
+      if (pa->is_variadic && !allow_variadic)
+        err_at(pa->file, pa->line, pa->col,
+               "variadic parameters are only for named `fn` declarations");
+      vec_push(out, pa);
+    } while (accept(p, P_COMMA));
+  }
+  expect(p, P_RPAREN, "`)`");
 }
 
 // optional `[T, U]` type-parameter list (fn/struct/enum declarations)
@@ -431,13 +466,7 @@ static Expr *parse_primary(Parser *p) {
   {
     advance(p);
     NODE(e, EX_CLOSURE);
-    expect(p, P_LPAREN, "`(`");
-    if (!at(p, P_RPAREN)) {
-      do {
-        vec_push(&e->params, parse_param(p));
-      } while (accept(p, P_COMMA));
-    }
-    expect(p, P_RPAREN, "`)`");
+    parse_param_list(p, &e->params, false);
     if (accept(p, P_ARROW))
       e->ret = parse_type(p);
     e->items = parse_block(p); // body stmts
@@ -466,24 +495,24 @@ static Expr *parse_postfix(Parser *p) {
           Token *nm = advance(p);
           advance(p); // ':'
           vec_push(&call->arg_names, str_to_c(nm->text));
-          vec_push(&call->args, parse_expr(p));
+          vec_push(&call->args, parse_arg_expr(p));
         } else if (e->kind == EX_NAME && str_eq_c(e->sv, "make") && at(p, P_LBRACKET)) {
           // make([]T, n): the first argument is a type
           vec_push(&call->arg_names, NULL);
           vec_push(&call->args, type_as_expr(p));
         } else {
           vec_push(&call->arg_names, NULL);
-          vec_push(&call->args, parse_expr(p));
+          vec_push(&call->args, parse_arg_expr(p));
         }
         while (accept(p, P_COMMA)) {
           if (at(p, TK_IDENT) && peek2(p)->kind == P_COLON) {
             Token *nm = advance(p);
             advance(p);
             vec_push(&call->arg_names, str_to_c(nm->text));
-            vec_push(&call->args, parse_expr(p));
+            vec_push(&call->args, parse_arg_expr(p));
           } else {
             vec_push(&call->arg_names, NULL);
-            vec_push(&call->args, parse_expr(p));
+            vec_push(&call->args, parse_arg_expr(p));
           }
         }
       }
@@ -745,13 +774,7 @@ Decl *parse_file(Str path, Str src) {
       expect(&p, KW_FN, "`fn`");
       Token *id = expect_ident(&p, "function name");
       d->name = id->text;
-      expect(&p, P_LPAREN, "`(`");
-      if (!at(&p, P_RPAREN)) {
-        do {
-          vec_push(&d->params, parse_param(&p));
-        } while (accept(&p, P_COMMA));
-      }
-      expect(&p, P_RPAREN, "`)`");
+      parse_param_list(&p, &d->params, false);
       if (accept(&p, P_ARROW))
         d->ret = parse_type(&p);
       expect(&p, P_SEMI, "`;`");
@@ -767,13 +790,7 @@ Decl *parse_file(Str path, Str src) {
         d->name = m->text;
       }
       parse_tparams(&p, &d->tparams);
-      expect(&p, P_LPAREN, "`(`");
-      if (!at(&p, P_RPAREN)) {
-        do {
-          vec_push(&d->params, parse_param(&p));
-        } while (accept(&p, P_COMMA));
-      }
-      expect(&p, P_RPAREN, "`)`");
+      parse_param_list(&p, &d->params, true);
       if (accept(&p, P_ARROW))
         d->ret = parse_type(&p);
       if (d->params.n && ((Param *)d->params.items[0])->is_self)

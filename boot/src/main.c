@@ -1,12 +1,5 @@
 #include "ir.h"
 
-// RV32 simulator (rv32sim.c) for the esp32c3 flat images
-#define RV32_STACK_TOP 0x01000000u
-#define RV32_HEAP_BASE 0x00100000u
-#define RV32_HEAP_SIZE 0x00800000u
-int sim_run(unsigned char *image, uint32_t image_size, uint32_t entry,
-            uint32_t heap_base, uint32_t heap_size, int *faulted);
-
 void lower_dump_ir(void);
 void lower_dump_ir_if_requested(void);
 #if !defined(__wasm__)
@@ -25,6 +18,78 @@ int system(const char *cmd) {
 extern const char PRELUDE_SOURCE[];
 extern const char *g_root_dir;
 const char *g_root_dir = ".";
+
+// the freestanding arm64-mac runtime: _rho_rt_start initializes the bump
+// allocator's heap pointer, calls _main (the emitter's trampoline), and
+// exits with its return code; _write/_exit are the raw syscalls the mac
+// prelude calls. Assembled into every arm64-mac image — no libc.
+static const char RT_ARM64[] =
+    ".section __TEXT,__text,regular,pure_instructions\n"
+    ".globl _rho_rt_start\n"
+    "_rho_rt_start:\n"
+    "  adrp x8, _rho_rt_heap@PAGE\n"
+    "  add x8, x8, _rho_rt_heap@PAGEOFF\n"
+    "  adrp x9, _rho__prelude___HEAP@PAGE\n"
+    "  add x9, x9, _rho__prelude___HEAP@PAGEOFF\n"
+    "  str x8, [x9]\n"
+    "  bl _main\n"
+    "  mov x16, #1\n"
+    "  movk x16, #32, lsl 16\n"
+    "  svc #0x80\n"
+    ".globl _write\n"
+    "_write:\n"
+    "  mov x16, #4\n"
+    "  movk x16, #32, lsl 16\n"
+    "  svc #0x80\n"
+    "  ret\n"
+    ".globl _exit\n"
+    "_exit:\n"
+    "  mov x16, #1\n"
+    "  movk x16, #32, lsl 16\n"
+    "  svc #0x80\n";
+
+// the freestanding amd64-linux runtime: same contract, SysV + raw
+// syscalls (write=1, exit=60). Symbols ride the ELF dialect — bare names.
+static const char RT_AMD64_LINUX[] =
+    ".text\n"
+    "rho_rt_start:\n"
+    "  leaq _rho_rt_heap(%rip), %rax\n"
+    "  leaq rho__prelude___HEAP(%rip), %rcx\n"
+    "  movq %rax, (%rcx)\n"
+    "  call main\n"
+    "  movl %eax, %edi\n"
+    "  movl $60, %eax\n"
+    "  syscall\n"
+    "write:\n"
+    "  movl $1, %eax\n"
+    "  syscall\n"
+    "  ret\n"
+    "exit:\n"
+    "  movl $60, %eax\n"
+    "  syscall\n";
+
+// the freestanding arm64-linux runtime: the syscall number rides x8 —
+// arm64 linux uses the asm-generic table (write=64, exit=93)
+static const char RT_ARM64_LINUX[] =
+    ".text\n"
+    "rho_rt_start:\n"
+    "  adrp x8, _rho_rt_heap@PAGE\n"
+    "  add x8, x8, _rho_rt_heap@PAGEOFF\n"
+    "  adrp x9, rho__prelude___HEAP@PAGE\n"
+    "  add x9, x9, rho__prelude___HEAP@PAGEOFF\n"
+    "  str x8, [x9]\n"
+    "  bl main\n"
+    "  mov x8, #93\n"
+    "  svc #0\n"
+    ".globl write\n"
+    "write:\n"
+    "  mov x8, #64\n"
+    "  svc #0\n"
+    "  ret\n"
+    ".globl exit\n"
+    "exit:\n"
+    "  mov x8, #93\n"
+    "  svc #0\n";
 
 // ------------------------------------------------------------------ io ----
 
@@ -271,33 +336,26 @@ static Target parse_target(const char *s) {
     return TGT_AMD64_MAC;
   if (!strcmp(s, "arm64-mac"))
     return TGT_ARM64_MAC;
+  if (!strcmp(s, "arm64-linux"))
+    return TGT_ARM64_LINUX;
   if (!strcmp(s, "wasm32-wasi"))
     return TGT_WASM32_WASI;
-  if (!strcmp(s, "esp32c3"))
-    return TGT_ESP32C3;
   fprintf(stderr, "rho: unknown target `%s`\n", s);
   exit(2);
 }
 
-static const char *target_cc(Target t) {
-  switch (t) {
-  case TGT_AMD64_LINUX:
-    return "cc -no-pie";
-  case TGT_AMD64_MAC:
-  case TGT_ARM64_MAC:
-    return "cc";
-  default:
-    return "cc";
-  }
-}
-
-// full pipeline: check -> lower -> emit -> assemble+link. Returns the path to
-// the built artifact (arena). On any failure prints diagnostics, returns NULL.
-static const char *build_to(const char *file, Target target, const char *out_path) {
+// full pipeline: check -> lower -> emit. wasm32-wasi produces a runnable
+// module directly; native targets emit assembly text — assembling and
+// linking are the platform toolchain's job, never an invocation from here.
+// Returns the path to the built artifact (arena). On any failure prints
+// diagnostics, returns NULL. `announce` prints the artifact line (build);
+// run and test build silently.
+static const char *build_to(const char *file, Target target, const char *out_path,
+                            bool announce) {
   extern bool g_prelude_wasm;
-  extern bool g_prelude_esp32;
+  extern bool g_prelude_native;
   g_prelude_wasm = target == TGT_WASM32_WASI;
-  g_prelude_esp32 = target == TGT_ESP32C3;
+  g_prelude_native = target != TGT_WASM32_WASI;
   Decl *root = compile_root(str_from(file));
   if (!root)
     return NULL;
@@ -315,36 +373,77 @@ static const char *build_to(const char *file, Target target, const char *out_pat
   if (target == TGT_AMD64_LINUX || target == TGT_AMD64_MAC) {
     lower_dump_ir_if_requested();
     emit_amd64(target, &emitted);
-  } else if (target == TGT_ARM64_MAC) {
+    if (target == TGT_AMD64_LINUX) {
+      // rho's own assembly -> own assembler -> static ELF; no libc, no
+      // interpreter, no external toolchain anywhere
+      Str text = sb_finish(&emitted);
+      if (getenv("RHO_KEEP_ASM")) {
+        char *p = arena_printf("%s.s", out_path);
+        write_file(str_from(p), text);
+      }
+      SB full = {0};
+      sb_append_c(&full, RT_AMD64_LINUX);
+      sb_printf(&full, "%.*s", (int)text.n, text.p);
+      SB secs[3];
+      uint64_t str_va, data_va, heap_va;
+      if (asm86_assemble(full.buf, 0x400000ull + ELF64_HDR, 0x1000, 0, secs,
+                         &str_va, &data_va, &heap_va))
+        return NULL;
+      if (elf64_write(secs, 62 /*EM_X86_64*/, 0x400000ull + ELF64_HDR, data_va,
+                      heap_va, out_path))
+        return NULL;
+      if (announce)
+        printf("built %s\n", out_path);
+      return out_path;
+    }
+  } else if (target == TGT_ARM64_LINUX) {
     lower_dump_ir_if_requested();
     emit_arm64(target, &emitted);
-  } else if (target == TGT_ESP32C3) {
-    // esp32c3: emit RV32IM text, assemble in-tree, write the flat image;
-    // the built-in simulator runs it directly (no external toolchain)
+    Str text = sb_finish(&emitted);
+    if (getenv("RHO_KEEP_ASM")) {
+      char *p = arena_printf("%s.s", out_path);
+      write_file(str_from(p), text);
+    }
+    SB full = {0};
+    sb_append_c(&full, RT_ARM64_LINUX);
+    sb_printf(&full, "%.*s", (int)text.n, text.p);
+    SB secs[3];
+    uint64_t str_va, data_va, heap_va;
+    if (asm64_assemble(full.buf, 0x400000ull + ELF64_HDR, 0x1000, 0, secs,
+                       &str_va, &data_va, &heap_va))
+      return NULL;
+    if (elf64_write(secs, 183 /*EM_AARCH64*/, 0x400000ull + ELF64_HDR, data_va,
+                    heap_va, out_path))
+      return NULL;
+    if (announce)
+      printf("built %s\n", out_path);
+    return out_path;
+  } else if (target == TGT_ARM64_MAC) {
+    // rho's own assembly format -> own assembler -> static Mach-O with an
+    // ad-hoc signature; no external toolchain anywhere
     lower_dump_ir_if_requested();
-    emit_riscv32(&emitted);
-    const char *s_path32 = arena_printf("%s.s", out_path);
-    Str dump_text = sb_finish(&emitted);
-    write_file(str_from(s_path32), dump_text);
-    emitted = (SB){0};
-    emitted.buf = dump_text.p;
-    emitted.n = dump_text.n;
-    emitted.cap = dump_text.n;
-    extern uint32_t g_rv32_last_size;
-    unsigned char *image = NULL;
-    if (assemble_rv32(str_to_c(sb_finish(&emitted)), &image) != 0) {
-      fprintf(stderr, "rho: rv32 assembly failed\n");
-      return NULL;
+    emit_arm64(target, &emitted);
+    Str text = sb_finish(&emitted);
+    if (getenv("RHO_KEEP_ASM")) { // debug: keep the assembly text
+      char *p = arena_printf("%s.s", out_path);
+      write_file(str_from(p), text);
     }
-    FILE *f = fopen(out_path, "wb");
-    if (!f) {
-      fprintf(stderr, "rho: cannot write %s\n", out_path);
+    SB full = {0};
+    sb_append_c(&full, RT_ARM64);
+    sb_printf(&full, "%.*s", (int)text.n, text.p);
+    // image base: VM 0x100000000 + the fixed 648-byte load-command block;
+    // 16K pages — Apple Silicon maps segments on 16K boundaries
+    SB secs[3];
+    uint64_t str_va, data_va, heap_va;
+    if (asm64_assemble(full.buf, 0x100000000ull + ARM64_MAC_HDR, 0x4000,
+                       0x100000000ull + 0x1000000ull, secs, &str_va, &data_va,
+                       &heap_va))
       return NULL;
-    }
-    fwrite(image, 1, g_rv32_last_size, f);
-    fclose(f);
-    free(image);
-    printf("built %s\n", out_path);
+    if (macho64_write(secs, 0x100000000ull + ARM64_MAC_HDR, data_va, heap_va,
+                      out_path))
+      return NULL;
+    if (announce)
+      printf("built %s\n", out_path);
     return out_path;
   } else if (target == TGT_WASM32_WASI) {
     // wasm: the emitter produces the binary module directly
@@ -353,35 +452,49 @@ static const char *build_to(const char *file, Target target, const char *out_pat
       fprintf(stderr, "rho: cannot write %s\n", out_path);
       return NULL;
     }
-    printf("built %s\n", out_path);
+    if (announce)
+      printf("built %s\n", out_path);
     return out_path;
   }
-  // shared native tail (amd64 + arm64): write the .s and hand it to cc
+  // shared native tail (amd64 + arm64): write the assembly text and stop.
+  // The toolchain does not shell out to an assembler/linker.
   const char *s_path = arena_printf("%s.s", out_path);
   if (!write_file(str_from(s_path), sb_finish(&emitted))) {
     fprintf(stderr, "rho: cannot write %s\n", s_path);
     return NULL;
   }
-  const char *cc_cmd = target_cc(target);
-  const char *arch = target == TGT_AMD64_LINUX || target == TGT_AMD64_MAC ? "-arch x86_64 " : "";
-  SB cmd = {0};
-  sb_printf(&cmd, "%s %s%s -o %s 2>&1", cc_cmd, arch, s_path, out_path);
-  if (system(str_to_c(sb_finish(&cmd))) != 0) {
-    fprintf(stderr, "rho: assembler/linker failed\n");
-    return NULL;
-  }
-  return out_path;
+  if (announce)
+    printf("wrote %s (assemble+link with the platform toolchain, e.g. cc %s -o %s)\n",
+           s_path, s_path, out_path);
+  return s_path;
 }
 
 static int cmd_build_run_test(const char *cmd, int argc, char **argv) {
   if (!strcmp(cmd, "test")) {
     const char *dir = "corpus";
-    Target tt = TGT_AMD64_MAC;
+    Target tt = TGT_WASM32_WASI;
     for (int i = 2; i < argc; i++) {
       if (!strcmp(argv[i], "--target") && i + 1 < argc)
         tt = parse_target(argv[++i]);
       else
         dir = argv[i];
+    }
+#if defined(__linux__)
+    if (tt != TGT_WASM32_WASI && tt != TGT_ARM64_MAC && tt != TGT_AMD64_LINUX &&
+        tt != TGT_ARM64_LINUX) {
+#else
+    if (tt != TGT_WASM32_WASI && tt != TGT_ARM64_MAC) {
+#endif
+      fprintf(stderr,
+              "rho: corpus execution runs on wasm32-wasi (wasmtime) or "
+              "arm64-mac (in-tree image)%s\n",
+#if defined(__linux__)
+              " or the linux targets (in-tree images)"
+#else
+              "; the linux targets build images but need a linux host to run"
+#endif
+      );
+      return 2;
     }
     Vec files = list_dir(str_from(dir), ".rho");
     int failures = 0, ran = 0;
@@ -395,7 +508,7 @@ static int cmd_build_run_test(const char *cmd, int argc, char **argv) {
       if (dot)
         *dot = 0;
       const char *bin = arena_printf("build/corpus_%s", name);
-      const char *built = build_to(path, tt, bin);
+      const char *built = build_to(path, tt, bin, false);
       if (!built) {
         printf("FAIL %s (build)\n", name);
         failures++;
@@ -407,35 +520,15 @@ static int cmd_build_run_test(const char *cmd, int argc, char **argv) {
       const char *tmpout = arena_printf("/tmp/rho_out_%s", name);
       SB rc = {0};
       int code;
-      if (tt == TGT_ESP32C3) {
-        // flat image: run it on the in-tree RV32 simulator
-        FILE *f = fopen(built, "rb");
-        if (!f) {
-          printf("FAIL %s (no image)\n", name);
-          failures++;
-          continue;
-        }
-        fseek(f, 0, SEEK_END);
-        long sz = ftell(f);
-        fseek(f, 0, SEEK_SET);
-        uint8_t *img = malloc(sz ? (size_t)sz : 1);
-        fread(img, 1, (size_t)sz, f);
-        fclose(f);
-        int faulted = 0;
-        code = sim_run(img, (uint32_t)sz, 0, RV32_HEAP_BASE, RV32_HEAP_SIZE, &faulted);
-        if (faulted)
-          code = 200;
-        free(img);
-      } else if (tt == TGT_WASM32_WASI) {
+      if (tt == TGT_ARM64_MAC || tt == TGT_ARM64_LINUX || tt == TGT_AMD64_LINUX) {
+        // a runnable image the toolchain built itself: execute directly
+        sb_printf(&rc, "%s > %s", built, tmpout);
+      } else {
         // wasmtime prints stdout to fd 1; panic exit 101 propagates
         sb_printf(&rc, "wasmtime run %s > %s 2>/dev/null", built, tmpout);
-        int status = system(str_to_c(sb_finish(&rc)));
-        code = WEXITSTATUS(status);
-      } else {
-        sb_printf(&rc, "%s > %s", built, tmpout);
-        int status = system(str_to_c(sb_finish(&rc)));
-        code = WEXITSTATUS(status);
       }
+      int status = system(str_to_c(sb_finish(&rc)));
+      code = WEXITSTATUS(status);
       // expected exit
       int want_code = 0;
       Str src = read_file_or_die(str_from(path));
@@ -466,7 +559,7 @@ static int cmd_build_run_test(const char *cmd, int argc, char **argv) {
   }
 
   // build / run
-  const char *file = NULL, *out = NULL, *target_s = "arm64-mac";
+  const char *file = NULL, *out = NULL, *target_s = "wasm32-wasi";
   for (int i = 2; i < argc; i++) {
     if (!strcmp(argv[i], "-o") && i + 1 < argc)
       out = argv[++i];
@@ -480,9 +573,16 @@ static int cmd_build_run_test(const char *cmd, int argc, char **argv) {
     return 2;
   }
   Target target = parse_target(target_s);
+#if !defined(__linux__)
+  if (!strcmp(cmd, "run") && target != TGT_WASM32_WASI && target != TGT_ARM64_MAC) {
+    fprintf(stderr, "rho: run supports wasm32-wasi (wasmtime) and arm64-mac "
+                    "(in-tree image); linux targets need a linux host\n");
+    return 2;
+  }
+#endif
   const char *bin;
   if (!strcmp(cmd, "build")) {
-    bin = out ? out : "a.out";
+    bin = out ? out : (target == TGT_WASM32_WASI ? "a.wasm" : "a.s");
   } else {
 #if defined(__wasm__)
     bin = "/tmp/rho_run";
@@ -490,23 +590,35 @@ static int cmd_build_run_test(const char *cmd, int argc, char **argv) {
     bin = arena_printf("/tmp/rho_run_%d", (int)getpid());
 #endif
   }
-  const char *built = build_to(file, target, bin);
+  const char *built = build_to(file, target, bin, !strcmp(cmd, "build"));
   if (!built)
     return 1;
   if (!strcmp(cmd, "run")) {
     SB rc = {0};
-    sb_append_c(&rc, built);
-    for (int i = 2; i < argc; i++) {
-      if (!strcmp(argv[i], "--")) {
-        for (int j = i + 1; j < argc; j++)
-          sb_printf(&rc, " \"%s\"", argv[j]);
-        break;
+    if (target == TGT_ARM64_MAC || target == TGT_ARM64_LINUX ||
+        target == TGT_AMD64_LINUX) {
+      sb_append_c(&rc, built);
+      for (int i = 2; i < argc; i++) {
+        if (!strcmp(argv[i], "--")) {
+          for (int j = i + 1; j < argc; j++)
+            sb_printf(&rc, " \"%s\"", argv[j]);
+          break;
+        }
+      }
+    } else {
+      sb_printf(&rc, "wasmtime run %s", built);
+      for (int i = 2; i < argc; i++) {
+        if (!strcmp(argv[i], "--")) {
+          for (int j = i + 1; j < argc; j++)
+            sb_printf(&rc, " \"%s\"", argv[j]);
+          break;
+        }
       }
     }
     int status = system(str_to_c(sb_finish(&rc)));
     return WEXITSTATUS(status);
   }
-  printf("built %s\n", bin);
+  // build_to already announced the artifact ("built …" / "wrote …")
   return 0;
 }
 
@@ -514,13 +626,20 @@ static int cmd_build_run_test(const char *cmd, int argc, char **argv) {
 
 static void usage(void) {
   fprintf(stderr,
-          "rho 0.3.0\n"
+          "rho 0.3.3\n"
           "usage: rho <command> [args]\n"
           "  check  <file>              parse + typecheck\n"
           "  fmt    [-w] <file>         print canonical formatting\n"
-          "  build  <file> [-o out]     (arrives in 0.0.2)\n"
-          "  run    <file>              (arrives in 0.0.2)\n"
-          "  test   [file|dir]          (arrives in 0.0.2)\n"
+          "  build  <file> [-o out]     emit the artifact for --target\n"
+          "                             (default wasm32-wasi: a runnable module;\n"
+          "                              arm64-mac: a static Mach-O, signed;\n"
+          "                              linux targets: static ELF images)\n"
+          "  run    <file> [-- args]    build + execute (wasm32-wasi via\n"
+          "                             wasmtime; native images run directly\n"
+          "                             on a matching host)\n"
+          "  test   [dir] [--target t]  compile + run corpus programs\n"
+          "                             (wasm32-wasi, arm64-mac, or linux\n"
+          "                             targets on a linux host)\n"
           "  selftest [--update-goldens] [--fmt]\n");
 }
 
@@ -532,7 +651,7 @@ int main(int argc, char **argv) {
   const char *cmd = argv[1];
 
   if (!strcmp(cmd, "--version") || !strcmp(cmd, "version")) {
-    printf("rho 0.3.0\n");
+    printf("rho 0.3.3\n");
     return 0;
   }
 
@@ -588,6 +707,20 @@ int main(int argc, char **argv) {
 
   if (!strcmp(cmd, "build") || !strcmp(cmd, "run") || !strcmp(cmd, "test"))
     return cmd_build_run_test(cmd, argc, argv);
+
+  if (!strcmp(cmd, "asmtest")) {
+    // development-time oracle: assemble rho assembly to a raw image so
+    // tools/check_asm64.sh can diff it against the system assembler
+    if (argc < 4) {
+      usage();
+      return 2;
+    }
+    Str src = read_file_or_die(str_from(argv[2]));
+    char *buf = arena_alloc(src.n + 1);
+    memcpy(buf, src.p, src.n);
+    buf[src.n] = 0;
+    return asm64_test(buf, argv[3]);
+  }
 
   usage();
   return 2;

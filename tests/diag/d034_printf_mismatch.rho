@@ -1,0 +1,7 @@
+// printf holes must match the value count; the format must be a literal
+fn main() -> i32 {
+  let s: string = "x";
+  printf("{} {}\n", 1);
+  printf(s, 1);
+  return 0;
+}

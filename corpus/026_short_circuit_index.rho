@@ -14,16 +14,16 @@ fn main() -> i32 {
     }
     n -= 1;
   }
-  println(n);
+  printf("{}\n", n);
   let mut m: usize = 6;
   while m > 1 && w[m - 1] == 0 {
     m -= 1;
   }
-  println(m);
+  printf("{}\n", m);
   let mut k: usize = 0;
   while k < 5 && w[k] != 9 {
     k += 1;
   }
-  println(k);
+  printf("{}\n", k);
   return 0;
 }

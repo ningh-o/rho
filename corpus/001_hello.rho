@@ -1,5 +1,5 @@
 // exit: 0
 fn main() -> i32 {
-  print("hello, world\n");
+  printf("hello, world\n");
   return 0;
 }

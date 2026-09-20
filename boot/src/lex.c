@@ -234,7 +234,16 @@ void lex_file(Str file, Str src, Vec *out_tokens) {
       continue;
     }
 
-    // multi-char operators first
+    // multi-char operators first (longest match: `...` before `..`)
+#define OP3(a, b, c3, k)                                                         \
+  if (c == a && lx.p + 2 < lx.end && lx.p[1] == b && lx.p[2] == c3) {            \
+    lx.p += 3;                                                                   \
+    lx.col += 3;                                                                 \
+    tok_new(&lx, k, start);                                                      \
+    continue;                                                                    \
+  }
+    OP3('.', '.', '.', P_ELLIPSIS3)
+#undef OP3
 #define OP2(a, b, k)                                                           \
   if (c == a && lx.p + 1 < lx.end && lx.p[1] == b) {                           \
     lx.p += 2;                                                                 \
@@ -355,6 +364,7 @@ const char *tok_name(Tok t) {
   case P_ARROW: return "`->`";
   case P_FATARROW: return "`=>`";
   case P_ELLIPSIS2: return "`..`";
+  case P_ELLIPSIS3: return "`...`";
   case P_PLUS: return "`+`";
   case P_MINUS: return "`-`";
   case P_STAR: return "`*`";
@@ -425,6 +435,7 @@ const char *tok_spell(Tok t) {
   case P_GE: return ">=";
   case P_ASSIGN: return "=";
   case P_ELLIPSIS2: return "..";
+  case P_ELLIPSIS3: return "...";
   case P_ARROW: return "->";
   case P_FATARROW: return "=>";
   case P_COLON: return ":";

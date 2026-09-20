@@ -166,6 +166,8 @@ static void f_expr(SB *sb, Expr *e, int parent_bp) {
       if (e->arg_names.n > i && e->arg_names.items[i])
         sb_printf(sb, "%s: ", (char *)e->arg_names.items[i]);
       f_expr(sb, e->args.items[i], 0);
+      if (((Expr *)e->args.items[i])->spread)
+        sb_append_c(sb, "...");
     }
     sb_push(sb, ')');
     break;
@@ -491,6 +493,8 @@ static void f_params(SB *sb, Vec *params) {
     sb_append(sb, pa->name);
     sb_append_c(sb, ": ");
     f_type(sb, pa->ty);
+    if (pa->is_variadic)
+      sb_append_c(sb, "...");
   }
   sb_push(sb, ')');
 }

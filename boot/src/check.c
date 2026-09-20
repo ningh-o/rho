@@ -720,7 +720,7 @@ void check_reset(void) {
 }
 
 bool g_prelude_wasm = false; // wasm32-wasi targets use the fd_write prelude
-bool g_prelude_esp32 = false; // esp32c3 targets use the bump-alloc prelude
+bool g_prelude_native = false; // native targets use the freestanding prelude
 
 void prelude_init(void) {
   if (prelude_loaded)
@@ -728,10 +728,10 @@ void prelude_init(void) {
   prelude_loaded = true;
   extern const char PRELUDE_SOURCE[];
   extern const char PRELUDE_WASI_SOURCE[];
+  extern const char PRELUDE_MAC_SOURCE[];
   Str path = str_from("<prelude>");
-  extern const char PRELUDE_ESP32_SOURCE[];
-  Str src = str_from(g_prelude_esp32 ? PRELUDE_ESP32_SOURCE
-                     : g_prelude_wasm ? PRELUDE_WASI_SOURCE
+  Str src = str_from(g_prelude_wasm ? PRELUDE_WASI_SOURCE
+                     : g_prelude_native ? PRELUDE_MAC_SOURCE
                                       : PRELUDE_SOURCE);
   Decl *root = parse_file(path, src);
   Module *m = arena_alloc_zeroed(sizeof(Module));
@@ -1236,6 +1236,13 @@ static Type *check_expr(Expr *e, Type *expected) {
                    : sym->type;
     if (sym->kind == SY_FN || sym->kind == SY_EXTERN)
       e->fnval = true; // a fn name in value position makes a closure value
+    if (sym->kind == SY_FN && sym->decl && sym->decl->params.n &&
+        ((Param *)sym->decl->params.items[sym->decl->params.n - 1])->is_variadic) {
+      ERR(e,
+          "a variadic function cannot be used as a value (fn types have no `...` spelling)");
+      e->typed = ty_err_;
+      return e->typed;
+    }
     if (g_cap_list && (sym->kind == SY_LOCAL || sym->kind == SY_PARAM) &&
         sym->local_id < g_cap_boundary) {
       bool dup = false;
@@ -1661,6 +1668,13 @@ static Type *check_field_access(Expr *e, Type *expected) {
       return e->typed;
     }
     if (item->kind == SY_FN || item->kind == SY_EXTERN) {
+      if (item->kind == SY_FN && item->decl && item->decl->params.n &&
+          ((Param *)item->decl->params.items[item->decl->params.n - 1])
+              ->is_variadic) {
+        ERR(e, "a variadic function cannot be used as a value");
+        e->typed = ty_err_;
+        return e->typed;
+      }
       e->sym = item;
       e->typed = item->type;
       e->fnval = true;
@@ -1901,11 +1915,17 @@ static CallTarget resolve_callee(Expr *callee) {
       }
     }
     // 4b) primitive receiver (`n.to_str()`): auto-deref through pointers,
-    // then the global primitive method table
+    // then the global primitive method table. Untyped literals resolve as
+    // their default width (i32 / f64); the method-arg adapter materializes
+    // the constant at `self`'s width below
     if (!rec_t) {
       Type *pt = bt;
       while (pt && pt->kind == TY_PTR)
         pt = pt->elem;
+      if (pt && pt->kind == TY_INT_LIT)
+        pt = ty_prim(PRIM_I32);
+      else if (pt && pt->kind == TY_FLOAT_LIT)
+        pt = ty_prim(PRIM_F64);
       if (pt && ty_is_primitive(pt)) {
         Sym *m = prim_method_find(pt, callee->sv);
         if (m) {
@@ -1941,8 +1961,119 @@ static CallTarget resolve_callee(Expr *callee) {
   return ct;
 }
 
+// printf/eprintf format strings: split the literal into runs between `{}`
+// placeholders; `{{` and `}}` are literal braces. Returns false on a stray
+// brace (already diagnosed).
+static bool split_format(Expr *at, Str fmt, Vec *parts, size_t *holes) {
+  SB cur = {0};
+  size_t i = 0;
+  while (i < fmt.n) {
+    char ch = fmt.p[i];
+    if (ch == '{' || ch == '}') {
+      if (i + 1 < fmt.n && fmt.p[i + 1] == ch) { // `{{` / `}}`
+        sb_push(&cur, ch);
+        i += 2;
+        continue;
+      }
+      if (ch == '{' && i + 1 < fmt.n && fmt.p[i + 1] == '}') {
+        Str *s = arena_alloc(sizeof(Str));
+        *s = sb_finish(&cur);
+        vec_push(parts, s);
+        cur = (SB){0};
+        (*holes)++;
+        i += 2;
+        continue;
+      }
+      ERR(at, "stray `%c` in the format string (escape it as `%c%c`)", ch, ch, ch);
+      return false;
+    }
+    sb_push(&cur, ch);
+    i++;
+  }
+  Str *s = arena_alloc(sizeof(Str));
+  *s = sb_finish(&cur);
+  vec_push(parts, s);
+  return true;
+}
+
 static Type *check_call(Expr *e, Type *expected) {
   (void)expected;
+  // printf/eprintf builtins: each `{}` takes the next value's to_str. The
+  // call desugars here into `__fmt_print("...", x.to_str(), ...)` — a
+  // variadic string join in the prelude — or, with no placeholders, into
+  // the raw byte sink; then the regular path checks the rewritten call
+  if (e->a->kind == EX_NAME &&
+      (str_eq_c(e->a->sv, "printf") || str_eq_c(e->a->sv, "eprintf"))) {
+    bool err_sink = str_eq_c(e->a->sv, "eprintf");
+    const char *verb = err_sink ? "eprintf" : "printf";
+    if (!e->args.n) {
+      ERR(e, "%s needs a format string", verb);
+      e->typed = ty_err_;
+      return e->typed;
+    }
+    Expr *fmt = e->args.items[0];
+    if (fmt->kind != EX_STR) {
+      ERR(fmt, "the %s format string must be a string literal", verb);
+      e->typed = ty_err_;
+      return e->typed;
+    }
+    Vec parts = {0};
+    size_t holes = 0;
+    if (!split_format(fmt, fmt->sv, &parts, &holes)) {
+      e->typed = ty_err_;
+      return e->typed;
+    }
+    if (holes != e->args.n - 1) {
+      ERR(e, "the format string has %zu `{}` but %zu values were given", holes,
+          e->args.n - 1);
+      e->typed = ty_err_;
+      return e->typed;
+    }
+    Vec nargs = {0};
+    if (holes == 0) {
+      Expr *lit = arena_alloc_zeroed(sizeof(Expr));
+      lit->kind = EX_STR;
+      lit->sv = *(Str *)parts.items[0];
+      lit->file = fmt->file;
+      lit->line = fmt->line;
+      lit->col = fmt->col;
+      vec_push(&nargs, lit);
+      e->a->sv = str_from(err_sink ? "__eprint_str" : "__print_str");
+    } else {
+      for (size_t k = 0; k <= holes; k++) {
+        Expr *lit = arena_alloc_zeroed(sizeof(Expr));
+        lit->kind = EX_STR;
+        lit->sv = *(Str *)parts.items[k];
+        lit->file = fmt->file;
+        lit->line = fmt->line;
+        lit->col = fmt->col;
+        vec_push(&nargs, lit);
+        if (k == holes)
+          break;
+        Expr *recv = e->args.items[k + 1];
+        Expr *field = arena_alloc_zeroed(sizeof(Expr));
+        field->kind = EX_FIELD;
+        field->a = recv;
+        field->sv = str_from("to_str");
+        field->file = recv->file;
+        field->line = recv->line;
+        field->col = recv->col;
+        Expr *call = arena_alloc_zeroed(sizeof(Expr));
+        call->kind = EX_CALL;
+        call->a = field;
+        call->file = recv->file;
+        call->line = recv->line;
+        call->col = recv->col;
+        vec_push(&nargs, call);
+      }
+      e->a->sv = str_from(err_sink ? "__fmt_eprint" : "__fmt_print");
+    }
+    e->args = nargs;
+    e->arg_names = (Vec){0};
+    e->a->sym = NULL;
+    // fall through: __fmt_print is variadic, so each value is checked
+    // against string; a value without to_str reports its own error there
+  }
   // builtins: make / len
   if (e->a->kind == EX_NAME && str_eq_c(e->a->sv, "make")) {
     if (e->args.n != 2) {
@@ -2302,11 +2433,29 @@ static Type *check_call(Expr *e, Type *expected) {
   // regular call: check args against params
   Type *fn_t = ct.fn_type;
   size_t nparams = fn_t->params.n;
+  // variadic callee: the last param is `rest: T...`, typed []T; extra args
+  // are checked against T, or one spread argument passes a []T whole
+  bool variadic = false;
+  if (ct.sym && ct.sym->kind == SY_FN && ct.sym->decl &&
+      ct.sym->decl->kind == DK_FN && ct.sym->decl->params.n &&
+      ((Param *)ct.sym->decl->params.items[ct.sym->decl->params.n - 1])
+          ->is_variadic)
+    variadic = true;
+  size_t nfixed = variadic ? nparams - 1 : nparams;
+  bool spread = e->args.n && ((Expr *)e->args.items[e->args.n - 1])->spread;
+  if (spread && !variadic)
+    ERR((Expr *)e->args.items[e->args.n - 1],
+        "`...` spread needs a variadic parameter to fill");
   (void)0;
   size_t first_arg = 0;
   if (ct.is_method) {
-    if (e->args.n + 1 != nparams) {
-      ERR(e, "method takes %zu arguments, got %zu", nparams - 1, e->args.n);
+    if (!variadic || spread) {
+      if (e->args.n + 1 != nparams)
+        ERR(e, "method takes %zu arguments, got %zu", nparams - 1, e->args.n);
+    } else {
+      if (e->args.n + 1 < nparams)
+        ERR(e, "method takes at least %zu arguments, got %zu", nparams - 1,
+            e->args.n);
     }
     Type *self_param = fn_t->params.items[0];
     Type *recv = e->a->a->typed;
@@ -2330,6 +2479,13 @@ static Type *check_call(Expr *e, Type *expected) {
       // adapt it so lowering materializes the constant at self's width
       require(recv, self_param, e->a->a, "method receiver");
     first_arg = 1;
+  } else if (variadic && !spread) {
+    if (e->args.n < nfixed)
+      ERR(e, "function takes at least %zu arguments, got %zu", nfixed, e->args.n);
+  } else if (variadic && spread) {
+    if (e->args.n != nfixed + 1)
+      ERR(e, "function takes exactly %zu arguments before the spread, got %zu",
+          nfixed, e->args.n);
   } else if (e->args.n != nparams) {
     ERR(e, "function takes %zu arguments, got %zu", nparams, e->args.n);
   }
@@ -2337,10 +2493,29 @@ static Type *check_call(Expr *e, Type *expected) {
     size_t ai = i - first_arg;
     if (ai >= e->args.n)
       break;
+    bool last = (i + 1 == nparams);
     Type *pt = fn_t->params.items[i];
+    if (variadic && last) {
+      // the slice param: a spread arg passes its value whole; otherwise the
+      // remaining args are checked element-wise against T
+      if (spread) {
+        Type *at = check_expr(e->args.items[ai], pt);
+        if (at->kind != TY_ERR && !ty_eq(at, pt))
+          ERR((Expr *)e->args.items[ai],
+              "spread needs `%s`, found `%s`", ty_name(pt), ty_name(at));
+        continue;
+      }
+      Type *elem = pt->elem;
+      for (size_t k = ai; k < e->args.n; k++) {
+        Type *at = check_expr(e->args.items[k], elem);
+        require(at, elem, (Expr *)e->args.items[k], "argument");
+      }
+      break;
+    }
     Type *at = ai < generic_arg_types.n ? (Type *)generic_arg_types.items[ai]
                                         : check_expr(e->args.items[ai], pt);
-    require(at, pt, (Expr *)e->args.items[ai], "argument");
+    if (!(((Expr *)e->args.items[ai])->spread && !variadic))
+      require(at, pt, (Expr *)e->args.items[ai], "argument");
   }
   e->typed = fn_t->ret;
   // never coercion: panic never returns, so a call to it is compatible with
@@ -2542,8 +2717,18 @@ static Type *check_block_value(Vec *stmts, Type *expected) {
   for (size_t i = 0; i < stmts->n; i++) {
     Stmt *s = stmts->items[i];
     check_stmt(s);
-    if (i + 1 == stmts->n && s->kind == ST_EXPR && s->tail)
+    if (i + 1 == stmts->n && s->kind == ST_EXPR && s->tail) {
+      // the block's value expression adapts to the context type: an
+      // untyped literal arm would otherwise lower at the i32/f64 default
+      // while the consumer widens it (wasm32 validation catches this)
+      if (expected && s->a->kind == EX_INT && ty_is_int(expected) &&
+          expected->kind != TY_INT_LIT)
+        s->a->typed = expected;
+      else if (expected && s->a->kind == EX_FLOAT &&
+               (expected->kind == TY_F32 || expected->kind == TY_F64))
+        s->a->typed = expected;
       result = s->a->typed;
+    }
   }
   scope_pop();
   if (expected && result->kind != TY_VOID)
@@ -2853,9 +3038,25 @@ static void resolve_sym_type(Sym *sym) {
         d->templated = true;
       }
     }
+    bool saw_variadic = false;
     for (size_t i = 0; i < d->params.n; i++) {
       Param *pa = d->params.items[i];
+      if (i && ((Param *)d->params.items[i - 1])->is_variadic) {
+        err_at(pa->file, pa->line, pa->col,
+               "only the last parameter can be variadic");
+        saw_variadic = true; // stay quiet about repeats of the same mistake
+      }
       Type *pt = resolve_type_in_module(sym->owner, pa->ty);
+      if (pa->is_variadic) {
+        saw_variadic = true;
+        // the function's type sees a slice: `rest: T...` is `rest: []T` to
+        // every caller; the call site decides how the slice is built
+        if (type_has_param(pt)) {
+          err_at(pa->file, pa->line, pa->col,
+                 "a variadic parameter needs a concrete element type");
+        }
+        pt = ty_slice(pt);
+      }
       vec_push(&ps, pt);
       if (pa->is_self) {
         // attach the method to its struct/enum — or, for a primitive

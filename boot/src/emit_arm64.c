@@ -16,6 +16,16 @@ typedef struct Emitter64 {
   IRBlock *cur;
 } Emitter64;
 
+static bool mac64(Target t) { return t == TGT_ARM64_MAC; }
+
+// mac images prefix every symbol with `_` (Mach-O convention); ELF targets
+// use the plain name
+static const char *sym64(Target t, const char *s) {
+  if (mac64(t))
+    return arena_printf("_%s", s);
+  return s;
+}
+
 static const char *X(int64_t off) {
   static char buf[4][16];
   static int r = 0;
@@ -197,7 +207,7 @@ static void emit_divmod64(Emitter64 *e, IRIns *i, bool is_mod) {
   int lbl = g_label64++;
   ld(e, bo, 8, false, "x9");
   sb_printf(e->out, "  cbnz x9, Ldz%d\n", lbl);
-  sb_printf(e->out, "  bl _%s\n", prelude_symbol("__panic_div"));
+  sb_printf(e->out, "  bl %s\n", sym64(e->tgt, prelude_symbol("__panic_div")));
   sb_printf(e->out, "Ldz%d:\n", lbl);
   if (i->signed_ops) {
     sb_printf(e->out, "  cmp x9, #-1\n  b.ne Lmin%d\n", lbl);
@@ -211,10 +221,6 @@ static void emit_divmod64(Emitter64 *e, IRIns *i, bool is_mod) {
     sb_printf(e->out, "  msub x8, x8, x9, x10\n");
   sb_printf(e->out, "Ldone%d:\n", lbl);
   st_(e, dof, 8, false, "x8");
-}
-
-static const char *sym64(const char *s) {
-  return arena_printf("_%s", s);
 }
 
 static void emit_call64(Emitter64 *e, IRIns *i) {
@@ -261,7 +267,7 @@ static void emit_call64(Emitter64 *e, IRIns *i) {
       sb_printf(e->out, "  brk #3\n");
       sb_printf(e->out, "Lgok%d:\n", gl);
     }
-    sb_printf(e->out, "  bl _%s\n", i->callee);
+    sb_printf(e->out, "  bl %s\n", sym64(e->tgt, i->callee));
   }
   if (i->dst) {
     bool f = ir_is_float(i->dst->ty);
@@ -427,9 +433,11 @@ static void emit_ins64(Emitter64 *e, IRIns *i) {
   }
   case IR_ADDRC: {
     int64_t dof = vreg_off(e, i->dst);
-    if (i->lit == -1)
-      sb_printf(e->out, "  adrp x8, _%s@PAGE\n  add x8, x8, _%s@PAGEOFF\n", i->callee,
-                i->callee);
+    if (i->lit == -1) {
+      // the @PAGE/@PAGEOFF markers fold away in the assembler
+      sb_printf(e->out, "  adrp x8, %s@PAGE\n  add x8, x8, %s@PAGEOFF\n",
+                sym64(e->tgt, i->callee), sym64(e->tgt, i->callee));
+    }
     else {
       addr_into(e, slot_off(e, i->slot));
       sb_printf(e->out, "  mov x8, x12\n");
@@ -579,7 +587,8 @@ static void emit_ins64(Emitter64 *e, IRIns *i) {
   case IR_LITADDR: {
     int64_t dof = vreg_off(e, i->dst);
     IRLiteral *l = e->fn->literals.items[i->lit];
-    sb_printf(e->out, "  adrp x8, L%s@PAGE\n  add x8, x8, L%s@PAGEOFF\n", l->label, l->label);
+    sb_printf(e->out, "  adrp x8, L%s@PAGE\n  add x8, x8, L%s@PAGEOFF\n", l->label,
+              l->label);
     st_(e, dof, 8, false, "x8");
     break;
   }
@@ -652,7 +661,8 @@ static void emit_fn64(Emitter64 *e, IRFn *fn) {
   e->cur = NULL;
   fn->uid = g_uid64++;
   layout_frame64(e);
-  sb_printf(e->out, "\n  .globl _%s\n_%s:\n", fn->symbol, fn->symbol);
+  const char *fs = sym64(e->tgt, fn->symbol);
+  sb_printf(e->out, "\n  .globl %s\n%s:\n", fs, fs);
   sb_printf(e->out, "  stp x29, x30, [sp, #-16]!\n  mov x29, sp\n");
   if (e->frame) {
     // the sub sp immediate is 12 bits; the epilogue restores sp from x29,
@@ -708,15 +718,19 @@ void emit_arm64(Target target, SB *out) {
   Emitter64 e = {0};
   e.tgt = target;
   e.out = out;
-  sb_append_c(out, ".section __TEXT,__text,regular,pure_instructions\n");
-  sb_append_c(out, ".build_version macos, 13, 0\n");
+  bool mac = mac64(target);
+  // mach-o carves the image into typed sections; ELF targets use the three
+  // plain names the in-tree arm64 assembler maps (strings fold into text)
+  sb_append_c(out, mac ? ".section __TEXT,__text,regular,pure_instructions\n" : ".text\n");
+  if (mac)
+    sb_append_c(out, ".build_version macos, 13, 0\n");
 
   for (size_t i = 0; i < g_ir_fns.n; i++)
     emit_fn64(&e, g_ir_fns.items[i]);
 
   // rc-headed literals must live in a non-merging section: ld64 folds and
   // reorders __cstring literals, which would break the buf/+24 pairing
-  sb_append_c(out, ".section __TEXT,__rhostr,regular\n");
+  sb_append_c(out, mac ? ".section __TEXT,__rhostr,regular\n" : ".section .rodata\n");
   for (size_t i = 0; i < g_ir_fns.n; i++) {
     IRFn *fn = g_ir_fns.items[i];
     for (size_t j = 0; j < fn->literals.n; j++) {
@@ -742,10 +756,11 @@ void emit_arm64(Target target, SB *out) {
 
   for (size_t i = 0; i < g_ir_globals.n; i++) {
     IRGlobal *g = g_ir_globals.items[i];
-    sb_printf(out, "\n  .globl _%s\n", g->symbol);
-    sb_append_c(out, ".section __DATA,__data\n");
-    sb_printf(out, "  .p2align %d\n_%s:\n",
-              g->align >= 8 ? 3 : g->align >= 4 ? 2 : g->align >= 2 ? 1 : 0, g->symbol);
+    const char *gs = sym64(target, g->symbol);
+    sb_printf(out, "\n  .globl %s\n", gs);
+    sb_append_c(out, mac ? ".section __DATA,__data\n" : ".section .data\n");
+    sb_printf(out, "  .p2align %d\n%s:\n",
+              g->align >= 8 ? 3 : g->align >= 4 ? 2 : g->align >= 2 ? 1 : 0, gs);
     size_t word = 0;
     if (g->relocs) {
       for (int w = 0; w < 3; w++) {
@@ -770,10 +785,13 @@ void emit_arm64(Target target, SB *out) {
   }
 
   if (g_main_symbol) {
-    sb_append_c(out, ".section __TEXT,__text,regular,pure_instructions\n");
-    sb_printf(out, "\n  .globl _main\n_main:\n");
+    sb_append_c(out, mac ? ".section __TEXT,__text,regular,pure_instructions\n" : ".text\n");
+    // the string pool may end mid-word: every arm64 instruction boundary
+    // (and the labels branches target) needs 4-byte alignment
+    sb_printf(out, "\n  .p2align 2\n  .globl %s\n%s:\n", sym64(target, "main"),
+              sym64(target, "main"));
     sb_printf(out, "  stp x29, x30, [sp, #-16]!\n  mov x29, sp\n");
-    sb_printf(out, "  bl _%s\n", g_main_symbol);
+    sb_printf(out, "  bl %s\n", sym64(target, g_main_symbol));
     sb_printf(out, "  ldp x29, x30, [sp], #16\n  ret\n");
   }
 }

@@ -143,6 +143,8 @@ static void d_expr(SB *sb, Expr *e) {
       if (e->arg_names.n && e->arg_names.items[i]) {
         sb_printf(sb, "%s: ", (char *)e->arg_names.items[i]);
       }
+      if (((Expr *)e->args.items[i])->spread)
+        sb_append_c(sb, "spread ");
       d_expr(sb, e->args.items[i]);
     }
     sb_push(sb, ')');
@@ -367,7 +369,8 @@ static void d_decl(SB *sb, Decl *d) {
     sb_printf(sb, " (fn%s %.*s (params", d->pub_ ? " pub" : "", (int)d->name.n, d->name.p);
     for (size_t i = 0; i < d->params.n; i++) {
       Param *pa = d->params.items[i];
-      sb_printf(sb, " (%.*s ", (int)pa->name.n, pa->name.p);
+      sb_printf(sb, " (%.*s%s ", (int)pa->name.n, pa->name.p,
+                pa->is_variadic ? "..." : "");
       d_type(sb, pa->ty);
       sb_push(sb, ')');
     }

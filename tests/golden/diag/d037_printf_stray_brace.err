@@ -1,0 +1,1 @@
+tests/diag/d037_printf_stray_brace.rho:3:10: error: stray `}` in the format string (escape it as `}}`)

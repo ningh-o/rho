@@ -1,0 +1,2 @@
+tests/diag/d036_variadic_not_last.rho:2:17: error: only the last parameter can be variadic
+tests/diag/d036_variadic_not_last.rho:2:17: error: only the last parameter can be variadic

@@ -11,7 +11,6 @@ Vec g_ir_globals = {0};
 const char *g_main_symbol = NULL;
 
 static void lower_drop_unreachable(void);
-extern bool g_prelude_esp32; // set by the build driver: RV32 keep-set (below)
 
 static Module *g_root_module;
 
@@ -60,6 +59,7 @@ static void run_defers(LCtx *c, LScope *stop);
 static IRVreg *compute_addr(LCtx *c, Expr *e);
 static void panic_call(LCtx *c, const char *msg);
 static IRVreg *lower_make(LCtx *c, Expr *e, IRVreg *dest);
+static IRVreg *make_slice(LCtx *c, Type *slice_t, IRVreg *n, IRVreg *dest);
 static IRVreg *lower_slice(LCtx *c, Expr *e);
 static IRVreg *lower_new(LCtx *c, Expr *e);
 static bool is_make_call(Expr *e);
@@ -2009,6 +2009,17 @@ static void build_call(LCtx *c, Sym *fn, Expr *receiver, Vec *args_exprs, IRVreg
     a->ty = NULL;
     vec_push(&call_args, a);
   }
+  // variadic callee: the trailing `rest: T...` parameter is a []T the call
+  // site builds from the extra arguments (or takes whole from `xs...`)
+  bool variadic = fn->kind == SY_FN && fn->decl && fn->decl->kind == DK_FN &&
+                  fn->decl->params.n &&
+                  ((Param *)fn->decl->params.items[fn->decl->params.n - 1])
+                      ->is_variadic;
+  size_t recv_n = receiver ? 1 : 0;
+  size_t nfixed =
+      variadic ? fn->type->params.n - recv_n - 1 : args_exprs->n;
+  IRVreg *vararg_slice = NULL; // built below, released after the call
+  Type *vararg_t = NULL;
   size_t param_index = 0;
   if (receiver) {
     Type *self_t = fn->type->params.items[0];
@@ -2022,7 +2033,7 @@ static void build_call(LCtx *c, Sym *fn, Expr *receiver, Vec *args_exprs, IRVreg
     }
     param_index = 1;
   }
-  for (size_t i = 0; i < args_exprs->n; i++) {
+  for (size_t i = 0; i < nfixed; i++) {
     Expr *arg = args_exprs->items[i];
     Type *pt = fn->type->params.n > param_index + i
                    ? fn->type->params.items[param_index + i]
@@ -2034,6 +2045,49 @@ static void build_call(LCtx *c, Sym *fn, Expr *receiver, Vec *args_exprs, IRVreg
     if (pt && ty_is_managed(pt) && expr_owned(arg)) {
       vec_push(&owned_args, arg);
       vec_push(&owned_slots, (void *)(long)(call_args.n - 1));
+    }
+  }
+  if (variadic) {
+    Type *slice_t = fn->type->params.items[fn->type->params.n - 1];
+    Type *elem_t = slice_t->elem;
+    size_t n = args_exprs->n - nfixed;
+    Expr *last = args_exprs->n ? args_exprs->items[args_exprs->n - 1] : NULL;
+    if (last && last->spread) {
+      // `xs...`: the slice value passes whole, with normal arg semantics
+      IRArg *a = arena_alloc(sizeof(IRArg));
+      a->vreg = lv_expr(c, last);
+      a->ty = slice_t;
+      vec_push(&call_args, a);
+      if (ty_is_managed(slice_t) && expr_owned(last)) {
+        vec_push(&owned_args, last);
+        vec_push(&owned_slots, (void *)(long)(call_args.n - 1));
+      }
+    } else {
+      IRSlot *tmp = new_slot(c, 24, 8, "varargs");
+      IRVreg *slice_addr = v_slotaddr(c, tmp);
+      make_slice(c, slice_t, v_const(c, (uint64_t)n, IT_USIZE), slice_addr);
+      IRVreg *data = v_load(c, v_addi(c, slice_addr, 8), IT_PTR);
+      for (size_t j = 0; j < n; j++) {
+        Expr *arg = args_exprs->items[nfixed + j];
+        IRVreg *ea =
+            v_addi(c, data, (uint64_t)j * (uint64_t)type_size(elem_t));
+        if (ty_is_aggregate(elem_t)) {
+          lv_agg(c, arg, ea);
+          if (ty_is_managed(elem_t) && !expr_owned(arg))
+            retain_addr(c, elem_t, ea);
+        } else {
+          IRVreg *v = lv_expr(c, arg);
+          v_store(c, ea, v);
+          if (ty_is_managed(elem_t) && !expr_owned(arg))
+            rc_inc_v(c, v);
+        }
+      }
+      IRArg *a = arena_alloc(sizeof(IRArg));
+      a->vreg = slice_addr;
+      a->ty = slice_t;
+      vec_push(&call_args, a);
+      vararg_slice = slice_addr;
+      vararg_t = slice_t;
     }
   }
   IRIns *call = emit(c, IR_CALL);
@@ -2052,6 +2106,10 @@ static void build_call(LCtx *c, Sym *fn, Expr *receiver, Vec *args_exprs, IRVreg
     else
       rc_dec_v(c, pv);
   }
+  // the constructed varargs slice was a fresh +1; hand it to the callee's
+  // param copy (which retained it on entry and releases it at exit)
+  if (vararg_slice)
+    release_addr(c, vararg_t, vararg_slice);
   *scalar_dst = call->dst;
 }
 
@@ -2077,11 +2135,12 @@ static IRVreg *call_prelude1(LCtx *c, const char *name, IRVreg *arg0, IRType ret
   return call->dst;
 }
 
-// make([]T, n): allocate len*esize + header, init slice {buf, ptr, len}
-static IRVreg *lower_make(LCtx *c, Expr *e, IRVreg *dest) {
-  Type *slice_t = e->typed;
+// make([]T, n) body: allocate n*esize + header, init slice {buf, ptr, len}.
+// `dest` may be NULL (a temp slot is made). The array's drop stays null —
+// element ownership rides the slice value, not the object (value walkers
+// release elements before the buf).
+static IRVreg *make_slice(LCtx *c, Type *slice_t, IRVreg *n, IRVreg *dest) {
   uint64_t esize = (uint64_t)type_size(slice_t->elem);
-  IRVreg *n = lv_expr(c, e->args.items[1]);
   IRVreg *esz = v_const(c, esize, IT_USIZE);
   IRVreg *hdr = v_const(c, 24, IT_USIZE);
   IRIns *mul = emit(c, IR_MUL);
@@ -2132,6 +2191,11 @@ static IRVreg *lower_make(LCtx *c, Expr *e, IRVreg *dest) {
   s3->a = n;
   s3->size = 8;
   return dest;
+}
+
+// make([]T, n) — the slice constructor call
+static IRVreg *lower_make(LCtx *c, Expr *e, IRVreg *dest) {
+  return make_slice(c, e->typed, lv_expr(c, e->args.items[1]), dest);
 }
 
 // new T { fields }: allocate, header, init fields, return the pointer
@@ -2509,32 +2573,10 @@ static void lv_agg(LCtx *c, Expr *e, IRVreg *dest) {
     }
     Sym *fn = e->a->sym;
     if (fn && fn->type->ret && ty_is_aggregate(fn->type->ret)) {
-      // call straight into dest
-      Vec call_args = {0};
-      IRArg *a0 = arena_alloc(sizeof(IRArg));
-      a0->vreg = dest;
-      a0->ty = NULL;
-      vec_push(&call_args, a0);
-      Expr *recv = method_receiver(e->a);
-      size_t pi = 0;
-      if (recv) {
-        IRArg *a = arena_alloc(sizeof(IRArg));
-        a->vreg = lv_expr(c, recv);
-        a->ty = fn->type->params.items[0];
-        vec_push(&call_args, a);
-        pi = 1;
-      }
-      for (size_t i = 0; i < e->args.n; i++) {
-        Expr *arg = e->args.items[i];
-        Type *pt = fn->type->params.items[pi + i];
-        IRArg *a = arena_alloc(sizeof(IRArg));
-        a->vreg = lv_expr(c, arg);
-        a->ty = pt;
-        vec_push(&call_args, a);
-      }
-      IRIns *call = emit(c, IR_CALL);
-      call->callee = sym_symbol(fn);
-      call->args = call_args;
+      // call straight into dest — one path for every call (variadic
+      // construction and owned-arg releases included)
+      IRVreg *dst;
+      build_call(c, fn, method_receiver(e->a), &e->args, dest, &dst);
       return;
     }
     IRVreg *src = lv_expr(c, e);
@@ -2928,7 +2970,7 @@ void lower_program(void) {
       Str *key = m->syms.keys.items[k];
       Sym *sym = map_get(&m->syms, *key);
       // lower real definitions only; externs declare without a body and an
-      // empty-bodied fn is still callable (e.g. esp32c3 __free is a no-op)
+      // empty-bodied fn is still callable
       if (sym->kind == SY_FN && sym->decl && sym->decl->kind == DK_FN &&
           !sym->decl->templated)
         vec_push(&g_ir_fns, lower_fn(sym));
@@ -2948,7 +2990,7 @@ void lower_program(void) {
 // — direct calls, address-taken fn values and globals, shims — so a symbol
 // walk over instructions is the whole reference graph. Two classes are kept
 // beyond the graph: the entry fn, and the fns backends call by symbol from
-// emitted code (__panic_div everywhere; the esp32c3 soft-float set on RV32).
+// emitted code (__panic_div).
 // Emission order is preserved — determinism is untouched.
 
 typedef struct ReachCtx {
@@ -2984,17 +3026,6 @@ static void lower_drop_unreachable(void) {
   reach_visit(g_main_symbol, &rc);
   // the divide-by-zero check every backend emits references by symbol
   reach_visit(prelude_symbol("__panic_div"), &rc);
-  if (g_prelude_esp32) {
-    // RV32 soft-float helpers + the panic family the emitter can reach
-    static const char *ESP32_KEEP[] = {
-        "__fadd32", "__fadd64", "__fsub32", "__fsub64", "__fmul32", "__fmul64",
-        "__fdiv32", "__fdiv64", "__feq32", "__feq64", "__flt32", "__flt64",
-        "__f64_f32", "__f32_f64", "__i2f64", "__f2i64", "__panic_oob",
-        "__panic_null",
-    };
-    for (size_t i = 0; i < sizeof(ESP32_KEEP) / sizeof(ESP32_KEEP[0]); i++)
-      reach_visit(prelude_symbol(ESP32_KEEP[i]), &rc);
-  }
   while (work.n > 0) {
     IRFn *fn = work.items[work.n - 1];
     work.n--;

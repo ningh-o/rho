@@ -13,9 +13,9 @@ fn i32.double(self: i32) -> i32 {
 
 fn main() -> i32 {
   let n: i32 = 21;
-  println(n.double());
-  println(n);
+  printf("{}\n", n.double());
+  printf("{}\n", n);
   let flag: bool = true;
-  println(flag);
+  printf("{}\n", flag);
   return 0;
 }

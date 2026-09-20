@@ -9,6 +9,10 @@ const TYPES = new Set([
   "bool", "i8", "i16", "i32", "i64", "isize", "u8", "u16", "u32", "u64",
   "usize", "f32", "f64", "string",
 ]);
+const BUILTINS = new Set([
+  "printf", "eprintf", "panic", "make", "len", "assert", "assert_eq",
+  "cat", "read_line", "size_of",
+]);
 
 function esc(s) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -48,6 +52,7 @@ export function highlightRho(src) {
       // a type-ish word: primitive, or Capitalised
       if (TYPES.has(word)) out += `<span class="ty">${word}</span>`;
       else if (KEYWORDS.has(word)) out += `<span class="kw">${word}</span>`;
+      else if (BUILTINS.has(word)) out += `<span class="bi">${word}</span>`;
       else if (/^[A-Z]/.test(word)) out += `<span class="ty">${word}</span>`;
       else out += esc(word);
       i = j;

@@ -4,11 +4,54 @@
 
 export const EXAMPLES = [
   {
+    id: "tour",
+    title: "A taste of rho",
+    code: `// Algebraic data, exhaustively matched.
+enum Shape {
+  Circle(f64),
+  Rect { w: f64, h: f64 },
+}
+
+fn area(s: Shape) -> f64 {
+  return match s {
+    Shape.Circle(r) => 3.14159 * r * r,
+    Shape.Rect { w, h } => w * h,
+  };
+}
+
+// Closures capture by copy.
+fn make_adder(n: i32) -> fn(i32) -> i32 {
+  return fn(x: i32) -> i32 { return x + n; };
+}
+
+// Heap objects are reference-counted: freed the
+// moment the last reference dies. No GC, no pauses.
+struct Node {
+  value: i32,
+  next: *Node,
+}
+
+fn main() -> i32 {
+  printf("{}\\n", area(Shape.Rect(w: 3.0, h: 4.0)));
+  printf("{}\\n", area(Shape.Circle(2.0)));
+
+  let add10: fn(i32) -> i32 = make_adder(10);
+  printf("{}\\n", add10(5));
+
+  let a: *Node = new Node { value: 1, next: null };
+  let b: *Node = a; // one copy, one retain
+  printf("{}\\n", b.value);
+  return 0;
+}
+`,
+    expect: `12.0\n12.56636\n15\n1\n`,
+  },
+  {
     id: "hello",
     title: "Hello, rho",
     code: `// Every rho program starts at main.
 fn main() -> i32 {
-  print("hello, world\\n");
+  printf("{}", "hello, world\\n");
   return 0;
 }
 `,
@@ -18,14 +61,14 @@ fn main() -> i32 {
     title: "Numbers that stay defined",
     code: `fn main() -> i32 {
   let big: i32 = 2_147_483_647;
-  println(big + 1); // wraps, never UB
+  printf("{}\\n", big + 1); // wraps, never UB
 
   let third: f64 = 1.0 / 3.0;
-  println(third); // 17 digits: enough to read the exact value back
+  printf("{}\\n", third); // 17 digits: enough to read the exact value back
 
   let hex: i32 = 0xFF;      // 255
   let bits: i32 = 0b1010;   // 10
-  println(hex + bits);
+  printf("{}\\n", hex + bits);
   return 0;
 }
 `,
@@ -39,7 +82,7 @@ fn main() -> i32 {
   let mut y: i32 = 0;   // mut to allow assignment
   y += x;
   // x = 5;             // rejected by the compiler
-  println(y);
+  printf("{}\\n", y);
   return 0;
 }
 `,
@@ -54,7 +97,7 @@ fn main() -> i32 {
 }
 
 fn main() -> i32 {
-  println(classify(5));
+  printf("{}\\n", classify(5));
 
   let mut i: i32 = 0;
   let mut sum: i32 = 0;
@@ -62,7 +105,7 @@ fn main() -> i32 {
     sum += i;
     i += 1;
   }
-  println(sum);
+  printf("{}\\n", sum);
 
   loop {
     sum += 1;
@@ -70,7 +113,7 @@ fn main() -> i32 {
       break;
     }
   }
-  println(sum);
+  printf("{}\\n", sum);
   return 0;
 }
 `,
@@ -97,8 +140,8 @@ fn power(base: i32, exp: i32) -> i32 {
 }
 
 fn main() -> i32 {
-  println(fib(20));
-  println(power(2, 16));
+  printf("{}\\n", fib(20));
+  printf("{}\\n", power(2, 16));
   return 0;
 }
 `,
@@ -122,7 +165,7 @@ fn Point.dist2(self: *Point, other: *Point) -> f64 {
 fn main() -> i32 {
   let a: *Point = new Point { x: 0.0, y: 0.0 };
   let b: *Point = new Point { x: 3.0, y: 4.0 };
-  println(a.dist2(b)); // 25: the 3-4-5 triangle
+  printf("{}\\n", a.dist2(b)); // 25: the 3-4-5 triangle
   return 0;
 }
 `,
@@ -149,9 +192,9 @@ fn area(s: Shape) -> f64 {
 fn main() -> i32 {
   let r: Shape = Shape.Rect(w: 3.0, h: 4.0);
   let c: Shape = Shape.Circle(2.0);
-  println(area(r));
-  println(area(c));
-  println(area(Shape.Point));
+  printf("{}\\n", area(r));
+  printf("{}\\n", area(c));
+  printf("{}\\n", area(Shape.Point));
   return 0;
 }
 `,
@@ -176,9 +219,9 @@ fn main() -> i32 {
   xs[1] = 20;
   xs[2] = 30;
   xs[3] = 40;
-  println(sum(xs));
+  printf("{}\\n", sum(xs));
   let view: []i32 = xs[1..3]; // shares the buffer
-  println(sum(view));
+  printf("{}\\n", sum(view));
   // xs[9] would panic: index out of bounds, never silent corruption
   return 0;
 }
@@ -207,8 +250,8 @@ fn main() -> i32 {
     Result.Ok(x) => x,
     Result.Err(_) => 0,
   };
-  println(n);
-  println(match safe_div(1, 0) {
+  printf("{}\\n", n);
+  printf("{}\\n", match safe_div(1, 0) {
     Result.Ok(_) => "ok",
     Result.Err(e) => e,
   });
@@ -228,9 +271,9 @@ fn main() -> i32 {
 fn main() -> i32 {
   let add10: fn(i32) -> i32 = make_adder(10);
   let add90: fn(i32) -> i32 = make_adder(90);
-  println(add10(5));
-  println(add90(5));
-  println(add10(1) + add90(1));
+  printf("{}\\n", add10(5));
+  printf("{}\\n", add90(5));
+  printf("{}\\n", add10(1) + add90(1));
   return 0;
 }
 `,
@@ -257,9 +300,9 @@ fn main() -> i32 {
   let b: i64 = id(11); // a fresh specialization
   let p: *Pair[i32, i64] = new Pair[i32, i64] { a: 3, b: 4 };
   let q: *Pair[i64, i32] = swap(p);
-  println(a);
-  println(b);
-  println(q.a); // i64 payload survives the swap
+  printf("{}\\n", a);
+  printf("{}\\n", b);
+  printf("{}\\n", q.a); // i64 payload survives the swap
   return 0;
 }
 `,
@@ -269,8 +312,8 @@ fn main() -> i32 {
     id: "defer",
     title: "defer runs on every exit",
     code: `fn work() -> i32 {
-  defer print("cleanup\\n");
-  print("working\\n");
+  defer printf("{}", "cleanup\\n");
+  printf("{}", "working\\n");
   if true {
     return 7; // defer fires here too
   }
@@ -279,7 +322,7 @@ fn main() -> i32 {
 
 fn main() -> i32 {
   let r: i32 = work();
-  println(r);
+  printf("{}\\n", r);
   return 0;
 }
 `,
@@ -298,7 +341,7 @@ fn main() -> i32 {
   let a: *Node = new Node { value: 1, next: null };
   let b: *Node = a; // copies the pointer, bumps the count
 
-  println(b.value);
+  printf("{}\\n", b.value);
 
   // when the last reference dies the object is freed —
   // no garbage collector, no pauses, no use-after-free
@@ -323,10 +366,10 @@ fn fib(n: i32) -> i32 {
 fn main() -> i32 {
   let mut i: i32 = 0;
   while i <= 10 {
-    print("fib(");
-    print(i.to_str());
-    print(") = ");
-    println(fib(i));
+    printf("{}", "fib(");
+    printf("{}", i.to_str());
+    printf("{}", ") = ");
+    printf("{}\\n", fib(i));
     i += 1;
   }
   return 0;

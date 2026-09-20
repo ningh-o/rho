@@ -1,0 +1,8 @@
+// only the last parameter can be variadic
+fn f(a: i64..., b: i32) -> i32 {
+  return b;
+}
+
+fn main() -> i32 {
+  return 0;
+}

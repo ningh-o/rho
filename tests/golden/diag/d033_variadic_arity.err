@@ -1,0 +1,1 @@
+tests/diag/d033_variadic_arity.rho:7:12: error: function takes at least 1 arguments, got 0

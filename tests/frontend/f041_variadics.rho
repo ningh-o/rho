@@ -1,0 +1,43 @@
+// variadic parameters, spread calls, and the printf desugar surface
+fn total(ns: i64...) -> i64 {
+  let mut t: i64 = 0;
+  let mut i: usize = 0;
+  while i < len(ns) {
+    t += ns[i];
+    i += 1;
+  }
+  return t;
+}
+
+fn greet(prelude: string, names: string...) -> string {
+  let mut out: string = prelude;
+  let mut i: usize = 0;
+  while i < len(names) {
+    out = cat(out, names[i]);
+    i += 1;
+  }
+  return out;
+}
+
+struct Wrap {
+  inner: i32,
+}
+
+fn Wrap.to_str(self: *Wrap) -> string {
+  return self.inner.to_str();
+}
+
+fn main() -> i32 {
+  printf("t={}\n", total(1, 2, 3));
+  let xs: []i64 = make([]i64, 2);
+  xs[0] = 4;
+  xs[1] = 5;
+  printf("spread={}\n", total(xs...));
+  printf("none={}\n", total());
+  printf("{} {}\n", greet("hi ", "a", "b"), 6 * 7);
+  printf("braces {{}}\n");
+  let w = new Wrap { inner: 8 };
+  printf("w={}\n", w);
+  eprintf("e={}{}\n", 1, "x");
+  return 0;
+}
