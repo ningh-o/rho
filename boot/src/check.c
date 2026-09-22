@@ -768,20 +768,16 @@ void check_reset(void) {
   g_inst_anchor_note = NULL;
 }
 
-bool g_prelude_wasm = false; // wasm32-wasi targets use the fd_write prelude
-bool g_prelude_native = false; // native targets use the freestanding prelude
-
+// boot compiles wasm32-wasi only, so there is exactly one prelude: the
+// core plus the wasi tail (the hosted/mac tails live in the self-hosted
+// compiler)
 void prelude_init(void) {
   if (prelude_loaded)
     return;
   prelude_loaded = true;
   extern const char PRELUDE_SOURCE[];
-  extern const char PRELUDE_WASI_SOURCE[];
-  extern const char PRELUDE_MAC_SOURCE[];
   Str path = str_from("<prelude>");
-  Str src = str_from(g_prelude_wasm ? PRELUDE_WASI_SOURCE
-                     : g_prelude_native ? PRELUDE_MAC_SOURCE
-                                      : PRELUDE_SOURCE);
+  Str src = str_from(PRELUDE_SOURCE);
   Decl *root = parse_file(path, src);
   Module *m = arena_alloc_zeroed(sizeof(Module));
   m->path = path;
@@ -2384,9 +2380,34 @@ static Type *check_call(Expr *e, Type *expected) {
     bool is_memcpy = !strcmp(name, "memcpy");
     bool is_slice_str = !strcmp(name, "slice_string");
     bool is_bits = !strcmp(name, "f64_bits") || !strcmp(name, "f32_bits");
-    if (!is_load && !is_store && !is_memcpy && !is_slice_str && !is_bits) {
+    bool is_mem = !strcmp(name, "mem_size") || !strcmp(name, "mem_grow");
+    if (!is_load && !is_store && !is_memcpy && !is_slice_str && !is_bits &&
+        !is_mem) {
       ERR(e, "unknown intrinsic `%s`", name);
       e->typed = ty_err_;
+      return e->typed;
+    }
+    if (is_mem) {
+      // linear-memory introspection (spec §10): the wasi prelude's bump
+      // allocator grows memory on demand with these
+      if (!strcmp(name, "mem_grow")) {
+        if (e->args.n != 1) {
+          ERR(e, "intrinsics.mem_grow takes one argument");
+          e->typed = ty_err_;
+          return e->typed;
+        }
+        Type *t = adapt_literal(check_expr(e->args.items[0], NULL), NULL);
+        if (t->kind != TY_USIZE) {
+          ERR(e, "intrinsics.mem_grow needs usize pages, found `%s`", ty_name(t));
+          e->typed = ty_err_;
+          return e->typed;
+        }
+      } else if (e->args.n != 0) {
+        ERR(e, "intrinsics.mem_size takes no arguments");
+        e->typed = ty_err_;
+        return e->typed;
+      }
+      e->typed = ty_prim(PRIM_USIZE);
       return e->typed;
     }
     if (is_bits) {

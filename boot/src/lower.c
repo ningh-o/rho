@@ -829,7 +829,7 @@ static IRVreg *vtable_ensure(LCtx *c, Type *conc, RecType *tr) {
   IRIns *dz = emit(c, IR_STORE);
   dz->addr = h16;
   dz->a = nullp;
-  dz->size = 8;
+  dz->size = 4; // wasm32: pointers are 4 bytes
   for (size_t i = 0; i < n; i++) {
     Sym *req = tr->methods.items[i];
     Sym *impl = dyn_method_on(conc, req->name);
@@ -1752,6 +1752,16 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
     IRVreg *a = lv_expr(c, e->a);
     IRVreg *b = lv_expr(c, e->b);
     IRType ty = ir_type_of(t);
+    // int arithmetic computes at the consumer-pinned width: INT_LIT
+    // operands default to i32, and `let cap: usize = 1 << 16` would
+    // otherwise store only 32 bits into the 8-byte slot, leaving the
+    // high half as stack garbage (measured: cap read back 0x100010000)
+    if (ty_is_int(t) && t->kind != TY_INT_LIT) {
+      if (a->ty != ty)
+        a = v_cast(c, a, ty);
+      if (b->ty != ty)
+        b = v_cast(c, b, ty);
+    }
     bool flt = ir_is_float(a->ty);
     switch (op) {
     case P_PLUS: return v_binop(c, IR_ADD, a, b, a->ty, true);
@@ -1910,7 +1920,7 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
     IRIns *dr = emit(c, IR_STORE);
     dr->addr = obj16;
     dr->a = dropv;
-    dr->size = 8;
+    dr->size = 4; // wasm32: pointers are 4 bytes
     int64_t off = 0;
     for (size_t i = 0; i < e->caps.n; i++) {
       Sym *cap = e->caps.items[i];
@@ -2368,7 +2378,7 @@ static IRVreg *make_slice(LCtx *c, Type *slice_t, IRVreg *n, IRVreg *dest) {
   IRIns *dr = emit(c, IR_STORE);
   dr->addr = obj16;
   dr->a = drop0;
-  dr->size = 8;
+  dr->size = 4; // wasm32: pointers are 4 bytes
   // slice {buf=obj, ptr=obj+24, len=n}
   if (!dest) {
     IRSlot *tmp = new_slot(c, 24, 8, "slice");
@@ -2426,7 +2436,7 @@ static IRVreg *lower_new(LCtx *c, Expr *e) {
   IRIns *dr = emit(c, IR_STORE);
   dr->addr = obj16;
   dr->a = dropv;
-  dr->size = 8;
+  dr->size = 4; // wasm32: pointers are 4 bytes
   // the returned reference points at the DATA, 24 bytes past the header
   IRVreg *data = v_addi(c, obj, 24);
   RecType *rec = struct_t->rec;
@@ -2662,6 +2672,26 @@ static IRVreg *compute_call_value(LCtx *c, Expr *e) {
       bool wantf = !strcmp(name, "f64_bits");
       return v_cast(c, v, wantf ? IT_U64 : IT_U32);
     }
+    if (!strcmp(name, "mem_size")) {
+      IRIns *ms = emit(c, IR_MEMSIZE);
+      IRVreg *d = new_vreg(c, IT_USIZE);
+      ms->dst = d;
+      return d;
+    }
+    if (!strcmp(name, "mem_grow")) {
+      // evaluate the argument FIRST: emitting the intrinsic before its
+      // argument's load appends that load after the grow in the block, and
+      // the grow then reads an uninitialized local (the 0.4.1 mirror trap:
+      // grow(0) succeeds silently, the heap crosses the memory end, and the
+      // next object write faults — corpus programs never grow, only large
+      // inputs like the self-compile do)
+      IRVreg *pages = lv_expr(c, e->args.items[0]);
+      IRIns *mg = emit(c, IR_MEMGROW);
+      IRVreg *d = new_vreg(c, IT_USIZE);
+      mg->a = pages;
+      mg->dst = d;
+      return d;
+    }
     if (!strcmp(name, "memcpy")) {
       IRVreg *dst = lv_expr(c, e->args.items[0]);
       IRVreg *src = lv_expr(c, e->args.items[1]);
@@ -2698,7 +2728,7 @@ static IRVreg *compute_call_value(LCtx *c, Expr *e) {
       IRIns *dr = emit(c, IR_STORE);
       dr->addr = obj16;
       dr->a = drop0;
-      dr->size = 8;
+      dr->size = 4; // wasm32: pointers are 4 bytes
       IRIns *cp = emit(c, IR_COPYMEM);
       cp->addr = obj24;
       cp->a = ptr;
@@ -3201,6 +3231,7 @@ static void lower_static(Sym *sym) {
     for (size_t i = 0; i < sv.n; i++)
       vec_push(&l->bytes, (void *)(long)(unsigned char)sv.p[i]);
     vec_push(&l->bytes, (void *)0L);
+    vec_push(&g->lits, l); // the native emitters emit this block per global
     char *bytes_label = arena_printf("%s_b", label);
     g->relocs = arena_alloc(3 * sizeof(char *));
     g->relocs[0] = label;      // buf: the immortal header block

@@ -1,0 +1,17 @@
+// exit: 0
+// unsigned wraparound at every width: MAX+1 lands on 0, 0-1 on MAX,
+// and multiply wraps mod 2^width
+fn main() -> i32 {
+  let a8: u8 = 255;
+  let a16: u16 = 65535;
+  let a32: u32 = 4294967295;
+  let a64: u64 = 18446744073709551615;
+  let au: usize = 18446744073709551615;
+  printf("u8: max+1={} 0-1={}\n", (a8 + 1), (0 as u8 - 1));
+  printf("u16: max+1={} 0-1={}\n", (a16 + 1), (0 as u16 - 1));
+  printf("u32: max+1={} 0-1={}\n", (a32 + 1), (0 as u32 - 1));
+  printf("u64: max+1={} 0-1={}\n", (a64 + 1), (0 as u64 - 1));
+  printf("usize: max+1={} 0-1={}\n", (au + 1), (0 as usize - 1));
+  printf("wrap*: u8 255*2={} u32 max*3={}\n", (a8 * 2), (a32 * 3));
+  return 0;
+}

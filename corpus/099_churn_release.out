@@ -1,0 +1,3 @@
+churn: died=3000
+self-assign: alive=true v=1
+reassign: old_dead=true fresh_alive=true v=2

@@ -1,0 +1,16 @@
+// exit: 0
+fn main() -> i32 {
+  // a bare pair of delimiters: the newline between them is the value
+  let e: string = """
+""";
+  printf("[{}]\n", e);
+  printf("{}\n", len(e) as i32);
+  // nothing but newlines: every one of them is content
+  let b: string = """
+
+
+""";
+  printf("[{}]\n", b);
+  printf("{}\n", len(b) as i32);
+  return 0;
+}

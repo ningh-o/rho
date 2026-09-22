@@ -1,0 +1,45 @@
+// exit: 0
+// rc release timing, observed through weak handles: overwriting the last
+// strong binding releases the object immediately; a block local holding the
+// last copy releases at the block exit; a strong two-node cycle keeps both
+// objects alive after every outside reference is gone.
+struct Node {
+  v: i32,
+}
+
+fn make_node(v: i32) -> *Node {
+  return new Node { v: v };
+}
+
+struct Cyc {
+  id: i32,
+  other: *Cyc,
+}
+
+fn make_cycle() -> *Cyc {
+  let mut a: *Cyc = new Cyc { id: 7, other: null };
+  let b: *Cyc = new Cyc { id: 8, other: a };
+  a.other = b;
+  return a;
+}
+
+fn main() -> i32 {
+  let mut n: *Node = make_node(5);
+  let w: weak[Node] = weak.from(n);
+  printf("up: alive={}\n", (w.get() != null));
+  n = null;
+  printf("nulled: alive={}\n", (w.get() != null));
+  let mut w2: weak[Node] = null;
+  {
+    let m: *Node = make_node(6);
+    w2 = weak.from(m);
+    printf("block up: alive={}\n", (w2.get() != null));
+  }
+  printf("block exited: alive={}\n", (w2.get() != null));
+  let mut c: *Cyc = make_cycle();
+  let wc: weak[Cyc] = weak.from(c);
+  printf("cycle up: alive={}\n", (wc.get() != null));
+  c = null;
+  printf("cycle dropped: alive={} (strong cycles stay)\n", (wc.get() != null));
+  return 0;
+}

@@ -1,0 +1,10 @@
+# nqueens / c
+# build: clang --target=wasm32-wasi --sysroot=... -O2 -o bench/build/nqueens.c.wasm bench/src/nqueens.c
+# run:   wasmtime run bench/build/nqueens.c.wasm
+# expected stdout: "queens(12)=14200"
+warmup   : 10.21 ms  exit=0  output_ok=true
+run 1   : 9.77 ms  exit=0  output_ok=true
+run 2   : 10.08 ms  exit=0  output_ok=true
+run 3   : 9.81 ms  exit=0  output_ok=true
+run 4   : 10.36 ms  exit=0  output_ok=true
+run 5   : 9.62 ms  exit=0  output_ok=true

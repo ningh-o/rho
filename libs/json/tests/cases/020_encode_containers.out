@@ -1,0 +1,18 @@
+{"obj":{"b":true,"a":[1.0,"two",null],"escape\"key":"v"},"list":[]}
+{
+  "obj": {
+    "b": true,
+    "a": [
+      1.0,
+      "two",
+      null
+    ],
+    "escape\"key": "v"
+  },
+  "list": []
+}
+{}
+[]
+big: 3501 bytes, head=91 tail=93
+cannot encode a non-finite number (nan and the infinities are not valid JSON)
+cannot encode a non-finite number (nan and the infinities are not valid JSON)

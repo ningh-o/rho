@@ -1,0 +1,49 @@
+// exit: 0
+// recursion: plain fib, mutual even/odd, and a countdown driven by match
+// arms where the recursive arm is a guarded if expression
+fn fib(n: i32) -> i64 {
+  if (n < 2) {
+    return n as i64;
+  }
+  return (fib((n - 1)) + fib((n - 2)));
+}
+
+fn is_even(n: i32) -> bool {
+  if (n == 0) {
+    return true;
+  }
+  return is_odd((n - 1));
+}
+
+fn is_odd(n: i32) -> bool {
+  if (n == 0) {
+    return false;
+  }
+  return is_even((n - 1));
+}
+
+enum Countdown {
+  Done,
+  Step(i32),
+}
+
+fn burn(c: Countdown) -> i64 {
+  return match c {
+    Countdown.Done => 0,
+    Countdown.Step(n) => {
+      let stop: bool = (n <= 0);
+      if stop {
+        0
+      } else {
+        (n as i64 + burn(Countdown.Step((n - 1))))
+      }
+    },
+  };
+}
+
+fn main() -> i32 {
+  printf("fib={}\n", fib(15));
+  printf("even={} odd={} odd={}\n", is_even(10), is_odd(10), is_odd(7));
+  printf("burn={} cold={} cold={}\n", burn(Countdown.Step(4)), burn(Countdown.Done), burn(Countdown.Step((0 - 3))));
+  return 0;
+}

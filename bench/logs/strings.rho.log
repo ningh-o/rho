@@ -1,0 +1,10 @@
+# strings / rho
+# build: rho build bench/src/strings.rho -o bench/build/strings.rho.wasm
+# run:   wasmtime run bench/build/strings.rho.wasm
+# expected stdout: "strings n=500000 bytes=50750000"
+warmup   : 8.86 ms  exit=0  output_ok=true
+run 1   : 8.48 ms  exit=0  output_ok=true
+run 2   : 7.26 ms  exit=0  output_ok=true
+run 3   : 8.44 ms  exit=0  output_ok=true
+run 4   : 7.71 ms  exit=0  output_ok=true
+run 5   : 8.59 ms  exit=0  output_ok=true

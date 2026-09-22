@@ -1,0 +1,13 @@
+# fixture application manifest — pinned and verified by run.sh.
+# The strlib rev must equal the second commit of the deterministic remote
+# that run.sh builds (fixed dates, fixed identities).
+[package]
+name = "fixture-app"
+version = "0.1.0"
+
+[dependencies.mathx]
+path = "vendor/mathx"
+
+[dependencies.strlib]
+git = "https://rho-fixture.local/strlib"
+rev = "fae685b13126201f6ea3331475825d8e83a1b1a2"

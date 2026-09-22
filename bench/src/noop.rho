@@ -1,0 +1,5 @@
+// not a kernel: measures the runtime process overhead (spawn -> exit of an
+// empty wasm32-wasi module) so kernel medians can be read against it.
+fn main() -> i32 {
+  return 0;
+}

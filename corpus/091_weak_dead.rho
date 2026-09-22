@@ -1,0 +1,27 @@
+// exit: 0
+// weak references do not keep an object alive and never resurrect it: two
+// independent weaks both flip to null on the same death, copying the weak
+// value changes nothing, and every get on a dead weak keeps answering null.
+struct Node {
+  v: i32,
+}
+
+fn make_node(v: i32) -> *Node {
+  return new Node { v: v };
+}
+
+fn main() -> i32 {
+  let mut n: *Node = make_node(42);
+  let w1: weak[Node] = weak.from(n);
+  let w2: weak[Node] = weak.from(n);
+  printf("up: w1={} w2={}\n", (w1.get() != null), (w2.get() != null));
+  n = null;
+  printf("down: w1={} w2={}\n", (w1.get() != null), (w2.get() != null));
+  let w3: weak[Node] = w2;
+  printf("copied weak: w3={}\n", (w3.get() != null));
+  let mut q: *Node = w1.get();
+  printf("get1: q_null={}\n", (q == null));
+  q = w3.get();
+  printf("get2: q_null={}\n", (q == null));
+  return 0;
+}

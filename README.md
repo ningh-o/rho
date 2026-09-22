@@ -31,6 +31,13 @@ rho fmt   main.rho      # canonical formatting (in place with -w)
 rho check main.rho      # type-check only
 ```
 
+Packages: `tools/pkg/rho-pkg.rho` — a package tool written in rho
+(manifests in `rho.toml`, a reproducible `rho.lock`, path + git
+dependencies consumed from an in-tree `vendor/`). It compiles to
+wasm32-wasi and runs under wasmtime; design and workflow in
+[docs/package-manager.md](docs/package-manager.md), end-to-end proof in
+[tests/pkg-fixture/run.sh](tests/pkg-fixture/run.sh).
+
 ## Status
 
 | Version | Milestone |

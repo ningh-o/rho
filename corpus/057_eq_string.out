@@ -1,0 +1,11 @@
+same literal: eq=true ne=false
+case: eq=false ne=true
+length: eq=false ne=true
+empty: eq=true ne=false
+trailing space: eq=false ne=true
+var vs literal: eq=true ne=false
+built vs literal: eq=true ne=false
+built vs built: eq=true
+utf8: eq=true ne=false bytes=13
+utf8 vs ascii: eq=false
+slice vs literal: eq=true ne=false

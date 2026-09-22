@@ -1,0 +1,39 @@
+// The rho module the example page imports. Every `pub fn` below becomes a
+// typed JS function after `vite build` — see src/index.d.rho.ts.
+//
+// `half` shows cross-module `use`: helper.rho sits next to this file and is
+// visible to the compiler automatically.
+
+use helper;
+
+pub fn fib(n: i32) -> i32 {
+  if (n < 2) {
+    return n;
+  }
+  return fib(n - 1) + fib(n - 2);
+}
+
+pub fn add(a: i32, b: i32) -> i32 {
+  return a + b;
+}
+
+pub fn exclaim(who: string) -> string {
+  return cat(who, ", from rho!");
+}
+
+pub fn is_even(n: i32) -> bool {
+  return n % 2 == 0;
+}
+
+pub fn half(n: i32) -> i32 {
+  return helper.twice2(n) / 2;
+}
+
+fn main() -> i32 {
+  printf("fib(10)={}\n", fib(10));
+  return 0;
+}
+
+pub fn double(n: i32) -> i32 {
+  return helper.twice2(n);
+}

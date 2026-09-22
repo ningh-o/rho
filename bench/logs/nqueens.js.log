@@ -1,0 +1,10 @@
+# nqueens / js
+# build: (none — run from source)
+# run:   node bench/src/nqueens.js
+# expected stdout: "queens(12)=14200"
+warmup   : 30.15 ms  exit=0  output_ok=true
+run 1   : 29.48 ms  exit=0  output_ok=true
+run 2   : 29.46 ms  exit=0  output_ok=true
+run 3   : 28.59 ms  exit=0  output_ok=true
+run 4   : 29.16 ms  exit=0  output_ok=true
+run 5   : 29.42 ms  exit=0  output_ok=true

@@ -1,0 +1,19 @@
+// exit: 0
+// 061 — `cat` against the empty string: either side, both sides,
+// nested empties, an empty carved out by a slice; length moves,
+// content never does
+fn main() -> i32 {
+  let s: string = "rho";
+  let e: string = "";
+  assert_eq(cat(e, s), "rho");
+  assert_eq(cat(s, e), "rho");
+  assert_eq(cat(e, e), "");
+  assert_eq(cat(e, cat(e, cat(e, s))), "rho");
+  printf("[{}][{}][{}]\n", cat(e, s), cat(s, e), cat(e, e));
+  printf("{} {} {} {}\n", len(s), len(e), len(cat(e, e)), len(cat(e, s)));
+  let half: string = s[2..2];
+  assert_eq(half, "");
+  printf("[{}] {}\n", half, len(half));
+  printf("[{}] [{}]\n", format("{}", e), format("{}|{}", e, e));
+  return 0;
+}

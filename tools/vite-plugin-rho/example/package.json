@@ -1,0 +1,19 @@
+{
+  "name": "vite-plugin-rho-example",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "rho-dts --compiler \"${RHO_BOOT_WASM:-../../../build/rho.wasm}\" src && tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "dts": "rho-dts --compiler \"${RHO_BOOT_WASM:-../../../build/rho.wasm}\" src"
+  },
+  "dependencies": {
+    "vite-plugin-rho": "file:.."
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vite": "^8.3.0"
+  }
+}

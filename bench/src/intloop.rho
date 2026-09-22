@@ -1,0 +1,16 @@
+// bench kernel: tight integer loop, ~1e8 iterations of
+// acc = (acc + (i % 100000)^2) % 4294967291 over i64 — every step is
+// exact in i64 AND in a JS double (t^2 <= 1e10, acc + t^2 < 2^53), so the
+// three implementations must agree digit for digit. Stresses i64
+// arithmetic, modulo, and loop-carried dependencies.
+fn main() -> i32 {
+  let mut acc: i64 = 0;
+  let mut i: usize = 0;
+  while i < 100_000_000 {
+    let t: i64 = (i % 100_000) as i64;
+    acc = (acc + t * t) % 4294967291;
+    i += 1;
+  }
+  printf("intloop acc={}\n", acc);
+  return 0;
+}

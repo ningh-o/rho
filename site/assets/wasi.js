@@ -281,6 +281,20 @@ export function createWasi({ args = [], fs = null, onStdout = null, onStderr = n
       fs.unlink(abs);
       return 0;
     },
+    // the compiler writes every artifact tmp-then-rename (the fresh-inode
+    // law); over the virtual FS that is a plain move. The adapter's
+    // preview1 signature takes the two-directory form.
+    path_rename(oldFd, oldPathPtr, oldPathLen, newFd, newPathPtr, newPathLen) {
+      if (!fs) return 44;
+      const oldPath = readStr(oldPathPtr, oldPathLen);
+      const newPath = readStr(newPathPtr, newPathLen);
+      const oldAbs = oldPath.startsWith("/") ? oldPath : "/" + oldPath;
+      const newAbs = newPath.startsWith("/") ? newPath : "/" + newPath;
+      if (!fs.exists(oldAbs)) return 44;
+      fs.write(newAbs, fs.read(oldAbs) || new Uint8Array(0));
+      fs.unlink(oldAbs);
+      return 0;
+    },
     fd_sync() {
       return 0;
     },

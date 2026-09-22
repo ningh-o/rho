@@ -1,0 +1,14 @@
+// exit: 0
+fn main() -> i32 {
+  // indentation is content: shallow, deep, tabbed — every byte between
+  // the delimiters enters the value; there is no baseline and no error
+  let s: string = """
+  deep
+ shallow
+	tabbed
+    deeper still
+  """;
+  printf("[{}]\n", s);
+  printf("{}\n", len(s) as i32);
+  return 0;
+}

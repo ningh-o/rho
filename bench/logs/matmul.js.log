@@ -1,0 +1,10 @@
+# matmul / js
+# build: (none — run from source)
+# run:   node bench/src/matmul.js
+# expected stdout: "matmul(256) sum_bits=4627167142146473984 sum_int=23"
+warmup   : 40.75 ms  exit=0  output_ok=true
+run 1   : 40.74 ms  exit=0  output_ok=true
+run 2   : 40.59 ms  exit=0  output_ok=true
+run 3   : 43.05 ms  exit=0  output_ok=true
+run 4   : 40.42 ms  exit=0  output_ok=true
+run 5   : 46.70 ms  exit=0  output_ok=true

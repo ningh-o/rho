@@ -1,0 +1,60 @@
+// parse: the full escape set — named escapes, the solidus, \uXXXX in all
+// widths, surrogate pairs, and NUL inside strings. Every decoded string is
+// dumped as decimal bytes so the golden pins exact UTF-8 output.
+use json/json;
+
+// space-separated decimal byte dump of a string
+fn dump(s: string) -> string {
+  if len(s) == 0 {
+    return "(empty)";
+  }
+  let mut out: string = "";
+  let mut i: usize = 0;
+  while i < len(s) {
+    if i > 0 {
+      out = cat(out, " ");
+    }
+    out = cat(out, format("{}", s[i]));
+    i += 1;
+  }
+  return out;
+}
+
+// decode one JSON string literal (given WITHOUT the surrounding quotes is
+// not accepted — a string document must be quoted) and dump its bytes
+fn dec(src: string) -> string {
+  let out = json.new_out();
+  let r = json.parse(src, out);
+  if r.is_err() {
+    return cat("ERR: ", json.err_msg(r));
+  }
+  return dump(json.as_str(out.root));
+}
+
+fn main() -> i32 {
+  // every named escape, in one string
+  printf("{}\n", dec("\"\\\"\\\\\\/\\b\\f\\n\\r\\t\""));
+  // \uXXXX: BMP code points in every byte width
+  printf("{}\n", dec("\"\\u0041\""));        // A — one byte
+  printf("{}\n", dec("\"\\u00e9\""));        // é — two bytes
+  printf("{}\n", dec("\"\\u4e2d\""));        // 中 — three bytes
+  printf("{}\n", dec("\"\\uffff\""));        // noncharacter, still legal
+  printf("{}\n", dec("\"\\u0000\""));        // NUL is a legal string byte
+  // surrogate pair combines to an astral code point
+  printf("{}\n", dec("\"\\ud83d\\ude00\"")); // U+1F600 😀
+  printf("{}\n", dec("\"\\uD83D\\uDE00\"")); // hex digits are case-insensitive
+  printf("{}\n", dec("\"\\udbff\\udfff\"")); // U+10FFFF, the last code point
+  // pairs and raw UTF-8 can mix inside one string
+  printf("{}\n", dec("\"a\\u4e2db\""));
+  // a raw (unescaped) string rides through byte for byte
+  printf("{}\n", dec("\"中文😀\""));
+  printf("{}\n", dec("\"\""));
+  // the decoded string re-encodes to JSON with raw UTF-8 and minimal
+  // escapes — encode never emits \u for a surrogate pair
+  let out = json.new_out();
+  if json.parse(cat("\"", cat("\\ud83d\\ude00\\u0001", "\"")), out).is_err() {
+    return 1;
+  }
+  printf("{}\n", json.err_text(json.encode(out.root)));
+  return 0;
+}

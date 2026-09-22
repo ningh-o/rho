@@ -1,0 +1,5 @@
+show(dot 1) | show(logo 3)
+paint(icon 2) | paint(paint 3)
+logo 3 / paint 3
+icon 2
+dot 1

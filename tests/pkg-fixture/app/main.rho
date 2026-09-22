@@ -1,0 +1,11 @@
+// fixture application — the consuming end of tests/pkg-fixture/run.sh.
+// Consumes mathx as a path dependency (which itself consumes strs as a
+// transitive path dependency) and strlib as a git dependency.
+use vendor/mathx/mathx;
+use vendor/strlib/strlib;
+
+fn main() -> i32 {
+  printf("mathx.double(21)={}\n", mathx.double(21));
+  printf("strlib.rev(\"abcdef\")={}\n", strlib.rev("abcdef"));
+  return 0;
+}

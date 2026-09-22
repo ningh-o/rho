@@ -1,0 +1,80 @@
+// exit: 0
+// slice 084: trait satisfaction — a type implements a trait when its
+// methods say so: a hand-written method with no impl block, an impl
+// block, an enum method, and every primitive through the prelude
+trait Show {
+  fn to_str(self) -> string,
+}
+
+trait Describe {
+  fn describe(self) -> string,
+  fn size_hint(self) -> i32,
+}
+
+// computed satisfaction: one method, no impl block
+struct Bare {
+  n: i64,
+}
+
+fn Bare.to_str(self: *Bare) -> string {
+  return format("bare {}", self.n);
+}
+
+// impl blocks: method definitions plus the eager check
+struct Full {
+  n: i64,
+}
+
+impl Show for Full {
+  fn to_str(self: *Full) -> string {
+    return format("full {}", self.n);
+  }
+}
+
+impl Describe for Full {
+  fn describe(self: *Full) -> string {
+    return format("full #{}", self.n);
+  }
+  fn size_hint(self: *Full) -> i32 {
+    return 2;
+  }
+}
+
+// an enum method satisfies Show too (the enum stays a value, not dyn)
+enum Mode {
+  On(i32),
+  Off,
+}
+
+fn Mode.to_str(self: Mode) -> string {
+  return match self {
+    Mode.On(k) => format("on {}", k),
+    Mode.Off => "off",
+  };
+}
+
+fn render[T: Show](v: *T) {
+  printf("render: {}\n", v);
+}
+
+fn main() -> i32 {
+  let b = new Bare { n: 3 };
+  let f = new Full { n: 4 };
+  // static dispatch through the bound, one instantiation each
+  render(b);
+  render(f);
+  // the multi-method trait dispatches both requirements
+  printf("describe={} hint={}\n", f.describe(), f.size_hint());
+  // enum satisfaction through printf's to_str lookup
+  let m: Mode = Mode.On(9);
+  printf("mode={} {}\n", m, Mode.Off);
+  // primitives: i32, bool, string, f64 all satisfy Show already
+  printf("prims {} {} {} {}\n", 1, true, "str", 2.5);
+  // the same types as dyn values
+  let db: dyn Show = b;
+  let df: dyn Show = f;
+  printf("dyn {} {}\n", db, df);
+  let dd: dyn Describe = f;
+  printf("dyn describe={} hint={}\n", dd.describe(), dd.size_hint());
+  return 0;
+}

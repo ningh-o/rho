@@ -1,0 +1,10 @@
+# naive_append / rho
+# build: rho build bench/src/naive_append.rho -o bench/build/naive_append.rho.wasm
+# run:   wasmtime run bench/build/naive_append.rho.wasm
+# expected stdout: "naive n=3750 bytes=380625"
+warmup   : 10.93 ms  exit=0  output_ok=true
+run 1   : 10.64 ms  exit=0  output_ok=true
+run 2   : 10.08 ms  exit=0  output_ok=true
+run 3   : 10.73 ms  exit=0  output_ok=true
+run 4   : 10.84 ms  exit=0  output_ok=true
+run 5   : 10.40 ms  exit=0  output_ok=true

@@ -1,0 +1,24 @@
+// exit: 0
+fn main() -> i32 {
+  // a multiline literal as a call argument
+  printf("[{}]\n", cat("join", """
+  ed
+  """));
+  // one as the printf format itself; escapes decode in here too, and
+  // the raw newline before the closing delimiter is part of the format
+  printf("""
+  num={}\n
+  """, 42);
+  // equality with the single-line spelling of the same bytes
+  if """
+  alpha
+  """ == "\n  alpha\n  " {
+    printf("eq\n");
+  }
+  printf("{}\n", len(cat("""
+  a
+  """, """
+  b
+  """)) as i64);
+  return 0;
+}

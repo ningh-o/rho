@@ -1,0 +1,9 @@
+is_obj=true size=6
+name=rho version=4.0
+dup-a=1.0 members-a=0
+flags size=3 [0]=true [1]=false [2]=true
+oob-null=true missing-null=true present-null=true
+deep=true deeper[0]=1.5
+1.0|-0.5|"s"|true
+[1.0,2.0]
+[]|{}

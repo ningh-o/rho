@@ -1,0 +1,25 @@
+// exit: 0
+// 068 — format() boundaries: the empty format, a holeless format that
+// is the literal itself, adjacent holes, a format nested as another
+// format's value, format feeding cat, and slicing a format's result
+fn main() -> i32 {
+  let e: string = format("");
+  assert_eq(e, "");
+  printf("[{}] {}\n", e, len(e));
+  let nohole: string = format("no holes");
+  assert_eq(nohole, "no holes");
+  printf("{}\n", nohole);
+  assert_eq(format("{}{}", "a", "b"), "ab");
+  printf("{}\n", format("{}{}", "a", "b"));
+  let nested: string = format("[{}]", format("{}", 7));
+  assert_eq(nested, "[7]");
+  printf("{}\n", nested);
+  let fed: string = cat("x=", format("{}", 9));
+  assert_eq(fed, "x=9");
+  printf("{} {}\n", fed, fed[0..2]);
+  let braces: string = format("{{}}={}", 1);
+  assert_eq(braces, "{}=1");
+  printf("{}\n", braces);
+  printf("{}\n", len(format("{}", 100)));
+  return 0;
+}

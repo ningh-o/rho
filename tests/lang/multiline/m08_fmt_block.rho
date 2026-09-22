@@ -1,0 +1,16 @@
+// exit: 0
+fn main() -> i32 {
+  // the canonical block: the value itself carries the shape — opener
+  // newline, interior lines indented at least one level, a final line
+  // of exactly one level of spaces for the closing delimiter to ride.
+  // fmt keeps this one a block; the runner pins the roundtrip.
+  let s: string = """
+    head
+      deeper
+    
+    tail
+    """;
+  printf("[{}]\n", s);
+  printf("{}\n", len(s) as i32);
+  return 0;
+}

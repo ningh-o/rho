@@ -1,0 +1,29 @@
+// exit: 0
+// as between signed and unsigned of the same width: the bits do not
+// change, only the interpretation (spec/type-system.md "wrap/truncate/
+// extend"; integer arithmetic wraps, two's complement)
+fn main() -> i32 {
+  let a: i32 = (0 - 1);
+  printf("i32 -1 as u32 = {}\n", a as u32);
+  let b: i32 = (0 - 2147483648);
+  printf("i32 -2147483648 as u32 = {}\n", b as u32);
+  let c: i32 = 123;
+  printf("i32 123 as u32 = {}\n", c as u32);
+  let d: u32 = 4294967295;
+  printf("u32 4294967295 as i32 = {}\n", d as i32);
+  let e: u32 = 2147483648;
+  printf("u32 2147483648 as i32 = {}\n", e as i32);
+  let f: i8 = (-128);
+  printf("i8 -128 as u8 = {}\n", f as u8);
+  let g: u8 = 200;
+  printf("u8 200 as i8 = {}\n", g as i8);
+  let h: i16 = (-2);
+  printf("i16 -2 as u16 = {}\n", h as u16);
+  let i: u16 = 32768;
+  printf("u16 32768 as i16 = {}\n", i as i16);
+  let j: i64 = (-1);
+  printf("i64 -1 as u64 = {}\n", j as u64);
+  let k: u64 = 18446744073709551615;
+  printf("u64 18446744073709551615 as i64 = {}\n", k as i64);
+  return 0;
+}

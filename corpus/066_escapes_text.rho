@@ -1,0 +1,16 @@
+// exit: 0
+// 066 — escapes hitting stdout verbatim: real tab-separated columns, a
+// carriage return mid-line, quoted text and backslashes as plain
+// output; the golden .out carries the raw control bytes
+fn main() -> i32 {
+  printf("a\tb\tc\n");
+  printf("one two\rOVER\n");
+  printf("quote:\" back:\\ end\n");
+  printf("mix\t\"q\"\t\\x41\n");
+  let t: string = "col1\tcol2";
+  printf("{}\n", t);
+  printf("{}\n", len(t));
+  let cr: string = "\r";
+  printf("{}\n", cr[0]);
+  return 0;
+}

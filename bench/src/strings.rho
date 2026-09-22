@@ -1,0 +1,37 @@
+// bench kernel: build one string by appending 200k small pieces (cycled
+// "a", "bc", "def", "ghij" -> 500000 bytes). rho has no growable string
+// builder: its only append, cat (boot/prelude/core.rho:110), rebuilds the
+// whole string per append (O(n^2)), so the linear way to build a big string
+// is a preallocated []u8 filled by index and converted once with
+// intrinsics.slice_string. That is what this kernel times; the O(n^2) cat
+// path is timed separately by the naive_append kernel at reduced scale.
+// Checksum: final length + byte sum.
+fn main() -> i32 {
+  let pieces: []string = make([]string, 4);
+  pieces[0] = "a";
+  pieces[1] = "bc";
+  pieces[2] = "def";
+  pieces[3] = "ghij";
+  let buf: []u8 = make([]u8, 500000);
+  let mut n: usize = 0;
+  let mut i: usize = 0;
+  while i < 200000 {
+    let p: string = pieces[i & 3];
+    let mut k: usize = 0;
+    while k < len(p) {
+      buf[n] = p[k];
+      n += 1;
+      k += 1;
+    }
+    i += 1;
+  }
+  let s: string = intrinsics.slice_string(buf);
+  let mut sum: u64 = 0;
+  let mut j: usize = 0;
+  while j < len(s) {
+    sum += s[j] as u64;
+    j += 1;
+  }
+  printf("strings n={} bytes={}\n", len(s), sum);
+  return 0;
+}

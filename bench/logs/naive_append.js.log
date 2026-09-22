@@ -1,0 +1,10 @@
+# naive_append / js
+# build: (none — run from source)
+# run:   node bench/src/naive_append.js
+# expected stdout: "naive n=3750 bytes=380625"
+warmup   : 22.61 ms  exit=0  output_ok=true
+run 1   : 22.95 ms  exit=0  output_ok=true
+run 2   : 23.08 ms  exit=0  output_ok=true
+run 3   : 22.01 ms  exit=0  output_ok=true
+run 4   : 22.77 ms  exit=0  output_ok=true
+run 5   : 22.09 ms  exit=0  output_ok=true

@@ -1,0 +1,11 @@
+// exit: 0
+fn main() -> i32 {
+  // one and two raw quotes are content; three need one escaped quote
+  let s: string = """
+  he said "go"
+  he said ""go""
+  he said \"""go\""" loudly
+  """;
+  printf("[{}]\n", s);
+  return 0;
+}

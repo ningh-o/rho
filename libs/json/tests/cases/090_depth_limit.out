@@ -1,0 +1,7 @@
+512 arrays: encoded, 1027 bytes
+513 arrays: 1:514 (offset 513): nesting deeper than 512 is rejected
+512 objects: encoded, 3075 bytes
+513 objects: 1:2562 (offset 2561): nesting deeper than 512 is rejected
+256+256 mixed: encoded, 2051 bytes
+257+256 mixed: 1:1534 (offset 1533): nesting deeper than 512 is rejected
+hand-built 600 deep encodes: true

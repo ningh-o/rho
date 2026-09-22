@@ -1,0 +1,10 @@
+# nqueens / rho
+# build: rho build bench/src/nqueens.rho -o bench/build/nqueens.rho.wasm
+# run:   wasmtime run bench/build/nqueens.rho.wasm
+# expected stdout: "queens(12)=14200"
+warmup   : 13.02 ms  exit=0  output_ok=true
+run 1   : 12.86 ms  exit=0  output_ok=true
+run 2   : 12.17 ms  exit=0  output_ok=true
+run 3   : 12.39 ms  exit=0  output_ok=true
+run 4   : 12.83 ms  exit=0  output_ok=true
+run 5   : 12.65 ms  exit=0  output_ok=true

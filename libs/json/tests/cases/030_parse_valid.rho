@@ -1,0 +1,74 @@
+// parse: the valid grammar — every value kind, top-level scalars, the
+// whitespace set, duplicate-key law, and the accessor surface.
+use json/json;
+
+fn parse_or_show(src: string) -> string {
+  let out = json.new_out();
+  let r = json.parse(src, out);
+  if r.is_err() {
+    return cat("ERR: ", json.err_msg(r));
+  }
+  let e = json.encode(out.root);
+  if e.is_err() {
+    return cat("ENC: ", json.err_msg(e));
+  }
+  return json.err_text(e);
+}
+
+fn join(parts: []string) -> string {
+  let mut out: string = "";
+  let mut i: usize = 0;
+  while i < len(parts) {
+    out = cat(out, parts[i]);
+    i += 1;
+  }
+  return out;
+}
+
+fn doc() -> string {
+  let ls: []string = make([]string, 8);
+  ls[0] = "{";
+  ls[1] = "\n  \"name\" : \"rho\" ,";
+  ls[2] = "\n  \"version\": 4,";
+  ls[3] = "\n  \"flags\": [true, false, null],";
+  ls[4] = "\n  \"nest\": {\"deep\": {\"deeper\": [1.5]}},";
+  ls[5] = "\n  \"a\": 1,";
+  ls[6] = "\n  \"a\": 2";
+  ls[7] = "\n}";
+  return join(ls);
+}
+
+fn main() -> i32 {
+  let out = json.new_out();
+  let r = json.parse(doc(), out);
+  if r.is_err() {
+    printf("parse error: {}\n", json.err_msg(r));
+    return 1;
+  }
+  let v: *json.Json = out.root;
+  // objects and members
+  printf("is_obj={} size={}\n", json.is_obj(v), json.size(v));
+  printf("name={} version={}\n", json.as_str(json.obj_get(v, "name")), json.as_num(json.obj_get(v, "version")));
+  // duplicate keys are kept in parse order; the first wins for lookup
+  printf("dup-a={} members-a={}\n", json.as_num(json.obj_get(v, "a")), json.size(json.obj_get(v, "a")));
+  // arrays
+  let flags: *json.Json = json.obj_get(v, "flags");
+  printf("flags size={} [0]={} [1]={} [2]={}\n", json.size(flags), json.as_bool(json.arr_at(flags, 0)), json.as_bool(json.arr_at(flags, 1)), json.is_null(json.arr_at(flags, 2)));
+  // out-of-bounds and missing lookups give the null pointer, distinct
+  // from a present JSON null
+  printf("oob-null={} missing-null={} present-null={}\n",
+    json.arr_at(flags, 3) == null,
+    json.obj_get(v, "nope") == null,
+    json.is_null(json.arr_at(flags, 2)));
+  // deep nesting
+  let deep: *json.Json = json.obj_get(json.obj_get(v, "nest"), "deep");
+  let deeper: *json.Json = json.obj_get(deep, "deeper");
+  printf("deep={} deeper[0]={}\n", json.is_obj(deep), json.as_num(json.arr_at(deeper, 0)));
+  // top-level scalars are documents
+  printf("{}|{}|{}|{}\n", parse_or_show("1"), parse_or_show("-0.5"), parse_or_show("\"s\""), parse_or_show("true"));
+  // the full whitespace set between tokens
+  printf("{}\n", parse_or_show("\t [ 1 ,\r\n 2 ] \r\n"));
+  // containers can be empty
+  printf("{}|{}\n", parse_or_show("[]"), parse_or_show("{}"));
+  return 0;
+}

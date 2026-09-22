@@ -4,7 +4,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { runWasm, createFS } from "../site/assets/wasi.js";
 
-const compilerPath = process.argv[2] || "build/rho-boot.wasm";
+const compilerPath = process.argv[2] || "build/rho.wasm";
 const compilerBytes = readFileSync(compilerPath);
 
 async function rhoCompile(source) {

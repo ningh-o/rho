@@ -1,0 +1,24 @@
+// exit: 0
+fn kind(n: i32) -> string {
+  return match n {
+    0 => "zero",
+    1 => "one",
+    7 => "lucky",
+    _ => "many",
+  };
+}
+
+fn parity_bit(n: i64) -> i32 {
+  return match n {
+    0 => 0,
+    2 => 1,
+    4 => 1,
+    _ => 99,
+  };
+}
+
+fn main() -> i32 {
+  printf("{} {} {} {}\n", kind(0), kind(1), kind(7), kind(99));
+  printf("{} {} {} {}\n", parity_bit(0), parity_bit(2), parity_bit(4), parity_bit(42));
+  return 0;
+}

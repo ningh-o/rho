@@ -1,0 +1,31 @@
+// exit: 0
+// ==/!= on pointers compare identity, never contents: two `new`
+// allocations with equal fields are distinct objects; a copied pointer
+// is the same object; null equals null (spec/type-system.md "pointers
+// compare identity"). weak[T] follows the same identity law and null is
+// a literal of any *T or weak[T].
+struct Node {
+  v: i32,
+}
+
+fn main() -> i32 {
+  let a: *Node = new Node { v: 1 };
+  let b: *Node = new Node { v: 1 };
+  let alias: *Node = a;
+  printf("distinct allocs: eq={} ne={}\n", (a == b), (a != b));
+  printf("alias: eq={} ne={}\n", (a == alias), (a != alias));
+  printf("self: eq={} ne={}\n", (a == a), (a != a));
+  printf("null vs null: eq={}\n", (null == null));
+  printf("null vs live: ne={}\n", (null != a));
+  printf("live vs null: ne={}\n", (a != null));
+  let wa: weak[Node] = weak.from(a);
+  let wa2: weak[Node] = weak.from(a);
+  let wb: weak[Node] = weak.from(b);
+  printf("weak same obj: eq={} ne={}\n", (wa == wa2), (wa != wa2));
+  printf("weak diff obj: eq={} ne={}\n", (wa == wb), (wa != wb));
+  let none: weak[Node] = null;
+  printf("weak null: eq={} vs-live-ne={}\n", (none == null), (wa != none));
+  a.v = 2;
+  printf("mutated through one alias still identity: eq={}\n", (a == alias));
+  return 0;
+}

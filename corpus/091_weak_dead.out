@@ -1,0 +1,5 @@
+up: w1=true w2=true
+down: w1=false w2=false
+copied weak: w3=false
+get1: q_null=true
+get2: q_null=true

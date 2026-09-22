@@ -1,0 +1,32 @@
+{
+  "name": "rho-lsp",
+  "version": "0.1.0",
+  "description": "Language Server Protocol implementation for the rho language, driven by the real rho compiler (wasm32-wasi build run in-process).",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "rho-lsp": "dist/server.js"
+  },
+  "main": "dist/server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "pretest": "npm run build",
+    "test": "node --test",
+    "build:vscode": "npm run build && rm -rf vscode/server && mkdir -p vscode/server && cp dist/*.js vscode/server/"
+  },
+  "dependencies": {
+    "vscode-languageserver": "^10.1.1",
+    "vscode-languageserver-textdocument": "^1.0.14"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "~5.9.0"
+  }
+}

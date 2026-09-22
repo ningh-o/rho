@@ -15,12 +15,13 @@ jobs:
       - uses: actions/checkout@v4
       - name: build boot compiler
         run: make -j
-      - name: selftest (ast goldens, diagnostics, fmt roundtrip)
+      - name: selftest (ast goldens, diagnostics)
         run: make test
 
-  linux-images:
-    # the static ELF targets, end to end through the in-tree assembler and
-    # linker: amd64 native, arm64 through qemu-user
+  wasm:
+    # boot ships one target: wasm32-wasi — the corpus is its referee.
+    # (the native images are built and graded by the self-hosted compiler;
+    # boot cannot emit them, so the old linux/mac image jobs are gone)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,21 +34,3 @@ jobs:
           echo "/tmp/wasmtime-v27.0.0-x86_64-linux" >> "$GITHUB_PATH"
       - name: corpus wasm32-wasi
         run: ./build/rho-boot test corpus --target wasm32-wasi
-      - name: corpus amd64-linux
-        run: ./build/rho-boot test corpus --target amd64-linux
-      - name: corpus arm64-linux (qemu-user)
-        run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
-          ./build/rho-boot test corpus --target arm64-linux
-
-  mac-images:
-    # the static Mach-O target: in-tree assemble + ad-hoc sign, run natively
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-      - name: build boot compiler
-        run: make -j
-      - name: corpus arm64-mac
-        run: ./build/rho-boot test corpus --target arm64-mac
-      - name: arm64 assembler oracle (system assembler as referee)
-        run: sh tools/check_asm64.sh

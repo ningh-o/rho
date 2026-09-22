@@ -1,0 +1,109 @@
+// round trips: encode -> parse must be the identity on bits for numbers
+// (the 17-digit canonical form plus a correctly rounded parser give that),
+// byte-identical for text, and a fixpoint for both compact and pretty.
+use json/json;
+
+struct FRow {
+  x: f64,
+}
+
+// parse text, re-encode: the compact form must be a fixpoint
+fn stable(src: string) -> bool {
+  let a = json.new_out();
+  if json.parse(src, a).is_err() {
+    return false;
+  }
+  let one = json.encode(a.root);
+  if one.is_err() {
+    return false;
+  }
+  let b = json.new_out();
+  if json.parse(json.err_text(one), b).is_err() {
+    return false;
+  }
+  let two = json.encode(b.root);
+  return two.is_ok() && json.err_text(two) == json.err_text(one);
+}
+
+fn main() -> i32 {
+  // numbers: bit-exact through the textual round trip
+  let xs: []FRow = make([]FRow, 18);
+  xs[0].x = 0.0;
+  xs[1].x = 0.0 * -1.0;
+  xs[2].x = 1.0;
+  xs[3].x = 0.0 - 1.0;
+  xs[4].x = 0.1;
+  xs[5].x = 0.2;
+  xs[6].x = 1.0 / 3.0;
+  xs[7].x = 2.2250738585072014e-308;
+  xs[8].x = 5e-324;
+  xs[9].x = 1.7976931348623157e308;
+  xs[10].x = 1e23;
+  xs[11].x = 1e-23;
+  xs[12].x = 9007199254740993.0;
+  xs[13].x = 123456.789;
+  xs[14].x = 3.141592653589793;
+  xs[15].x = 2.718281828459045;
+  xs[16].x = 1e300;
+  xs[17].x = 0.0 - 5e-324;
+  let out = json.new_out();
+  let mut fails: i32 = 0;
+  let mut i: usize = 0;
+  while i < 18 {
+    let v: *json.Json = json.mk_num(xs[i].x);
+    let e = json.encode(v);
+    if e.is_err() {
+      printf("FAIL enc {}\n", i);
+      fails += 1;
+      i += 1;
+      continue;
+    }
+    if json.parse(json.err_text(e), out).is_err() {
+      printf("FAIL reparse: {}\n", json.err_text(e));
+      fails += 1;
+      i += 1;
+      continue;
+    }
+    let before: u64 = intrinsics.f64_bits(xs[i].x);
+    let after: u64 = intrinsics.f64_bits(json.as_num(out.root));
+    if before == after {
+      printf("ok   {} bits={}\n", json.err_text(e), before);
+    } else {
+      printf("FAIL {} bits {} != {}\n", json.err_text(e), before, after);
+      fails += 1;
+    }
+    i += 1;
+  }
+  // text: escaping is stable through encode -> parse -> encode
+  printf("stable: {} {} {} {}\n",
+    stable("\"a\\/\\b\\f\\n\\r\\t\\\\\\\"\\u0001\\ud83d\\ude00中\""),
+    stable("[[[[1]]]]"),
+    stable("{\"a\":[1,{\"b\":null},\"c\"],\"d\":-0.0}"),
+    stable("\"\""));
+  // structural: build -> encode -> parse -> deep_eq the original
+  let pairs: []*json.Member = make([]*json.Member, 2);
+  pairs[0] = json.mk_member("n", json.mk_num(2.5));
+  pairs[1] = json.mk_member("s", json.mk_str("str\"quote"));
+  let arr: []*json.Json = make([]*json.Json, 3);
+  arr[0] = json.mk_obj(pairs);
+  arr[1] = json.mk_arr(make([]*json.Json, 0));
+  arr[2] = json.mk_null();
+  let orig: *json.Json = json.mk_arr(arr);
+  let e = json.encode(orig);
+  if json.parse(json.err_text(e), out).is_err() {
+    return 1;
+  }
+  printf("deep_eq after round trip: {}\n", json.deep_eq(orig, out.root));
+  // pretty is a fixpoint too
+  let p1 = json.encode_pretty(orig);
+  if json.parse(json.err_text(p1), out).is_err() {
+    return 1;
+  }
+  let p2 = json.encode_pretty(out.root);
+  printf("pretty fixpoint: {}\n", json.err_text(p1) == json.err_text(p2));
+  printf("fails: {}\n", fails);
+  if fails > 0 {
+    return 1;
+  }
+  return 0;
+}

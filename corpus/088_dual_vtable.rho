@@ -1,0 +1,79 @@
+// exit: 13
+// slice 088: one object, two vtables — the same *T coerced to two
+// traits dispatches each trait's own methods; the same trait over two
+// types keeps the calls apart; both vtables hold the one live object
+trait Show {
+  fn to_str(self) -> string,
+}
+
+trait Desc {
+  fn describe(self) -> string,
+  fn rank(self) -> i32,
+}
+
+struct Pt {
+  x: i32,
+}
+
+fn Pt.to_str(self: *Pt) -> string {
+  return format("pt({})", self.x);
+}
+
+fn Pt.describe(self: *Pt) -> string {
+  return format("pt describing {}", self.x);
+}
+
+fn Pt.rank(self: *Pt) -> i32 {
+  return self.x;
+}
+
+fn Pt.bump(self: *Pt) {
+  self.x += 1;
+}
+
+struct Wd {
+  s: string,
+}
+
+fn Wd.to_str(self: *Wd) -> string {
+  return format("wd<{}>", self.s);
+}
+
+fn Wd.describe(self: *Wd) -> string {
+  return format("wd describing {}", self.s);
+}
+
+fn Wd.rank(self: *Wd) -> i32 {
+  return len(self.s) as i32;
+}
+
+fn main() -> i32 {
+  let p = new Pt { x: 7 };
+  let w = new Wd { s: "abcd" };
+  // two vtables from one object
+  let ds: dyn Show = p;
+  let dd: dyn Desc = p;
+  printf("p: show={} describe={} rank={}\n", ds, dd.describe(), dd.rank());
+  // the same two traits over a second type
+  let ws: dyn Show = w;
+  let wd: dyn Desc = w;
+  printf("w: show={} describe={} rank={}\n", ws, wd.describe(), wd.rank());
+  // one dyn value copied twice into one call still dispatches right
+  printf("mix {} {} {} {}\n", ds, ws, ds, ws);
+  // both vtables hold the same object: mutate through the concrete
+  // pointer and every view of p — either trait, either coercion — sees it
+  p.bump();
+  p.bump();
+  let ds2: dyn Show = p;
+  printf("bumped {} {} rank={}\n", ds, ds2, dd.rank());
+  // both types behind one Show slice — two vtables, one loop
+  let items: []dyn Show = make([]dyn Show, 2);
+  items[0] = p;
+  items[1] = w;
+  let mut i: usize = 0;
+  while i < len(items) {
+    printf("item {}\n", items[i]);
+    i += 1;
+  }
+  return (dd.rank() + wd.rank()) as i32;
+}

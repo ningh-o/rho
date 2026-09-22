@@ -1,0 +1,1578 @@
+// json — a JSON codec package for rho, written in rho.
+//
+// The first real package in the rho package ecosystem: a manifest
+// (rho.toml) plus one entry module, consumable by any package through the
+// rho-pkg path-dependency workflow (docs/package-manager.md):
+//
+//   [dependencies.json]
+//   path = "vendor/json"    # the package root, descending only
+//
+//   use vendor/json/json;
+//   let out = json.new_out();
+//   let r = json.parse("[1, 2, 3]", out);
+//   if r.is_err() {
+//     eprintf("parse failed: {}\n", err_text(r));
+//   }
+//   let s = json.encode(out.root);
+//
+// What it guarantees (all pinned by tests/run.sh):
+//   - encode/decode both ways over one in-memory model (Jv/Json/Member);
+//   - strings are UTF-8 byte strings, exactly rho's `string`: decode
+//     validates UTF-8 and rejects raw control bytes; encode passes every
+//     non-ASCII byte through and emits the minimal standard escapes
+//     (\" \\ \b \f \n \r \t, \u00xx for the remaining C0 controls);
+//     decode accepts the full escape set including \/ and \uXXXX with
+//     surrogate pairs (lone surrogates are errors);
+//   - numbers are f64 end to end: decode is correctly rounded (half to
+//     even) over the whole double range including subnormals and the
+//     infinities; encode prints the 17-round-trip-digit canonical form of
+//     the prelude and rejects nan/inf (JSON has no spelling for them);
+//   - parse rejects trailing garbage and every malformed literal, and
+//     every error message names its position: "line:col (offset N): ...";
+//   - nesting deeper than MAX_DEPTH is an error, not a stack overflow.
+//
+// Boot-compiler constraints this shape works around (probed against
+// ./build/rho-boot, rho 0.4.0):
+//   - `new` only builds structs, so the tree node is `struct Json` holding
+//     the enum payload in `v`; heap enum pointers do not exist;
+//   - generic type arguments must be primitives (Result[*T, ...] is not
+//     expressible), so parse reports through a caller-owned out struct
+//     (`Parsed`) and Result[string, string] as the status — the same
+//     idiom tools/pkg/rho-pkg.rho uses;
+//   - a `const` string has no address and cannot be dynamically indexed,
+//     so lookup tables are local literals inside their functions.
+// =========================================================== tiny helpers
+fn singleton(b: u8) -> string {
+  let one: []u8 = make([]u8, 1);
+  one[0] = b;
+  return intrinsics.slice_string(one);
+}
+
+fn cat3(a: string, b: string, c: string) -> string {
+  return cat(cat(a, b), c);
+}
+
+fn cat4(a: string, b: string, c: string, d: string) -> string {
+  return cat(cat(cat(a, b), c), d);
+}
+
+// Exact f64 negation. `0.0 - x` would work for every nonzero x but turns
+// -0.0 into +0.0; multiplying by -1 keeps the sign of zero, which "-0"
+// inputs rely on. (A bare `-331` is also the only safe spelling of a
+// negative constant in i64 comparisons: `0 - 331` computes in i32 and
+// miscompares — probed against ./build/rho-boot.)
+fn neg_of(x: f64) -> f64 {
+  return (x * (-1.0));
+}
+
+// A growable byte buffer. All string building in this package goes
+// through one, so encode/decode are linear, not quadratic.
+struct Buf {
+  b: []u8,
+  n: usize,
+}
+
+fn new_buf() -> *Buf {
+  let b: *Buf = new Buf { b: make([]u8, 256), n: 0 };
+  return b;
+}
+
+fn Buf.reserve(self: *Buf, need: usize) {
+  if (need <= len(self.b)) {
+    return;
+  }
+  let mut cap: usize = len(self.b);
+  while (cap < need) {
+    cap *= 2;
+  }
+  let grown: []u8 = make([]u8, cap);
+  let mut i: usize = 0;
+  while (i < self.n) {
+    grown[i] = self.b[i];
+    i += 1;
+  }
+  self.b = grown;
+}
+
+fn Buf.put(self: *Buf, s: string) {
+  self.reserve((self.n + len(s)));
+  let mut j: usize = 0;
+  while (j < len(s)) {
+    self.b[self.n] = s[j];
+    self.n += 1;
+    j += 1;
+  }
+}
+
+fn Buf.put_u8(self: *Buf, c: u8) {
+  self.reserve((self.n + 1));
+  self.b[self.n] = c;
+  self.n += 1;
+}
+
+// The bytes as a string. Empty stays empty: a zero-length slice at the
+// end boundary of a buffer is the one slice the compiler rejects.
+fn Buf.take(self: *Buf) -> string {
+  if (self.n == 0) {
+    return "";
+  }
+  return intrinsics.slice_string(self.b[0..self.n]);
+}
+
+fn is_digit(c: u8) -> bool {
+  return ((c >= 48) && (c <= 57));
+}
+
+// hex digit value, or -1
+fn hex_val(c: u8) -> i32 {
+  if ((c >= 48) && (c <= 57)) {
+    return (c as i32 - 48);
+  }
+  if ((c >= 97) && (c <= 102)) {
+    return (c as i32 - 87);
+  }
+  if ((c >= 65) && (c <= 70)) {
+    return (c as i32 - 55);
+  }
+  return (0 - 1);
+}
+
+// lowercase hex nibble, for \u00xx escapes (a `const` string has no
+// address, so the table lives as a local literal)
+fn hex_nibble(c: u8) -> u8 {
+  let digits: string = "0123456789abcdef";
+  return digits[c];
+}
+
+// ===================================================== the in-memory model
+// Maximum nesting depth of arrays-inside-arrays (objects count the same).
+// Parsing is recursive descent; the limit turns a hostile input into an
+// error message instead of a stack overflow. Comfortably below what the
+// wasm32-wasi stack tolerates (pinned by a test).
+const MAX_DEPTH: i32 = 512;
+
+pub enum Jv {
+  Null,
+  Bool(bool),
+  Num(f64),
+  Str(string),
+  Arr([]*Json),
+  Obj([]*Member),
+}
+
+// A tree node. rho's `new` builds structs only, so the enum payload rides
+// in `v` and every value in the model is a `*Json` handle.
+pub struct Json {
+  v: Jv,
+}
+
+pub struct Member {
+  key: string,
+  val: *Json,
+}
+
+// The out-pointer parse reports through: Result's type arguments must be
+// primitives on the boot compiler, so the tree rides beside the status.
+pub struct Parsed {
+  root: *Json,
+}
+
+pub fn new_out() -> *Parsed {
+  let out: *Parsed = new Parsed { root: null };
+  return out;
+}
+
+pub fn mk_null() -> *Json {
+  let v: *Json = new Json { v: Jv.Null };
+  return v;
+}
+
+pub fn mk_bool(b: bool) -> *Json {
+  let v: *Json = new Json { v: Jv.Bool(b) };
+  return v;
+}
+
+// Accepts every f64 including nan/inf; encode is the step that rejects
+// non-finite numbers (JSON has no spelling for them).
+pub fn mk_num(x: f64) -> *Json {
+  let v: *Json = new Json { v: Jv.Num(x) };
+  return v;
+}
+
+pub fn mk_str(s: string) -> *Json {
+  let v: *Json = new Json { v: Jv.Str(s) };
+  return v;
+}
+
+pub fn mk_arr(items: []*Json) -> *Json {
+  let v: *Json = new Json { v: Jv.Arr(items) };
+  return v;
+}
+
+pub fn mk_obj(pairs: []*Member) -> *Json {
+  let v: *Json = new Json { v: Jv.Obj(pairs) };
+  return v;
+}
+
+pub fn mk_member(key: string, val: *Json) -> *Member {
+  let m: *Member = new Member { key: key, val: val };
+  return m;
+}
+
+// ===================================================== positions & errors
+// "line:col (offset N): msg" — 1-based line and column, byte offset from
+// the start of the document. Columns count bytes, like the rest of the
+// package (strings are byte strings here too).
+fn make_err(src: string, pos: usize, msg: string) -> string {
+  let mut line: i32 = 1;
+  let mut line_start: usize = 0;
+  let mut i: usize = 0;
+  while (i < pos) {
+    if (src[i] == 10) {
+      line += 1;
+      line_start = (i + 1);
+    }
+    i += 1;
+  }
+  let col: usize = ((pos - line_start) + 1);
+  return cat4(format("{}:{} (offset {}): ", line, col, pos), msg, "", "");
+}
+
+// =========================================================== the value set
+pub fn is_null(v: *Json) -> bool {
+  return match v.v {
+    Jv.Null => true,
+    _ => false,
+  };
+}
+
+pub fn is_bool(v: *Json) -> bool {
+  return match v.v {
+    Jv.Bool(_) => true,
+    _ => false,
+  };
+}
+
+pub fn is_num(v: *Json) -> bool {
+  return match v.v {
+    Jv.Num(_) => true,
+    _ => false,
+  };
+}
+
+pub fn is_str(v: *Json) -> bool {
+  return match v.v {
+    Jv.Str(_) => true,
+    _ => false,
+  };
+}
+
+pub fn is_arr(v: *Json) -> bool {
+  return match v.v {
+    Jv.Arr(_) => true,
+    _ => false,
+  };
+}
+
+pub fn is_obj(v: *Json) -> bool {
+  return match v.v {
+    Jv.Obj(_) => true,
+    _ => false,
+  };
+}
+
+// Extractors: they assume the matching `is_*` held and yield the zero
+// value otherwise (booleans are not optional on the boot compiler).
+// JSON null vs a missing key stays distinct: obj_get answers `null` (the
+// pointer) for missing; a present `null` comes back as a *Json holding
+// Jv.Null, which is_null reports.
+pub fn as_bool(v: *Json) -> bool {
+  return match v.v {
+    Jv.Bool(b) => b,
+    _ => false,
+  };
+}
+
+pub fn as_num(v: *Json) -> f64 {
+  return match v.v {
+    Jv.Num(x) => x,
+    _ => 0.0,
+  };
+}
+
+pub fn as_str(v: *Json) -> string {
+  return match v.v {
+    Jv.Str(s) => s,
+    _ => "",
+  };
+}
+
+// Elements of an array; null when v is not an array or i is out of bounds.
+pub fn arr_at(v: *Json, i: usize) -> *Json {
+  return match v.v {
+    Jv.Arr(xs) => {
+      if (i >= len(xs)) {
+        null
+      } else {
+        xs[i]
+      }
+    },
+    _ => null,
+  };
+}
+
+// First member with this key; null when v is not an object or the key is
+// missing. Duplicates keep their parse order; the first wins for lookup.
+pub fn obj_get(v: *Json, key: string) -> *Json {
+  return match v.v {
+    Jv.Obj(ms) => {
+      let mut found: *Json = null;
+      let mut i: usize = 0;
+      while (i < len(ms)) {
+        if (ms[i].key == key) {
+          found = ms[i].val;
+          break;
+        }
+        i += 1;
+      }
+      found
+    },
+    _ => null,
+  };
+}
+
+// len of the container; 0 for scalars.
+pub fn size(v: *Json) -> usize {
+  return match v.v {
+    Jv.Arr(xs) => len(xs),
+    Jv.Obj(ms) => len(ms),
+    _ => 0,
+  };
+}
+
+pub fn items(v: *Json) -> []*Json {
+  return match v.v {
+    Jv.Arr(xs) => xs,
+    _ => make([]*Json, 0),
+  };
+}
+
+pub fn members(v: *Json) -> []*Member {
+  return match v.v {
+    Jv.Obj(ms) => ms,
+    _ => make([]*Member, 0),
+  };
+}
+
+// append to an array in place; false when a is not an array
+pub fn arr_push(a: *Json, v: *Json) -> bool {
+  return match a.v {
+    Jv.Arr(xs) => {
+      let grown: []*Json = grow_jsons(xs, v);
+      a.v = Jv.Arr(grown);
+      true
+    },
+    _ => false,
+  };
+}
+
+// add or replace: the FIRST member with this key is overwritten in place
+// (its position and later duplicates keep standing); otherwise the pair
+// is appended. false when o is not an object.
+pub fn obj_set(o: *Json, key: string, val: *Json) -> bool {
+  return match o.v {
+    Jv.Obj(ms) => {
+      let mut i: usize = 0;
+      while (i < len(ms)) {
+        if (ms[i].key == key) {
+          ms[i].val = val;
+          return true;
+        }
+        i += 1;
+      }
+      let grown: []*Member = grow_members(ms, key, val);
+      o.v = Jv.Obj(grown);
+      true
+    },
+    _ => false,
+  };
+}
+
+fn grow_jsons(xs: []*Json, v: *Json) -> []*Json {
+  let mut cap: usize = (len(xs) * 2);
+  if (cap < 4) {
+    cap = 4;
+  }
+  let grown: []*Json = make([]*Json, cap);
+  let mut i: usize = 0;
+  while (i < len(xs)) {
+    grown[i] = xs[i];
+    i += 1;
+  }
+  grown[len(xs)] = v;
+  // the exact-length view: the slice's len is the element count, not the
+  // buffer's capacity (cap >= len(xs) + 1 always, so this is interior and
+  // never the zero-length end boundary)
+  return grown[0..(len(xs) + 1)];
+}
+
+fn grow_members(ms: []*Member, key: string, val: *Json) -> []*Member {
+  let mut cap: usize = (len(ms) * 2);
+  if (cap < 4) {
+    cap = 4;
+  }
+  let grown: []*Member = make([]*Member, cap);
+  let mut i: usize = 0;
+  while (i < len(ms)) {
+    grown[i] = ms[i];
+    i += 1;
+  }
+  grown[len(ms)] = mk_member(key, val);
+  return grown[0..(len(ms) + 1)];
+}
+
+// Structural equality: same type everywhere, arrays element-wise, objects
+// key-set-wise (order-insensitive, first-match on duplicates). Numbers
+// compare with f64 `==`: nan equals nothing, -0.0 equals 0.0.
+pub fn deep_eq(a: *Json, b: *Json) -> bool {
+  if is_null(a) {
+    return is_null(b);
+  }
+  if is_bool(a) {
+    return (is_bool(b) && (as_bool(a) == as_bool(b)));
+  }
+  if is_num(a) {
+    return (is_num(b) && (as_num(a) == as_num(b)));
+  }
+  if is_str(a) {
+    return (is_str(b) && (as_str(a) == as_str(b)));
+  }
+  if is_arr(a) {
+    if (!is_arr(b)) {
+      return false;
+    }
+    let xs: []*Json = items(a);
+    let ys: []*Json = items(b);
+    if (len(xs) != len(ys)) {
+      return false;
+    }
+    let mut i: usize = 0;
+    while (i < len(xs)) {
+      if (!deep_eq(xs[i], ys[i])) {
+        return false;
+      }
+      i += 1;
+    }
+    return true;
+  }
+  if is_obj(a) {
+    if (!is_obj(b)) {
+      return false;
+    }
+    let ms: []*Member = members(a);
+    let ns: []*Member = members(b);
+    if (len(ms) != len(ns)) {
+      return false;
+    }
+    let mut i: usize = 0;
+    while (i < len(ms)) {
+      let fv: *Json = obj_get(b, ms[i].key);
+      if (fv == null) {
+        return false;
+      }
+      if (!deep_eq(ms[i].val, fv)) {
+        return false;
+      }
+      i += 1;
+    }
+    return true;
+  }
+  return false;
+}
+
+// =============================================================== decoding
+struct Parser {
+  src: string,
+  pos: usize,
+  depth: i32,
+  err: string,
+}
+
+fn Parser.fail(self: *Parser, msg: string) {
+  if (self.err == "") {
+    self.err = make_err(self.src, self.pos, msg);
+  }
+}
+
+fn Parser.eof(self: *Parser) -> bool {
+  return (self.pos >= len(self.src));
+}
+
+fn Parser.peek(self: *Parser) -> u8 {
+  if self.eof() {
+    return 0;
+  }
+  return self.src[self.pos];
+}
+
+// ws = space, tab, LF, CR — the JSON set, nothing else
+fn Parser.skip_ws(self: *Parser) {
+  while (!self.eof()) {
+    let c: u8 = self.src[self.pos];
+    if ((((c == 32) || (c == 9)) || (c == 10)) || (c == 13)) {
+      self.pos += 1;
+    } else {
+      break;
+    }
+  }
+}
+
+// match a fixed literal at the cursor ("null", "true", "false")
+fn Parser.word(self: *Parser, w: string) -> bool {
+  let mut i: usize = 0;
+  while (i < len(w)) {
+    if ((self.pos + i) >= len(self.src)) {
+      self.fail(cat3("unexpected end of input (expected `", w, "`)"));
+      return false;
+    }
+    if (self.src[(self.pos + i)] != w[i]) {
+      self.fail(cat3("invalid literal (expected `", w, "`)"));
+      return false;
+    }
+    i += 1;
+  }
+  self.pos += len(w);
+  return true;
+}
+
+// four hex digits at the cursor; -1 (and an error) when malformed
+fn Parser.hex4(self: *Parser) -> i32 {
+  let mut v: i32 = 0;
+  let mut i: usize = 0;
+  while (i < 4) {
+    if ((self.pos + i) >= len(self.src)) {
+      self.fail("bad \\u escape (needs four hex digits)");
+      return (0 - 1);
+    }
+    let d: i32 = hex_val(self.src[(self.pos + i)]);
+    if (d < 0) {
+      self.fail("bad \\u escape (needs four hex digits)");
+      return (0 - 1);
+    }
+    v = ((v * 16) + d);
+    i += 1;
+  }
+  return v;
+}
+
+fn Buf.put_cp(self: *Buf, cp: i32) {
+  let c: u32 = cp as u32;
+  if (c < 128) {
+    self.put_u8(c as u8);
+  } else if (c < 2048) {
+    self.put_u8((192 | (c >> 6)) as u8);
+    self.put_u8((128 | (c & 63)) as u8);
+  } else if (c < 65536) {
+    self.put_u8((224 | (c >> 12)) as u8);
+    self.put_u8((128 | ((c >> 6) & 63)) as u8);
+    self.put_u8((128 | (c & 63)) as u8);
+  } else {
+    self.put_u8((240 | (c >> 18)) as u8);
+    self.put_u8((128 | ((c >> 12) & 63)) as u8);
+    self.put_u8((128 | ((c >> 6) & 63)) as u8);
+    self.put_u8((128 | (c & 63)) as u8);
+  }
+}
+
+// Parse one \uXXXX escape (cursor on the backslash) into UTF-8 bytes on
+// buf. Surrogate pairs combine; lone halves are errors, per the JSON
+// standard.
+fn Parser.u_escape(self: *Parser, buf: *Buf) -> bool {
+  self.pos += 2;
+  // the backslash and the 'u'
+  let h: i32 = self.hex4();
+  if (h < 0) {
+    return false;
+  }
+  self.pos += 4;
+  let mut cp: i32 = h;
+  if ((h >= 55296) && (h <= 56319)) {
+    // high half: a low half must follow as \uDC00-\uDFFF
+    let esc_start: usize = self.pos;
+    if ((((self.pos + 1) < len(self.src)) && (self.src[self.pos] == 92)) && (self.src[(self.pos + 1)] == 117)) {
+      self.pos += 2;
+      let lo: i32 = self.hex4();
+      if ((lo >= 56320) && (lo <= 57343)) {
+        self.pos += 4;
+        cp = ((65536 + ((h - 55296) << 10)) + (lo - 56320));
+      } else {
+        self.pos = esc_start;
+        self.fail("lone high surrogate (no low half followed)");
+        return false;
+      }
+    } else {
+      self.fail("lone high surrogate (no low half followed)");
+      return false;
+    }
+  } else if ((h >= 56320) && (h <= 57343)) {
+    self.fail("lone low surrogate");
+    return false;
+  }
+  buf.put_cp(cp);
+  return true;
+}
+
+// validate one multi-byte UTF-8 sequence starting at src[pos]; the
+// sequence length, or -1 (with an error set). Rejects bad continuation
+// bytes, overlong forms, UTF-16 surrogates, and anything past U+10FFFF.
+fn Parser.utf8_len(self: *Parser) -> i32 {
+  let b: u8 = self.src[self.pos];
+  let n: usize = len(self.src);
+  if ((b >= 194) && (b <= 223)) {
+    if ((((self.pos + 1) < n) && (self.src[(self.pos + 1)] >= 128)) && (self.src[(self.pos + 1)] <= 191)) {
+      return 2;
+    }
+    self.fail("invalid UTF-8 in string");
+    return (0 - 1);
+  }
+  if ((b >= 224) && (b <= 239)) {
+    let mut lo: u8 = 128;
+    let mut hi: u8 = 191;
+    if (b == 224) {
+      lo = 160;
+    }
+    if (b == 237) {
+      hi = 159;
+    }
+    if ((((((self.pos + 2) < n) && (self.src[(self.pos + 1)] >= lo)) && (self.src[(self.pos + 1)] <= hi)) && (self.src[(self.pos + 2)] >= 128)) && (self.src[(self.pos + 2)] <= 191)) {
+      return 3;
+    }
+    self.fail("invalid UTF-8 in string");
+    return (0 - 1);
+  }
+  if ((b >= 240) && (b <= 244)) {
+    let mut lo: u8 = 128;
+    let mut hi: u8 = 191;
+    if (b == 240) {
+      lo = 144;
+    }
+    if (b == 244) {
+      hi = 143;
+    }
+    if ((((((((self.pos + 3) < n) && (self.src[(self.pos + 1)] >= lo)) && (self.src[(self.pos + 1)] <= hi)) && (self.src[(self.pos + 2)] >= 128)) && (self.src[(self.pos + 2)] <= 191)) && (self.src[(self.pos + 3)] >= 128)) && (self.src[(self.pos + 3)] <= 191)) {
+      return 4;
+    }
+    self.fail("invalid UTF-8 in string");
+    return (0 - 1);
+  }
+  self.fail("invalid UTF-8 in string");
+  return (0 - 1);
+}
+
+// cursor on the opening quote; returns "" both for an empty string and on
+// error — callers check p.err
+fn Parser.parse_string(self: *Parser) -> string {
+  self.pos += 1;
+  // the opening quote
+  let buf: *Buf = new_buf();
+  while (!self.eof()) {
+    let c: u8 = self.src[self.pos];
+    if (c == 34) {
+      self.pos += 1;
+      return buf.take();
+    }
+    if (c == 92) {
+      if ((self.pos + 1) >= len(self.src)) {
+        self.pos += 1;
+        self.fail("unterminated escape");
+        return "";
+      }
+      let e: u8 = self.src[(self.pos + 1)];
+      if (e == 34) {
+        buf.put_u8(34);
+        self.pos += 2;
+      } else if (e == 92) {
+        buf.put_u8(92);
+        self.pos += 2;
+      } else if (e == 47) {
+        buf.put_u8(47);
+        // \/ — the solidus escape
+        self.pos += 2;
+      } else if (e == 98) {
+        buf.put_u8(8);
+        // \b
+        self.pos += 2;
+      } else if (e == 102) {
+        buf.put_u8(12);
+        // \f
+        self.pos += 2;
+      } else if (e == 110) {
+        buf.put_u8(10);
+        // \n
+        self.pos += 2;
+      } else if (e == 114) {
+        buf.put_u8(13);
+        // \r
+        self.pos += 2;
+      } else if (e == 116) {
+        buf.put_u8(9);
+        // \t
+        self.pos += 2;
+      } else if (e == 117) {
+        if (!self.u_escape(buf)) {
+          return "";
+        }
+      } else {
+        self.fail("invalid escape in string");
+        return "";
+      }
+    } else if (c < 32) {
+      self.fail("unescaped control character in string");
+      return "";
+    } else if (c < 128) {
+      buf.put_u8(c);
+      self.pos += 1;
+    } else {
+      let n: i32 = self.utf8_len();
+      if (n < 0) {
+        return "";
+      }
+      let end: usize = (self.pos + n as usize);
+      let mut j: usize = self.pos;
+      while (j < end) {
+        buf.put_u8(self.src[j]);
+        j += 1;
+      }
+      self.pos = end;
+    }
+  }
+  self.fail("unterminated string");
+  return "";
+}
+
+// cursor on the first byte of a number; JSON's strict grammar
+// (-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?) with position-bearing
+// errors. The conversion itself is number_f64 below.
+fn Parser.parse_number(self: *Parser) -> f64 {
+  let start: usize = self.pos;
+  if (self.peek() == 45) {
+    self.pos += 1;
+  }
+  let c: u8 = self.peek();
+  if (c == 48) {
+    self.pos += 1;
+    if is_digit(self.peek()) {
+      self.fail("leading zeros are not allowed in a number");
+      return 0.0;
+    }
+  } else if ((c >= 49) && (c <= 57)) {
+    while is_digit(self.peek()) {
+      self.pos += 1;
+    }
+  } else {
+    self.fail("expected a digit");
+    return 0.0;
+  }
+  if (self.peek() == 46) {
+    self.pos += 1;
+    // '.'
+    if (!is_digit(self.peek())) {
+      self.fail("expected a digit after the decimal point");
+      return 0.0;
+    }
+    while is_digit(self.peek()) {
+      self.pos += 1;
+    }
+  }
+  let e: u8 = self.peek();
+  if ((e == 101) || (e == 69)) {
+    self.pos += 1;
+    // 'e' / 'E'
+    let s: u8 = self.peek();
+    if ((s == 43) || (s == 45)) {
+      self.pos += 1;
+    }
+    if (!is_digit(self.peek())) {
+      self.fail("expected a digit in the exponent");
+      return 0.0;
+    }
+    while is_digit(self.peek()) {
+      self.pos += 1;
+    }
+  }
+  return number_f64(self.src[start..self.pos]);
+}
+
+fn Parser.parse_array(self: *Parser) -> *Json {
+  self.pos += 1;
+  // '['
+  self.depth += 1;
+  if (self.depth > MAX_DEPTH) {
+    self.fail(cat3("nesting deeper than ", format("{}", MAX_DEPTH), " is rejected"));
+    return null;
+  }
+  let xs: *Jsons = new Jsons { items: make([]*Json, 4), n: 0 };
+  self.skip_ws();
+  if (self.peek() == 93) {
+    self.pos += 1;
+    self.depth -= 1;
+    return mk_arr(xs.take());
+  }
+  while true {
+    let v: *Json = self.parse_value();
+    if (self.err != "") {
+      return null;
+    }
+    xs.put(v);
+    self.skip_ws();
+    let c: u8 = self.peek();
+    if (c == 44) {
+      self.pos += 1;
+      self.skip_ws();
+      continue;
+    }
+    if (c == 93) {
+      self.pos += 1;
+      self.depth -= 1;
+      return mk_arr(xs.take());
+    }
+    self.fail("expected `,` or `]` in an array");
+    return null;
+  }
+  return null;
+}
+
+fn Parser.parse_object(self: *Parser) -> *Json {
+  self.pos += 1;
+  // '{'
+  self.depth += 1;
+  if (self.depth > MAX_DEPTH) {
+    self.fail(cat3("nesting deeper than ", format("{}", MAX_DEPTH), " is rejected"));
+    return null;
+  }
+  let ms: *Members = new Members { items: make([]*Member, 4), n: 0 };
+  self.skip_ws();
+  if (self.peek() == 125) {
+    self.pos += 1;
+    self.depth -= 1;
+    return mk_obj(ms.take());
+  }
+  while true {
+    if (self.peek() != 34) {
+      self.fail("expected a string key in an object");
+      return null;
+    }
+    let key: string = self.parse_string();
+    if (self.err != "") {
+      return null;
+    }
+    self.skip_ws();
+    if (self.peek() != 58) {
+      self.fail("expected `:` after an object key");
+      return null;
+    }
+    self.pos += 1;
+    self.skip_ws();
+    let v: *Json = self.parse_value();
+    if (self.err != "") {
+      return null;
+    }
+    ms.put(key, v);
+    self.skip_ws();
+    let c: u8 = self.peek();
+    if (c == 44) {
+      self.pos += 1;
+      self.skip_ws();
+      continue;
+    }
+    if (c == 125) {
+      self.pos += 1;
+      self.depth -= 1;
+      return mk_obj(ms.take());
+    }
+    self.fail("expected `,` or `}` in an object");
+    return null;
+  }
+  return null;
+}
+
+fn Parser.parse_value(self: *Parser) -> *Json {
+  self.skip_ws();
+  if self.eof() {
+    self.fail("expected a value (input ended)");
+    return null;
+  }
+  let c: u8 = self.peek();
+  if (c == 110) {
+    // 'n'
+    if self.word("null") {
+      return mk_null();
+    }
+    return null;
+  }
+  if (c == 116) {
+    // 't'
+    if self.word("true") {
+      return mk_bool(true);
+    }
+    return null;
+  }
+  if (c == 102) {
+    // 'f'
+    if self.word("false") {
+      return mk_bool(false);
+    }
+    return null;
+  }
+  if (c == 34) {
+    let s: string = self.parse_string();
+    if (self.err != "") {
+      return null;
+    }
+    return mk_str(s);
+  }
+  if ((c == 45) || ((c >= 48) && (c <= 57))) {
+    let x: f64 = self.parse_number();
+    if (self.err != "") {
+      return null;
+    }
+    return mk_num(x);
+  }
+  if (c == 91) {
+    return self.parse_array();
+  }
+  if (c == 123) {
+    return self.parse_object();
+  }
+  self.fail("unexpected character (a value cannot start here)");
+  return null;
+}
+
+// Parse a complete JSON document into out.root.
+// Ok("") on success; Err("<line>:<col> (offset N): reason") otherwise.
+// Anything after the top-level value — even one trailing space is fine,
+// any trailing token is not — is rejected.
+pub fn parse(src: string, out: *Parsed) -> Result[string, string] {
+  out.root = null;
+  let p: *Parser = new Parser { src: src, pos: 0, depth: 0, err: "" };
+  let v: *Json = p.parse_value();
+  if (p.err != "") {
+    return Result.Err(p.err);
+  }
+  p.skip_ws();
+  if (!p.eof()) {
+    return Result.Err(make_err(src, p.pos, "trailing characters after the JSON value"));
+  }
+  out.root = v;
+  return Result.Ok("");
+}
+
+// Growable holders the parser builds containers with (slices are
+// fixed-length views in rho, so growth means: new buffer, copy, store).
+struct Jsons {
+  items: []*Json,
+  n: usize,
+}
+
+fn Jsons.put(self: *Jsons, v: *Json) {
+  if (self.n == len(self.items)) {
+    let mut cap: usize = (len(self.items) * 2);
+    if (cap < 4) {
+      cap = 4;
+    }
+    let grown: []*Json = make([]*Json, cap);
+    let mut i: usize = 0;
+    while (i < self.n) {
+      grown[i] = self.items[i];
+      i += 1;
+    }
+    self.items = grown;
+  }
+  self.items[self.n] = v;
+  self.n += 1;
+}
+
+fn Jsons.take(self: *Jsons) -> []*Json {
+  if (self.n == 0) {
+    return make([]*Json, 0);
+  }
+  return self.items[0..self.n];
+}
+
+struct Members {
+  items: []*Member,
+  n: usize,
+}
+
+fn Members.put(self: *Members, key: string, v: *Json) {
+  if (self.n == len(self.items)) {
+    let mut cap: usize = (len(self.items) * 2);
+    if (cap < 4) {
+      cap = 4;
+    }
+    let grown: []*Member = make([]*Member, cap);
+    let mut i: usize = 0;
+    while (i < self.n) {
+      grown[i] = self.items[i];
+      i += 1;
+    }
+    self.items = grown;
+  }
+  self.items[self.n] = mk_member(key, v);
+  self.n += 1;
+}
+
+fn Members.take(self: *Members) -> []*Member {
+  if (self.n == 0) {
+    return make([]*Member, 0);
+  }
+  return self.items[0..self.n];
+}
+
+// =================================================== numbers: text -> f64
+//
+// Correctly rounded (round half to even) decimal -> binary conversion,
+// the algorithm self/rho.rho's lexer uses for float literals — exact
+// bigint arithmetic, no libc strtod on any target. Leading zeros never
+// count toward the digit budget (a fully spelled subnormal keeps its
+// value), and digits past MAX_SIG_DIGITS are dropped: that shifts the
+// value by less than 1e-800 relative, while an exact rounding tie (the
+// only place where a dropped digit can flip a decision) is a dyadic
+// rational whose decimal form needs at most 768 significant digits —
+// so every tie a double can have is held exactly.
+const MAX_SIG_DIGITS: i32 = 800;
+
+struct Big {
+  w: []u32,
+  n: usize,
+}
+
+fn big_new() -> *Big {
+  let b: *Big = new Big { w: make([]u32, 160), n: 1 };
+  return b;
+}
+
+fn big_trim(b: *Big) {
+  while ((b.n > 1) && (b.w[(b.n - 1)] == 0)) {
+    b.n -= 1;
+  }
+}
+
+fn big_mul_u32(b: *Big, m: u32) {
+  let mut carry: u64 = 0;
+  let mut i: usize = 0;
+  while (i < b.n) {
+    let cur: u64 = ((b.w[i] as u64 * m as u64) + carry);
+    b.w[i] = (cur % 1000000000) as u32;
+    carry = (cur / 1000000000);
+    i += 1;
+  }
+  while (carry > 0) {
+    b.w[b.n] = (carry % 1000000000) as u32;
+    carry = (carry / 1000000000);
+    b.n += 1;
+  }
+}
+
+fn big_add_u32(b: *Big, v: u32) {
+  b.w[0] = (b.w[0] + v);
+  let mut i: usize = 0;
+  while (b.w[i] >= 1000000000) {
+    b.w[i] = (b.w[i] - 1000000000);
+    i += 1;
+    b.w[i] = (b.w[i] + 1);
+  }
+  if (i >= b.n) {
+    b.n = (i + 1);
+  }
+}
+
+fn big_clone(a: *Big) -> *Big {
+  let b: *Big = big_new();
+  let mut i: usize = 0;
+  while (i < a.n) {
+    b.w[i] = a.w[i];
+    i += 1;
+  }
+  b.n = a.n;
+  return b;
+}
+
+fn big_cmp(a: *Big, b: *Big) -> i32 {
+  if (a.n != b.n) {
+    if (a.n < b.n) {
+      return (0 - 1);
+    }
+    return 1;
+  }
+  let mut i: usize = a.n;
+  while (i > 0) {
+    i -= 1;
+    if (a.w[i] != b.w[i]) {
+      if (a.w[i] < b.w[i]) {
+        return (0 - 1);
+      }
+      return 1;
+    }
+  }
+  return 0;
+}
+
+fn big_sub(a: *Big, b: *Big) {
+  let mut borrow: i64 = 0;
+  let mut i: usize = 0;
+  while (i < a.n) {
+    let mut cur: i64 = (a.w[i] as i64 - borrow);
+    if (i < b.n) {
+      cur = ((a.w[i] as i64 - b.w[i] as i64) - borrow);
+    }
+    if (cur < 0) {
+      cur += 1000000000;
+      borrow = 1;
+    } else {
+      borrow = 0;
+    }
+    a.w[i] = cur as u32;
+    i += 1;
+  }
+  big_trim(a);
+}
+
+// decimal digit count of a limb's value
+fn u32_digits(v: u32) -> i64 {
+  let mut d: i64 = 1;
+  let mut x: u32 = v;
+  while (x >= 10) {
+    x = (x / 10);
+    d += 1;
+  }
+  return d;
+}
+
+fn p10_u64(r: usize) -> u64 {
+  let mut v: u64 = 1;
+  let mut i: usize = 0;
+  while (i < r) {
+    v = (v * 10);
+    i += 1;
+  }
+  return v;
+}
+
+// floor(a * 2^bits / b) rounded half-even on the exact remainder; `a` is
+// consumed and must satisfy a < b at entry (b > 0)
+fn big_div_bits(a: *Big, b: *Big, bits: i64) -> u64 {
+  let mut q: u64 = 0;
+  let mut j: i64 = 0;
+  while (j < bits) {
+    big_mul_u32(a, 2);
+    q = (q * 2);
+    if (big_cmp(a, b) >= 0) {
+      big_sub(a, b);
+      q += 1;
+    }
+    j += 1;
+  }
+  big_mul_u32(a, 2);
+  let c: i32 = big_cmp(a, b);
+  if ((c > 0) || ((c == 0) && ((q & 1) == 1))) {
+    q += 1;
+  }
+  return q;
+}
+
+// A valid JSON number token (the scanner already enforced the grammar) to
+// the nearest f64, ties to even. nan/inf never arise from in-range inputs;
+// out-of-range magnitudes give the infinity, deep underflow gives zero —
+// IEEE-754 semantics for both.
+fn number_f64(tok: string) -> f64 {
+  let d: *Big = big_new();
+  // the significant digits
+  let mut sig: i32 = 0;
+  // significant digits taken (capped at MAX_SIG_DIGITS)
+  let mut e10: i64 = 0;
+  let mut i: usize = 0;
+  let mut neg: bool = false;
+  let mut seen: bool = false;
+  if (tok[0] == 45) {
+    neg = true;
+    i = 1;
+  }
+  while ((i < len(tok)) && is_digit(tok[i])) {
+    seen = true;
+    // a leading integer zero carries no digit and no position
+    if ((sig == 0) && (tok[i] == 48)) {
+    } else if (sig < MAX_SIG_DIGITS) {
+      big_mul_u32(d, 10);
+      big_add_u32(d, (tok[i] - 48) as u32);
+      sig += 1;
+    } else {
+      e10 += 1;
+    }
+    i += 1;
+  }
+  if ((i < len(tok)) && (tok[i] == 46)) {
+    i += 1;
+    while ((i < len(tok)) && is_digit(tok[i])) {
+      seen = true;
+      if ((sig == 0) && (tok[i] == 48)) {
+        // a zero before the first significant digit shifts the position
+        // only — without this, a fully spelled tiny decimal would lose
+        // its value to the digit cap
+        e10 -= 1;
+      } else if (sig < MAX_SIG_DIGITS) {
+        big_mul_u32(d, 10);
+        big_add_u32(d, (tok[i] - 48) as u32);
+        sig += 1;
+        e10 -= 1;
+      }
+      i += 1;
+    }
+  }
+  if ((i < len(tok)) && ((tok[i] == 101) || (tok[i] == 69))) {
+    i += 1;
+    let mut eneg: bool = false;
+    if ((i < len(tok)) && ((tok[i] == 43) || (tok[i] == 45))) {
+      eneg = (tok[i] == 45);
+      i += 1;
+    }
+    // clamp the exponent magnitude: anything past ~1e400 decides inf/0 at
+    // the `approx` gate below, and an unclamped accumulate would wrap
+    let mut ev: i64 = 0;
+    while ((i < len(tok)) && is_digit(tok[i])) {
+      if (ev < 200000) {
+        ev = ((ev * 10) + (tok[i] - 48) as i64);
+      }
+      i += 1;
+    }
+    if eneg {
+      e10 -= ev;
+    } else {
+      e10 += ev;
+    }
+  }
+  if ((!seen) || ((d.n == 1) && (d.w[0] == 0))) {
+    // "-0" keeps its sign: f64 semantics
+    if neg {
+      return neg_of(0.0);
+    }
+    return 0.0;
+  }
+  let dl: i64 = (((d.n as i64 - 1) * 9) + u32_digits(d.w[(d.n - 1)]));
+  let approx: i64 = ((dl - 1) + e10);
+  if (approx > 309) {
+    // beyond the max double; x10 overflows to inf without a literal trap
+    let mut big: f64 = 1e+308;
+    big = (big * 10.0);
+    if neg {
+      return neg_of(big);
+    }
+    return big;
+  }
+  if (approx < (-331)) {
+    if neg {
+      return neg_of(0.0);
+    }
+    return 0.0;
+  }
+  // value = n2 / m2, both exact bigints
+  let n2: *Big = big_clone(d);
+  let m2: *Big = big_new();
+  big_add_u32(m2, 1);
+  if (e10 >= 0) {
+    let mut k: i64 = e10;
+    while (k >= 9) {
+      big_mul_u32(n2, 1000000000);
+      k -= 9;
+    }
+    if (k > 0) {
+      big_mul_u32(n2, p10_u64(k as usize) as u32);
+    }
+  } else {
+    let mut k: i64 = (0 - e10);
+    while (k >= 9) {
+      big_mul_u32(m2, 1000000000);
+      k -= 9;
+    }
+    if (k > 0) {
+      big_mul_u32(m2, p10_u64(k as usize) as u32);
+    }
+  }
+  // normalize the fraction n2/m2 into [1/2, 1): scale n2 up until n2 >= m2,
+  // then m2 up until m2 > n2 — sN and cc track the power-of-two drift
+  let mut sN: i64 = 0;
+  while (big_cmp(n2, m2) < 0) {
+    big_mul_u32(n2, 2);
+    sN += 1;
+  }
+  let mut cc: i64 = 0;
+  while (big_cmp(n2, m2) >= 0) {
+    big_mul_u32(m2, 2);
+    cc += 1;
+  }
+  // value = fraction * 2^e2v with fraction in [1/2, 1)
+  let e2v: i64 = (cc - sN);
+  let mut result: f64 = 0.0;
+  if (e2v >= (-1021)) {
+    // normal: extract 53 mantissa bits, round half-even on the remainder
+    let mut q: u64 = big_div_bits(n2, m2, 53);
+    if (q >= 9007199254740992) {
+      // carry re-normalizes: 2^53 -> 2^52 one exponent step higher
+      // (a final carry past 2^1024 makes the scaling loop reach inf,
+      // which is the correctly rounded answer there)
+      q = 4503599627370496;
+      // e2v is a `let` binding above; carry the step through a fresh one
+      return scale(q, (e2v + 1), neg);
+    }
+    return scale(q, e2v, neg);
+  }
+  // subnormal: q = round(value * 2^1074), one exact power-of-two scale.
+  // e2v <= -1022 keeps k <= 52, so the quotient cannot overflow.
+  let k: i64 = (e2v + 1074);
+  let q: u64 = deep_bits(n2, m2, k);
+  result = q as i64 as f64;
+  let mut t: i64 = 1074;
+  while (t > 0) {
+    result = (result / 2.0);
+    t -= 1;
+  }
+  if neg {
+    return neg_of(result);
+  }
+  return result;
+}
+
+// value = q * 2^(e2v - 53), built by exact doublings/halvings from the
+// 53-bit integer q; the sign applies last (exact for every finite result,
+// and it flips the overflowed infinity too)
+fn scale(q: u64, e2v: i64, neg: bool) -> f64 {
+  let mut result: f64 = q as i64 as f64;
+  let mut t: i64 = (e2v - 53);
+  while (t > 0) {
+    result = (result * 2.0);
+    t -= 1;
+  }
+  while (t < 0) {
+    result = (result / 2.0);
+    t += 1;
+  }
+  if neg {
+    return neg_of(result);
+  }
+  return result;
+}
+
+// round_half_even((n2/m2) * 2^k) for k <= 52 — the subnormal bit count.
+// k >= 1 runs the standard division; the deep window k <= 0 (values below
+// ~1.1e-323, where the quotient's integer part is 0) is decided exactly by
+// comparing n2/m2 against the single representable half: ties to even
+// means 0, so q is 1 exactly when fraction > 2^(-k-1).
+fn deep_bits(n2: *Big, m2: *Big, k: i64) -> u64 {
+  if (k >= 1) {
+    return big_div_bits(n2, m2, k);
+  }
+  let c: i32 = half_cmp(n2, m2, k);
+  if (c > 0) {
+    return 1;
+  }
+  return 0;
+}
+
+// compare n2/m2 (the normalized fraction) against 2^(-k-1), k <= 0:
+//   fraction > 2^(-k-1)  <=>  n2 * 2^(k+1) > m2
+// shifting whichever side the exponent favors (both shifts exact)
+fn half_cmp(n2: *Big, m2: *Big, k: i64) -> i32 {
+  if (k == 0) {
+    let n2s: *Big = big_clone(n2);
+    big_mul_u32(n2s, 2);
+    return big_cmp(n2s, m2);
+  }
+  let m2s: *Big = big_clone(m2);
+  let mut j: i64 = ((0 - k) - 1);
+  while (j > 0) {
+    big_mul_u32(m2s, 2);
+    j -= 1;
+  }
+  return big_cmp(n2, m2s);
+}
+
+// =============================================================== encoding
+struct Enc {
+  buf: *Buf,
+  err: string,
+}
+
+// The minimal standard escape set: \" \\ and the C0 controls (named for
+// \b \f \n \r \t, \u00xx for the rest). `/` is not escaped — it is not a
+// control character and JSON does not require it; the decoder accepts the
+// \/ escape all the same. Bytes >= 0x80 pass through: rho strings are
+// UTF-8 by the language's own type law, and encode trusts the type
+// system it encodes from (decode, which faces untrusted bytes, does not).
+fn Enc.put_escaped(self: *Enc, s: string) {
+  let mut i: usize = 0;
+  while (i < len(s)) {
+    let c: u8 = s[i];
+    if (c == 34) {
+      self.buf.put("\\\"");
+    } else if (c == 92) {
+      self.buf.put("\\\\");
+    } else if (c == 8) {
+      self.buf.put("\\b");
+    } else if (c == 12) {
+      self.buf.put("\\f");
+    } else if (c == 10) {
+      self.buf.put("\\n");
+    } else if (c == 13) {
+      self.buf.put("\\r");
+    } else if (c == 9) {
+      self.buf.put("\\t");
+    } else if (c < 32) {
+      self.buf.put("\\u00");
+      self.buf.put_u8(hex_nibble(((c >> 4) & 15)));
+      self.buf.put_u8(hex_nibble((c & 15)));
+    } else {
+      self.buf.put_u8(c);
+    }
+    i += 1;
+  }
+}
+
+fn indent_of(depth: i32) -> string {
+  let buf: *Buf = new_buf();
+  let mut i: i32 = 0;
+  while (i < depth) {
+    buf.put("  ");
+    i += 1;
+  }
+  return buf.take();
+}
+
+fn Enc.emit(self: *Enc, v: *Json, depth: i32, pretty: bool) {
+  if is_str(v) {
+    self.buf.put("\"");
+    self.put_escaped(as_str(v));
+    self.buf.put("\"");
+    return;
+  }
+  if is_num(v) {
+    let x: f64 = as_num(v);
+    let bits: u64 = intrinsics.f64_bits(x);
+    if (((bits >> 52) & 2047) == 2047) {
+      if (self.err == "") {
+        self.err = "cannot encode a non-finite number (nan and the infinities are not valid JSON)";
+      }
+      return;
+    }
+    self.buf.put(x.to_str());
+    return;
+  }
+  if is_bool(v) {
+    if as_bool(v) {
+      self.buf.put("true");
+    } else {
+      self.buf.put("false");
+    }
+    return;
+  }
+  if is_null(v) {
+    self.buf.put("null");
+    return;
+  }
+  if is_arr(v) {
+    let xs: []*Json = items(v);
+    if (len(xs) == 0) {
+      self.buf.put("[]");
+      return;
+    }
+    self.buf.put("[");
+    let mut i: usize = 0;
+    while (i < len(xs)) {
+      if pretty {
+        self.buf.put("\n");
+        self.buf.put(indent_of((depth + 1)));
+      }
+      self.emit(xs[i], (depth + 1), pretty);
+      if ((i + 1) < len(xs)) {
+        self.buf.put(",");
+      }
+      i += 1;
+    }
+    if pretty {
+      self.buf.put("\n");
+      self.buf.put(indent_of(depth));
+    }
+    self.buf.put("]");
+    return;
+  }
+  if is_obj(v) {
+    let ms: []*Member = members(v);
+    if (len(ms) == 0) {
+      self.buf.put("{}");
+      return;
+    }
+    self.buf.put("{");
+    let mut i: usize = 0;
+    while (i < len(ms)) {
+      if pretty {
+        self.buf.put("\n");
+        self.buf.put(indent_of((depth + 1)));
+      }
+      self.buf.put("\"");
+      self.put_escaped(ms[i].key);
+      self.buf.put("\":");
+      if pretty {
+        self.buf.put(" ");
+      }
+      self.emit(ms[i].val, (depth + 1), pretty);
+      if ((i + 1) < len(ms)) {
+        self.buf.put(",");
+      }
+      i += 1;
+    }
+    if pretty {
+      self.buf.put("\n");
+      self.buf.put(indent_of(depth));
+    }
+    self.buf.put("}");
+    return;
+  }
+}
+
+// Compact encoding. Ok(text) or Err(reason) — only non-finite numbers
+// fail (nan and the infinities have no JSON spelling).
+pub fn encode(v: *Json) -> Result[string, string] {
+  let buf: *Buf = new_buf();
+  let e: *Enc = new Enc { buf: buf, err: "" };
+  e.emit(v, 0, false);
+  if (e.err != "") {
+    return Result.Err(e.err);
+  }
+  return Result.Ok(e.buf.take());
+}
+
+// Pretty encoding: two spaces per level, spaces after `:`, empty
+// containers stay `{}` / `[]`.
+pub fn encode_pretty(v: *Json) -> Result[string, string] {
+  let buf: *Buf = new_buf();
+  let e: *Enc = new Enc { buf: buf, err: "" };
+  e.emit(v, 0, true);
+  if (e.err != "") {
+    return Result.Err(e.err);
+  }
+  return Result.Ok(e.buf.take());
+}
+
+// Status helpers matching the prelude's Result accessors.
+pub fn err_text(r: Result[string, string]) -> string {
+  return match r {
+    Result.Ok(t) => t,
+    Result.Err(_) => "",
+  };
+}
+
+pub fn err_msg(r: Result[string, string]) -> string {
+  return match r {
+    Result.Err(e) => e,
+    Result.Ok(_) => "",
+  };
+}

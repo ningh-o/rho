@@ -1,0 +1,10 @@
+// exit: 0
+fn main() -> i32 {
+  let s: string = """
+  hello
+  world
+  """;
+  printf("[{}]\n", s);
+  printf("{}\n", len(s) as i32);
+  return 0;
+}

@@ -1,0 +1,60 @@
+// encode: containers — nesting, pretty form, empty containers, buffer
+// growth past the initial capacity, and errors escaping from inside a tree.
+use json/json;
+
+fn build() -> *json.Json {
+  // a document that exercises every shape at once
+  let inner: []*json.Json = make([]*json.Json, 3);
+  inner[0] = json.mk_num(1.0);
+  inner[1] = json.mk_str("two");
+  inner[2] = json.mk_null();
+  let pairs: []*json.Member = make([]*json.Member, 3);
+  pairs[0] = json.mk_member("b", json.mk_bool(true));
+  pairs[1] = json.mk_member("a", json.mk_arr(inner));
+  pairs[2] = json.mk_member("escape\"key", json.mk_str("v"));
+  let outer: []*json.Member = make([]*json.Member, 2);
+  outer[0] = json.mk_member("obj", json.mk_obj(pairs));
+  outer[1] = json.mk_member("list", json.mk_arr(make([]*json.Json, 0)));
+  return json.mk_obj(outer);
+}
+
+fn main() -> i32 {
+  let v: *json.Json = build();
+  let c = json.encode(v);
+  if c.is_err() {
+    printf("compact ERR: {}\n", json.err_msg(c));
+    return 1;
+  }
+  printf("{}\n", json.err_text(c));
+  let p = json.encode_pretty(v);
+  if p.is_err() {
+    printf("pretty ERR: {}\n", json.err_msg(p));
+    return 1;
+  }
+  printf("{}\n", json.err_text(p));
+  // empty containers stay on one line even when pretty
+  printf("{}\n", json.err_text(json.encode_pretty(json.mk_obj(make([]*json.Member, 0)))));
+  printf("{}\n", json.err_text(json.encode_pretty(json.mk_arr(make([]*json.Json, 0)))));
+  // an array big enough to force the byte buffer to grow several times
+  let big: []*json.Json = make([]*json.Json, 100);
+  let mut i: usize = 0;
+  while i < 100 {
+    big[i] = json.mk_str("0123456789abcdef0123456789abcdef");
+    i += 1;
+  }
+  let s = json.encode(json.mk_arr(big));
+  if s.is_err() {
+    return 1;
+  }
+  let sbody: string = json.err_text(s);
+  printf("big: {} bytes, head={} tail={}\n", len(sbody), sbody[0], sbody[len(sbody) - 1]);
+  // a non-finite number deep inside a tree fails the whole encode
+  let bad: []*json.Json = make([]*json.Json, 2);
+  bad[0] = json.mk_num(1.0);
+  bad[1] = json.mk_num(0.0 / 0.0);
+  printf("{}\n", json.err_msg(json.encode(json.mk_arr(bad))));
+  let bad2: []*json.Member = make([]*json.Member, 1);
+  bad2[0] = json.mk_member("inf", json.mk_num(1.0 / 0.0));
+  printf("{}\n", json.err_msg(json.encode(json.mk_obj(bad2))));
+  return 0;
+}

@@ -1,0 +1,2 @@
+mathx.double(21)=42
+strlib.rev("abcdef")=fedcba

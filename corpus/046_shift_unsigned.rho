@@ -1,0 +1,17 @@
+// exit: 0
+// unsigned shifts fill with zero; the same register-width masking
+// applies — >> 32 on u32 is a no-op, 1 << 64 on u64 is 1, and sub-word
+// widths shift in the 32-bit register and truncate afterwards
+fn main() -> i32 {
+  let m32: u32 = 4294967295;
+  printf("u32: max>>1={} max>>31={} max>>32={}\n", (m32 >> 1), (m32 >> 31), (m32 >> 32));
+  printf("u32: 1<<30={} 1<<31={} 1<<32={}\n", (1 as u32 << 30), (1 as u32 << 31), (1 as u32 << 32));
+  let m64: u64 = 18446744073709551615;
+  printf("u64: max>>1={} max>>63={} max>>64={}\n", (m64 >> 1), (m64 >> 63), (m64 >> 64));
+  printf("u64: 1<<63={} 1<<64={} 1<<65={}\n", (1 as u64 << 63), (1 as u64 << 64), (1 as u64 << 65));
+  let b8: u8 = 255;
+  printf("u8: 255>>7={} 255>>8={} 255>>9={} 1<<7={} 1<<8={}\n", (b8 >> 7), (b8 >> 8), (b8 >> 9), (1 as u8 << 7), (1 as u8 << 8));
+  let s: usize = 18446744073709551615;
+  printf("usize: max>>63={} 0-1={}\n", (s >> 63), (0 as usize - 1));
+  return 0;
+}

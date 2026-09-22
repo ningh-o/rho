@@ -14,19 +14,478 @@ struct Iov {
   l: i32,
 }
 
+// ---- allocator (0.4.2): size-bucket recycling over the bump heap --------
+// SIX-CLASS interim version (fixed convention; no big-class recycling)
+
 static mut HEAP: usize = 65536;
 
-fn __alloc(n: usize) -> *u8 {
+fn bump_big(n: usize) -> *u8 {
   let p: usize = HEAP;
   let mut end: usize = p + n;
   end = (end + 7) & 4294967288;
+  if end > 4278190080 {
+    __eprint_str("rho: wasm32 heap exhausted\n");
+    __exit(101);
+  }
+  let cur: usize = intrinsics.mem_size() * 65536;
+  if end > cur {
+    let pages: usize = (end - cur + 65535) / 65536;
+    if intrinsics.mem_grow(pages) == 4294967295 {
+      __eprint_str("rho: out of linear memory\n");
+      __exit(101);
+    }
+  }
   HEAP = end;
   return p as *u8;
 }
 
-fn __free(p: *u8) {
+fn zero_bytes(from: usize, count: usize) {
+  let mut k: usize = 0;
+  while k + 8 <= count {
+    intrinsics.store_u64((from + k) as *u8, 0);
+    k += 8;
+  }
+  while k < count {
+    intrinsics.store_u8((from + k) as *u8, 0);
+    k += 1;
+  }
 }
 
+fn dead_mark() -> usize {
+  return 6510615555426900570;
+}
+
+static mut FL0: usize = 0;
+static mut FL1: usize = 0;
+static mut FL2: usize = 0;
+static mut FL3: usize = 0;
+static mut FL4: usize = 0;
+static mut FL5: usize = 0;
+static mut C0: usize = 0;
+static mut E0: usize = 0;
+static mut C1: usize = 0;
+static mut E1: usize = 0;
+static mut C2: usize = 0;
+static mut E2: usize = 0;
+static mut C3: usize = 0;
+static mut E3: usize = 0;
+static mut C4: usize = 0;
+static mut E4: usize = 0;
+static mut C5: usize = 0;
+static mut E5: usize = 0;
+static mut LO0: usize = 0;
+static mut HI0: usize = 0;
+static mut LO1: usize = 0;
+static mut HI1: usize = 0;
+static mut LO2: usize = 0;
+static mut HI2: usize = 0;
+static mut LO3: usize = 0;
+static mut HI3: usize = 0;
+static mut LO4: usize = 0;
+static mut HI4: usize = 0;
+static mut LO5: usize = 0;
+static mut HI5: usize = 0;
+
+// chunk registry: every bucket chunk ever carved, as (base, end, class)
+// triples in raw bump storage. The per-class LO/HI pair only covers the
+// CURRENT chunk — without the registry, a block handed out from an older
+// chunk fails the region test when it dies and leaks, the freelist
+// starves, and a long compile grinds through chunks it never reuses (the
+// emit-phase treadmill: freelists empty while the cursor climbs).
+static mut CT: usize = 0;
+static mut CTN: usize = 0;
+static mut CTC: usize = 0;
+
+fn as_class_stride(k: usize) -> usize {
+  if k == 0 { return 64; }
+  if k == 1 { return 128; }
+  if k == 2 { return 256; }
+  if k == 3 { return 512; }
+  if k == 4 { return 1024; }
+  if k == 5 { return 4096; }
+  if k < 16 {
+    let mut s: usize = 8192;
+    let mut j: usize = k - 6;
+    while j > 0 {
+      s = s * 2;
+      j -= 1;
+    }
+    return s;
+  }
+  return 4096;
+}
+
+// big classes 6..15 (strides 8K..4M): the emit phase's doubling buffers —
+// out-buffers, text slabs, offs tables — all ride sizes past the six small
+// strides; without recycling every grown-away intermediate leaks into the
+// bump and a self-compile climbs past the wasm32 ceiling. One context
+// block holds, per class: freelist head, chunk cursor, chunk end, chunk
+// lo, chunk hi (10 classes x 5 slots x 8 bytes).
+static mut BCX: usize = 0;
+
+fn bcx_ensure() {
+  if BCX == 0 {
+    BCX = bump_big(400) as usize;
+    zero_bytes(BCX, 400);
+  }
+}
+
+fn big_class_of(n: usize) -> usize {
+  let mut k: usize = 6;
+  let mut stride: usize = 8192;
+  while stride < n && k < 15 {
+    stride = stride * 2;
+    k += 1;
+  }
+  return k;
+}
+
+fn as_note_chunk(base: usize, end_: usize, k: usize) {
+  if CTN == CTC {
+    let mut newcap: usize = 16;
+    if CTC != 0 {
+      newcap = CTC * 2;
+    }
+    let p: usize = bump_big(newcap * 24) as usize;
+    let mut i: usize = 0;
+    while i < CTN * 3 {
+      intrinsics.store_u64((p + i * 8) as *u8,
+                           intrinsics.load_u64((CT + i * 8) as *u8));
+      i += 1;
+    }
+    CT = p;
+    CTC = newcap;
+  }
+  intrinsics.store_u64((CT + CTN * 24) as *u8, base as u64);
+  intrinsics.store_u64((CT + CTN * 24 + 8) as *u8, end_ as u64);
+  intrinsics.store_u64((CT + CTN * 24 + 16) as *u8, k as u64);
+  CTN += 1;
+}
+
+fn __alloc(n: usize) -> *u8 {
+  if n <= 64 {
+    if FL0 != 0 {
+      let h: usize = FL0;
+      FL0 = intrinsics.load_u64((h + 16) as *u8) as usize;
+      zero_bytes(h + 24, 40);
+      return h as *u8;
+    }
+    if C0 == E0 {
+      let chunk: usize = bump_big(16777216) as usize;
+      as_note_chunk(chunk, chunk + 16777216, 0);
+      LO0 = chunk;
+      HI0 = chunk + 16777216;
+      C0 = chunk + 64;
+      E0 = chunk + 16777216;
+      zero_bytes(chunk + 24, 40);
+      return chunk as *u8;
+    }
+    let h2: usize = C0;
+    C0 = C0 + 64;
+    zero_bytes(h2 + 24, 40);
+    return h2 as *u8;
+  }
+  if n <= 128 {
+    if FL1 != 0 {
+      let h3: usize = FL1;
+      FL1 = intrinsics.load_u64((h3 + 16) as *u8) as usize;
+      zero_bytes(h3 + 24, 104);
+      return h3 as *u8;
+    }
+    if C1 == E1 {
+      let chunk: usize = bump_big(16777216) as usize;
+      as_note_chunk(chunk, chunk + 16777216, 1);
+      LO1 = chunk;
+      HI1 = chunk + 16777216;
+      C1 = chunk + 128;
+      E1 = chunk + 16777216;
+      zero_bytes(chunk + 24, 104);
+      return chunk as *u8;
+    }
+    let h4: usize = C1;
+    C1 = C1 + 128;
+    zero_bytes(h4 + 24, 104);
+    return h4 as *u8;
+  }
+  if n <= 256 {
+    if FL2 != 0 {
+      let h5: usize = FL2;
+      FL2 = intrinsics.load_u64((h5 + 16) as *u8) as usize;
+      zero_bytes(h5 + 24, 232);
+      return h5 as *u8;
+    }
+    if C2 == E2 {
+      let chunk: usize = bump_big(16777216) as usize;
+      as_note_chunk(chunk, chunk + 16777216, 2);
+      LO2 = chunk;
+      HI2 = chunk + 16777216;
+      C2 = chunk + 256;
+      E2 = chunk + 16777216;
+      zero_bytes(chunk + 24, 232);
+      return chunk as *u8;
+    }
+    let h6: usize = C2;
+    C2 = C2 + 256;
+    zero_bytes(h6 + 24, 232);
+    return h6 as *u8;
+  }
+  if n <= 512 {
+    if FL3 != 0 {
+      let h7: usize = FL3;
+      FL3 = intrinsics.load_u64((h7 + 16) as *u8) as usize;
+      zero_bytes(h7 + 24, 488);
+      return h7 as *u8;
+    }
+    if C3 == E3 {
+      let chunk: usize = bump_big(16777216) as usize;
+      as_note_chunk(chunk, chunk + 16777216, 3);
+      LO3 = chunk;
+      HI3 = chunk + 16777216;
+      C3 = chunk + 512;
+      E3 = chunk + 16777216;
+      zero_bytes(chunk + 24, 488);
+      return chunk as *u8;
+    }
+    let h8: usize = C3;
+    C3 = C3 + 512;
+    zero_bytes(h8 + 24, 488);
+    return h8 as *u8;
+  }
+  if n <= 1024 {
+    if FL4 != 0 {
+      let h9: usize = FL4;
+      FL4 = intrinsics.load_u64((h9 + 16) as *u8) as usize;
+      zero_bytes(h9 + 24, 1000);
+      return h9 as *u8;
+    }
+    if C4 == E4 {
+      let chunk: usize = bump_big(16777216) as usize;
+      as_note_chunk(chunk, chunk + 16777216, 4);
+      LO4 = chunk;
+      HI4 = chunk + 16777216;
+      C4 = chunk + 1024;
+      E4 = chunk + 16777216;
+      zero_bytes(chunk + 24, 1000);
+      return chunk as *u8;
+    }
+    let h10: usize = C4;
+    C4 = C4 + 1024;
+    zero_bytes(h10 + 24, 1000);
+    return h10 as *u8;
+  }
+  if n <= 4096 {
+    if FL5 != 0 {
+      let h11: usize = FL5;
+      FL5 = intrinsics.load_u64((h11 + 16) as *u8) as usize;
+      zero_bytes(h11 + 24, 4072);
+      return h11 as *u8;
+    }
+    if C5 == E5 {
+      let chunk: usize = bump_big(16777216) as usize;
+      as_note_chunk(chunk, chunk + 16777216, 5);
+      LO5 = chunk;
+      HI5 = chunk + 16777216;
+      C5 = chunk + 4096;
+      E5 = chunk + 16777216;
+      zero_bytes(chunk + 24, 4072);
+      return chunk as *u8;
+    }
+    let h12: usize = C5;
+    C5 = C5 + 4096;
+    zero_bytes(h12 + 24, 4072);
+    return h12 as *u8;
+  }
+  if n <= 4194304 {
+    bcx_ensure();
+    let k: usize = big_class_of(n);
+    let j: usize = k - 6;
+    let stride: usize = as_class_stride(k);
+    let head: usize = intrinsics.load_u64((BCX + j * 8) as *u8) as usize;
+    if head != 0 {
+      intrinsics.store_u64((BCX + j * 8) as *u8,
+                           intrinsics.load_u64((head + 16) as *u8));
+      zero_bytes(head + 24, stride - 24);
+      return head as *u8;
+    }
+    let mut cur: usize = intrinsics.load_u64((BCX + 80 + j * 8) as *u8) as usize;
+    let endr: usize = intrinsics.load_u64((BCX + 160 + j * 8) as *u8) as usize;
+    if cur == endr {
+      let mut want: usize = 16777216;
+      if stride * 8 > want {
+        want = stride * 8;
+      }
+      let chunk: usize = bump_big(want) as usize;
+      as_note_chunk(chunk, chunk + want, k);
+      intrinsics.store_u64((BCX + 240 + j * 8) as *u8, chunk as u64);
+      intrinsics.store_u64((BCX + 320 + j * 8) as *u8, (chunk + want) as u64);
+      intrinsics.store_u64((BCX + 80 + j * 8) as *u8, (chunk + stride) as u64);
+      intrinsics.store_u64((BCX + 160 + j * 8) as *u8, (chunk + want) as u64);
+      cur = chunk + stride;
+      zero_bytes(chunk + 24, stride - 24);
+      return chunk as *u8;
+    }
+    intrinsics.store_u64((BCX + 80 + j * 8) as *u8, (cur + stride) as u64);
+    zero_bytes(cur + 24, stride - 24);
+    return cur as *u8;
+  }
+  return bump_big(n);
+}
+
+static mut BADFREE: usize = 0;
+
+fn __free(p: *u8) {
+  let a: usize = p as usize;
+  if intrinsics.load_u64(a as *u8) == dead_mark() {
+    return;
+  }
+  // the release path frees only after its dec brought the count to zero;
+  // a nonzero count here means a stale owner released a block that has
+  // since been reused — refuse it (a leak, never a corruption) and say so
+  if intrinsics.load_u64(a as *u8) != 0 {
+    BADFREE += 1;
+    if BADFREE < 8 {
+      __eprint_str(__cat3("BADFREE a=", __fmt_u64(a as u64), " rc="));
+      __eprint_str(__cat3("", __fmt_u64(intrinsics.load_u64(a as *u8)), "\n"));
+    }
+    return;
+  }
+  if a >= LO0 && a < HI0 && (a - LO0) % 64 == 0 {
+    intrinsics.store_u64((a + 16) as *u8, FL0 as u64);
+    intrinsics.store_u64(a as *u8, dead_mark() as u64);
+    FL0 = a;
+    return;
+  }
+  if a >= LO1 && a < HI1 && (a - LO1) % 128 == 0 {
+    intrinsics.store_u64((a + 16) as *u8, FL1 as u64);
+    intrinsics.store_u64(a as *u8, dead_mark() as u64);
+    FL1 = a;
+    return;
+  }
+  if a >= LO2 && a < HI2 && (a - LO2) % 256 == 0 {
+    intrinsics.store_u64((a + 16) as *u8, FL2 as u64);
+    intrinsics.store_u64(a as *u8, dead_mark() as u64);
+    FL2 = a;
+    return;
+  }
+  if a >= LO3 && a < HI3 && (a - LO3) % 512 == 0 {
+    intrinsics.store_u64((a + 16) as *u8, FL3 as u64);
+    intrinsics.store_u64(a as *u8, dead_mark() as u64);
+    FL3 = a;
+    return;
+  }
+  if a >= LO4 && a < HI4 && (a - LO4) % 1024 == 0 {
+    intrinsics.store_u64((a + 16) as *u8, FL4 as u64);
+    intrinsics.store_u64(a as *u8, dead_mark() as u64);
+    FL4 = a;
+    return;
+  }
+  if a >= LO5 && a < HI5 && (a - LO5) % 4096 == 0 {
+    intrinsics.store_u64((a + 16) as *u8, FL5 as u64);
+    intrinsics.store_u64(a as *u8, dead_mark() as u64);
+    FL5 = a;
+    return;
+  }
+  // big classes: the current chunk per class lives in the BCX lo/hi pair
+  if BCX != 0 {
+    let mut j: usize = 0;
+    while j < 10 {
+      let blo: usize = intrinsics.load_u64((BCX + 240 + j * 8) as *u8) as usize;
+      let bhi: usize = intrinsics.load_u64((BCX + 320 + j * 8) as *u8) as usize;
+      if a >= blo && a < bhi {
+        let s2: usize = as_class_stride(j + 6);
+        if (a - blo) % s2 == 0 {
+          intrinsics.store_u64((a + 16) as *u8,
+                               intrinsics.load_u64((BCX + j * 8) as *u8));
+          intrinsics.store_u64(a as *u8, dead_mark() as u64);
+          intrinsics.store_u64((BCX + j * 8) as *u8, a as u64);
+          return;
+        }
+      }
+      j += 1;
+    }
+  }
+  // exhausted chunks: the block's chunk is in the registry, not in LO/HI
+  let mut t: usize = 0;
+  while t < CTN {
+    let base: usize = intrinsics.load_u64((CT + t * 24) as *u8) as usize;
+    let hi: usize = intrinsics.load_u64((CT + t * 24 + 8) as *u8) as usize;
+    if a >= base && a < hi {
+      let k: usize = intrinsics.load_u64((CT + t * 24 + 16) as *u8) as usize;
+      let s: usize = as_class_stride(k);
+      if (a - base) % s == 0 {
+        if k == 0 {
+          intrinsics.store_u64((a + 16) as *u8, FL0 as u64);
+          intrinsics.store_u64(a as *u8, dead_mark() as u64);
+          FL0 = a;
+          return;
+        }
+        if k == 1 {
+          intrinsics.store_u64((a + 16) as *u8, FL1 as u64);
+          intrinsics.store_u64(a as *u8, dead_mark() as u64);
+          FL1 = a;
+          return;
+        }
+        if k == 2 {
+          intrinsics.store_u64((a + 16) as *u8, FL2 as u64);
+          intrinsics.store_u64(a as *u8, dead_mark() as u64);
+          FL2 = a;
+          return;
+        }
+        if k == 3 {
+          intrinsics.store_u64((a + 16) as *u8, FL3 as u64);
+          intrinsics.store_u64(a as *u8, dead_mark() as u64);
+          FL3 = a;
+          return;
+        }
+        if k == 4 {
+          intrinsics.store_u64((a + 16) as *u8, FL4 as u64);
+          intrinsics.store_u64(a as *u8, dead_mark() as u64);
+          FL4 = a;
+          return;
+        }
+        if k == 5 {
+          intrinsics.store_u64((a + 16) as *u8, FL5 as u64);
+          intrinsics.store_u64(a as *u8, dead_mark() as u64);
+          FL5 = a;
+          return;
+        }
+        // big class: push onto its BCX freelist (BCX is live — the class
+        // carved a chunk through bcx_ensure before this block existed)
+        let bj: usize = k - 6;
+        intrinsics.store_u64((a + 16) as *u8,
+                             intrinsics.load_u64((BCX + bj * 8) as *u8));
+        intrinsics.store_u64(a as *u8, dead_mark() as u64);
+        intrinsics.store_u64((BCX + bj * 8) as *u8, a as u64);
+        return;
+      }
+    }
+    t += 1;
+  }
+}
+
+fn __fl_count6(head: usize) -> usize {
+  let mut n: usize = 0;
+  let mut p: usize = head;
+  while p != 0 {
+    n += 1;
+    p = intrinsics.load_u64((p + 16) as *u8) as usize;
+  }
+  return n;
+}
+
+fn __alloc_dbg() -> usize {
+  return __fl_count6(FL0) * 64 + __fl_count6(FL1) * 128 + __fl_count6(FL2) * 256
+       + __fl_count6(FL3) * 512 + __fl_count6(FL4) * 1024 + __fl_count6(FL5) * 4096;
+}
+
+fn __heap_ptr() -> usize {
+  return HEAP;
+}
+
+
+// TEMP instrumentation (strip before release): walk every bucket freelist
+// and report how many blocks are parked — carved minus parked minus the
+// per-class residue is the live estimate
 fn __print_str(s: string) {
   let iov = new Iov { p: (s.ptr as usize) as i32, l: s.len as i32 };
   let nw = new Iov { p: 0, l: 0 };
@@ -41,4 +500,117 @@ fn __eprint_str(s: string) {
 
 fn __exit(code: i32) {
   proc_exit(code);
+}
+
+// ---- toolchain host hooks (0.3.x): args + file io over raw wasi ----------
+// The self-hosted compiler body calls these per-target hooks; this tail
+// implements them over wasi_snapshot_preview1. fd 3 is the preopened
+// working directory wasmtime hands the guest.
+
+extern fn args_sizes_get(count: i32, buf: i32) -> i32;
+extern fn args_get(argv: i32, buf: i32) -> i32;
+extern fn path_open(fd: i32, dirflags: i32, path: i32, path_len: i32,
+                    oflags: i32, rights_base: u64, rights_inheriting: u64,
+                    fdflags: i32, opened: i32) -> i32;
+extern fn fd_read(fd: i32, iovs: i32, iovs_len: i32, nread: i32) -> i32;
+extern fn fd_close(fd: i32) -> i32;
+// wasmtime 40's preview1 adapter takes the two-directory form:
+// (old_fd, old_path, old_len, new_fd, new_path, new_len)
+extern fn path_rename(old_fd: i32, old_path: i32, old_path_len: i32,
+                      new_fd: i32, new_path: i32, new_path_len: i32) -> i32;
+
+fn __c_len(p: *u8) -> i32 {
+  let mut n: i32 = 0;
+  loop {
+    if intrinsics.load_u8(((p as usize) + (n as usize)) as *u8) == 0 {
+      break;
+    }
+    n += 1;
+  }
+  return n;
+}
+
+// flags: 0 = read-only, nonzero = create/truncate + write
+fn __open(path: *u8, flags: i32, mode: i32) -> i32 {
+  let plen: i32 = __c_len(path);
+  let mut oflags: i32 = 0;
+  let mut rights: u64 = 2; // FD_READ
+  if flags != 0 {
+    oflags = 1 | 8; // CREAT | TRUNC
+    rights = (2 | 4) as u64; // FD_READ | FD_WRITE
+  }
+  let out: *u8 = __alloc(4);
+  let err: i32 = path_open(3, 0, path as usize as i32, plen, oflags,
+                           rights, rights, 0, out as usize as i32);
+  if err != 0 {
+    return -1;
+  }
+  return intrinsics.load_u64(out) as i32;
+}
+
+fn __read(fd: i32, buf: *u8, n: usize) -> isize {
+  let iov = new Iov { p: buf as usize as i32, l: n as i32 };
+  let nr = new Iov { p: 0, l: 0 };
+  if fd_read(fd, iov as usize as i32, 1, nr as usize as i32) != 0 {
+    return -1;
+  }
+  // the out-param address IS &nr (the struct base): the count lands in .p
+  return nr.p as isize;
+}
+
+fn __write(fd: i32, buf: *u8, n: usize) -> isize {
+  let iov = new Iov { p: buf as usize as i32, l: n as i32 };
+  let nw = new Iov { p: 0, l: 0 };
+  if fd_write(fd, iov as usize as i32, 1, nw as usize as i32) != 0 {
+    return -1;
+  }
+  // the out-param address IS &nw (the struct base): the count lands in .p
+  return nw.p as isize;
+}
+
+fn __close(fd: i32) -> i32 {
+  return fd_close(fd);
+}
+
+// tmp+rename keeps every write on a fresh path; over WASI it rides the
+// preopened cwd (fd 3), so both paths must be relative to it
+fn __rename(old_path: *u8, new_path: *u8) -> i32 {
+  return path_rename(3, old_path as usize as i32, __c_len(old_path),
+                     3, new_path as usize as i32, __c_len(new_path));
+}
+
+fn __can_spawn() -> bool {
+  return false;
+}
+
+fn __program_args() -> []string {
+  let info: *u8 = __alloc(8); // [count: i32][bufsize: i32]
+  if args_sizes_get(info as usize as i32, ((info as usize) + 4) as i32) != 0 {
+    return make([]string, 0);
+  }
+  let count: usize = intrinsics.load_u32(info) as usize;
+  let bufsize: usize = intrinsics.load_u32(((info as usize) + 4) as *u8) as usize;
+  if count == 0 {
+    return make([]string, 0);
+  }
+  let argv: *u8 = __alloc(count * 4 + 8);
+  let buf: *u8 = __alloc(bufsize + 8);
+  if args_get(argv as usize as i32, buf as usize as i32) != 0 {
+    return make([]string, 0);
+  }
+  let args: []string = make([]string, count);
+  let mut i: usize = 0;
+  while i < count {
+    let p: usize = intrinsics.load_u32(((argv as usize) + (i * 4)) as *u8) as usize;
+    let n: usize = __c_len(p as *u8) as usize;
+    let raw: []u8 = make([]u8, n);
+    let mut k: usize = 0;
+    while k < n {
+      raw[k] = intrinsics.load_u8(((p as usize) + k) as *u8);
+      k += 1;
+    }
+    args[i] = intrinsics.slice_string(raw);
+    i += 1;
+  }
+  return args;
 }

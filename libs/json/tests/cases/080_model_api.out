@@ -1,0 +1,17 @@
+kinds: true true true true true true
+push true true 2
+push-scalar: false
+set true
+set true
+set true
+set true
+size=2 k=3.0 first-key=k size-k=0
+set-scalar: false
+zero: false 0.0 
+at-oob: true
+eq: true true false true false false
+eq-num: true false
+eq-obj: true true
+eq-arr-order: false len-mismatch: false
+eq-nested: false
+eq-missing-key: false

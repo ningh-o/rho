@@ -1,0 +1,10 @@
+# fib / js
+# build: (none — run from source)
+# run:   node bench/src/fib.js
+# expected stdout: "fib(32)=2178309"
+warmup   : 35.09 ms  exit=0  output_ok=true
+run 1   : 35.21 ms  exit=0  output_ok=true
+run 2   : 35.47 ms  exit=0  output_ok=true
+run 3   : 36.41 ms  exit=0  output_ok=true
+run 4   : 35.88 ms  exit=0  output_ok=true
+run 5   : 34.38 ms  exit=0  output_ok=true

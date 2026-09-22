@@ -1,0 +1,30 @@
+// SUPPLEMENTARY kernel (reduced scale, 1.5k pieces — not the 200k kernel):
+// naive string append through rho's only append API, cat, which rebuilds
+// the whole string every time (O(n^2)) and never frees the old one (the
+// WASI prelude's __alloc is a bump allocator whose __free is a no-op).
+// Cumulative allocation is O(n^2) too (cat's buffer + slice_string's copy),
+// and the heap is ~8MB: at 20k pieces the module dies with "wasm trap: out
+// of bounds memory access", and 2k pieces dies the same way (each append
+// allocates twice); 1.5k pieces (~5.6MB cumulative) fits. Checksum: final
+// length + byte sum.
+fn main() -> i32 {
+  let pieces: []string = make([]string, 4);
+  pieces[0] = "a";
+  pieces[1] = "bc";
+  pieces[2] = "def";
+  pieces[3] = "ghij";
+  let mut s: string = "";
+  let mut i: usize = 0;
+  while i < 1500 {
+    s = cat(s, pieces[i & 3]);
+    i += 1;
+  }
+  let mut sum: u64 = 0;
+  let mut j: usize = 0;
+  while j < len(s) {
+    sum += s[j] as u64;
+    j += 1;
+  }
+  printf("naive n={} bytes={}\n", len(s), sum);
+  return 0;
+}

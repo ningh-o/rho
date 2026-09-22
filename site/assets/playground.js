@@ -3,6 +3,7 @@
 
 import { highlightRho } from "./highlight.js";
 import { EXAMPLES, STARTER } from "./examples.js";
+import { attachCompletion } from "./completion.js";
 
 // Compile + run happen in a worker: a long-running program can then never
 // freeze the page. The worker is terminated on Stop and after the caps.
@@ -67,6 +68,11 @@ const runBtn = document.getElementById("run");
 const loadbar = document.getElementById("loadbar");
 const exampleSel = document.getElementById("example");
 const stats = document.getElementById("stats");
+
+// fast completion (keywords + buffer symbols + prelude tables); the
+// type-aware service it is an adapter for is specified in
+// docs/language-service.md
+const suggest = attachCompletion(ta);
 
 const LS_KEY = "rho-playground-source";
 const LS_EX = "rho-playground-example";
@@ -227,6 +233,7 @@ for (const ex of EXAMPLES) {
 
 function loadCode(code, exId) {
   ta.value = code;
+  suggest.dismiss(); // the popup would be stale against swapped-in code
   render();
   localStorage.setItem(LS_KEY, code);
   if (exId) {
@@ -254,7 +261,9 @@ ta.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
     e.preventDefault();
     doRun();
+    return;
   }
+  if (suggest.onKeydown(e)) return; // the popup consumed the key (Tab/Enter/arrows/Escape)
   if (e.key === "Tab") {
     e.preventDefault();
     const s = ta.selectionStart;

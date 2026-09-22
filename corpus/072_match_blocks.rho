@@ -1,0 +1,44 @@
+// exit: 0
+// block arms: local lets then a final expression value, nested match as a
+// let initializer inside an arm block
+fn classify(n: i32) -> string {
+  return match n {
+    100 => {
+      let note: string = "perfect";
+      note
+    },
+    0 => "zero",
+    _ => {
+      let band: string = "mid";
+      band
+    },
+  };
+}
+
+enum Op {
+  Lit(i32),
+  Sum(i32, i32),
+}
+
+fn eval(o: Op) -> i32 {
+  return match o {
+    Op.Lit(v) => {
+      let doubled: i32 = (v * 2);
+      (doubled + 1)
+    },
+    Op.Sum(a, b) => {
+      let partial: i32 = match a {
+        0 => b,
+        _ => (a + b),
+      };
+      ((partial * 10) + a)
+    },
+  };
+}
+
+fn main() -> i32 {
+  printf("{} {} {}\n", classify(100), classify(0), classify(55));
+  printf("{}\n", eval(Op.Lit(20)));
+  printf("{} {}\n", eval(Op.Sum(0, 7)), eval(Op.Sum(3, 4)));
+  return 0;
+}

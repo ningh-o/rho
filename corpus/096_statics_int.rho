@@ -1,0 +1,30 @@
+// exit: 0
+// statics are module-lifetime variables: they keep their value across calls
+// no matter the call order, consts fold at compile time, and a static
+// accumulates inside a loop exactly like any other mutable variable.
+const SIDE: i32 = 8;
+
+const AREA: i32 = ((SIDE * SIDE) - 14);
+
+static mut CALLS: i32 = 0;
+
+static mut TOTAL: i64 = 0;
+
+fn record(v: i32) -> i32 {
+  CALLS += 1;
+  TOTAL += v as i64;
+  return CALLS;
+}
+
+fn main() -> i32 {
+  let first: i32 = record(10);
+  let second: i32 = record(20);
+  let mut i: i32 = 0;
+  while (i < 4) {
+    record(5);
+    i += 1;
+  }
+  printf("calls: {} {} {}\n", first, second, CALLS);
+  printf("total={} area={} shift={}\n", TOTAL, AREA, (CALLS * AREA));
+  return 0;
+}

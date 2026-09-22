@@ -1,0 +1,21 @@
+// exit: 0
+// signed / and % truncate toward zero at every width (C semantics:
+// the remainder takes the dividend's sign); MIN / -1 wraps to MIN
+// instead of panicking
+fn main() -> i32 {
+  let n: i32 = (-7);
+  printf("i32: 7/2={} 7%2={}\n", (7 / 2), (7 % 2));
+  printf("i32: -7/2={} -7%2={}\n", (n / 2), (n % 2));
+  printf("i32: 7/-2={} 7%-2={}\n", (7 / (-2)), (7 % (-2)));
+  printf("i32: -7/-2={} -7%-2={}\n", (n / (-2)), (n % (-2)));
+  let n8: i8 = (-7);
+  let n64: i64 = (-7);
+  printf("i8: -7/2={} -7%2={}\n", (n8 / 2), (n8 % 2));
+  printf("i64: -7/2={} -7%2={}\n", (n64 / 2), (n64 % 2));
+  let m8: i8 = (-128);
+  let m16: i16 = (-32768);
+  let m32: i32 = (-2147483648);
+  let m64: i64 = (-9223372036854775808);
+  printf("min/-1: i8={} i16={} i32={} i64={}\n", (m8 / (-1)), (m16 / (-1)), (m32 / (-1)), (m64 / (-1)));
+  return 0;
+}

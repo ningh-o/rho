@@ -74,6 +74,38 @@ static unsigned char w_vt(IRType t) {
 
 static bool w_is64(IRType t) { return t == IT_I64 || t == IT_U64 || t == IT_USIZE; }
 
+// wasi_snapshot_preview1 imports this emitter wires into every module.
+// The array order IS the import index order used by the call mapping in
+// emit_ins (IR_CALL with one of these callees emits call <array index>).
+typedef struct {
+  const char *name;
+  int nparams;
+  IRType params[9];
+  bool has_ret;
+  IRType ret;
+} WasiImport;
+
+static const WasiImport wasi_imports[] = {
+  {"fd_write", 4, {IT_I32, IT_I32, IT_I32, IT_I32}, true, IT_I32},
+  {"proc_exit", 1, {IT_I32}, false, IT_I32},
+  {"args_sizes_get", 2, {IT_I32, IT_I32}, true, IT_I32},
+  {"args_get", 2, {IT_I32, IT_I32}, true, IT_I32},
+  {"path_open", 9,
+   {IT_I32, IT_I32, IT_I32, IT_I32, IT_I32, IT_I64, IT_I64, IT_I32, IT_I32},
+   true, IT_I32},
+  {"fd_read", 4, {IT_I32, IT_I32, IT_I32, IT_I32}, true, IT_I32},
+  {"fd_close", 1, {IT_I32}, true, IT_I32},
+  {"path_rename", 6, {IT_I32, IT_I32, IT_I32, IT_I32, IT_I32, IT_I32}, true, IT_I32},
+};
+#define WASI_IMPORT_N ((int)(sizeof(wasi_imports) / sizeof(wasi_imports[0])))
+
+static int wasi_import_of(const char *name) {
+  for (int k = 0; k < WASI_IMPORT_N; k++)
+    if (strcmp(name, wasi_imports[k].name) == 0)
+      return k;
+  return -1;
+}
+
 IRFn *ir_fn_for_symbol(const char *symbol) {
   for (size_t i = 0; i < g_ir_fns.n; i++) {
     IRFn *f = g_ir_fns.items[i];
@@ -230,8 +262,17 @@ static void w_layout_data(void) {
       at += 24 + (int64_t)lit->bytes.n;
     }
   }
-  W.heap_base = (at + 15) / 16 * 16;
-  // the wasi prelude's HEAP static starts allocation above the data image
+  // layout law (0.4.1): the SHADOW STACK sits directly above the data
+  // image in a fixed 256 MiB slot, and the heap starts at the stack's top
+  // and grows UP without bound — the heap can never eat the stack, and a
+  // heap-heavy program (the self-hosted compiler checking its own 650 KB
+  // source churns ~800 MB) grows memory on demand instead of dying at the
+  // old 64 MiB ceiling. The engine's wasm stack (max-wasm-stack) is
+  // separate and bounds the shadow stack's depth.
+  W.stack_top = ((at + 15) / 16 * 16 + 2 * 0x4000000 - 1) / 0x4000000 * 0x4000000;
+  W.heap_base = W.stack_top;
+  W.data_end = at;
+  // the wasi prelude's HEAP static starts allocation above the stack slot
   for (size_t g = 0; g < g_ir_globals.n; g++) {
     IRGlobal *gl = g_ir_globals.items[g];
     if (gl->is_extern || gl->init.n != 8)
@@ -244,9 +285,6 @@ static void w_layout_data(void) {
         gl->init.items[b] = (void *)(long)((v >> (8 * b)) & 0xFF);
     }
   }
-  // the bump heap grows up toward the stack; leave it 8 MiB of headroom
-  W.stack_top = W.heap_base + 0x800000;
-  W.data_end = at;
 }
 
 // ---- per-function emission ----------------------------------------------------------
@@ -361,6 +399,13 @@ static void emit_store(WFnCtx *c, IRIns *i) {
     w8(c->body, 0x36); // i32.store
     wuleb(c->body, 2);
   } else {
+    // the size is authoritative: a narrow-typed value (e.g. a cast the
+    // checker adapted at the assignment) stored into an 8-byte field must
+    // reach i64, and a wide value into a narrow field must wrap
+    if (sz == 8 && !w_is64(t))
+      w8(c->body, 0xAD); // i64.extend_i32_u
+    else if (sz < 8 && w_is64(t))
+      w8(c->body, 0xA7); // i32.wrap_i64
     w8(c->body, sz == 1 ? 0x3A : sz == 2 ? 0x3B : sz == 4 ? 0x36 : 0x37);
     wuleb(c->body, sz == 1 ? 0 : sz == 2 ? 1 : sz == 4 ? 2 : 3);
   }
@@ -523,15 +568,41 @@ static void emit_ins(WFnCtx *c, IRIns *i) {
     lget(c, i->b);
     // pointer(+/-)usize mixes i32 and i64 on wasm32: narrow the wide side
     // (wrap semantics; addresses live in the 32-bit memory space)
+    // pointer(+/-)usize mixes i32 and i64 on wasm32: narrow the wide side
+    // (wrap semantics; addresses live in the 32-bit memory space)
     if (!w_is64(i->a->ty) && w_is64(i->b->ty) && !i->is_float)
       w8(c->body, 0xA7); // i32.wrap_i64
     else if (w_is64(i->a->ty) && !w_is64(i->b->ty) && !i->is_float)
       w8(c->body, 0xAD); // i64.extend_i32_u — zero-extend the narrow side
     w8(c->body, arith_op(i->op, i->a->ty, i->signed_ops, i->is_float));
+    // the value must land at the DST's declared width — locals are typed
+    // by dst->ty, so an add whose operands narrowed under a wide dst (or
+    // widened under a narrow one) reconciles here
+    if (!i->is_float) {
+      if (w_is64(i->dst->ty) && !w_is64(i->a->ty))
+        w8(c->body, 0xAD); // i64.extend_i32_u
+      else if (!w_is64(i->dst->ty) && w_is64(i->a->ty))
+        w8(c->body, 0xA7); // i32.wrap_i64
+    }
     lset(c, i->dst);
     break;
   case IR_CMP:
     emit_cmp(c, i);
+    break;
+  case IR_MEMSIZE:
+    // memory.size (memidx 0) yields i32 pages; usize vregs are i64 here
+    w8(c->body, 0x3F);
+    w8(c->body, 0x00);
+    w8(c->body, 0xAD); // i64.extend_i32_u
+    lset(c, i->dst);
+    break;
+  case IR_MEMGROW:
+    lget(c, i->a);          // usize (i64) pages
+    w8(c->body, 0xA7);      // i32.wrap_i64
+    w8(c->body, 0x40);      // memory.grow
+    w8(c->body, 0x00);      // memidx 0
+    w8(c->body, 0xAD);      // i64.extend_i32_u (old pages / 0xFFFFFFFF)
+    lset(c, i->dst);
     break;
   case IR_LOAD:
     emit_load(c, i);
@@ -577,8 +648,7 @@ static void emit_ins(WFnCtx *c, IRIns *i) {
     if (i->callee) {
       // resolve first: a body-less rho fn (empty {}) is a no-op, and its
       // arg drops must not follow an already-emitted call opcode
-      long import = strcmp(i->callee, "fd_write") == 0 ? 0
-                    : strcmp(i->callee, "proc_exit") == 0 ? 1 : -1;
+      long import = wasi_import_of(i->callee);
       WFn *t = NULL;
       if (import < 0) {
         t = map_get(&W.fn_by_symbol, str_from(i->callee));
@@ -857,7 +927,17 @@ static void edge_copies(WFnCtx *c, IRBlock *from, IRBlock *t) {
     IRPhi *phi = t->phis.items[p];
     for (size_t k = 0; k < phi->preds.n; k++)
       if (phi->preds.items[k] == from) {
-        lget(c, phi->args.items[k]);
+        IRVreg *arg = phi->args.items[k];
+        lget(c, arg);
+        // an argument may ride at a different width than the phi's own
+        // declared type (a literal feeds its default i32 into a usize
+        // phi): reconcile so the spill local's type matches
+        if (!ir_is_float(phi->dst->ty)) {
+          if (w_is64(phi->dst->ty) && !w_is64(arg->ty))
+            w8(c->body, 0xAD); // i64.extend_i32_u
+          else if (!w_is64(phi->dst->ty) && w_is64(arg->ty))
+            w8(c->body, 0xA7); // i32.wrap_i64
+        }
         lset(c, phi->dst);
       }
   }
@@ -866,8 +946,8 @@ static void edge_copies(WFnCtx *c, IRBlock *from, IRBlock *t) {
 static void emit_br(WFnCtx *c, IRBlock *from, IRBlock *t) {
   edge_copies(c, from, t);
   int d = br_depth(c, t);
-  if (getenv("RHO_WASM_DEBUG"))
-    fprintf(stderr, "  br %s->B%d depth=%d labels=%u\n", c->fn->symbol,
+  if (getenv("RHO_WASM_TRACE"))
+    fprintf(stderr, "  BR %s->B%d depth=%d labels=%u\n", c->fn->symbol,
             t ? t->id : -1, d, (unsigned)c->labels.n);
   if (d < 0)
     d = 0;
@@ -879,6 +959,14 @@ static void emit_br(WFnCtx *c, IRBlock *from, IRBlock *t) {
 // out or returns; returns the block the region branched to, or NULL.
 // `from` is the phi-edge predecessor for the first block.
 static IRBlock *emit_region(WFnCtx *c, IRBlock *b, IRBlock *from);
+
+static int g_dbg_depth;
+static void wctrl(WFnCtx *c, unsigned char b) {
+  w8(c->body, b);
+  if (getenv("RHO_WASM_TRACE"))
+    fprintf(stderr, "  CTRL %s body=%zu b=%02x labels=%u\n",
+            c->fn->symbol, c->body->n, b, (unsigned)c->labels.n);
+}
 
 // emit_region plus continuation: when a region breaks out to code that
 // nobody else will emit (a loop break at this nesting level), the exit's
@@ -905,6 +993,22 @@ static IRBlock *emit_region(WFnCtx *c, IRBlock *b, IRBlock *from) {
   IRBlock *my_header = NULL, *my_exit = NULL;
   while (b) {
     if (b->emitted || has_target(c, b)) {
+      if (started_loop && (b == my_header || b == my_exit)) {
+        // a child region already br'd to our header (back edge — the body
+        // is complete) or to our exit (break out of both loops): the br is
+        // out; close the loop and continue with the exit's code here
+        wctrl(c, 0x0B); // end loop
+        wctrl(c, 0x0B); // end block
+        pop_label(c);
+        pop_label(c);
+        if (!my_exit)
+          return NULL;
+        from = b;
+        b = my_exit;
+        started_loop = 0;
+        my_header = my_exit = NULL;
+        continue;
+      }
       emit_br(c, from, b);
       return b;
     }
@@ -916,13 +1020,16 @@ static IRBlock *emit_region(WFnCtx *c, IRBlock *b, IRBlock *from) {
       my_header = b;
       push_label(c, 0, my_exit); // block $exit
       push_label(c, 1, my_header); // loop $h
-      w8(c->body, 0x02); // block
+      wctrl(c, 0x02); // block
       w8(c->body, 0x40);
-      w8(c->body, 0x03); // loop
+      wctrl(c, 0x03); // loop
       w8(c->body, 0x40);
       started_loop = 1;
     }
     b->emitted = true;
+    if (getenv("RHO_WASM_TRACE"))
+      fprintf(stderr, "  EMIT %s B%d loop=%d labels=%u\n", c->fn->symbol, b->id,
+              b->loop_header ? 1 : 0, (unsigned)c->labels.n);
     if (getenv("RHO_WASM_DEBUG"))
       fprintf(stderr, "  [%s] emit B%d (loop=%d) labels=%u\n", c->fn->symbol, b->id,
               b->loop_header ? 1 : 0, (unsigned)c->labels.n);
@@ -930,8 +1037,8 @@ static IRBlock *emit_region(WFnCtx *c, IRBlock *b, IRBlock *from) {
       emit_ins(c, b->ins.items[k]);
     if (!b->term) {
       if (started_loop) {
-        w8(c->body, 0x0B); // end loop
-        w8(c->body, 0x0B); // end block
+        wctrl(c, 0x0B); // end loop
+        wctrl(c, 0x0B); // end block
         pop_label(c);
         pop_label(c);
       }
@@ -939,8 +1046,20 @@ static IRBlock *emit_region(WFnCtx *c, IRBlock *b, IRBlock *from) {
     }
     if (b->term->op == (IROp)OP_BR) {
       IRBlock *t = (IRBlock *)b->term->dst;
-      // forward entry into a not-yet-emitted loop becomes the construct
+      // forward entry into a not-yet-emitted loop becomes the construct.
+      // If this frame already owns an open loop, the new loop is NESTED
+      // inside our body: recurse so a child frame owns its labels — the
+      // old flatten-in-place walk overwrote my_header/my_exit, so when the
+      // nested loops closed, a back edge to OUR header hit the generic
+      // br path and returned with `block $exit { loop $h {` never closed
+      // (and the exit block never emitted).
       if (t->loop_header && !t->emitted) {
+        if (started_loop) {
+          IRBlock *stop = emit_region(c, t, b);
+          from = b;
+          b = stop;
+          continue;
+        }
         from = b;
         b = t;
         continue;
@@ -948,8 +1067,8 @@ static IRBlock *emit_region(WFnCtx *c, IRBlock *b, IRBlock *from) {
       if (t == my_header && started_loop) {
         // back edge: repeat the loop
         emit_br(c, b, t);
-        w8(c->body, 0x0B); // end loop
-        w8(c->body, 0x0B); // end block
+        wctrl(c, 0x0B); // end loop
+        wctrl(c, 0x0B); // end block
         pop_label(c);
         pop_label(c);
         if (!my_exit)
@@ -968,8 +1087,8 @@ static IRBlock *emit_region(WFnCtx *c, IRBlock *b, IRBlock *from) {
       emit_br(c, b, t);
       if (started_loop && t == my_exit) {
         // break: leave the loop, the exit's code follows in the caller
-        w8(c->body, 0x0B); // end loop
-        w8(c->body, 0x0B); // end block
+        wctrl(c, 0x0B); // end loop
+        wctrl(c, 0x0B); // end block
         pop_label(c);
         pop_label(c);
         return t;
@@ -987,10 +1106,24 @@ static IRBlock *emit_region(WFnCtx *c, IRBlock *b, IRBlock *from) {
       wuleb(c->body, 0);
       if (b->term->a)
         lget(c, b->term->a);
+      else if (c->fn->ret && c->fn->ret->kind != TY_VOID &&
+               !c->fn->returns_aggregate) {
+        // an unreachable exit can lower as a valueless ret; wasm needs the
+        // operand — supply the zero of the fn's return type
+        IRType rt = w_ir_type(c->fn->ret);
+        if (rt == IT_F32 || rt == IT_F64) {
+          w8(c->body, rt == IT_F32 ? 0x43 : 0x44);
+          for (int z = 0; z < (rt == IT_F32 ? 4 : 8); z++)
+            w8(c->body, 0);
+        } else {
+          w8(c->body, w_is64(rt) ? 0x42 : 0x41);
+          w8(c->body, 0x00);
+        }
+      }
       w8(c->body, 0x0F); // return
       if (started_loop) {
-        w8(c->body, 0x0B); // end loop (lexically required)
-        w8(c->body, 0x0B); // end block
+        wctrl(c, 0x0B); // end loop (lexically required)
+        wctrl(c, 0x0B); // end block
         pop_label(c);
         pop_label(c);
       }
@@ -1030,21 +1163,21 @@ static IRBlock *emit_region(WFnCtx *c, IRBlock *b, IRBlock *from) {
               c->fn->symbol, b->id, t ? t->id : -1, f ? f->id : -1, join ? join->id : -1,
               claimed, (unsigned)c->labels.n);
     lget(c, b->term->a);
-    w8(c->body, 0x04); // if
+    wctrl(c, 0x04); // if
     w8(c->body, 0x40); // void blocktype
     emit_region_run(c, t, b);
     if (getenv("RHO_WASM_DEBUG"))
       fprintf(stderr, "  [%s] else (of B%d)\n", c->fn->symbol, b->id);
-    w8(c->body, 0x05); // else
+    wctrl(c, 0x05); // else
     emit_region_run(c, f, b);
     if (getenv("RHO_WASM_DEBUG"))
       fprintf(stderr, "  [%s] endif (of B%d)\n", c->fn->symbol, b->id);
-    w8(c->body, 0x0B); // end if
+    wctrl(c, 0x0B); // end if
     pop_label(c);      // drop the if placeholder
     if (!join) {
       if (started_loop) {
-        w8(c->body, 0x0B); // end loop
-        w8(c->body, 0x0B); // end block
+        wctrl(c, 0x0B); // end loop
+        wctrl(c, 0x0B); // end block
         pop_label(c);
         pop_label(c);
       }
@@ -1055,8 +1188,8 @@ static IRBlock *emit_region(WFnCtx *c, IRBlock *b, IRBlock *from) {
         c->claims.n--; // ours went stale the moment it was emitted
       if (started_loop && join == my_exit) {
         // a break-if: both arms already br'd; close the loop, emit exit
-        w8(c->body, 0x0B); // end loop
-        w8(c->body, 0x0B); // end block
+        wctrl(c, 0x0B); // end loop
+        wctrl(c, 0x0B); // end block
         pop_label(c);
         pop_label(c);
         started_loop = 0;
@@ -1070,8 +1203,8 @@ static IRBlock *emit_region(WFnCtx *c, IRBlock *b, IRBlock *from) {
     if (!claimed) {
       if (started_loop && join == my_exit) {
         // break-if against this loop's exit: close and continue at exit
-        w8(c->body, 0x0B); // end loop
-        w8(c->body, 0x0B); // end block
+        wctrl(c, 0x0B); // end loop
+        wctrl(c, 0x0B); // end block
         pop_label(c);
         pop_label(c);
         started_loop = 0;
@@ -1178,6 +1311,12 @@ static IRType vreg_type(IRFn *fn, int id) {
     }
     for (size_t k = 0; k < blk->ins.n; k++) {
       IRIns *i = blk->ins.items[k];
+      // the lowering keeps the terminator as the last ins entry too; its
+      // dst is an IRBlock* reinterpreted as a vreg and must not answer
+      // type queries (its garbage ty once declared an i32 local for an
+      // i64 const — wasmtime rejected the module)
+      if (i->op == (IROp)OP_BR || i->op == (IROp)OP_CBR || i->op == (IROp)OP_RET)
+        continue;
       if (i->dst && i->dst->id == id)
         return i->dst->ty;
     }
@@ -1192,33 +1331,30 @@ void emit_wasm(Target target, SB *out) {
 
   memset(&W, 0, sizeof(W));
 
-  // register the two import signatures FIRST: sections are serialized in
+  // register the import signatures FIRST: sections are serialized in
   // order, so anything w_type_for adds during import assembly would land
   // past the already-written type section
-  {
+  for (int k = 0; k < WASI_IMPORT_N; k++) {
     Vec p = {0};
-    for (int k = 0; k < 4; k++)
-      vec_push(&p, (void *)(long)IT_I32);
-    w_type_for(p, true, IT_I32); // fd_write
-    p.n = 0;
-    vec_push(&p, (void *)(long)IT_I32);
-    w_type_for(p, false, IT_I32); // proc_exit
+    for (int q = 0; q < wasi_imports[k].nparams; q++)
+      vec_push(&p, (void *)(long)wasi_imports[k].params[q]);
+    w_type_for(p, wasi_imports[k].has_ret, wasi_imports[k].ret);
   }
 
   if (getenv("RHO_WASM_DEBUG")) {
     fprintf(stderr, "import 0 = fd_write\nimport 1 = proc_exit\n");
     for (size_t i = 0; i < g_ir_fns.n; i++) {
       IRFn *fn = g_ir_fns.items[i];
-      fprintf(stderr, "func %d = %s\n", (int)(2 + i), fn->symbol);
+      fprintf(stderr, "func %d = %s\n", (int)(WASI_IMPORT_N + i), fn->symbol);
     }
   }
 
-  // function table (indices 0,1 are the wasi imports)
+  // function table (indices 0..WASI_IMPORT_N-1 are the wasi imports)
   for (size_t i = 0; i < g_ir_fns.n; i++) {
     IRFn *fn = g_ir_fns.items[i];
     WFn *wf = arena_alloc(sizeof(WFn));
     wf->fn = fn;
-    wf->index = (int)(2 + i);
+    wf->index = (int)(WASI_IMPORT_N + i);
     wf->type = w_type_of_fn(fn);
     if (getenv("RHO_DBG_VT"))
       fprintf(stderr, "[vt-fn] %d %s type=%d\n", wf->index, fn->symbol, wf->type);
@@ -1266,26 +1402,18 @@ void emit_wasm(Target target, SB *out) {
     wsection(&typesec, 1, &body);
   }
 
-  // import section: fd_write, proc_exit
+  // import section: the wasi_snapshot_preview1 set
   {
     SB body = {0};
-    wuleb(&body, 2);
-    wstr(&body, "wasi_snapshot_preview1");
-    wstr(&body, "fd_write");
-    w8(&body, 0x00); // func
-    {
+    wuleb(&body, WASI_IMPORT_N);
+    for (int k = 0; k < WASI_IMPORT_N; k++) {
+      wstr(&body, "wasi_snapshot_preview1");
+      wstr(&body, wasi_imports[k].name);
+      w8(&body, 0x00); // func
       Vec p = {0};
-      for (int k = 0; k < 4; k++)
-        vec_push(&p, (void *)(long)IT_I32);
-      wuleb(&body, w_type_for(p, true, IT_I32));
-    }
-    wstr(&body, "wasi_snapshot_preview1");
-    wstr(&body, "proc_exit");
-    w8(&body, 0x00);
-    {
-      Vec p = {0};
-      vec_push(&p, (void *)(long)IT_I32);
-      wuleb(&body, w_type_for(p, false, IT_I32));
+      for (int q = 0; q < wasi_imports[k].nparams; q++)
+        vec_push(&p, (void *)(long)wasi_imports[k].params[q]);
+      wuleb(&body, w_type_for(p, wasi_imports[k].has_ret, wasi_imports[k].ret));
     }
     wsection(&importsec, 2, &body);
   }
@@ -1339,7 +1467,7 @@ void emit_wasm(Target target, SB *out) {
   }
 
   // export section: memory + _start
-  int start_index = (int)(2 + W.fns.n);
+  int start_index = (int)(WASI_IMPORT_N + W.fns.n);
   {
     SB body = {0};
     wuleb(&body, 2);
@@ -1376,6 +1504,8 @@ void emit_wasm(Target target, SB *out) {
     for (size_t i = 0; i < W.fns.n; i++) {
       WFn *wf = W.fns.items[i];
       IRFn *fn = wf->fn;
+      // TEMP probe: function index -> symbol map for crash triage
+      fprintf(stderr, "WE %ld %s\n", (long)(WASI_IMPORT_N + i), fn->symbol);
       SB *code = emit_fn_body(wf);
       // locals: one group per local so indices stay params, $fb, then
       // vregs in id order. The signature carries the declared params (plus
@@ -1403,10 +1533,20 @@ void emit_wasm(Target target, SB *out) {
       WFn *mainf = map_get(&W.fn_by_symbol, str_from(g_main_symbol));
       w8(&entry, 0x10);
       wuleb(&entry, mainf ? (uint64_t)mainf->index : 0);
-      w8(&entry, 0x41); // i32.const 255
-      w8(&entry, 0xFF);
-      w8(&entry, 0x01);
-      w8(&entry, 0x71); // i32.and
+      // only a scalar-returning main leaves a status on the stack; a void
+      // or aggregate main contributes no value, so exit status 0
+      bool scalar_main = mainf && mainf->fn->ret &&
+                         mainf->fn->ret->kind != TY_VOID &&
+                         !mainf->fn->returns_aggregate;
+      if (scalar_main) {
+        w8(&entry, 0x41); // i32.const 255
+        w8(&entry, 0xFF);
+        w8(&entry, 0x01);
+        w8(&entry, 0x71); // i32.and
+      } else {
+        w8(&entry, 0x41); // i32.const 0
+        w8(&entry, 0x00);
+      }
       w8(&entry, 0x10);
       wuleb(&entry, 1); // proc_exit
       w8(&entry, 0x0B); // (unreachable after proc_exit, but valid)

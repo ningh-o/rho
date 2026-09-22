@@ -1,0 +1,10 @@
+# intloop / js
+# build: (none — run from source)
+# run:   node bench/src/intloop.js
+# expected stdout: "intloop acc=2114416450"
+warmup   : 749.88 ms  exit=0  output_ok=true
+run 1   : 762.31 ms  exit=0  output_ok=true
+run 2   : 756.97 ms  exit=0  output_ok=true
+run 3   : 748.04 ms  exit=0  output_ok=true
+run 4   : 751.75 ms  exit=0  output_ok=true
+run 5   : 754.46 ms  exit=0  output_ok=true

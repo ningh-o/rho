@@ -1,0 +1,63 @@
+1:1 (offset 0): expected a value (input ended)
+2:1 (offset 4): expected a value (input ended)
+1:1 (offset 0): unexpected end of input (expected `null`)
+1:1 (offset 0): unexpected end of input (expected `true`)
+1:1 (offset 0): unexpected end of input (expected `false`)
+1:1 (offset 0): invalid literal (expected `null`)
+1:1 (offset 0): unexpected character (a value cannot start here)
+1:2 (offset 1): leading zeros are not allowed in a number
+1:3 (offset 2): leading zeros are not allowed in a number
+1:3 (offset 2): expected a digit after the decimal point
+1:3 (offset 2): expected a digit after the decimal point
+1:1 (offset 0): unexpected character (a value cannot start here)
+1:1 (offset 0): unexpected character (a value cannot start here)
+1:2 (offset 1): expected a digit
+1:3 (offset 2): expected a digit in the exponent
+1:4 (offset 3): expected a digit in the exponent
+1:4 (offset 3): expected a digit in the exponent
+1:3 (offset 2): expected a digit in the exponent
+1:2 (offset 1): expected a digit
+1:3 (offset 2): expected a digit after the decimal point
+1:2 (offset 1): trailing characters after the JSON value
+1:1 (offset 0): unexpected character (a value cannot start here)
+1:1 (offset 0): unexpected character (a value cannot start here)
+1:14 (offset 13): unterminated string
+1:1 (offset 0): unexpected character (a value cannot start here)
+1:5 (offset 4): invalid escape in string
+1:11 (offset 10): unterminated escape
+1:9 (offset 8): bad \u escape (needs four hex digits)
+1:7 (offset 6): bad \u escape (needs four hex digits)
+1:12 (offset 11): lone high surrogate (no low half followed)
+1:11 (offset 10): lone low surrogate
+1:12 (offset 11): lone high surrogate (no low half followed)
+1:5 (offset 4): unescaped control character in string
+1:19 (offset 18): unescaped control character in string
+1:2 (offset 1): invalid UTF-8 in string
+1:2 (offset 1): invalid UTF-8 in string
+1:2 (offset 1): invalid UTF-8 in string
+1:2 (offset 1): invalid UTF-8 in string
+1:2 (offset 1): invalid UTF-8 in string
+1:2 (offset 1): invalid UTF-8 in string
+1:2 (offset 1): invalid UTF-8 in string
+1:2 (offset 1): invalid UTF-8 in string
+1:2 (offset 1): expected a value (input ended)
+1:5 (offset 4): expected `,` or `]` in an array
+1:6 (offset 5): expected a value (input ended)
+1:2 (offset 1): unexpected character (a value cannot start here)
+1:4 (offset 3): expected `,` or `]` in an array
+1:1 (offset 0): unexpected character (a value cannot start here)
+1:2 (offset 1): expected a string key in an object
+1:1 (offset 0): unexpected character (a value cannot start here)
+1:2 (offset 1): expected a string key in an object
+1:2 (offset 1): expected a string key in an object
+1:6 (offset 5): expected `:` after an object key
+1:6 (offset 5): unexpected character (a value cannot start here)
+1:8 (offset 7): expected a string key in an object
+1:5 (offset 4): expected `:` after an object key
+1:3 (offset 2): trailing characters after the JSON value
+1:4 (offset 3): trailing characters after the JSON value
+1:6 (offset 5): trailing characters after the JSON value
+1:4 (offset 3): trailing characters after the JSON value
+1:4 (offset 3): trailing characters after the JSON value
+3:2 (offset 9): unexpected character (a value cannot start here)
+2:4 (offset 9): expected `,` or `}` in an object

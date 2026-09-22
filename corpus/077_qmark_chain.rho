@@ -1,0 +1,48 @@
+// exit: 0
+// ? chains: a Result error travels three hops and surfaces verbatim at the
+// match site; the happy path threads through every ?; an Option chain
+// propagates None the same way
+fn parse(n: i32) -> Result[i32, string] {
+  if (n < 0) {
+    return Result.Err("negative");
+  }
+  return Result.Ok(n);
+}
+
+fn double(n: i32) -> Result[i32, string] {
+  let v: i32 = parse(n)?;
+  return Result.Ok((v * 2));
+}
+
+fn shifted(n: i32) -> Result[i64, string] {
+  let v: i32 = double(n)?;
+  return Result.Ok((v as i64 + 100));
+}
+
+fn opt_half(o: Option[i32]) -> Option[i32] {
+  let v: i32 = o?;
+  if (v == 0) {
+    return Option.None;
+  }
+  return Option.Some((v / 2));
+}
+
+fn main() -> i32 {
+  match shifted(21) {
+    Result.Ok(v) => printf("ok={}\n", v),
+    Result.Err(e) => printf("err={}\n", e),
+  }
+  match shifted((0 - 5)) {
+    Result.Ok(v) => printf("ok={}\n", v),
+    Result.Err(e) => printf("err={}\n", e),
+  }
+  match opt_half(Option.Some(44)) {
+    Option.Some(v) => printf("half={}\n", v),
+    Option.None => printf("none\n"),
+  }
+  match opt_half(Option.Some(0)) {
+    Option.Some(v) => printf("half={}\n", v),
+    Option.None => printf("none\n"),
+  }
+  return 0;
+}

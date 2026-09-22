@@ -1,0 +1,12 @@
+main: begin
+  work: body
+  work: first
+  work: second
+  work: third
+main: r=100
+  early: body
+  early: deferred
+main: e=7
+main: end
+main: first defer
+main: last defer

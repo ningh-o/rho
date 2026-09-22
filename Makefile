@@ -1,3 +1,6 @@
+# boot keeps only: compile rho → wasm32-wasi, and the corpus oracle.
+# Features frozen at 0.4.0 + triple-quote; fmt and the native backends
+# live in the self-hosted compiler (self/rho.rho).
 CC ?= cc
 CFLAGS ?= -std=c11 -D_POSIX_C_SOURCE=200809L -O2 -Wall -Wextra -Wno-unused-parameter
 # prelude_data.c is listed explicitly: after `make clean` the wildcard cannot
@@ -5,9 +8,6 @@ CFLAGS ?= -std=c11 -D_POSIX_C_SOURCE=200809L -O2 -Wall -Wextra -Wno-unused-param
 # dedupes once the generated file shows up in the wildcard too
 BOOT_SRC := $(sort $(wildcard boot/src/*.c) boot/src/prelude_data.c)
 BOOT_OBJ := $(BOOT_SRC:.c=.o)
-WASI_SDK ?= $(HOME)/Developer/tools/wasi-sdk
-WASI_CC := $(WASI_SDK)/bin/clang
-WASI_FLAGS := --target=wasm32-wasi --sysroot=$(WASI_SDK)/share/wasi-sysroot -O2
 
 build/rho-boot: $(BOOT_OBJ)
 	@mkdir -p build
@@ -16,30 +16,37 @@ build/rho-boot: $(BOOT_OBJ)
 boot/src/%.o: boot/src/%.c boot/src/rho.h boot/src/ir.h boot/src/prelude_data.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+# one prelude: the pure core + the wasi tail (the only target boot emits)
 CORE := boot/prelude/core.rho
 
-boot/src/prelude_data.c: $(CORE) boot/prelude/hosted.rho boot/prelude/wasi.rho boot/prelude/mac.rho tools/embed.py
-	python3 tools/embed.py PRELUDE_SOURCE boot/src/prelude_data.c $(CORE) boot/prelude/hosted.rho
-	python3 tools/embed.py PRELUDE_WASI_SOURCE boot/src/prelude_wasi_data.inc $(CORE) boot/prelude/wasi.rho
-	python3 tools/embed.py PRELUDE_MAC_SOURCE boot/src/prelude_mac_data.inc $(CORE) boot/prelude/mac.rho
-	cat boot/src/prelude_wasi_data.inc boot/src/prelude_mac_data.inc >> boot/src/prelude_data.c
+boot/src/prelude_data.c: $(CORE) boot/prelude/wasi.rho tools/embed.py
+	python3 tools/embed.py PRELUDE_SOURCE boot/src/prelude_data.c $(CORE) boot/prelude/wasi.rho
 
-# the compiler itself as wasm32-wasi: the browser playground runs this
-build/rho-boot.wasm: $(BOOT_SRC) boot/src/rho.h
-	@mkdir -p build
-	$(WASI_CC) $(WASI_FLAGS) -o $@ $(BOOT_SRC)
+# the served compiler asset is the self-hosted compiler itself: the C seed
+# turns self/rho.rho into a wasm32-wasi module — the same build the
+# bootstrap gate grades as build/gate/m.wasm. wasi-sdk is retired: rho has
+# always emitted wasm (and native images) directly, in-process, and no C
+# compiler takes part in any shipped artifact anymore.
+site/assets/rho.wasm: build/rho-boot self/rho.rho
+	@mkdir -p site/assets
+	./build/rho-boot build self/rho.rho --target wasm32-wasi -o $@
+
+# the same artifact at its historical path — the site tests, the LSP and
+# the vite plugin all read build/rho.wasm. A copy of the self-built asset,
+# never a wasi-sdk product.
+build/rho.wasm: site/assets/rho.wasm
+	cp $< $@
 
 # everything the static site needs, ready to serve from site/
-site: build/rho-boot.wasm
-	cp build/rho-boot.wasm site/assets/rho-boot.wasm
+site: build/rho.wasm
 	mkdir -p site/spec
 	cp spec/spec.md site/spec/spec.md
 
-.PHONY: test test-site site goldens fmt-check clean
+.PHONY: test test-site site goldens clean
 test: build/rho-boot
 	./build/rho-boot selftest
 
-test-site: build/rho-boot build/rho-boot.wasm
+test-site: build/rho-boot build/rho.wasm
 	./build/rho-boot test corpus --target wasm32-wasi
 	node tools/test_browser_compiler.mjs
 	node tools/verify_examples.mjs
@@ -47,8 +54,5 @@ test-site: build/rho-boot build/rho-boot.wasm
 goldens: build/rho-boot
 	./build/rho-boot selftest --update-goldens
 
-fmt-check: build/rho-boot
-	./build/rho-boot selftest --fmt
-
 clean:
-	rm -rf build boot/src/*.o boot/src/prelude_data.c boot/src/prelude_wasi_data.inc boot/src/prelude_data.h
+	rm -rf build boot/src/*.o boot/src/prelude_data.c

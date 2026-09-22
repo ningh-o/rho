@@ -2,7 +2,12 @@ build/
 *.o
 *.wasm
 # the playground ships the compiler itself
-!site/assets/rho-boot.wasm
+!site/assets/rho.wasm
 out/
 .DS_Store
 *.o.tmp
+# node artifacts: the LSP package's build and every npm install
+node_modules/
+tools/lsp/dist/
+# release staging: zips publish to GitHub Releases, never into the tree
+/release/

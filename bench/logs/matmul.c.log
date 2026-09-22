@@ -1,0 +1,10 @@
+# matmul / c
+# build: clang --target=wasm32-wasi --sysroot=... -O2 -o bench/build/matmul.c.wasm bench/src/matmul.c
+# run:   wasmtime run bench/build/matmul.c.wasm
+# expected stdout: "matmul(256) sum_bits=4627167142146473984 sum_int=23"
+warmup   : 15.64 ms  exit=0  output_ok=true
+run 1   : 15.24 ms  exit=0  output_ok=true
+run 2   : 15.66 ms  exit=0  output_ok=true
+run 3   : 14.91 ms  exit=0  output_ok=true
+run 4   : 14.80 ms  exit=0  output_ok=true
+run 5   : 15.00 ms  exit=0  output_ok=true

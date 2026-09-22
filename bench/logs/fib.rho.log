@@ -1,0 +1,10 @@
+# fib / rho
+# build: rho build bench/src/fib.rho -o bench/build/fib.rho.wasm
+# run:   wasmtime run bench/build/fib.rho.wasm
+# expected stdout: "fib(32)=2178309"
+warmup   : 19.17 ms  exit=0  output_ok=true
+run 1   : 18.32 ms  exit=0  output_ok=true
+run 2   : 18.61 ms  exit=0  output_ok=true
+run 3   : 19.11 ms  exit=0  output_ok=true
+run 4   : 19.16 ms  exit=0  output_ok=true
+run 5   : 18.72 ms  exit=0  output_ok=true

@@ -1,0 +1,10 @@
+[0] pt(1,2)
+[1] bx:abc
+[2] num(7)
+[3] pt(5,5)
+overwritten: pt(9,9)
+ends pt(1,2) | pt(5,5)
+tail n=2 first=num(7)
+tail [0] num(7)
+tail [1] pt(5,5)
+sizes sum=19 one=4

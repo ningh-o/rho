@@ -1,0 +1,20 @@
+// exit: 0
+// bitwise & | ^ ~ at several widths; `as` reinterprets the same bits,
+// so a cast carries a mask across signedness (255 as i8 is -1)
+fn main() -> i32 {
+  printf("i32: 0xF0|0x0F={} 0xF0&0x3C={} 0xFF^0x0F={} ~0={}\n", (240 | 15), (240 & 60), (255 ^ 15), (~0));
+  let x: i32 = 305419896;
+  printf("i32: x&0xFF={} (x>>8)&0xFF={} x&~255={}\n", (x & 255), ((x >> 8) & 255), (x & (~255)));
+  printf("i64: ~0={} u64: ~0={}\n", (~0 as i64), (~0 as u64));
+  let nb: u8 = (~0 as u8);
+  printf("u8: ~0={} 0xF0&0x0F={} 0xF0^0xFF={}\n", nb, (240 as u8 & 15 as u8), (240 as u8 ^ 255 as u8));
+  let raw: u8 = 255;
+  let se: i8 = raw as i8;
+  let neg8: i8 = (0 - 1) as i8;
+  let up16: u16 = neg8 as u16;
+  let up64: u64 = neg8 as u64;
+  printf("reinterp: 255u8->i8={} back->u8={} i8-1->u16={} ->u64={}\n", se, se as u8, up16, up64);
+  let h: u16 = 65280;
+  printf("u16: 0xFF00>>8={} 0xFF00|0x00FF={}\n", (h >> 8), (h | 255));
+  return 0;
+}

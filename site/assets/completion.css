@@ -1,0 +1,71 @@
+/* Playground completion popup — loaded only by playground.html.
+   Fast, type-unaware completion; the popup is hand-drawn over the plain
+   textarea. Type-aware completion lands with the compiler language
+   service (docs/language-service.md). */
+
+.cp-pop {
+  position: absolute;
+  z-index: 5; /* above the textarea (z-index: 2 in style.css) */
+  min-width: 220px;
+  max-width: min(420px, 90%);
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  font: 12.5px/1.5 var(--mono);
+  padding: 4px;
+}
+
+.cp-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.cp-row.cp-active {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.cp-label {
+  color: var(--ink);
+  flex: none;
+}
+.cp-detail {
+  color: var(--ink-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.cp-kind {
+  flex: none;
+  margin-left: auto;
+  font: 600 10px var(--sans);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 5px;
+}
+.cp-kind-fn { color: #d08770; }
+.cp-kind-ty, .cp-kind-struct, .cp-kind-enum, .cp-kind-trait { color: #7fb3d5; }
+.cp-kind-kw { color: #d886c8; }
+.cp-kind-let, .cp-kind-const { color: var(--ok); }
+
+.cp-hint {
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
+  padding: 5px 8px 3px;
+  font: 12px/1.45 var(--sans);
+  color: var(--ink-dim);
+  white-space: normal;
+  max-width: 420px;
+}
+.cp-hint:empty {
+  display: none;
+}

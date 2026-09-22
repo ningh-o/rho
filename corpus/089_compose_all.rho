@@ -1,0 +1,90 @@
+// exit: 0
+// slice 089: the pieces compose — a bounded generic over []*T prints
+// the same strings []dyn dispatch prints for the same objects; generic
+// instantiation nests inside generic instantiation; variadic calls
+// carry generic results
+trait Show {
+  fn to_str(self) -> string,
+}
+
+struct Pair[A, B] {
+  a: A,
+  b: B,
+}
+
+struct Pt {
+  x: i32,
+  y: i32,
+}
+
+fn Pt.to_str(self: *Pt) -> string {
+  return format("pt({},{})", self.x, self.y);
+}
+
+struct Wd {
+  s: string,
+}
+
+fn Wd.to_str(self: *Wd) -> string {
+  return format("wd<{}>", self.s);
+}
+
+fn total(ns: i64...) -> i64 {
+  let mut t: i64 = 0;
+  let mut i: usize = 0;
+  while i < len(ns) {
+    t += ns[i];
+    i += 1;
+  }
+  return t;
+}
+
+fn dup[T](v: T) -> *Pair[T, T] {
+  return new Pair[T, T] { a: v, b: v };
+}
+
+fn render_all[T: Show](vs: []*T) -> i32 {
+  let mut acc: i32 = 0;
+  let mut i: usize = 0;
+  while i < len(vs) {
+    printf("static [{}] {}\n", i, vs[i]);
+    acc += 1;
+    i += 1;
+  }
+  return acc;
+}
+
+fn main() -> i32 {
+  let p = new Pt { x: 1, y: 2 };
+  let w = new Wd { s: "hey" };
+  // static dispatch over the concrete slice
+  let ps: []*Pt = make([]*Pt, 2);
+  ps[0] = p;
+  ps[1] = new Pt { x: 3, y: 4 };
+  let n1: i32 = render_all(ps);
+  // dynamic dispatch over the same shapes plus one more
+  let ds: []dyn Show = make([]dyn Show, 3);
+  ds[0] = p;
+  ds[1] = ps[1];
+  ds[2] = w;
+  let mut n2: i32 = 0;
+  let mut i: usize = 0;
+  while i < len(ds) {
+    printf("dyn    [{}] {}\n", i, ds[i]);
+    n2 += 1;
+    i += 1;
+  }
+  printf("counts {} {}\n", n1, n2);
+  // the overlapping views agree on every shared object
+  assert_eq(format("{}", ps[0]), format("{}", ds[0]));
+  assert_eq(format("{}", ps[1]), format("{}", ds[1]));
+  // a generic instantiation whose argument is itself generic
+  let nested = dup(dup(2));
+  printf("nested {} {}\n", nested.a.a, nested.b.b);
+  // generic results flow into variadic calls
+  let d1 = dup(5);
+  printf("dup {} {}\n", d1.a, d1.b);
+  printf("sum={}\n", total(d1.a as i64, d1.b as i64, 7));
+  printf("nest={}\n", total(nested.a.a as i64, nested.b.b as i64));
+  return 0;
+}

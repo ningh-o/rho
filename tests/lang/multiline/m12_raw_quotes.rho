@@ -1,0 +1,10 @@
+// exit: 0
+fn main() -> i32 {
+  // an unescaped """ closes the literal anywhere, mid-line included;
+  // the bytes before it — even on the opener's own line — are the value
+  let s: string = """mid """;
+  printf("[{}]\n", s);
+  let t: string = """two""";
+  printf("[{}]\n", t);
+  return 0;
+}

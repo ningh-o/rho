@@ -1,0 +1,10 @@
+# naive_append / c
+# build: clang --target=wasm32-wasi --sysroot=... -O2 -o bench/build/naive_append.c.wasm bench/src/naive_append.c
+# run:   wasmtime run bench/build/naive_append.c.wasm
+# expected stdout: "naive n=3750 bytes=380625"
+warmup   : 5.99 ms  exit=0  output_ok=true
+run 1   : 4.83 ms  exit=0  output_ok=true
+run 2   : 5.92 ms  exit=0  output_ok=true
+run 3   : 5.09 ms  exit=0  output_ok=true
+run 4   : 4.61 ms  exit=0  output_ok=true
+run 5   : 5.56 ms  exit=0  output_ok=true

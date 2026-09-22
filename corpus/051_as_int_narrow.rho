@@ -1,0 +1,35 @@
+// exit: 0
+// as between integer widths: narrowing truncates to the low bits and
+// reinterprets them in the target signedness (spec/type-system.md
+// "wrap/truncate/extend")
+fn main() -> i32 {
+  let a: i32 = 200;
+  printf("i32 200 as i8 = {}\n", a as i8);
+  let b: i32 = 130;
+  printf("i32 130 as i8 = {}\n", b as i8);
+  let c: i32 = 127;
+  printf("i32 127 as i8 = {}\n", c as i8);
+  let d: i32 = (0 - 1);
+  printf("i32 -1 as i8 = {}\n", d as i8);
+  let e: i32 = 40000;
+  printf("i32 40000 as i16 = {}\n", e as i16);
+  let f: i64 = 4294967297;
+  printf("i64 4294967297 as i32 = {}\n", f as i32);
+  let g: i64 = (-1);
+  printf("i64 -1 as i32 = {}\n", g as i32);
+  let h: i64 = 2147483648;
+  printf("i64 2147483648 as i32 = {}\n", h as i32);
+  let i: i64 = 65539;
+  printf("i64 65539 as i16 = {}\n", i as i16);
+  let j: u32 = 300;
+  printf("u32 300 as u8 = {}\n", j as u8);
+  let k: u64 = 70000;
+  printf("u64 70000 as u16 = {}\n", k as u16);
+  let l: u64 = 511;
+  printf("u64 511 as u8 = {}\n", l as u8);
+  let m: u64 = 256;
+  printf("u64 256 as u8 = {}\n", m as u8);
+  let n: i64 = (-1);
+  printf("i64 -1 as u8 = {}\n", n as u8);
+  return 0;
+}

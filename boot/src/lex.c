@@ -56,6 +56,41 @@ static bool is_ident_start(char c) {
 static bool is_ident_char(char c) { return is_ident_start(c) || (c >= '0' && c <= '9'); }
 static bool is_digit(char c) { return c >= '0' && c <= '9'; }
 
+// decode one escape sequence; lx->p sits on the backslash. Appends the
+// decoded byte(s) to sb. Returns false when the escape runs off the end of
+// the source (diagnostic already emitted). Shared by the single-line and
+// multiline string lexers so both decode escapes identically.
+static bool lex_escape(Lexer *lx, SB *sb) {
+  lx->p++; // the backslash
+  if (lx->p >= lx->end) {
+    lex_error(lx, "unterminated escape");
+    return false;
+  }
+  char e = *lx->p++;
+  switch (e) {
+  case 'n': sb_push(sb, '\n'); break;
+  case 't': sb_push(sb, '\t'); break;
+  case 'r': sb_push(sb, '\r'); break;
+  case '\\': sb_push(sb, '\\'); break;
+  case '"': sb_push(sb, '"'); break;
+  case '0': sb_push(sb, '\0'); break;
+  case 'x': {
+    if (lx->p + 1 < lx->end && isxdigit(lx->p[0]) && isxdigit(lx->p[1])) {
+      char hex[3] = {lx->p[0], lx->p[1], 0};
+      sb_push(sb, (char)strtol(hex, NULL, 16));
+      lx->p += 2;
+    } else {
+      lex_error(lx, "malformed \\x escape");
+    }
+    break;
+  }
+  default:
+    lex_error(lx, "unknown escape");
+    sb_push(sb, e);
+  }
+  return true;
+}
+
 // digit value in the given base, or -1
 static int digit_val(char c, uint64_t base) {
   int d;
@@ -183,6 +218,54 @@ void lex_file(Str file, Str src, Vec *out_tokens) {
 
     // strings
     if (c == '"') {
+      // triple-quoted multiline string: every byte between the opening and
+      // the closing """ enters the value verbatim — the newline right after
+      // the opening """ included, no indentation processing. Escapes decode
+      // exactly like single-line strings, and the first unescaped """
+      // terminates the literal; running off the end of the source is an
+      // error.
+      if (lx.p + 2 < lx.end && lx.p[1] == '"' && lx.p[2] == '"') {
+        lx.p += 3;
+        SB sb = {0};
+        for (;;) {
+          if (lx.p >= lx.end) {
+            lex_error(&lx, "unterminated multiline string literal");
+            break;
+          }
+          char d = *lx.p;
+          if (d == '\\') {
+            if (!lex_escape(&lx, &sb))
+              break;
+            continue;
+          }
+          if (d == '"' && lx.p + 2 < lx.end && lx.p[1] == '"' && lx.p[2] == '"') {
+            lx.p += 3;
+            break;
+          }
+          sb_push(&sb, d);
+          lx.p++;
+        }
+        Token *t = tok_new(&lx, TK_STR, start);
+        t->line = start_line;
+        t->col = start_col;
+        t->text = sb_finish(&sb); // decoded contents
+        // resync line/col past the interior newlines so later diagnostics
+        // keep pointing at the right spot
+        int nl = 0;
+        for (const char *q = start + 3; q < lx.p; q++)
+          if (*q == '\n')
+            nl++;
+        if (nl) {
+          lx.line += nl;
+          const char *ls = lx.p;
+          while (ls > start && ls[-1] != '\n')
+            ls--;
+          lx.col = (int)(lx.p - ls) + 1;
+        } else {
+          lx.col += (int)(lx.p - start);
+        }
+        continue;
+      }
       lx.p++;
       SB sb = {0};
       for (;;) {
@@ -196,33 +279,8 @@ void lex_file(Str file, Str src, Vec *out_tokens) {
           break;
         }
         if (d == '\\') {
-          lx.p++;
-          if (lx.p >= lx.end) {
-            lex_error(&lx, "unterminated escape");
+          if (!lex_escape(&lx, &sb))
             break;
-          }
-          char e = *lx.p++;
-          switch (e) {
-          case 'n': sb_push(&sb, '\n'); break;
-          case 't': sb_push(&sb, '\t'); break;
-          case 'r': sb_push(&sb, '\r'); break;
-          case '\\': sb_push(&sb, '\\'); break;
-          case '"': sb_push(&sb, '"'); break;
-          case '0': sb_push(&sb, '\0'); break;
-          case 'x': {
-            if (lx.p + 1 < lx.end && isxdigit(lx.p[0]) && isxdigit(lx.p[1])) {
-              char hex[3] = {lx.p[0], lx.p[1], 0};
-              sb_push(&sb, (char)strtol(hex, NULL, 16));
-              lx.p += 2;
-            } else {
-              lex_error(&lx, "malformed \\x escape");
-            }
-            break;
-          }
-          default:
-            lex_error(&lx, "unknown escape");
-            sb_push(&sb, e);
-          }
           continue;
         }
         sb_push(&sb, d);

@@ -1,0 +1,6 @@
+p: show=pt(7) describe=pt describing 7 rank=7
+w: show=wd<abcd> describe=wd describing abcd rank=4
+mix pt(7) wd<abcd> pt(7) wd<abcd>
+bumped pt(9) pt(9) rank=9
+item pt(9)
+item wd<abcd>

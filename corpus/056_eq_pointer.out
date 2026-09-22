@@ -1,0 +1,10 @@
+distinct allocs: eq=false ne=true
+alias: eq=true ne=false
+self: eq=true ne=false
+null vs null: eq=true
+null vs live: ne=true
+live vs null: ne=true
+weak same obj: eq=true ne=false
+weak diff obj: eq=false ne=true
+weak null: eq=true vs-live-ne=true
+mutated through one alias still identity: eq=true

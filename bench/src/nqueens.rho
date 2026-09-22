@@ -1,0 +1,21 @@
+// bench kernel: count all solutions to the 12-queens problem via the
+// column/left-diagonal/right-diagonal bitmask recursion — fixed input,
+// deterministic answer (14200). Stresses recursion, i32 bit ops.
+fn count(mask: i32, dl: i32, dr: i32, full: i32) -> i32 {
+  if mask == full {
+    return 1;
+  }
+  let mut total: i32 = 0;
+  let mut avail: i32 = full & ~(mask | dl | dr);
+  while avail != 0 {
+    let bit: i32 = avail & (-avail);
+    avail = avail & (avail - 1);
+    total += count(mask | bit, (dl | bit) << 1, (dr | bit) >> 1, full);
+  }
+  return total;
+}
+
+fn main() -> i32 {
+  printf("queens(12)={}\n", count(0, 0, 0, (1 << 12) - 1));
+  return 0;
+}

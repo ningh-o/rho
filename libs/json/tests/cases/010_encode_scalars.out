@@ -1,0 +1,19 @@
+null|true|false
+0.0|-0.0
+1.0|123456789.0|-2.5
+0.10000000000000001
+0.33333333333333331
+10000000000000000.0
+1e+17
+2.5000000000000001e-05
+4.9406564584124654e-324
+1.7976931348623157e+308
+""
+"plain ASCII"
+"quote:\" back:\\ slash:/ del:"
+"\b\f\n\r\t"
+"\u0000\u0001\b\u000b\f\u001e\u001f"
+"中文 — 😀 — end"
+ERR: cannot encode a non-finite number (nan and the infinities are not valid JSON)
+ERR: cannot encode a non-finite number (nan and the infinities are not valid JSON)
+ERR: cannot encode a non-finite number (nan and the infinities are not valid JSON)

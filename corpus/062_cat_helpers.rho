@@ -1,0 +1,37 @@
+// exit: 0
+// 062 — the cat3/cat4 helpers user code stacks on binary `cat` (the
+// libs/json idiom): left- and right-associated spellings agree, and a
+// helper's trailing argument may itself nest a cat or another helper
+fn cat3(a: string, b: string, c: string) -> string {
+  return cat(cat(a, b), c);
+}
+
+fn cat3r(a: string, b: string, c: string) -> string {
+  return cat(a, cat(b, c));
+}
+
+fn cat4(a: string, b: string, c: string, d: string) -> string {
+  return cat(cat(cat(a, b), c), d);
+}
+
+fn cat4r(a: string, b: string, c: string, d: string) -> string {
+  return cat(a, cat(b, cat(c, d)));
+}
+
+fn main() -> i32 {
+  let flat: string = "wxyz!";
+  let a: string = cat3("w", "xy", "z!");
+  let b: string = cat3r("w", "xy", "z!");
+  let c: string = cat4("w", "x", "yz", "!");
+  let d: string = cat4r("w", "x", "yz", "!");
+  let tail: string = cat4("w", "x", "y", cat("z", "!"));
+  let nest: string = cat4(cat3("w", "x", "y"), "z", "!", "");
+  assert_eq(a, flat);
+  assert_eq(b, flat);
+  assert_eq(c, flat);
+  assert_eq(d, flat);
+  assert_eq(tail, flat);
+  assert_eq(nest, flat);
+  printf("{}\n{}\n{}\n{}\n{}\n{}\n", a, b, c, d, tail, nest);
+  return 0;
+}

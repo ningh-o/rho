@@ -1,0 +1,6 @@
+# json — a JSON codec package for rho (see README.md).
+# Manifest format: docs/package-manager.md. The entry module is json.rho
+# (its basename is the package namespace).
+[package]
+name = "json"
+version = "0.1.0"

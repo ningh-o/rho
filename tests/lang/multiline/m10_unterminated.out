@@ -1,0 +1,3 @@
+tests/lang/multiline/m10_unterminated.rho:7:1: error: unterminated multiline string literal
+tests/lang/multiline/m10_unterminated.rho:7:1: error: expected `;` (`;`), found end of file
+tests/lang/multiline/m10_unterminated.rho:7:1: error: expected `}` (`}`), found end of file

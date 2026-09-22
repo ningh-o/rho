@@ -10,6 +10,11 @@ lives in [syntax.md](syntax.md), the type rules in
 [type-system.md](type-system.md), and program composition in
 [module-system.md](module-system.md).
 
+Packages (path + git dependencies, consumed from an in-tree `vendor/` under
+manifests and a reproducible lockfile kept by the separate `rho-pkg` tool)
+are deliberately outside the language contract; their design lives in
+[docs/package-manager.md](../docs/package-manager.md).
+
 Design pillars:
 
 1. **One binary toolchain.** `rho` does build/run/test/fmt/check. No external

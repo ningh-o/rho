@@ -1,0 +1,10 @@
+# fib / c
+# build: clang --target=wasm32-wasi --sysroot=... -O2 -o bench/build/fib.c.wasm bench/src/fib.c
+# run:   wasmtime run bench/build/fib.c.wasm
+# expected stdout: "fib(32)=2178309"
+warmup   : 11.26 ms  exit=0  output_ok=true
+run 1   : 11.27 ms  exit=0  output_ok=true
+run 2   : 11.15 ms  exit=0  output_ok=true
+run 3   : 10.49 ms  exit=0  output_ok=true
+run 4   : 10.96 ms  exit=0  output_ok=true
+run 5   : 11.11 ms  exit=0  output_ok=true

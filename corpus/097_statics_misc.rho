@@ -1,0 +1,29 @@
+// exit: 0
+// statics of float and bool behave like any mutable variable with module
+// lifetime: they accumulate across calls, flip mid-run, and read back inside
+// expressions that mix them with locals.
+static mut ACC: f64 = 0.5;
+
+static mut FLAG: bool = false;
+
+static mut SEED: i32 = 1;
+
+fn step() -> f64 {
+  ACC += 0.25;
+  SEED = ((SEED * 3) + 1);
+  if (SEED > 10) {
+    FLAG = true;
+  }
+  return ACC;
+}
+
+fn main() -> i32 {
+  let a: f64 = step();
+  let b: f64 = step();
+  let c: f64 = step();
+  printf("acc: {} {} {}\n", a, b, c);
+  printf("final: acc={} flag={} seed={}\n", ACC, FLAG, SEED);
+  ACC = (ACC * 2.0);
+  printf("doubled: acc={} mixed={}\n", ACC, (ACC + ACC));
+  return 0;
+}

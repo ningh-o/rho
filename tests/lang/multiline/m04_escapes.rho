@@ -1,0 +1,9 @@
+// exit: 0
+fn main() -> i32 {
+  let s: string = """
+  a\tb\\d\x41\"q "raw" end
+  """;
+  printf("[{}]\n", s);
+  printf("{}\n", len(s) as i32);
+  return 0;
+}

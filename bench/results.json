@@ -1,0 +1,673 @@
+{
+  "schema": "rho-bench-results/1",
+  "meta": {
+    "date": "2026-09-20T19:50:48.395Z",
+    "host": {
+      "os": "Darwin 25.2.0",
+      "arch": "arm64",
+      "cpu": "Apple M4 Pro",
+      "memory_bytes": 25769803776,
+      "note": "laptop, plugged-in state unknown — treat small deltas (a few %) as noise"
+    },
+    "tools": {
+      "rho": "rho 0.4.0",
+      "wasmtime": "wasmtime 40.0.0 (0807b003e 2025-12-22)",
+      "clang": "clang version 19.1.5-wasi-sdk (https://github.com/llvm/llvm-project ab4b5a2db582958af1ee308a790cfdb42bd24720)",
+      "node": "v24.1.0"
+    },
+    "rho_git": {
+      "head": "6e8ed343e68b5ca6ca9e9e9e2fdc7a61609ddd44",
+      "dirty_files": 13,
+      "dirty_paths": [
+        "M boot/prelude/hosted.rho",
+        " M boot/prelude/mac.rho",
+        " M boot/prelude/wasi.rho",
+        " M boot/src/emit_wasm.c",
+        " M boot/src/prelude_data.c",
+        " M boot/src/prelude_mac_data.inc",
+        " M boot/src/prelude_wasi_data.inc",
+        " M self/rho.rho",
+        "?? bench/",
+        "?? docs/package-manager.md",
+        "?? tools/lsp/",
+        "?? tools/pkg/",
+        "?? tools/vite-plugin-rho/"
+      ]
+    },
+    "compiler_status": "The rho compiler's register allocation is still spill-everything: docs/todo.md's '0.2 backlog (unchanged)' lists 'linear-scan register allocator (replaces spill-everything)' as open, and no linear-scan work exists in this tree — the uncommitted boot/ changes are WASI import wiring + width fixes in emit_wasm.c/prelude, not the allocator. Every rho number here carries the full spill/reload cost; treat rho-vs-C gaps as 'current compiler state', not the language's ceiling.",
+    "boot_binary_provenance": {
+      "path": "build/rho-boot",
+      "mtime": "2026-09-20T19:01:01.705Z",
+      "newest_input": "prelude_data.c",
+      "newest_input_mtime": "2026-09-20T19:00:59.561Z",
+      "built_from_current_tree": true,
+      "note": "this runner never rebuilds the compiler; it uses the working tree's binary as found"
+    },
+    "method": {
+      "timing": "wall-clock around the whole runtime process (spawn -> exit), performance.now()",
+      "warmup": 1,
+      "runs": 5,
+      "aggregate": "median of measured runs (all runs also recorded)",
+      "runtimes": "rho and C both as wasm32-wasi modules under wasmtime (the runtime `rho run` shells out to, boot/src/main.c:609); JS under node",
+      "correctness_gate": "every run's stdout must equal the expected string recomputed independently by this driver; failing runs are recorded as failures, never averaged in"
+    }
+  },
+  "kernels": [
+    {
+      "name": "noop",
+      "task": "empty program — runtime process overhead (spawn -> exit), not a kernel",
+      "expected_output": "",
+      "all_implementations_passed": true,
+      "impls": [
+        {
+          "lang": "rho",
+          "tool": "rho 0.4.0 build (wasm32-wasi, spill-everything register allocation)",
+          "build_cmd": "rho build bench/src/noop.rho -o bench/build/noop.rho.wasm",
+          "artifact": "bench/build/noop.rho.wasm",
+          "artifact_bytes": 4071,
+          "build_ms": 2.6760829999999487,
+          "runtime_cmd": "wasmtime run bench/build/noop.rho.wasm",
+          "warmups": 1,
+          "runs_ms": [
+            4.91,
+            4.98,
+            4.72,
+            4.77,
+            4.96
+          ],
+          "median_ms": 4.91,
+          "min_ms": 4.72,
+          "max_ms": 4.98,
+          "runs_passed": 5,
+          "runs_total": 5,
+          "ok": true
+        },
+        {
+          "lang": "c",
+          "tool": "clang version 19.1.5-wasi-sdk (https://github.com/llvm/llvm-project ab4b5a2db582958af1ee308a790cfdb42bd24720) --target=wasm32-wasi -O2 (wasi-sdk)",
+          "build_cmd": "clang --target=wasm32-wasi --sysroot=... -O2 -o bench/build/noop.c.wasm bench/src/noop.c",
+          "artifact": "bench/build/noop.c.wasm",
+          "artifact_bytes": 18163,
+          "build_ms": 93.60504200000003,
+          "runtime_cmd": "wasmtime run bench/build/noop.c.wasm",
+          "warmups": 1,
+          "runs_ms": [
+            4.46,
+            5.15,
+            4.95,
+            4.47,
+            4.63
+          ],
+          "median_ms": 4.63,
+          "min_ms": 4.46,
+          "max_ms": 5.15,
+          "runs_passed": 5,
+          "runs_total": 5,
+          "ok": true
+        },
+        {
+          "lang": "js",
+          "tool": "v24.1.0 (V8)",
+          "build_cmd": "(none — run from source)",
+          "artifact": "bench/src/noop.js",
+          "artifact_bytes": 145,
+          "build_ms": null,
+          "runtime_cmd": "node bench/src/noop.js",
+          "warmups": 1,
+          "runs_ms": [
+            21.17,
+            20.31,
+            20.16,
+            20.99,
+            20.58
+          ],
+          "median_ms": 20.58,
+          "min_ms": 20.16,
+          "max_ms": 21.17,
+          "runs_passed": 5,
+          "runs_total": 5,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "fib",
+      "task": "naive recursive fib(32), i64",
+      "expected_output": "fib(32)=2178309",
+      "all_implementations_passed": true,
+      "impls": [
+        {
+          "lang": "rho",
+          "tool": "rho 0.4.0 build (wasm32-wasi, spill-everything register allocation)",
+          "build_cmd": "rho build bench/src/fib.rho -o bench/build/fib.rho.wasm",
+          "artifact": "bench/build/fib.rho.wasm",
+          "artifact_bytes": 10543,
+          "build_ms": 2.955249999999978,
+          "runtime_cmd": "wasmtime run bench/build/fib.rho.wasm",
+          "warmups": 1,
+          "runs_ms": [
+            18.32,
+            18.61,
+            19.11,
+            19.16,
+            18.72
+          ],
+          "median_ms": 18.72,
+          "min_ms": 18.32,
+          "max_ms": 19.16,
+          "runs_passed": 5,
+          "runs_total": 5,
+          "ok": true
+        },
+        {
+          "lang": "c",
+          "tool": "clang version 19.1.5-wasi-sdk (https://github.com/llvm/llvm-project ab4b5a2db582958af1ee308a790cfdb42bd24720) --target=wasm32-wasi -O2 (wasi-sdk)",
+          "build_cmd": "clang --target=wasm32-wasi --sysroot=... -O2 -o bench/build/fib.c.wasm bench/src/fib.c",
+          "artifact": "bench/build/fib.c.wasm",
+          "artifact_bytes": 82265,
+          "build_ms": 168.46554200000014,
+          "runtime_cmd": "wasmtime run bench/build/fib.c.wasm",
+          "warmups": 1,
+          "runs_ms": [
+            11.27,
+            11.15,
+            10.49,
+            10.96,
+            11.11
+          ],
+          "median_ms": 11.11,
+          "min_ms": 10.49,
+          "max_ms": 11.27,
+          "runs_passed": 5,
+          "runs_total": 5,
+          "ok": true
+        },
+        {
+          "lang": "js",
+          "tool": "v24.1.0 (V8)",
+          "build_cmd": "(none — run from source)",
+          "artifact": "bench/src/fib.js",
+          "artifact_bytes": 268,
+          "build_ms": null,
+          "runtime_cmd": "node bench/src/fib.js",
+          "warmups": 1,
+          "runs_ms": [
+            35.21,
+            35.47,
+            36.41,
+            35.88,
+            34.38
+          ],
+          "median_ms": 35.47,
+          "min_ms": 34.38,
+          "max_ms": 36.41,
+          "runs_passed": 5,
+          "runs_total": 5,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "nqueens",
+      "task": "count 12-queens solutions via col/diag bitmask recursion, i32",
+      "expected_output": "queens(12)=14200",
+      "all_implementations_passed": true,
+      "impls": [
+        {
+          "lang": "rho",
+          "tool": "rho 0.4.0 build (wasm32-wasi, spill-everything register allocation)",
+          "build_cmd": "rho build bench/src/nqueens.rho -o bench/build/nqueens.rho.wasm",
+          "artifact": "bench/build/nqueens.rho.wasm",
+          "artifact_bytes": 11148,
+          "build_ms": 2.8635830000000624,
+          "runtime_cmd": "wasmtime run bench/build/nqueens.rho.wasm",
+          "warmups": 1,
+          "runs_ms": [
+            12.86,
+            12.17,
+            12.39,
+            12.83,
+            12.65
+          ],
+          "median_ms": 12.65,
+          "min_ms": 12.17,
+          "max_ms": 12.86,
+          "runs_passed": 5,
+          "runs_total": 5,
+          "ok": true
+        },
+        {
+          "lang": "c",
+          "tool": "clang version 19.1.5-wasi-sdk (https://github.com/llvm/llvm-project ab4b5a2db582958af1ee308a790cfdb42bd24720) --target=wasm32-wasi -O2 (wasi-sdk)",
+          "build_cmd": "clang --target=wasm32-wasi --sysroot=... -O2 -o bench/build/nqueens.c.wasm bench/src/nqueens.c",
+          "artifact": "bench/build/nqueens.c.wasm",
+          "artifact_bytes": 82358,
+          "build_ms": 165.70104100000003,
+          "runtime_cmd": "wasmtime run bench/build/nqueens.c.wasm",
+          "warmups": 1,
+          "runs_ms": [
+            9.77,
+            10.08,
+            9.81,
+            10.36,
+            9.62
+          ],
+          "median_ms": 9.81,
+          "min_ms": 9.62,
+          "max_ms": 10.36,
+          "runs_passed": 5,
+          "runs_total": 5,
+          "ok": true
+        },
+        {
+          "lang": "js",
+          "tool": "v24.1.0 (V8)",
+          "build_cmd": "(none — run from source)",
+          "artifact": "bench/src/nqueens.js",
+          "artifact_bytes": 644,
+          "build_ms": null,
+          "runtime_cmd": "node bench/src/nqueens.js",
+          "warmups": 1,
+          "runs_ms": [
+            29.48,
+            29.46,
+            28.59,
+            29.16,
+            29.42
+          ],
+          "median_ms": 29.42,
+          "min_ms": 28.59,
+          "max_ms": 29.48,
+          "runs_passed": 5,
+          "runs_total": 5,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "matmul",
+      "task": "f64 matmul C = A*B, 256x256, k innermost; checksum = IEEE bit pattern of the row-major sum of C (order pinned, no fast-math anywhere). Escalated from the task's 192 because measured C compute at 192 (~4ms) sat under wasmtime's own 4.1ms process overhead — the task's 'too fast -> 256' clause; the 192 numbers are kept as the supplementary matmul192 kernel",
+      "expected_output": "matmul(256) sum_bits=4627167142146473984 sum_int=23",
+      "all_implementations_passed": true,
+      "impls": [
+        {
+          "lang": "rho",
+          "tool": "rho 0.4.0 build (wasm32-wasi, spill-everything register allocation)",
+          "build_cmd": "rho build bench/src/matmul.rho -o bench/build/matmul.rho.wasm",
+          "artifact": "bench/build/matmul.rho.wasm",
+          "artifact_bytes": 15312,
+          "build_ms": 2.875832999999602,
+          "runtime_cmd": "wasmtime run bench/build/matmul.rho.wasm",
+          "warmups": 1,
+          "runs_ms": [
+            58.23,
+            58.45,
+            55.47,
+            59.07,
+            59.94
+          ],
+          "median_ms": 58.45,
+          "min_ms": 55.47,
+          "max_ms": 59.94,
+          "runs_passed": 5,
+          "runs_total": 5,
+          "ok": true
+        },
+        {
+          "lang": "c",
+          "tool": "clang version 19.1.5-wasi-sdk (https://github.com/llvm/llvm-project ab4b5a2db582958af1ee308a790cfdb42bd24720) --target=wasm32-wasi -O2 (wasi-sdk)",
+          "build_cmd": "clang --target=wasm32-wasi --sysroot=... -O2 -o bench/build/matmul.c.wasm bench/src/matmul.c",
+          "artifact": "bench/build/matmul.c.wasm",
+          "artifact_bytes": 82804,
+          "build_ms": 174.1637499999997,
+          "runtime_cmd": "wasmtime run bench/build/matmul.c.wasm",
+          "warmups": 1,
+          "runs_ms": [
+            15.24,
+            15.66,
+            14.91,
+            14.8,
+            15
+          ],
+          "median_ms": 15,
+          "min_ms": 14.8,
+          "max_ms": 15.66,
+          "runs_passed": 5,
+          "runs_total": 5,
+          "ok": true
+        },
+        {
+          "lang": "js",
+          "tool": "v24.1.0 (V8)",
+          "build_cmd": "(none — run from source)",
+          "artifact": "bench/src/matmul.js",
+          "artifact_bytes": 1113,
+          "build_ms": null,
+          "runtime_cmd": "node bench/src/matmul.js",
+          "warmups": 1,
+          "runs_ms": [
+            40.74,
+            40.59,
+            43.05,
+            40.42,
+            46.7
+          ],
+          "median_ms": 40.74,
+          "min_ms": 40.42,
+          "max_ms": 46.7,
+          "runs_passed": 5,
+          "runs_total": 5,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "matmul192",
+      "task": "SUPPLEMENTARY: the task's original 192x192 matmul, kept because the headline escalated to 256. Same op order and checksum scheme as matmul",
+      "expected_output": "matmul(192) sum_bits=13861305596860432384 sum_int=-117",
+      "all_implementations_passed": true,
+      "impls": [
+        {
+          "lang": "rho",
+          "tool": "rho 0.4.0 build (wasm32-wasi, spill-everything register allocation)",
+          "build_cmd": "rho build bench/src/matmul192.rho -o bench/build/matmul192.rho.wasm",
+          "artifact": "bench/build/matmul192.rho.wasm",
+          "artifact_bytes": 15330,
+          "build_ms": 2.9989590000000135,
+          "runtime_cmd": "wasmtime run bench/build/matmul192.rho.wasm",
+          "warmups": 1,
+          "runs_ms": [
+            21.36,
+            21.44,
+            22.42,
+            21.06,
+            22.61
+          ],
+          "median_ms": 21.44,
+          "min_ms": 21.06,
+          "max_ms": 22.61,
+          "runs_passed": 5,
+          "runs_total": 5,
+          "ok": true
+        },
+        {
+          "lang": "c",
+          "tool": "clang version 19.1.5-wasi-sdk (https://github.com/llvm/llvm-project ab4b5a2db582958af1ee308a790cfdb42bd24720) --target=wasm32-wasi -O2 (wasi-sdk)",
+          "build_cmd": "clang --target=wasm32-wasi --sysroot=... -O2 -o bench/build/matmul192.c.wasm bench/src/matmul192.c",
+          "artifact": "bench/build/matmul192.c.wasm",
+          "artifact_bytes": 82802,
+          "build_ms": 168.52295800000002,
+          "runtime_cmd": "wasmtime run bench/build/matmul192.c.wasm",
+          "warmups": 1,
+          "runs_ms": [
+            7.82,
+            7.89,
+            7.95,
+            7.18,
+            8.01
+          ],
+          "median_ms": 7.89,
+          "min_ms": 7.18,
+          "max_ms": 8.01,
+          "runs_passed": 5,
+          "runs_total": 5,
+          "ok": true
+        },
+        {
+          "lang": "js",
+          "tool": "v24.1.0 (V8)",
+          "build_cmd": "(none — run from source)",
+          "artifact": "bench/src/matmul192.js",
+          "artifact_bytes": 1122,
+          "build_ms": null,
+          "runtime_cmd": "node bench/src/matmul192.js",
+          "warmups": 1,
+          "runs_ms": [
+            30.89,
+            31.95,
+            31.97,
+            31.11,
+            31.1
+          ],
+          "median_ms": 31.11,
+          "min_ms": 30.89,
+          "max_ms": 31.97,
+          "runs_passed": 5,
+          "runs_total": 5,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "strings",
+      "task": "append 200k small pieces into a 500KB string. rho: preallocated []u8 + index writes + one intrinsics.slice_string (rho's cat append is O(n^2) — see naive_append); C: one malloc + memcpy per piece; JS: s += piece",
+      "expected_output": "strings n=500000 bytes=50750000",
+      "all_implementations_passed": true,
+      "impls": [
+        {
+          "lang": "rho",
+          "tool": "rho 0.4.0 build (wasm32-wasi, spill-everything register allocation)",
+          "build_cmd": "rho build bench/src/strings.rho -o bench/build/strings.rho.wasm",
+          "artifact": "bench/build/strings.rho.wasm",
+          "artifact_bytes": 12372,
+          "build_ms": 3.1185420000001614,
+          "runtime_cmd": "wasmtime run bench/build/strings.rho.wasm",
+          "warmups": 1,
+          "runs_ms": [
+            8.48,
+            7.26,
+            8.44,
+            7.71,
+            8.59
+          ],
+          "median_ms": 8.44,
+          "min_ms": 7.26,
+          "max_ms": 8.59,
+          "runs_passed": 5,
+          "runs_total": 5,
+          "ok": true
+        },
+        {
+          "lang": "c",
+          "tool": "clang version 19.1.5-wasi-sdk (https://github.com/llvm/llvm-project ab4b5a2db582958af1ee308a790cfdb42bd24720) --target=wasm32-wasi -O2 (wasi-sdk)",
+          "build_cmd": "clang --target=wasm32-wasi --sysroot=... -O2 -o bench/build/strings.c.wasm bench/src/strings.c",
+          "artifact": "bench/build/strings.c.wasm",
+          "artifact_bytes": 116507,
+          "build_ms": 190.71445800000038,
+          "runtime_cmd": "wasmtime run bench/build/strings.c.wasm",
+          "warmups": 1,
+          "runs_ms": [
+            6.93,
+            6.01,
+            5.83,
+            6.23,
+            5.46
+          ],
+          "median_ms": 6.01,
+          "min_ms": 5.46,
+          "max_ms": 6.93,
+          "runs_passed": 5,
+          "runs_total": 5,
+          "ok": true
+        },
+        {
+          "lang": "js",
+          "tool": "v24.1.0 (V8)",
+          "build_cmd": "(none — run from source)",
+          "artifact": "bench/src/strings.js",
+          "artifact_bytes": 519,
+          "build_ms": null,
+          "runtime_cmd": "node bench/src/strings.js",
+          "warmups": 1,
+          "runs_ms": [
+            30.12,
+            29,
+            27.41,
+            27.94,
+            28.61
+          ],
+          "median_ms": 28.61,
+          "min_ms": 27.41,
+          "max_ms": 30.12,
+          "runs_passed": 5,
+          "runs_total": 5,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "naive_append",
+      "task": "SUPPLEMENTARY (1.5k pieces, not the 200k kernel): the naive append loop in each language — rho: s = cat(s, p); C: strcat; JS: s +=. rho's cat is O(n^2) in copies AND in live memory (the prelude bump allocator never frees; each append allocates twice — cat's make + slice_string's copy): at 20k pieces the module dies with `wasm trap: out of bounds memory access` (exit 134, observed this run), and 2k pieces dies the same way; 1.5k pieces (~5.6MB cumulative over the ~8MB heap) is the largest round scale that fits",
+      "expected_output": "naive n=3750 bytes=380625",
+      "all_implementations_passed": true,
+      "impls": [
+        {
+          "lang": "rho",
+          "tool": "rho 0.4.0 build (wasm32-wasi, spill-everything register allocation)",
+          "build_cmd": "rho build bench/src/naive_append.rho -o bench/build/naive_append.rho.wasm",
+          "artifact": "bench/build/naive_append.rho.wasm",
+          "artifact_bytes": 13168,
+          "build_ms": 2.9184159999999792,
+          "runtime_cmd": "wasmtime run bench/build/naive_append.rho.wasm",
+          "warmups": 1,
+          "runs_ms": [
+            10.64,
+            10.08,
+            10.73,
+            10.84,
+            10.4
+          ],
+          "median_ms": 10.64,
+          "min_ms": 10.08,
+          "max_ms": 10.84,
+          "runs_passed": 5,
+          "runs_total": 5,
+          "ok": true
+        },
+        {
+          "lang": "c",
+          "tool": "clang version 19.1.5-wasi-sdk (https://github.com/llvm/llvm-project ab4b5a2db582958af1ee308a790cfdb42bd24720) --target=wasm32-wasi -O2 (wasi-sdk)",
+          "build_cmd": "clang --target=wasm32-wasi --sysroot=... -O2 -o bench/build/naive_append.c.wasm bench/src/naive_append.c",
+          "artifact": "bench/build/naive_append.c.wasm",
+          "artifact_bytes": 118748,
+          "build_ms": 187.1317079999999,
+          "runtime_cmd": "wasmtime run bench/build/naive_append.c.wasm",
+          "warmups": 1,
+          "runs_ms": [
+            4.83,
+            5.92,
+            5.09,
+            4.61,
+            5.56
+          ],
+          "median_ms": 5.09,
+          "min_ms": 4.61,
+          "max_ms": 5.92,
+          "runs_passed": 5,
+          "runs_total": 5,
+          "ok": true
+        },
+        {
+          "lang": "js",
+          "tool": "v24.1.0 (V8)",
+          "build_cmd": "(none — run from source)",
+          "artifact": "bench/src/naive_append.js",
+          "artifact_bytes": 545,
+          "build_ms": null,
+          "runtime_cmd": "node bench/src/naive_append.js",
+          "warmups": 1,
+          "runs_ms": [
+            22.95,
+            23.08,
+            22.01,
+            22.77,
+            22.09
+          ],
+          "median_ms": 22.77,
+          "min_ms": 22.01,
+          "max_ms": 23.08,
+          "runs_passed": 5,
+          "runs_total": 5,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "intloop",
+      "task": "tight integer loop, 1e8 iterations of acc = (acc + (i%100000)^2) % 4294967291, i64",
+      "expected_output": "intloop acc=2114416450",
+      "all_implementations_passed": true,
+      "impls": [
+        {
+          "lang": "rho",
+          "tool": "rho 0.4.0 build (wasm32-wasi, spill-everything register allocation)",
+          "build_cmd": "rho build bench/src/intloop.rho -o bench/build/intloop.rho.wasm",
+          "artifact": "bench/build/intloop.rho.wasm",
+          "artifact_bytes": 10681,
+          "build_ms": 3.0649579999999332,
+          "runtime_cmd": "wasmtime run bench/build/intloop.rho.wasm",
+          "warmups": 1,
+          "runs_ms": [
+            308.18,
+            312.36,
+            310.84,
+            317.42,
+            312.08
+          ],
+          "median_ms": 312.08,
+          "min_ms": 308.18,
+          "max_ms": 317.42,
+          "runs_passed": 5,
+          "runs_total": 5,
+          "ok": true
+        },
+        {
+          "lang": "c",
+          "tool": "clang version 19.1.5-wasi-sdk (https://github.com/llvm/llvm-project ab4b5a2db582958af1ee308a790cfdb42bd24720) --target=wasm32-wasi -O2 (wasi-sdk)",
+          "build_cmd": "clang --target=wasm32-wasi --sysroot=... -O2 -o bench/build/intloop.c.wasm bench/src/intloop.c",
+          "artifact": "bench/build/intloop.c.wasm",
+          "artifact_bytes": 82287,
+          "build_ms": 162.98750000000018,
+          "runtime_cmd": "wasmtime run bench/build/intloop.c.wasm",
+          "warmups": 1,
+          "runs_ms": [
+            280.69,
+            282.35,
+            283.35,
+            290.33,
+            278.71
+          ],
+          "median_ms": 282.35,
+          "min_ms": 278.71,
+          "max_ms": 290.33,
+          "runs_passed": 5,
+          "runs_total": 5,
+          "ok": true
+        },
+        {
+          "lang": "js",
+          "tool": "v24.1.0 (V8)",
+          "build_cmd": "(none — run from source)",
+          "artifact": "bench/src/intloop.js",
+          "artifact_bytes": 468,
+          "build_ms": null,
+          "runtime_cmd": "node bench/src/intloop.js",
+          "warmups": 1,
+          "runs_ms": [
+            762.31,
+            756.97,
+            748.04,
+            751.75,
+            754.46
+          ],
+          "median_ms": 754.46,
+          "min_ms": 748.04,
+          "max_ms": 762.31,
+          "runs_passed": 5,
+          "runs_total": 5,
+          "ok": true
+        }
+      ]
+    }
+  ]
+}

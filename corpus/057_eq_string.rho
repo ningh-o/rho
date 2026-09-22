@@ -1,0 +1,25 @@
+// exit: 0
+// ==/!= on strings compare contents byte by byte (spec/type-system.md
+// "strings compare contents"): equal literals, case differences, length
+// differences, runtime-built strings, and UTF-8 text compared as bytes.
+fn main() -> i32 {
+  printf("same literal: eq={} ne={}\n", ("rho" == "rho"), ("rho" != "rho"));
+  printf("case: eq={} ne={}\n", ("rho" == "Rho"), ("rho" != "Rho"));
+  printf("length: eq={} ne={}\n", ("a" == "ab"), ("a" != "ab"));
+  printf("empty: eq={} ne={}\n", ("" == ""), ("" != ""));
+  printf("trailing space: eq={} ne={}\n", ("rho" == "rho "), ("rho" != "rho "));
+  let s: string = "rho";
+  printf("var vs literal: eq={} ne={}\n", (s == "rho"), (s != "rho"));
+  let built: string = format("{}-{}", 1, 2);
+  printf("built vs literal: eq={} ne={}\n", (built == "1-2"), (built != "1-2"));
+  let again: string = format("{}-{}", 1, 2);
+  printf("built vs built: eq={}\n", (built == again));
+  let u1: string = "héllo wörld";
+  let u2: string = "héllo wörld";
+  printf("utf8: eq={} ne={} bytes={}\n", (u1 == u2), (u1 != u2), len(u1) as i32);
+  printf("utf8 vs ascii: eq={}\n", (u1 == "hello world"));
+  let base: string = "rho language";
+  let sliced: string = base[0..3];
+  printf("slice vs literal: eq={} ne={}\n", (sliced == "rho"), (sliced != "rho"));
+  return 0;
+}

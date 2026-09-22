@@ -10,7 +10,7 @@ function fetchCompiler(onProgress) {
     // anchored to this module's URL: the same path resolves on the page and
     // inside a worker (whose relative base is /assets/, not /)
     compilerBytesPromise = (async () => {
-      const res = await fetch(new URL("rho-boot.wasm", import.meta.url));
+      const res = await fetch(new URL("rho.wasm", import.meta.url));
       if (!res.ok) throw new Error("cannot load the compiler (" + res.status + ")");
       if (!res.body || !onProgress) {
         cachedBytes = new Uint8Array(await res.arrayBuffer());

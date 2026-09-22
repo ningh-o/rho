@@ -1,0 +1,52 @@
+pub fn fib(n: i32) -> i32 {
+  if (n < 2) { return n; }
+  return fib(n - 1) + fib(n - 2);
+}
+
+pub fn add(a: i32, b: i32) -> i32 {
+  return a + b;
+}
+
+pub fn concat(a: string, b: string) -> string {
+  return cat(a, b);
+}
+
+pub fn is_even(n: i32) -> bool {
+  return n % 2 == 0;
+}
+
+pub fn half64(n: i64) -> i64 {
+  return n / 2;
+}
+
+pub fn scale(x: f64, by: f64) -> f64 {
+  return x * by;
+}
+
+pub fn greet() -> string {
+  return "hello from rho";
+}
+
+use helper;
+
+pub fn double(n: i32) -> i32 {
+  return helper.twice2(n);
+}
+
+pub fn twice[T](x: T) -> T {
+  return x;
+}
+
+struct Point {
+  x: i32,
+  y: i32,
+}
+
+pub fn norm(p: Point) -> i32 {
+  return p.x + p.y;
+}
+
+fn main() -> i32 {
+  printf("fib(10)={}\n", fib(10));
+  return 0;
+}

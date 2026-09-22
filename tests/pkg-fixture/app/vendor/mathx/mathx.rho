@@ -1,0 +1,7 @@
+// mathx — a library package consumed as a path dependency. Its own
+// dependency (strs) rides inside its tree: app/vendor/mathx/vendor/strs.
+use vendor/strs/strs;
+
+pub fn double(a: i32) -> i32 {
+  return strs.plus(a, a);
+}

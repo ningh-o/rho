@@ -1,0 +1,27 @@
+// exit: 0
+// `as` between integer widths: truncation keeps the low bits, extension
+// follows the source signedness — signed extends the sign bit, unsigned
+// zero-fills
+fn main() -> i32 {
+  let big: i32 = 300;
+  printf("i32 300 -> i8={} u8={}\n", big as i8, big as u8);
+  let w64: i64 = 4294967301;
+  printf("i64 2^32+5 -> i32={} u32={}\n", w64 as i32, w64 as u32);
+  let n8: i8 = (-1);
+  printf("i8 -1 -> i16={} u16={} i64={} u64={}\n", n8 as i16, n8 as u16, n8 as i64, n8 as u64);
+  let u8v: u8 = 200;
+  printf("u8 200 -> i8={} i32={} u64={}\n", u8v as i8, u8v as i32, u8v as u64);
+  let n32: i32 = (-2);
+  printf("i32 -2 -> i64={} u32={} u64={}\n", n32 as i64, n32 as u32, n32 as u64);
+  let m32: u32 = 4294967295;
+  printf("u32 max -> i8={} i32={} i64={}\n", m32 as i8, m32 as i32, m32 as i64);
+  let s: usize = 18446744073709551615;
+  printf("usize max -> i64={} usize+1={}\n", s as i64, (s + 1));
+  let rt: i32 = 305419896;
+  let up: i64 = rt as i64;
+  let back: i32 = up as i32;
+  let low8: u8 = rt as u8;
+  let back2: i32 = low8 as i32;
+  printf("roundtrip: i32->i64->i32={} ->u8->i32={}\n", back, back2);
+  return 0;
+}

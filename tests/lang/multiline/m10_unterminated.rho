@@ -1,0 +1,6 @@
+// diag
+fn main() -> i32 {
+  let s: string = """
+  never closed
+  return 0;
+}

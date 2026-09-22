@@ -1,0 +1,14 @@
+// exit: 0
+fn main() -> i32 {
+  // the newline immediately after the opening """ is content, like
+  // every other byte between the delimiters
+  let s: string = """
+  x
+  """;
+  printf("[{}]\n", s);
+  printf("{}\n", len(s) as i32);
+  if s == "\n  x\n  " {
+    printf("eq\n");
+  }
+  return 0;
+}

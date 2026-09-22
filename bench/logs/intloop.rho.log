@@ -1,0 +1,10 @@
+# intloop / rho
+# build: rho build bench/src/intloop.rho -o bench/build/intloop.rho.wasm
+# run:   wasmtime run bench/build/intloop.rho.wasm
+# expected stdout: "intloop acc=2114416450"
+warmup   : 314.31 ms  exit=0  output_ok=true
+run 1   : 308.18 ms  exit=0  output_ok=true
+run 2   : 312.36 ms  exit=0  output_ok=true
+run 3   : 310.84 ms  exit=0  output_ok=true
+run 4   : 317.42 ms  exit=0  output_ok=true
+run 5   : 312.08 ms  exit=0  output_ok=true

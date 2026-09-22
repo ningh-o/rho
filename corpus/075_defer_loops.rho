@@ -1,0 +1,29 @@
+// exit: 0
+// defer in loops on the frozen compiler: a body defer fires when a pass
+// reaches the end of the body naturally, and does not fire when the pass
+// leaves via continue or break
+fn main() -> i32 {
+  let mut i: i32 = 0;
+  while (i < 4) {
+    i += 1;
+    defer printf("  pass-{} defer\n", i);
+    printf("  pass-{} body\n", i);
+    if (i == 2) {
+      continue;
+    }
+    if (i == 3) {
+      break;
+    }
+  }
+  printf("done i={}\n", i);
+  let mut s: i32 = 0;
+  loop {
+    s += 1;
+    defer printf("  loop-{} defer\n", s);
+    if (s == 2) {
+      break;
+    }
+  }
+  printf("done s={}\n", s);
+  return 0;
+}

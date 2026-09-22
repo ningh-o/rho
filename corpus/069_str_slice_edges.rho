@@ -1,0 +1,26 @@
+// exit: 0
+// 069 — string slicing at its boundaries: the full-range copy, empty
+// ranges inside the string, slice-of-slice, first and last bytes by
+// index, UTF-8 byte offsets, and a cat-built (heap) string sliced
+fn main() -> i32 {
+  let s: string = "boundary";
+  assert_eq(s[0..len(s)], s);
+  printf("[{}]\n", s[0..len(s)]);
+  printf("{} {} {}\n", len(s[0..0]), len(s[3..3]), len(s[7..7]));
+  assert_eq(s[0..8][3..7], "ndar");
+  printf("[{}]\n", s[0..8][3..7]);
+  printf("{} {}\n", s[0], s[7]);
+  let u: string = "héllo";
+  printf("{} {} {} {}\n", len(u), u[0..2], len(u[0..2]), u[3..6]);
+  let bytes: string = "AéB";
+  let mut i: usize = 0;
+  while (i < len(bytes)) {
+    printf("{} ", bytes[i]);
+    i += 1;
+  }
+  printf("\n");
+  let d: string = cat("bound", "ary");
+  assert_eq(d[0..6], "bounda");
+  printf("[{}] {} {} [{}]\n", d[0..6], len(d[3..3]), d[7], d[3..8]);
+  return 0;
+}

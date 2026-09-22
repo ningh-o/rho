@@ -1,0 +1,10 @@
+false && f  -> false calls=0
+true || f   -> true calls=0
+true && f   -> false calls=1
+false || f  -> true calls=1
+t && f      -> false calls=2
+f || t      -> true calls=2
+f && t || t -> true calls=2
+t || f && t -> true calls=1
+if body taken, calls=2
+t && true   -> true calls=1

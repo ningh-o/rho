@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { runWasm, createFS } from "../site/assets/wasi.js";
 import { EXAMPLES } from "../site/assets/examples.js";
 
-const compilerBytes = readFileSync("build/rho-boot.wasm");
+const compilerBytes = readFileSync("build/rho.wasm");
 async function rhoCompile(source) {
   const fs = createFS();
   fs.write("/main.rho", new TextEncoder().encode(source));

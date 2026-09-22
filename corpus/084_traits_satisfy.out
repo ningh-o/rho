@@ -1,0 +1,7 @@
+render: bare 3
+render: full 4
+describe=full #4 hint=2
+mode=on 9 off
+prims 1 true str 2.5
+dyn bare 3 full 4
+dyn describe=full #4 hint=2

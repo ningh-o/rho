@@ -1,0 +1,44 @@
+// bench kernel: f64 matrix multiply, C = A * B at 256x256, k innermost. (Escalated from the task's 192: at 192, C compute
+// was ~4ms — under wasmtime's 4.1ms process overhead — per the task's
+// "too fast -> 256" clause.) Entries are small deterministic integers stored as f64. The checksum is
+// the exact IEEE-754 bit pattern of the row-major sum of C plus its
+// truncation, so any reassociation of the float ops shows up as a mismatch.
+fn main() -> i32 {
+  let n: usize = 256;
+  let a: []f64 = make([]f64, n * n);
+  let b: []f64 = make([]f64, n * n);
+  let c: []f64 = make([]f64, n * n);
+  let mut i: usize = 0;
+  while i < n {
+    let mut j: usize = 0;
+    while j < n {
+      a[i * n + j] = ((i * 7 + j * 13) % 19) as i32 as f64 - 9.0;
+      b[i * n + j] = ((i * 5 + j * 3) % 17) as i32 as f64 - 8.0;
+      j += 1;
+    }
+    i += 1;
+  }
+  i = 0;
+  while i < n {
+    let mut j: usize = 0;
+    while j < n {
+      let mut s: f64 = 0.0;
+      let mut k: usize = 0;
+      while k < n {
+        s += a[i * n + k] * b[k * n + j];
+        k += 1;
+      }
+      c[i * n + j] = s;
+      j += 1;
+    }
+    i += 1;
+  }
+  let mut total: f64 = 0.0;
+  i = 0;
+  while i < n * n {
+    total += c[i];
+    i += 1;
+  }
+  printf("matmul(256) sum_bits={} sum_int={}\n", intrinsics.f64_bits(total), total as i64);
+  return 0;
+}

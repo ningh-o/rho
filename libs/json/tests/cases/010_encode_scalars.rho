@@ -1,0 +1,39 @@
+// encode: every scalar kind, the escape set, and the non-finite rejections.
+use json/json;
+
+fn enc(v: *json.Json) -> string {
+  let r = json.encode(v);
+  if r.is_err() {
+    return cat("ERR: ", json.err_msg(r));
+  }
+  return json.err_text(r);
+}
+
+fn main() -> i32 {
+  // the null and the two booleans
+  printf("{}|{}|{}\n", enc(json.mk_null()), enc(json.mk_bool(true)), enc(json.mk_bool(false)));
+  // numbers: integral forms keep their .0, negatives and -0 keep signs
+  printf("{}|{}\n", enc(json.mk_num(0.0)), enc(json.mk_num(0.0 * -1.0)));
+  printf("{}|{}|{}\n", enc(json.mk_num(1.0)), enc(json.mk_num(123456789.0)), enc(json.mk_num(0.0 - 2.5)));
+  // the canonical 17-digit forms: round-trip digit count, scientific beyond 1e16
+  printf("{}\n", enc(json.mk_num(0.1)));
+  printf("{}\n", enc(json.mk_num(1.0 / 3.0)));
+  printf("{}\n", enc(json.mk_num(1e16)));
+  printf("{}\n", enc(json.mk_num(1e17)));
+  printf("{}\n", enc(json.mk_num(0.000025)));
+  printf("{}\n", enc(json.mk_num(5e-324)));
+  printf("{}\n", enc(json.mk_num(1.7976931348623157e308)));
+  // strings: plain, then every named escape, then the C0 controls as
+  // \u00xx, then raw UTF-8 passed through byte for byte
+  printf("{}\n", enc(json.mk_str("")));
+  printf("{}\n", enc(json.mk_str("plain ASCII")));
+  printf("{}\n", enc(json.mk_str("quote:\" back:\\ slash:/ del:\x7f")));
+  printf("{}\n", enc(json.mk_str("\x08\x0c\n\r\t")));
+  printf("{}\n", enc(json.mk_str("\x00\x01\x08\x0b\x0c\x1e\x1f")));
+  printf("{}\n", enc(json.mk_str("中文 — 😀 — end")));
+  // non-finite numbers have no JSON spelling: encode refuses, naming why
+  printf("{}\n", enc(json.mk_num(1.0 / 0.0)));
+  printf("{}\n", enc(json.mk_num(0.0 - 1.0 / 0.0)));
+  printf("{}\n", enc(json.mk_num(0.0 / 0.0)));
+  return 0;
+}

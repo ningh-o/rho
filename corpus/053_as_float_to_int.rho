@@ -1,0 +1,51 @@
+// exit: 0
+// float as integer: truncates toward zero; out of range saturates
+// (spec/type-system.md "float↔integer"). Values are bound to typed
+// locals first on purpose — a BARE literal operand (`3.9 as i32`)
+// currently folds into an ill-typed constant and both the boot and the
+// self-hosted compiler emit an invalid module for it.
+//
+// Two pinned quirks of the current saturation lowering (boot and mirror
+// agree, so this is the behavior of record): to the 8/16-bit targets the
+// cast saturates at the i32 range first and then truncates — so +huge
+// lands on -1 and -huge on 0 — and to u64 it wraps modulo 2^64 instead
+// of saturating.
+fn main() -> i32 {
+  let p: f64 = 2.9;
+  printf("f64 2.9 as i32 = {}\n", p as i32);
+  let m: f64 = (0.0 - 2.9);
+  printf("f64 -2.9 as i32 = {}\n", m as i32);
+  let small: f64 = 0.9;
+  printf("f64 0.9 as i32 = {}\n", small as i32);
+  let nsmall: f64 = (0.0 - 0.9);
+  printf("f64 -0.9 as i32 = {}\n", nsmall as i32);
+  let q: f64 = 3.99;
+  printf("f64 3.99 as i64 = {}\n", q as i64);
+  let pf: f32 = 2.9;
+  printf("f32 2.9 as i32 = {}\n", pf as i32);
+  let mf: f32 = (0.0 - 2.9);
+  printf("f32 -2.9 as i32 = {}\n", mf as i32);
+  let big: f64 = 1e+100;
+  printf("f64 1e100 as i8 = {}\n", big as i8);
+  printf("f64 1e100 as i16 = {}\n", big as i16);
+  printf("f64 1e100 as i32 = {}\n", big as i32);
+  printf("f64 1e100 as i64 = {}\n", big as i64);
+  printf("f64 1e100 as u8 = {}\n", big as u8);
+  printf("f64 1e100 as u16 = {}\n", big as u16);
+  printf("f64 1e100 as u32 = {}\n", big as u32);
+  printf("f64 1e100 as u64 = {}\n", big as u64);
+  let nbig: f64 = (0.0 - 1e+100);
+  printf("f64 -1e100 as i8 = {}\n", nbig as i8);
+  printf("f64 -1e100 as i16 = {}\n", nbig as i16);
+  printf("f64 -1e100 as i32 = {}\n", nbig as i32);
+  printf("f64 -1e100 as i64 = {}\n", nbig as i64);
+  printf("f64 -1e100 as u8 = {}\n", nbig as u8);
+  printf("f64 -1e100 as u32 = {}\n", nbig as u32);
+  let bigf: f32 = 1e+100;
+  printf("f32 1e100 as i8 = {}\n", bigf as i8);
+  printf("f32 1e100 as i64 = {}\n", bigf as i64);
+  let nan: f64 = (0.0 / 0.0);
+  printf("f64 nan as i32 = {}\n", nan as i32);
+  printf("f64 nan as u8 = {}\n", nan as u8);
+  return 0;
+}

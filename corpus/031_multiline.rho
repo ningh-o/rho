@@ -1,0 +1,49 @@
+// exit: 0
+// 031 — triple-quoted multiline strings are verbatim: every byte between
+// the opening and the closing """ enters the value, the newline right
+// after the opening """ included; no indentation is stripped; escapes
+// decode exactly like single-line strings; and the first unescaped """
+// terminates the literal, so a closer may sit mid-line with content
+// running right up to it
+fn main() -> i32 {
+  let doc: string = """
+first line
+  indented second
+third""";
+  printf("""[{}]
+""", doc);
+  printf("""len={}
+""", len(doc));
+  // byte 0 is the newline that follows the opening """
+  printf("""first byte={}
+""", doc[0]);
+  let nl: string = """
+""";
+  assert_eq(doc[0..1], nl);
+  // interior indentation is content, not structure
+  assert_eq(doc[12..14], "  ");
+  // escapes decode inside the literal (\t and \n below are raw tab and
+  // newline bytes — the canonical spelling); an escaped quote never
+  // terminates, so a value may carry a """ run written escaped
+  let esc: string = """
+a	b
+c\"\"\"d""";
+  printf("""[{}]
+""", esc);
+  printf("""len={}
+""", len(esc));
+  // two raw quotes are content but format escaped (a quote next to a
+  // quote is always written \"), and a value ending in quotes writes them
+  // escaped so the closing delimiter stays three quotes exactly
+  let quotes: string = """
+say \"\" then \"\"\"""";
+  printf("""[{}]
+""", quotes);
+  // an empty literal is the empty string ("""""" parses to the same value
+  // and formats as "")
+  let empty: string = "";
+  printf("""empty len={}
+""", len(empty));
+  assert_eq(empty, "");
+  return 0;
+}

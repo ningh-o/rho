@@ -1,0 +1,10 @@
+# noop / js
+# build: (none — run from source)
+# run:   node bench/src/noop.js
+# expected stdout: ""
+warmup   : 21.39 ms  exit=0  output_ok=true
+run 1   : 21.17 ms  exit=0  output_ok=true
+run 2   : 20.31 ms  exit=0  output_ok=true
+run 3   : 20.16 ms  exit=0  output_ok=true
+run 4   : 20.99 ms  exit=0  output_ok=true
+run 5   : 20.58 ms  exit=0  output_ok=true

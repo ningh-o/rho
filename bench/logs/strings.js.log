@@ -1,0 +1,10 @@
+# strings / js
+# build: (none — run from source)
+# run:   node bench/src/strings.js
+# expected stdout: "strings n=500000 bytes=50750000"
+warmup   : 27.53 ms  exit=0  output_ok=true
+run 1   : 30.12 ms  exit=0  output_ok=true
+run 2   : 29.00 ms  exit=0  output_ok=true
+run 3   : 27.41 ms  exit=0  output_ok=true
+run 4   : 27.94 ms  exit=0  output_ok=true
+run 5   : 28.61 ms  exit=0  output_ok=true

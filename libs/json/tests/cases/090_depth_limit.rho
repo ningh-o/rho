@@ -1,0 +1,61 @@
+// the depth limit: MAX_DEPTH (512) nested containers parse, 513 fail with
+// a position-bearing error, and array/object nesting shares one budget.
+use json/json;
+
+fn nest(open: string, close: string, times: i32, inner: string) -> string {
+  let mut buf: string = "";
+  let mut i: i32 = 0;
+  while i < times {
+    buf = cat(buf, open);
+    i += 1;
+  }
+  buf = cat(buf, inner);
+  let mut j: i32 = 0;
+  while j < times {
+    buf = cat(buf, close);
+    j += 1;
+  }
+  return buf;
+}
+
+fn try_parse(src: string) -> string {
+  let out = json.new_out();
+  let r = json.parse(src, out);
+  if r.is_err() {
+    return json.err_msg(r);
+  }
+  let e = json.encode(out.root);
+  if e.is_err() {
+    return cat("ENC: ", json.err_msg(e));
+  }
+  let s: string = json.err_text(e);
+  return cat(cat("encoded, ", format("{}", len(s))), " bytes");
+}
+
+fn main() -> i32 {
+  // exactly MAX_DEPTH arrays: fine
+  printf("512 arrays: {}\n", try_parse(nest("[", "]", 512, "1")));
+  // one more: the error names the limit and its position
+  printf("513 arrays: {}\n", try_parse(nest("[", "]", 513, "1")));
+  // objects count the same budget
+  printf("512 objects: {}\n", try_parse(nest("{\"a\":", "}", 512, "1")));
+  printf("513 objects: {}\n", try_parse(nest("{\"a\":", "}", 513, "1")));
+  // arrays and objects share the budget: 256 + 256 = 512 passes
+  let mixed: string = nest("[", "]", 256, nest("{\"a\":", "}", 256, "1"));
+  printf("256+256 mixed: {}\n", try_parse(mixed));
+  let mixed2: string = nest("[", "]", 257, nest("{\"a\":", "}", 256, "1"));
+  printf("257+256 mixed: {}\n", try_parse(mixed2));
+  // the limit applies to parse only: a hand-built tree of depth 600
+  // encodes without complaint (the constant is not enforced on encode)
+  let mut deep: *json.Json = json.mk_num(1.0);
+  let mut i: i32 = 0;
+  while i < 600 {
+    let one: []*json.Json = make([]*json.Json, 1);
+    one[0] = deep;
+    deep = json.mk_arr(one);
+    i += 1;
+  }
+  let e = json.encode(deep);
+  printf("hand-built 600 deep encodes: {}\n", e.is_ok());
+  return 0;
+}

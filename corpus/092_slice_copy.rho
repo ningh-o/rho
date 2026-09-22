@@ -1,0 +1,38 @@
+// exit: 0
+// slices own their buffer, and copying the slice value copies the view, not
+// the bytes: assignment, argument passing and reslicing all end up looking
+// at the same storage, so a write through any one view is visible through
+// all the others.
+fn bump(xs: []i32) {
+  xs[0] = (xs[0] + 100);
+  return;
+}
+
+fn sum(xs: []i32) -> i32 {
+  let mut t: i32 = 0;
+  let mut i: usize = 0;
+  while (i < len(xs)) {
+    t += xs[i];
+    i += 1;
+  }
+  return t;
+}
+
+fn main() -> i32 {
+  let mut xs: []i32 = make([]i32, 4);
+  let mut i: usize = 0;
+  while (i < len(xs)) {
+    xs[i] = (i as i32 + 1);
+    i += 1;
+  }
+  let ys: []i32 = xs;
+  ys[3] = 40;
+  printf("shared write: xs[3]={} ys[0]={}\n", xs[3], ys[0]);
+  bump(xs);
+  printf("callee write: ys[0]={}\n", ys[0]);
+  let part: []i32 = xs[1..3];
+  part[0] = 22;
+  printf("reslice: xs[1]={} len(part)={} part[1]={}\n", xs[1], len(part), part[1]);
+  printf("sums: {} {} {}\n", sum(xs), sum(part), sum(ys));
+  return 0;
+}

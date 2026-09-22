@@ -1,0 +1,68 @@
+// exit: 0
+// slice 086: dyn coercions at the expected-type sites both compilers
+// honor — let annotation, field initializer, assignment — with virtual
+// calls through each, and identity pinned behaviorally (bump through
+// one view, read through another; == on dyn does not compile in either)
+trait Show {
+  fn to_str(self) -> string,
+}
+
+struct Pt {
+  x: i32,
+  y: i32,
+}
+
+fn Pt.to_str(self: *Pt) -> string {
+  return format("pt({},{})", self.x, self.y);
+}
+
+struct Bx {
+  tag: string,
+}
+
+fn Bx.to_str(self: *Bx) -> string {
+  return format("bx:{}", self.tag);
+}
+
+// mutable state seen through any dyn view of the same object
+struct Ct {
+  n: i32,
+}
+
+fn Ct.to_str(self: *Ct) -> string {
+  return format("ct({})", self.n);
+}
+
+fn Ct.bump(self: *Ct) {
+  self.n += 1;
+}
+
+struct Holder {
+  d: dyn Show,
+  label: string,
+}
+
+fn main() -> i32 {
+  let p = new Pt { x: 1, y: 2 };
+  let b = new Bx { tag: "t" };
+  // let annotation
+  let d1: dyn Show = p;
+  printf("d1={}\n", d1);
+  // field initializer
+  let h = new Holder { d: b, label: "held" };
+  printf("held {} {}\n", h.label, h.d);
+  // assignment re-coerces
+  let mut d4: dyn Show = p;
+  printf("d4={}", d4);
+  d4 = b;
+  printf(" then {}\n", d4);
+  // identity, behaviorally: bumping through the concrete pointer shows
+  // through every dyn view of the same object
+  let c = new Ct { n: 5 };
+  let v1: dyn Show = c;
+  let v2: dyn Show = c;
+  c.bump();
+  c.bump();
+  printf("views {} {}\n", v1, v2);
+  return 0;
+}

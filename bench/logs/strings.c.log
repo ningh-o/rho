@@ -1,0 +1,10 @@
+# strings / c
+# build: clang --target=wasm32-wasi --sysroot=... -O2 -o bench/build/strings.c.wasm bench/src/strings.c
+# run:   wasmtime run bench/build/strings.c.wasm
+# expected stdout: "strings n=500000 bytes=50750000"
+warmup   : 6.46 ms  exit=0  output_ok=true
+run 1   : 6.93 ms  exit=0  output_ok=true
+run 2   : 6.01 ms  exit=0  output_ok=true
+run 3   : 5.83 ms  exit=0  output_ok=true
+run 4   : 6.23 ms  exit=0  output_ok=true
+run 5   : 5.46 ms  exit=0  output_ok=true

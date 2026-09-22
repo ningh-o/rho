@@ -1,0 +1,56 @@
+{
+  "name": "rho-vscode",
+  "displayName": "rho language support",
+  "description": "The rho language in VS Code: compiler diagnostics, canonical formatting, hover signatures and go-to-definition, powered by the real rho compiler.",
+  "version": "0.1.0",
+  "publisher": "ningh-o",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ningh-o/rho"
+  },
+  "engines": {
+    "vscode": "^1.91.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "rho",
+        "aliases": [
+          "rho"
+        ],
+        "extensions": [
+          ".rho"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "configuration": {
+      "title": "rho",
+      "properties": {
+        "rho.compilerWasm": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Absolute path to a `rho.wasm` override for the language server (passed as `RHO_LSP_WASM`). Empty: the server discovers the compiler next to the package."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "package": "tsc -p . && vsce package --skip-license"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^10.1.1"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.91.0",
+    "@types/node": "^24.0.0",
+    "typescript": "~5.9.0",
+    "@vscode/vsce": "^4.0.0"
+  }
+}

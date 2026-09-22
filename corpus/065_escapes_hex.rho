@@ -1,0 +1,16 @@
+// exit: 0
+// 065 — hex and NUL escapes: \xNN decodes to exactly that byte (two
+// hex digits), \0 is one zero byte; pinned by lengths, raw byte
+// values, and == against the spelled-out forms
+fn main() -> i32 {
+  assert_eq("\x41", "A");
+  assert_eq("\x41\x42\x43", "ABC");
+  assert_eq("\0", "\x00");
+  assert_eq("\x0a", "\n");
+  assert_eq("\x09", "\t");
+  printf("{} {} {}\n", len("\0"), len("\x00"), len("\x41"));
+  printf("{} {} {}\n", "\0"[0], "\x00"[0], "\x7f"[0]);
+  printf("{} {} {}\n", "\xff"[0], "\x0a"[0], "\x09"[0]);
+  printf("{}\n", cat("\x5c", "\x22"));
+  return 0;
+}

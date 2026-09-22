@@ -1,0 +1,10 @@
+# intloop / c
+# build: clang --target=wasm32-wasi --sysroot=... -O2 -o bench/build/intloop.c.wasm bench/src/intloop.c
+# run:   wasmtime run bench/build/intloop.c.wasm
+# expected stdout: "intloop acc=2114416450"
+warmup   : 284.10 ms  exit=0  output_ok=true
+run 1   : 280.69 ms  exit=0  output_ok=true
+run 2   : 282.35 ms  exit=0  output_ok=true
+run 3   : 283.35 ms  exit=0  output_ok=true
+run 4   : 290.33 ms  exit=0  output_ok=true
+run 5   : 278.71 ms  exit=0  output_ok=true

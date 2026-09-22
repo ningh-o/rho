@@ -1,0 +1,10 @@
+# noop / c
+# build: clang --target=wasm32-wasi --sysroot=... -O2 -o bench/build/noop.c.wasm bench/src/noop.c
+# run:   wasmtime run bench/build/noop.c.wasm
+# expected stdout: ""
+warmup   : 5.25 ms  exit=0  output_ok=true
+run 1   : 4.46 ms  exit=0  output_ok=true
+run 2   : 5.15 ms  exit=0  output_ok=true
+run 3   : 4.95 ms  exit=0  output_ok=true
+run 4   : 4.47 ms  exit=0  output_ok=true
+run 5   : 4.63 ms  exit=0  output_ok=true

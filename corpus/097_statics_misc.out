@@ -1,0 +1,3 @@
+acc: 0.75 1.0 1.25
+final: acc=1.25 flag=true seed=40
+doubled: acc=2.5 mixed=5.0

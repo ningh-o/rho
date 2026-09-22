@@ -1,0 +1,75 @@
+// the in-memory model: builders, in-place mutation, lookup law, and
+// deep_eq semantics (numbers by f64 ==, objects order-insensitive with
+// first-match on duplicates).
+use json/json;
+
+fn main() -> i32 {
+  // builders of every kind
+  let arr: *json.Json = json.mk_arr(make([]*json.Json, 0));
+  let obj: *json.Json = json.mk_obj(make([]*json.Member, 0));
+  printf("kinds: {} {} {} {} {} {}\n",
+    json.is_null(json.mk_null()), json.is_bool(json.mk_bool(false)), json.is_num(json.mk_num(1.0)),
+    json.is_str(json.mk_str("")), json.is_arr(arr), json.is_obj(obj));
+  // arr_push appends in place
+  printf("push {} {} {}\n", json.arr_push(arr, json.mk_num(1.0)), json.arr_push(arr, json.mk_str("x")), json.size(arr));
+  // pushing onto a non-array is refused
+  printf("push-scalar: {}\n", json.arr_push(json.mk_null(), json.mk_num(1.0)));
+  // obj_set appends, then replaces the FIRST match in place
+  printf("set {}\n", json.obj_set(obj, "k", json.mk_num(1.0)));
+  printf("set {}\n", json.obj_set(obj, "k", json.mk_num(2.0)));
+  printf("set {}\n", json.obj_set(obj, "k", json.mk_num(3.0)));
+  printf("set {}\n", json.obj_set(obj, "j", json.mk_bool(true)));
+  // (the members call binds to a local first: indexing a call result and
+  // taking a field of it in one expression trips the boot compiler's
+  // `not an lvalue` limitation)
+  let first_members: []*json.Member = json.members(obj);
+  printf("size={} k={} first-key={} size-k={}\n",
+    json.size(obj), json.as_num(json.obj_get(obj, "k")),
+    first_members[0].key, json.size(json.obj_get(obj, "k")));
+  // set on a non-object is refused
+  printf("set-scalar: {}\n", json.obj_set(json.mk_arr(make([]*json.Json, 0)), "k", json.mk_null()));
+  // extractors yield zero values on the wrong kind (pair with is_*)
+  printf("zero: {} {} {}\n", json.as_bool(json.mk_num(1.0)), json.as_num(json.mk_str("x")), json.as_str(json.mk_null()));
+  // arr_at out of bounds
+  printf("at-oob: {}\n", json.arr_at(arr, 9) == null);
+  // deep_eq: scalars
+  printf("eq: {} {} {} {} {} {}\n",
+    json.deep_eq(json.mk_null(), json.mk_null()),
+    json.deep_eq(json.mk_bool(true), json.mk_bool(true)),
+    json.deep_eq(json.mk_num(1.0), json.mk_bool(true)),
+    json.deep_eq(json.mk_str("a"), json.mk_str("a")),
+    json.deep_eq(json.mk_str("a"), json.mk_str("b")),
+    json.deep_eq(json.mk_num(1.0), json.mk_num(2.0)));
+  // deep_eq numbers compare by f64 ==: -0.0 equals 0.0, nan equals nothing
+  printf("eq-num: {} {}\n", json.deep_eq(json.mk_num(0.0), json.mk_num(0.0 * -1.0)), json.deep_eq(json.mk_num(0.0 / 0.0), json.mk_num(0.0 / 0.0)));
+  // deep_eq: containers, order-insensitive objects, order-sensitive arrays
+  let a: []*json.Member = make([]*json.Member, 2);
+  a[0] = json.mk_member("x", json.mk_num(1.0));
+  a[1] = json.mk_member("y", json.mk_str("s"));
+  let b: []*json.Member = make([]*json.Member, 2);
+  b[0] = json.mk_member("y", json.mk_str("s"));
+  b[1] = json.mk_member("x", json.mk_num(1.0));
+  printf("eq-obj: {} {}\n", json.deep_eq(json.mk_obj(a), json.mk_obj(b)), json.deep_eq(json.mk_obj(a), json.mk_obj(a)));
+  let l1: []*json.Json = make([]*json.Json, 2);
+  l1[0] = json.mk_num(1.0);
+  l1[1] = json.mk_num(2.0);
+  let l2: []*json.Json = make([]*json.Json, 2);
+  l2[0] = json.mk_num(2.0);
+  l2[1] = json.mk_num(1.0);
+  printf("eq-arr-order: {} len-mismatch: {}\n",
+    json.deep_eq(json.mk_arr(l1), json.mk_arr(l2)),
+    json.deep_eq(json.mk_arr(l1), json.mk_arr(make([]*json.Json, 0))));
+  // nested inequality
+  let n1: []*json.Member = make([]*json.Member, 1);
+  n1[0] = json.mk_member("k", json.mk_arr(l1));
+  let n2: []*json.Member = make([]*json.Member, 1);
+  n2[0] = json.mk_member("k", json.mk_arr(l2));
+  printf("eq-nested: {}\n", json.deep_eq(json.mk_obj(n1), json.mk_obj(n2)));
+  // missing key counts as unequal
+  let m1: []*json.Member = make([]*json.Member, 1);
+  m1[0] = json.mk_member("x", json.mk_num(1.0));
+  let m2: []*json.Member = make([]*json.Member, 1);
+  m2[0] = json.mk_member("z", json.mk_num(1.0));
+  printf("eq-missing-key: {}\n", json.deep_eq(json.mk_obj(m1), json.mk_obj(m2)));
+  return 0;
+}

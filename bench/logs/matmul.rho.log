@@ -1,0 +1,10 @@
+# matmul / rho
+# build: rho build bench/src/matmul.rho -o bench/build/matmul.rho.wasm
+# run:   wasmtime run bench/build/matmul.rho.wasm
+# expected stdout: "matmul(256) sum_bits=4627167142146473984 sum_int=23"
+warmup   : 57.92 ms  exit=0  output_ok=true
+run 1   : 58.23 ms  exit=0  output_ok=true
+run 2   : 58.45 ms  exit=0  output_ok=true
+run 3   : 55.47 ms  exit=0  output_ok=true
+run 4   : 59.07 ms  exit=0  output_ok=true
+run 5   : 59.94 ms  exit=0  output_ok=true

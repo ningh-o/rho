@@ -1,5 +1,9 @@
 // rho boot compiler — common definitions.
 //
+// Boot keeps only: compile rho → wasm32-wasi, and the corpus oracle.
+// Features frozen at 0.4.0 + triple-quote; fmt and the native backends
+// live in the self-hosted compiler (self/rho.rho).
+//
 // Everything lives in one arena that is never freed: the compiler is a
 // one-shot process, and the self-hosted port keeps the same shape.
 #ifndef RHO_H
@@ -446,10 +450,6 @@ Module *g_prelude_module(void);
 const char *sym_symbol(Sym *s);
 const char *rho_sanitize(const char *s);
 const char *prelude_symbol(const char *name);
-
-// ------------------------------------------------------------------ fmt ---
-
-Str fmt_module(Decl *module);
 
 // ----------------------------------------------------------------- main ---
 
