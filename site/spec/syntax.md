@@ -36,6 +36,38 @@ String literals: `"..."` with escapes `\n \t \r \\ \" \0 \xNN`. The lexer
 decodes escapes, so the token's bytes are the string's bytes. String
 literals are immutable static data.
 
+Multiline string literals: `"""` opens a triple-quoted literal that runs
+to the next unescaped `"""`:
+
+```
+let s: string = """
+  hello
+  world
+  """;
+```
+
+- The literal is fully literal: every byte between the opening `"""` and
+  the closing `"""` enters the value unchanged. The newline immediately
+  after the opening `"""` is content like any byte, and so is the
+  indentation — the example's value is `"\n  hello\n  world\n  "`.
+- Escapes decode exactly as in single-line literals: `\n` puts a newline
+  into the value without ending the source line, `\"` embeds a quote.
+- An unescaped `"""` closes the literal — anywhere, mid-line included.
+  To embed three quotes in the value, escape any one quote of the run:
+  `\"""` decodes to `"""`.
+- An unterminated literal (end of file before a closing `"""`) is a
+  compile error.
+
+`rho fmt` reprints such a literal canonically: the value's own bytes
+between the delimiters — opener where the expression sits, the value's
+newlines drawing the block's lines, its indentation the block's indent,
+and its final line (one indent level of spaces) carrying the closing
+delimiter. A value takes that form only when its own shape fits the
+enclosing indent; anything else — no newline, a first byte other than
+the opener's newline, interior lines indented shallower than the block,
+a last line that is not exactly the block's indent — stays single-line
+escaped, a form that always reparses to the same value byte for byte.
+
 Operators and punctuation:
 
 ```

@@ -58,9 +58,15 @@ exists only through the `intrinsics` namespace.
   type error, never an implicit `to_str` — build mixed lines with
   `format`, or splice `x.to_str()` by hand.
 - `==`/`!=`: pointers compare identity, strings compare contents, enums
-  compare tag then payload (compiler-generated, recursive). Element-wise
-  `==` on structs, arrays and slices arrives with the self-hosted compiler.
-  Not defined on `fn` values.
+  compare tag then payload (compiler-generated, recursive), and structs,
+  fixed arrays and slices compare element-wise (compiler-generated
+  `rho__eq$<t>` helpers, recursive; a slice compares lengths first).
+  Every field/element type must itself be comparable — ints, floats,
+  bools, strings, pointers, weak handles and the aggregate kinds
+  recurse; `fn` values, `dyn` and `err` payloads never compare, and a
+  struct/enum naming one is rejected at the `==` site with a diagnostic.
+  Comparing self-referential container data recurses at runtime — it
+  terminates on acyclic values.
 - `as` casts: between integer types (wrap/truncate/extend), float↔integer
   (truncates toward zero; out-of-range saturates), enum→tag integer.
   Known corner (both compilers agree, `tests/lang/opt/s07`): a narrowing
