@@ -1,0 +1,8 @@
+// exit: 0
+use sub.deep;
+use aux;
+
+fn main() -> i32 {
+  printf("root={} deep={}\n", aux.root_tag(), deep.deep_tag());
+  return 0;
+}

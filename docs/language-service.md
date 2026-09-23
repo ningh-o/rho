@@ -304,8 +304,8 @@ decision, not an oversight.
 
 Every diagnostic gets a stable, documented code (`E0107`-style or
 rho-idiomatic short names — the *stability* is the contract, the
-spelling is not). The corpus's diag fixtures (`tests/diag/…`, referenced
-from `docs/todo.md:24,41,69` as `d0XX` sets) are the natural home for
+spelling is not). The corpus's diag fixtures (`tests/lang/*/diag_*`,
+`tests/lang/params`) are the natural home for
 pinning codes alongside messages. Codes are what let an editor offer
 "suppress this" or a quick-fix without string-matching English prose.
 

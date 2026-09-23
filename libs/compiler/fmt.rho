@@ -713,14 +713,21 @@ fn f_params(params: *cli.Vec[*parse.Param]) {
 fn f_decl(d: *parse.Decl) {
   f_pre(d.pre);
   if d.kind == parse.DeclKind.DkUse {
+    if d.pub_ {
+      sb_s("pub ");
+    }
     sb_s("use ");
     let mut i: usize = 0;
     while i < d.path.n {
       if i > 0 {
-        sb_c(47); // /
+        sb_c(46); // .
       }
       sb_s(d.path.items[i]);
       i += 1;
+    }
+    if len(d.name) > 0 {
+      sb_s(" as ");
+      sb_s(d.name);
     }
     sb_c(59);
     return;
@@ -1251,18 +1258,18 @@ pub fn g_digits(x: f64, prec: i64) -> string {
       if len(frac) == 0 {
         return substr(ds, 0, ip);
       }
-      return cli.cat3(substr(ds, 0, ip), cli.cat3(".", frac, ""), "");
+      return substr(ds, 0, ip) + "." + frac + "" + "";
     }
-    let all: string = g6_strip(cli.cat3(rep0((0 - e10 - 1) as usize), ds, ""));
+    let all: string = g6_strip(rep0((0 - e10 - 1) as usize) + ds + "");
     if len(all) == 0 {
       return "0";
     }
-    return cli.cat3("0.", all, "");
+    return "0." + all + "";
   }
   let mut out: string = substr(ds, 0, 1);
   let frac: string = g6_strip(substr(ds, 1, prec as usize));
   if len(frac) > 0 {
-    out = cli.cat3(out, cli.cat3(".", frac, ""), "");
+    out = out + "." + frac + "" + "";
   }
   let mut ae: i64 = e10;
   if ae < 0 {
@@ -1270,12 +1277,12 @@ pub fn g_digits(x: f64, prec: i64) -> string {
   }
   let mut es: string = cli.itoa(ae);
   if ae < 10 {
-    es = cli.cat3("0", es, "");
+    es = "0" + es + "";
   }
   if e10 < 0 {
-    return cli.cat3(out, cli.cat3("e-", es, ""), "");
+    return out + "e-" + es + "" + "";
   }
-  return cli.cat3(out, cli.cat3("e+", es, ""), "");
+  return out + "e+" + es + "" + "";
 }
 
 fn g6(x: f64) -> string {

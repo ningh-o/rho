@@ -1,9 +1,11 @@
 # rho syntax
 
-The surface grammar, aligned with the boot compiler (`boot/src/lex.c`,
-`parse.c`, `fmt.c`). Semantics live in [type-system.md](type-system.md);
-program composition lives in [module-system.md](module-system.md). Canonical
-formatting (`rho fmt`) emits exactly the spacing shown here.
+The surface grammar — the current law, carried by the self-hosted
+compiler (`libs/compiler`); the frozen boot seed keeps its era's grammar
+(slash `use`, no build parameters). Semantics live in
+[type-system.md](type-system.md); program composition lives in
+[module-system.md](module-system.md). Canonical formatting (`rho fmt`)
+emits exactly the spacing shown here.
 
 ## Lexical structure
 
@@ -103,6 +105,36 @@ named `fn` declaration. Inside the body it is a `[]T` slice. `extern`
 declarations and closure literals take no variadic parameters — the
 function-value type has no spelling for "and then more".
 
+### Build parameters (root consts)
+
+A `const` declared in the entry (root) file **is a build parameter** — no
+annotation, no keyword, nothing new to learn:
+
+```
+const native: bool = false;    // the root file's consts are build params
+const level: i32 = 1;
+const label: string = "web";
+```
+
+- Types are limited to `bool`, `i32`, and `string` literals; the
+  initializer must be comptime (the const law already demands that).
+- The name is visible in **every module** without a `use` — the same
+  implicit status the prelude carries (`spec/module-system.md` §
+  "Root build parameters").
+- `rho build --set name=value` (repeatable) overrides the declared
+  default by name: `rho build app.rho --set native=true`. An unknown
+  name or a value that does not fit the declared annotation is a clear
+  CLI refusal (exit 2).
+- A module-level item named like a build parameter is an error
+  (`native` shadows a build parameter declared in the root file) — a
+  silent shadow would change what every `if (param)` in that module
+  folds to.
+- Artifact symbols are not part of the language surface: internal
+  symbols compile to the shortest serial names `a..z, aa..` (nothing
+  outside the artifact can call them by name), and `rho build -g` keeps
+  the full `rho_<mod-index>__<name>` spellings for debugging dumps and
+  panic stamps.
+
 ## Statements
 
 ```
@@ -196,6 +228,19 @@ match value {
 Conditions are `bool` — no truthiness. The `if` expression form requires an
 `else`. `break`/`continue` target the innermost loop. `defer` runs on every
 exit path of its scope, including `break`/`continue`/`return` and panics.
+
+### Comptime-folded conditions
+
+A condition the compiler can decide at compile time — a literal, a const
+(build parameters included), or a comptime combination of those with `&&`,
+`||`, `!`, comparisons, and integer arithmetic — folds the `if` at check
+time: only the live branch is checked and lowered. The dead branch is
+parsed and then skipped whole: names it alone references never resolve
+(calling a function that does not exist inside a dead branch is not an
+error), its diagnostics never fire, and modules only it reaches are
+dropped from the artifact by reachability. That is how one source ships
+two configurations — `native` code lives inside `if (native)`, and a
+`--set native=false` build compiles as if it were not there.
 
 Match arms are `pattern => expr,` and may open a block. Patterns: unit /
 tuple / struct variants of an enum (with `_` placeholders or bindings),

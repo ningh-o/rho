@@ -1,0 +1,6 @@
+// resolution falls back to the entry file's directory
+use aux;
+
+pub fn deep_tag() -> i32 {
+  return aux.root_tag() * 10;
+}

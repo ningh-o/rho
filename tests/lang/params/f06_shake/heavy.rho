@@ -1,0 +1,6 @@
+pub fn crunch() -> void {
+  printf("{}", "crunching hard\n");
+}
+pub fn dead_weight() -> i32 {
+  return 42;
+}

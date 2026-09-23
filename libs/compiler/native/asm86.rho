@@ -291,7 +291,7 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
         if len(o0) > 0 && o0[0] == 36 { // '$': the immediate is the source
           let imm: *asm64.AImm = asm64.asm_parse_imm(o0);
           if !imm.ok {
-            asm64.asm_err(a, cli.cat("bad ", cli.cat3(mn, " immediate", "")));
+            asm64.asm_err(a, "bad " + mn + " immediate" + "");
             return;
           }
           let rm: *MReg = m_parse_reg(o1);
@@ -301,7 +301,7 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
           }
           let m: *AMem = m_parse_mem(o1);
           if !m.has {
-            asm64.asm_err(a, cli.cat("bad ", cli.cat3(mn, " operand", "")));
+            asm64.asm_err(a, "bad " + mn + " operand" + "");
             return;
           }
           // imm -> mem: 80/81/83 /digit by width
@@ -328,7 +328,7 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
           let dst: *MReg = m_parse_reg(o1);
           if dst.cls != R86_NONE {
             if dst.cls != src.cls {
-              asm64.asm_err(a, cli.cat3(mn, " size mismatch", ""));
+              asm64.asm_err(a, mn + " size mismatch" + "");
               return;
             }
             m_op_rr(a, p66, if size == 1 { m_alu_opcm(row) - 1 } else { m_alu_opcm(row) }, size == 8, src, dst);
@@ -336,7 +336,7 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
           }
           let m: *AMem = m_parse_mem(o1);
           if !m.has {
-            asm64.asm_err(a, cli.cat("bad ", cli.cat3(mn, " operand", "")));
+            asm64.asm_err(a, "bad " + mn + " operand" + "");
             return;
           }
           m_op_rm(a, p66, if size == 1 { m_alu_opcm(row) - 1 } else { m_alu_opcm(row) }, size == 8, src, m, false);
@@ -371,7 +371,7 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
       opc = 0x10;
     }
     if xm.cls != R86_XMM || !m.has {
-      asm64.asm_err(a, cli.cat("bad ", cli.cat3(mn, " operand", "")));
+      asm64.asm_err(a, "bad " + mn + " operand" + "");
       return;
     }
     m_prefix_rex(a, prefix, false, xm, mreg(R86_NONE, 0));
@@ -389,7 +389,7 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
     let xm: *MReg = m_parse_reg(ops[0]);
     let g: *MReg = m_parse_reg(ops[1]);
     if g.cls != R86_32 && g.cls != R86_64 {
-      asm64.asm_err(a, cli.cat("bad ", cli.cat3(mn, "", "")));
+      asm64.asm_err(a, "bad " + mn + "" + "");
       return;
     }
     asm64.a_emitb(a, 0x66);
@@ -416,7 +416,7 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
     else if cli.streq(sfx_s, "zbq") { sfx = 8; }
     else if cli.streq(sfx_s, "zwq") { sfx = 9; }
     if sfx < 0 || nops != 2 {
-      asm64.asm_err(a, cli.cat("unhandled `", cli.cat3(mn, "' operand forms", "")));
+      asm64.asm_err(a, "unhandled `" + mn + "' operand forms" + "");
       return;
     }
 
@@ -765,7 +765,7 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
       let dst: *MReg = m_parse_reg(ops[1]);
       let src: *MReg = m_parse_reg(ops[0]);
       if dst.cls != R86_XMM || src.cls != R86_XMM {
-        asm64.asm_err(a, cli.cat("bad ", cli.cat3(mn, "", "")));
+        asm64.asm_err(a, "bad " + mn + "" + "");
         return;
       }
       m_prefix_rex(a, sse_pre, false, dst, mreg(R86_NONE, 0));
@@ -805,7 +805,7 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
     return;
   }
 
-  asm64.asm_err(a, cli.cat("unknown instruction `", cli.cat3(mn, "'", "")));
+  asm64.asm_err(a, "unknown instruction `" + mn + "'" + "");
 }
 
 fn asm86_resolve(a: *asm64.ASMCtx, ly: *asm64.ALayout) {
@@ -819,7 +819,7 @@ fn asm86_resolve(a: *asm64.ASMCtx, ly: *asm64.ALayout) {
     } else if cli.streq(f.sym, "_rho_rt_heap") {
       target = ly.heap_a;
     } else {
-      asm64.asm_err(a, cli.cat("undefined symbol `", cli.cat3(f.sym, "'", "")));
+      asm64.asm_err(a, "undefined symbol `" + f.sym + "'" + "");
       i += 1;
       continue;
     }
@@ -833,7 +833,7 @@ fn asm86_resolve(a: *asm64.ASMCtx, ly: *asm64.ALayout) {
     // from the next byte — the same pc+4 either way
     let d: i64 = target as i64 - ((pc + 4) as i64);
     if d + (1 << 31) < 0 || d >= (1 << 31) {
-      asm64.asm_err(a, cli.cat("relocation out of range for `", cli.cat3(f.sym, "'", "")));
+      asm64.asm_err(a, "relocation out of range for `" + f.sym + "'" + "");
       i += 1;
       continue;
     }
@@ -857,7 +857,7 @@ pub fn asm86_assemble(text: string, base: u64, page: u64, heap_override: u64) ->
       let label: string = raw[0..len(raw) - 1];
       let s: *asm64.ASym = asm64.sym_get(a, label, true);
       if s.defined {
-        asm64.asm_err(a, cli.cat("duplicate label `", cli.cat3(label, "'", "")));
+        asm64.asm_err(a, "duplicate label `" + label + "'" + "");
         continue;
       }
       s.defined = true;
@@ -889,7 +889,7 @@ pub fn asm86_assemble(text: string, base: u64, page: u64, heap_override: u64) ->
         } else if asm64.str_starts(rest, ".data") || asm64.str_starts(rest, "__data") || asm64.str_starts(rest, "__DATA") {
           a.sec = 2;
         } else {
-          asm64.asm_err(a, cli.cat("unknown section `", cli.cat3(rest, "'", "")));
+          asm64.asm_err(a, "unknown section `" + rest + "'" + "");
         }
       } else if cli.streq(name, ".globl") {
         asm64.sym_get(a, rest, true);

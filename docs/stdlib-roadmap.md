@@ -33,9 +33,8 @@ library are, in order of coupling to the compiler:
   only (`docs/package-manager.md:42-46` probes `use ../x;` as a parse
   error), so a std root outside the program's tree is unreachable under
   the current resolution rule. Language/module-system evolution happens
-  in the living toolchain first and is mirrored after
-  (`docs/todo.md:123-159`, boot is the reference toolchain while the
-  bootstrap gate is open).
+  mirror-first under the two-layer law (the frozen boot floor, the
+  pinned seed frontier — `docs/bootstrap.md`, `docs/todo.md`).
 
 **Placement law.** A capability goes in the first ring that fits:
 
@@ -106,9 +105,10 @@ minimal unsafe kernel: raw loads/stores by width, `memcpy`, `mem_set`,
   (`docs/package-manager.md:39-41`).
 - **Native images are freestanding**: static ELF "no interpreter, no
   libc, raw syscalls" and Mach-O via dyld with the runtime blob
-  (`spec/spec.md:16-17`, `docs/todo.md:71-95`). The RT blobs currently
-  cover file IO + argv shims as a *mirror* item
-  (`docs/todo.md:152-157`); networking syscalls are not among them.
+  (`spec/spec.md:16-17`). The RT blobs currently cover file IO + argv
+  shims (the tails' `__open`/`__read`/`__write`/`__close`/
+  `__program_args` in `libs/compiler/prelude_src.rho`); networking
+  syscalls are not among them.
 - **`__program_args` works on wasm32-wasi with the working-tree
   compiler** — probe:
 
@@ -133,11 +133,11 @@ minimal unsafe kernel: raw loads/stores by width, `memcpy`, `mem_set`,
   (`docs/package-manager.md:26-46`). That tool's stdin-only UI and
   hand-written TOML subset (`docs/package-manager.md:49-51, 83-88`) are
   the concrete price already being paid for the missing stdlib.
-- **Spec drift to resolve**: `spec/module-system.md:51` says the tail
-  defines "`read_line()` on hosted targets" — a grep over
-  `boot/prelude/*.rho` finds no `read_line`. Either implement it or
-  amend the spec; this roadmap assumes amend-or-implement lands with the
-  fs item (§5.2).
+- **Spec drift (read_line), spec side resolved**: the spec's claim that
+  a tail defines `read_line()` was amended away in the 2026-09-24 sweep
+  (no tail defines it — grep over the embedded sources in
+  `libs/compiler/prelude_src.rho`); a `read_line` helper still lands
+  with the fs item (§5.2).
 
 ### 2.5 The gaps, ranked by who feels them
 
@@ -167,11 +167,11 @@ fail:
   [language-service.md](language-service.md) §5.5a — the future `rho
   lsp` query loop, which is itself a rho program (line-framed JSON over
   stdio) and therefore needs JSON + args + fs-min and *no* http.
-- **Toolchain change required?** Then the work is boot-first plus a
-  mirror-set entry (`docs/todo.md:123-159`), and the bootstrap gate's
-  open-ness means every such change compounds debt. Do these in
-  batched rounds, only when the pure-rho value beneath them is
-  exhausted.
+- **Toolchain change required?** Then the work is mirror-first, and the
+  round ends in the reseed ritual (`docs/bootstrap.md`) refreshing the
+  pinned frontier. Do these in batched rounds, only when the pure-rho
+  value beneath them is exhausted — every frontier move re-pays the
+  seed.
 - **Placement fits Ring 0?** (§1 placement law.) Most answers are no.
 
 ## 4. Dependency graph
@@ -248,11 +248,10 @@ precision numbers are out; i64/f64 coverage matches the language.
    wasm import table extended (`fd_readdir`,
    `path_create_directory`, `clock_time_get`, `random_get` —
    `emit_wasm.c:88-98` grows) plus native RT-blob syscall mirrors
-   (`docs/todo.md:152-157` covers file IO + argv only). **Why batch:**
-   one emitter change + one mirror-set entry instead of three, and the
-   bootstrap gate is already open (`docs/todo.md:123`). `read_line`
-   (§2.4 drift) rides this same round — implement against
-   `fd_read`, or strike the spec claim.
+   (the tails in `libs/compiler/prelude_src.rho` cover file IO + argv
+   only). **Why batch:** one emitter change + one seed re-pin instead
+   of three. `read_line` (§2.4 drift) rides this same round —
+   implement against `fd_read`.
 
 ### 5.3 http / socket — **not now; the dual-track design, recorded so the delay is a decision.**
 
@@ -268,9 +267,9 @@ precision numbers are out; i64/f64 coverage matches the language.
   (`sock_accept`/`sock_connect`/`sock_recv`/`sock_send`/`sock_close`)
   are supported by the runtimes rho already targets (wasmtime) and fit
   the existing emitter pattern — one table extension.
-- **Native has no net syscalls yet** — the RT-blob work item covers
-  file IO + argv (`docs/todo.md:152-157`); socket syscalls per target
-  (arm64/amd64 linux, mac) are new blob work.
+- **Native has no net syscalls yet** — the RT blobs cover file IO +
+  argv (`libs/compiler/prelude_src.rho`'s tails); socket syscalls per
+  target (arm64/amd64 linux, mac) are new blob work.
 
 **The dual-track design for when it happens:** a small socket hook set
 in both tails — `__sock_open`/`__sock_connect`/`__sock_accept`/
@@ -317,7 +316,7 @@ rho *programs*, not for rho's tooling.
 | Stage | Contents | Toolchain change? | Gate |
 | --- | --- | --- | --- |
 | **A — pure rho, now** | `path`; `Vec` (then `Map`); JSON (in flight); `args`; `fs-min` | none | corpus pairs for every module on all four targets (`rho test`, `spec/spec.md:99-101`); delivered as vendored packages, promoted later |
-| **B — one batched toolchain round** | import-table extension (`fd_readdir`, `path_create_directory`, `clock_time_get`, `random_get`); native RT-blob mirrors; native `run` args fix; `read_line` implement-or-amend | yes — boot + mirror set (`docs/todo.md`) | twice-compile determinism gate; `boot(corpus) == self(corpus)` progress not regressed; then `fs-full`/`time`/`random` modules land on the new hooks |
+| **B — one batched toolchain round** | import-table extension (`fd_readdir`, `path_create_directory`, `clock_time_get`, `random_get`); native RT-blob mirrors; native `run` args fix; `read_line` against `fd_read` | yes — mirror, then the reseed ritual (`docs/bootstrap.md`) | twice-compile determinism gate; the seed-chain leg green after re-pin; then `fs-full`/`time`/`random` modules land on the new hooks |
 | **C — sockets dual-track** | `__sock_*` hooks both tracks (preview1 `sock_*` / raw syscalls); `http` client package; loopback corpus fixture | yes — same shape as B | client works against loopback on wasm **and** native before any server work; TLS decision explicitly re-visited, default remains "out" |
 | **D — promotion to Ring 1** | `use std.<module>;` resolution rule (module-system extension in the living toolchain); `std/` tree absorbing the Stage A modules | module-system change | stable API after a round of real use; resolution rule specified in `spec/module-system.md` with corpus + pkg-fixture coverage (`tests/pkg-fixture/run.sh` is the model, `docs/package-manager.md:300`) |
 
@@ -334,8 +333,9 @@ bookkeeping once the APIs have users.
 - Every hook-backed module gets a dual-target test: wasm under wasmtime
   (with `--dir .` where files are involved) and native where the blob
   supports the syscall (§2.4's probes are the pattern).
-- Anything crossing Stage B/C's toolchain changes also enters the
-  mirror-set checklist (`docs/todo.md`), or it is not done.
+- Anything crossing Stage B/C's toolchain changes lands mirror-first
+  and ends in the reseed ritual (`docs/bootstrap.md`), or it is not
+  done.
 - End-to-end capability proofs live as fixture scripts, the way
   `tests/pkg-fixture/run.sh` proves the package tool end to end
   (`docs/package-manager.md:292-300`).

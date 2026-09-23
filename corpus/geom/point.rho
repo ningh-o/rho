@@ -1,0 +1,10 @@
+// an interior file of the geom package: reachable only through the facade
+pub fn origin() -> i32 {
+  return 0;
+}
+fn offset() -> i32 {
+  return 7;
+}
+pub fn shifted(v: i32) -> i32 {
+  return v + offset();
+}

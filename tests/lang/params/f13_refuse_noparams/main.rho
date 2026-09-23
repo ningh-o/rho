@@ -1,0 +1,4 @@
+// refuse: 2
+fn main() -> i32 {
+  return 0;
+}

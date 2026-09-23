@@ -54,8 +54,9 @@ if [ ! -x "$B" ]; then
 fi
 if [ ! -f "$M" ]; then
   echo "native-exec: no mirror at $M — building it"
-  perl -e 'alarm shift; exec @ARGV or die "cannot exec $ARGV[0]\n"' 60 \
-    "$B" build libs/compiler/full.rho --target wasm32-wasi -o "$M" || {
+  perl -e 'alarm shift; exec @ARGV or die "cannot exec $ARGV[0]\n"' 900 \
+    wasmtime run --dir . boot/rho-seed.wasm \
+    build libs/compiler/cli.rho --target wasm32-wasi -o "$M" || {
     echo "native-exec: mirror build failed"
     exit 2
   }
@@ -96,14 +97,14 @@ for src in $PROGS; do
   wout="$G/$name.wasm"
   nimg=$(mktemp "$G/$name.XXXXXX")
   rm -f "$wout"
-  if ! wr 90 wasmtime run -W max-wasm-stack=1073741824 --dir . "$M" build "$src.rho" \
+  if ! wr 90 wasmtime run --dir . "$M" build "$src.rho" \
       --target wasm32-wasi -o "$wout" >/dev/null 2>&1 || [ ! -f "$wout" ]; then
     echo "$name: FAIL (wasm build)"
     fail=$((fail + 1))
     rm -f "$nimg"
     continue
   fi
-  if ! wr 90 wasmtime run -W max-wasm-stack=1073741824 --dir . "$M" build "$src.rho" \
+  if ! wr 90 wasmtime run --dir . "$M" build "$src.rho" \
       --target "$TARGET" -o "$nimg" >/dev/null 2>&1 || [ ! -f "$nimg" ]; then
     echo "$name: FAIL (native build)"
     fail=$((fail + 1))

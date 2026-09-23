@@ -1,0 +1,16 @@
+// pub use is the Rust-style flatten: the facade presents one namespace.
+// Internal naming is a separate, private import.
+use lexer as lex;
+use deep;
+pub use lexer;
+pub use lexer.reveal as open;
+pub use lexer.parse as p;
+pub use lexer as engine;
+pub use deep.dig as digs;
+
+fn hidden_use() -> usize {
+  return engine.parse("abcd");
+}
+pub fn all() -> usize {
+  return hidden_use() + len(digs()) + open() as usize + p("xy") + lex.parse("zzz");
+}

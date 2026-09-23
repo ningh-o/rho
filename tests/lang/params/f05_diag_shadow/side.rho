@@ -1,0 +1,4 @@
+const native: bool = true;
+pub fn talk() -> void {
+  printf("{}", "talk\n");
+}

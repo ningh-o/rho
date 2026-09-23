@@ -1,0 +1,8 @@
+// exit: 0
+// `-g` keeps the full rho_<mod-index>__<name> internal symbols: readable
+// dumps and panic stamps when debugging an artifact. The default build
+// uses the shortest serial names (f14).
+fn main() -> i32 {
+  printf("{}", "f15 ok\n");
+  return 0;
+}

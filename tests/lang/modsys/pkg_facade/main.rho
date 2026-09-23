@@ -1,0 +1,10 @@
+// exit: 0
+// a directory with lib.rho is a package: use vox imports the facade
+use vox;
+
+fn main() -> i32 {
+  printf("{}\n", vox.tag());
+  printf("{}\n", vox.through());
+  printf("{}\n", vox.open());
+  return 0;
+}

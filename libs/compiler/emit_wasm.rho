@@ -244,14 +244,14 @@ fn w_type_key(params: []i64, has_ret: bool, ret: ir.IRType) -> string {
   let mut k: string = "";
   let mut i: usize = 0;
   while i < len(params) {
-    k = cli.cat3(k, cli.itoa(params[i]), ",");
+    k = k + cli.itoa(params[i]) + ",";
     i += 1;
   }
   let mut r: i64 = -1;
   if has_ret {
     r = ret as i64;
   }
-  return cli.cat3(k, "->", cli.itoa(r));
+  return k + "->" + cli.itoa(r);
 }
 
 fn w_type_for(params: []i64, has_ret: bool, ret: ir.IRType) -> i32 {
@@ -395,12 +395,15 @@ fn w_layout_data() {
   st = st - 1;
   W.stack_top = st / 0x4000000 * 0x4000000;
   W.heap_base = W.stack_top;
-  // the wasi prelude's HEAP static starts allocation above the stack slot
+  // the wasi prelude's HEAP static starts allocation above the stack slot.
+  // The cell is resolved through the one naming law (prelude_symbol ->
+  // sym_symbol), never by a name shape — internal symbols are the shortest
+  // serial names by default, so a spelling like `_HEAP` cannot be relied on.
+  let heap_sym: string = prelude_symbol("HEAP");
   g = 0;
   while g < ir.g_ir_globals.n {
     let gl: *ir.IRGlobal = ir.g_ir_globals.items[g];
-    if !gl.is_extern && len(gl.init) == 8 && len(gl.symbol) >= 5 &&
-       cli.streq(slice_str(gl.symbol, len(gl.symbol) - 5, len(gl.symbol)), "_HEAP") {
+    if !gl.is_extern && len(gl.init) == 8 && cli.streq(gl.symbol, heap_sym) {
       let v: u64 = W.heap_base as u64;
       let mut b: i32 = 0;
       while b < 8 {

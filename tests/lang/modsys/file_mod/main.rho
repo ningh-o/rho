@@ -1,0 +1,11 @@
+// exit: 0
+// loose directories hold addressable plain files; tools/fmt is a package
+// (it has lib.rho) so its interior is reached through the facade
+use tools.count;
+use tools.fmt;
+
+fn main() -> i32 {
+  printf("{}\n", count.upto(6));
+  printf("{}\n", fmt.pad("plain"));
+  return 0;
+}

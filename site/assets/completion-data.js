@@ -39,10 +39,10 @@ export const KEYWORDS = [
   ["true", "let b: bool = true;", "the true literal"],
   ["false", "let b: bool = false;", "the false literal"],
   ["as", "x as T", "explicit cast between numeric/pointer types"],
-  ["use", "use a.b.c;", "imports another module into the graph"],
+  ["use", "use a.b.c;", "imports a module by dot path; a directory with lib.rho is a package behind its facade"],
   ["pub", "pub fn … / pub struct …", "exports an item beyond its module"],
   ["static", "static NAME: T = …;", "module-level storage"],
-  ["const", "const NAME: T = …;", "compile-time constant"],
+  ["const", "const NAME: T = …;", "compile-time constant; in the root file, a build parameter (rho build --set name=value)"],
   ["self", "fn T.m(self: *T, …)", "method receiver; first named self parameter"],
   ["weak", "weak p: *T", "non-owning pointer that cannot keep an object alive"],
   ["extern", "extern fn name(…) -> T;", "declares a foreign (libc-style) function"],
@@ -123,7 +123,7 @@ export const BUILTINS = [
 // Prelude surface the wasm32-wasi build actually embeds (boot/prelude/
 // core.rho — the wasi tail only adds __-prefixed hooks user code never
 // calls). Signatures are copied from core.rho. String concatenation is
-// the `+` operator (no cat function — retired; nothing coerces to string).
+// the `+` operator; nothing coerces to string.
 export const PRELUDE = [
   {
     label: "assert",

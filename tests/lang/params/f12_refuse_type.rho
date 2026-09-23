@@ -1,0 +1,7 @@
+// refuse: 2
+// the value grammar follows the declared annotation
+const verbose: bool = false;
+const level: i32 = 1;
+fn main() -> i32 {
+  return 0;
+}

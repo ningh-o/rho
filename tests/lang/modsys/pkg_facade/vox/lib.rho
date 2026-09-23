@@ -1,0 +1,7 @@
+// the facade: one namespace for the package, interior imported freely
+use util;
+pub use util;
+
+pub fn open() -> i32 {
+  return util.tag();
+}

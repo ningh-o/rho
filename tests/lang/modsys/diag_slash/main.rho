@@ -1,0 +1,7 @@
+// diag
+// the slash form is retired; dots are the only separator
+use d/x;
+
+fn main() -> i32 {
+  return 0;
+}

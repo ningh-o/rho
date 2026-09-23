@@ -110,9 +110,9 @@ pub fn ac_new(base: u64, is_arm: bool) -> *ASMCtx {
 
 pub fn asm_err(a: *ASMCtx, msg: string) {
   if a.is_arm {
-    eprintf("{}", cli.cat("rho: asm64: ", cli.cat3(msg, "\n", "")));
+    eprintf("{}", "rho: asm64: " + msg + "\n" + "");
   } else {
-    eprintf("{}", cli.cat("rho: asm86: ", cli.cat3(msg, "\n", "")));
+    eprintf("{}", "rho: asm86: " + msg + "\n" + "");
   }
   a.errors += 1;
 }
@@ -479,7 +479,7 @@ fn ar_addsub_imm(a: *ASMCtx, is_sub_in: bool, set: bool, rd: *AReg, rn: *AReg, i
     imm = 0 - imm;
   }
   if imm > 4095 {
-    asm_err(a, cli.cat3(mn, cli.cat3(" immediate out of range: ", cli.itoa(imm), ""), ""));
+    asm_err(a, mn + " immediate out of range: " + cli.itoa(imm) + "" + "");
     return;
   }
   let mut base: u32 = 0;
@@ -507,7 +507,7 @@ fn ar_addsub_reg(a: *ASMCtx, is_sub: bool, set: bool, rd: *AReg, rn: *AReg, rm: 
 fn ar_movz(a: *ASMCtx, rd: *AReg, imm: i64, hw: i32) {
   let maxhw: i32 = if rd.cls == RC_X { 3 } else { 1 };
   if imm < 0 || imm > 65535 || hw < 0 || hw > maxhw {
-    asm_err(a, cli.cat3("movz/movk out of range: ", cli.itoa(imm), ""));
+    asm_err(a, "movz/movk out of range: " + cli.itoa(imm) + "");
     return;
   }
   let base: u32 = if rd.cls == RC_X { 0xD2800000 } else { 0x52800000 };
@@ -517,7 +517,7 @@ fn ar_movz(a: *ASMCtx, rd: *AReg, imm: i64, hw: i32) {
 fn ar_movk(a: *ASMCtx, rd: *AReg, imm: i64, hw: i32) {
   let maxhw: i32 = if rd.cls == RC_X { 3 } else { 1 };
   if imm < 0 || imm > 65535 || hw < 0 || hw > maxhw {
-    asm_err(a, cli.cat3("movk out of range: ", cli.itoa(imm), ""));
+    asm_err(a, "movk out of range: " + cli.itoa(imm) + "");
     return;
   }
   let base: u32 = if rd.cls == RC_X { 0xF2800000 } else { 0x72800000 };
@@ -531,7 +531,7 @@ fn ar_mem(a: *ASMCtx, base: u32, rt: *AReg, rn: *AReg) {
 
 fn ar_pair(a: *ASMCtx, load: bool, post: bool, rt: *AReg, rt2: *AReg, rn: *AReg, imm: i64) {
   if imm % 8 != 0 || imm > 240 || imm + 256 < 0 {
-    asm_err(a, cli.cat3("stp/ldp offset out of range: ", cli.itoa(imm), ""));
+    asm_err(a, "stp/ldp offset out of range: " + cli.itoa(imm) + "");
     return;
   }
   let imm7: u32 = ((imm / 8) as u32) & 0x7F;
@@ -606,7 +606,7 @@ fn ar_asm_line(a: *ASMCtx, mn: string, ops: []string) {
     if len(o2) > 0 && o2[0] == 35 { // '#'
       let imm: *AImm = asm_parse_imm(o2);
       if !imm.ok {
-        asm_err(a, cli.cat("bad ", cli.cat3(mn, " immediate", "")));
+        asm_err(a, "bad " + mn + " immediate" + "");
         return;
       }
       ar_addsub_imm(a, is_sub, false, rd, rn, imm.v, mn);
@@ -753,7 +753,7 @@ fn ar_asm_line(a: *ASMCtx, mn: string, ops: []string) {
         return;
       }
     }
-    asm_err(a, cli.cat("bad ", cli.cat3(mn, " addressing", "")));
+    asm_err(a, "bad " + mn + " addressing" + "");
     return;
   }
   if cli.streq(mn, "mul") && nops == 3 {
@@ -868,7 +868,7 @@ fn ar_asm_line(a: *ASMCtx, mn: string, ops: []string) {
     let rd: *AReg = ar_parse_reg(ops[0]);
     let rn: *AReg = ar_parse_reg(ops[1]);
     if rn.cls != RC_X || (rd.cls != RC_VD && rd.cls != RC_VS) {
-      asm_err(a, cli.cat("bad ", cli.cat3(mn, "", "")));
+      asm_err(a, "bad " + mn + "" + "");
       return;
     }
     let mut base: u32 = 0x9E220000;
@@ -886,7 +886,7 @@ fn ar_asm_line(a: *ASMCtx, mn: string, ops: []string) {
     let rn: *AReg = ar_parse_reg(ops[1]);
     // the emitter always converts from x8: D dest rides sf=1, S dest sf=0
     if rn.cls != RC_X || (rd.cls != RC_VD && rd.cls != RC_VS) {
-      asm_err(a, cli.cat3("bad ", mn, ""));
+      asm_err(a, "bad " + mn + "");
       return;
     }
     let base: u32 = if cli.streq(mn, "scvtf") {
@@ -938,7 +938,7 @@ fn ar_asm_line(a: *ASMCtx, mn: string, ops: []string) {
     else { matched = false; }
     if matched {
       if len(src) == 0 || src[0] != 91 { // '['
-        asm_err(a, cli.cat("bad ", cli.cat3(mn, " addressing", "")));
+        asm_err(a, "bad " + mn + " addressing" + "");
         return;
       }
       let rn: *AReg = ar_parse_reg(src[1..len(src)]);
@@ -947,7 +947,7 @@ fn ar_asm_line(a: *ASMCtx, mn: string, ops: []string) {
     }
   }
 
-  asm_err(a, cli.cat("unknown instruction `", cli.cat3(mn, "'", "")));
+  asm_err(a, "unknown instruction `" + mn + "'" + "");
 }
 
 // ---- assembly drivers ------------------------------------------------------
@@ -1066,7 +1066,7 @@ fn asm64_resolve(a: *ASMCtx, ly: *ALayout) {
     } else if cli.streq(f.sym, "_rho_rt_heap") {
       target = ly.heap_a;
     } else {
-      asm_err(a, cli.cat("undefined symbol `", cli.cat3(f.sym, cli.cat("' (fixup kind ", cli.cat3(cli.itoa(f.kind as i64), ")", "")), "")));
+      asm_err(a, "undefined symbol `" + f.sym + "' (fixup kind " + cli.itoa(f.kind as i64) + ")" + "" + "");
       i += 1;
       continue;
     }
@@ -1199,7 +1199,7 @@ pub fn asm64_assemble(text: string, base: u64, page: u64, heap_override: u64) ->
       let label: string = line[0..len(line) - 1];
       let s: *ASym = sym_get(a, label, true);
       if s.defined {
-        asm_err(a, cli.cat("duplicate label `", cli.cat3(label, "'", "")));
+        asm_err(a, "duplicate label `" + label + "'" + "");
         continue;
       }
       s.defined = true;

@@ -1,0 +1,2 @@
+// a subdirectory that is itself a package under a loose directory
+pub use help;

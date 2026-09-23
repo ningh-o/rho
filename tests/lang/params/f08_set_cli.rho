@@ -1,0 +1,10 @@
+// exit: 0
+const native: bool = false;
+fn main() -> i32 {
+  if native {
+    printf("{}", "native\n");
+  } else {
+    printf("{}", "web\n");
+  }
+  return 0;
+}

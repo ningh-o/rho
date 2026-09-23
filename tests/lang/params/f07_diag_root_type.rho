@@ -1,0 +1,5 @@
+// diag
+const scale: f64 = 1.5;
+fn main() -> i32 {
+  return 0;
+}

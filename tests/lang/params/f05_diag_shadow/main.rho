@@ -1,0 +1,7 @@
+// diag
+const native: bool = false;
+use side;
+fn main() -> i32 {
+  side.talk();
+  return 0;
+}

@@ -1,0 +1,1 @@
+tests/lang/params/f05_diag_shadow/side.rho:1:1: error: `native` shadows a build parameter declared in the root file

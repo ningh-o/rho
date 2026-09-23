@@ -1,0 +1,1 @@
+tests/lang/modsys/diag_dotted/main.rho:3:1: error: module file names cannot contain dots: `tests/lang/modsys/diag_dotted/my.mod.rho` is not a module

@@ -1,0 +1,5 @@
+// the geom facade: the package's one window. `pub use` flattens the
+// interior's public items; a single item arrives renamed.
+use point;
+pub use point;
+pub use point.origin as zero;

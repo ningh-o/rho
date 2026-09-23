@@ -1,0 +1,21 @@
+// exit: 0
+// 032 — the dot round's module system, five samples in one program:
+//   facade      use geom;            a package behind its lib.rho
+//   file module use web.strs;        a plain file two segments deep
+//   subpackage  use geom.units;      a package with its own facade
+//   alias       ... as strs;         a binding renamed
+//   re-export   pub use in the facades: full flatten and one item renamed
+use geom;
+use geom.units;
+use web.strs as strs;
+
+fn main() -> i32 {
+  printf("{}\n", geom.origin());
+  printf("{}\n", geom.zero());
+  printf("{}\n", geom.shifted(5));
+  printf("{}\n", units.factor());
+  printf("{}\n", units.apply(4));
+  printf("{}\n", strs.dup("ab"));
+  printf("{}\n", strs.tag());
+  return 0;
+}

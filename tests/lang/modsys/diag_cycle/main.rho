@@ -1,0 +1,7 @@
+// diag
+// flattening each other never grounds: circular re-export
+use cyc.cyca;
+
+fn main() -> i32 {
+  return 0;
+}

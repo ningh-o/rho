@@ -1,0 +1,7 @@
+// garden is a package; roses is its own package behind its own facade
+use roses;
+pub use roses;
+
+pub fn bloom() -> string {
+  return roses.kind();
+}

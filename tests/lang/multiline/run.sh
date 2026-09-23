@@ -45,7 +45,7 @@ for src in tests/lang/multiline/m*.rho; do
   case $(head -1 "$src") in
   "// exit:"*)
     rm -f "$G/$name.wasm" "$G/$name.got" "$G/$name.fmt.rho" "$G/$name.fmt.wasm" "$G/$name.fmt.got" "$G/$name.fmt2.rho"
-    if ! wr 60 wasmtime run -W max-wasm-stack=1073741824 --dir . "$R" build "$src" --target wasm32-wasi -o "$G/$name.wasm" >/dev/null 2>&1 || [ ! -f "$G/$name.wasm" ]; then
+    if ! wr 60 wasmtime run --dir . "$R" build "$src" --target wasm32-wasi -o "$G/$name.wasm" >/dev/null 2>&1 || [ ! -f "$G/$name.wasm" ]; then
       verdict="FAIL (build)"
     else
       wr 10 wasmtime run --dir . "$G/$name.wasm" 2>/dev/null | strip_dbg > "$G/$name.got"
@@ -56,11 +56,11 @@ for src in tests/lang/multiline/m*.rho; do
     if [ -z "$verdict" ]; then
       # fmt roundtrip: the canonical form must rebuild, rerun, and reprint
       # the same bytes, and formatting must be idempotent
-      wr 60 wasmtime run -W max-wasm-stack=1073741824 --dir . "$R" fmt "$src" 2>/dev/null > "$G/$name.fmt.rho"
-      wr 60 wasmtime run -W max-wasm-stack=1073741824 --dir . "$R" fmt "$G/$name.fmt.rho" 2>/dev/null > "$G/$name.fmt2.rho"
+      wr 60 wasmtime run --dir . "$R" fmt "$src" 2>/dev/null > "$G/$name.fmt.rho"
+      wr 60 wasmtime run --dir . "$R" fmt "$G/$name.fmt.rho" 2>/dev/null > "$G/$name.fmt2.rho"
       if ! cmp -s "$G/$name.fmt.rho" "$G/$name.fmt2.rho"; then
         verdict="FAIL (fmt not idempotent)"
-      elif ! wr 60 wasmtime run -W max-wasm-stack=1073741824 --dir . "$R" build "$G/$name.fmt.rho" --target wasm32-wasi -o "$G/$name.fmt.wasm" >/dev/null 2>&1 || [ ! -f "$G/$name.fmt.wasm" ]; then
+      elif ! wr 60 wasmtime run --dir . "$R" build "$G/$name.fmt.rho" --target wasm32-wasi -o "$G/$name.fmt.wasm" >/dev/null 2>&1 || [ ! -f "$G/$name.fmt.wasm" ]; then
         verdict="FAIL (fmt output does not build)"
       else
         wr 10 wasmtime run --dir . "$G/$name.fmt.wasm" 2>/dev/null | strip_dbg > "$G/$name.fmt.got"
@@ -71,7 +71,7 @@ for src in tests/lang/multiline/m*.rho; do
     fi
     ;;
   "// diag")
-    wr 60 wasmtime run -W max-wasm-stack=1073741824 --dir . "$R" check "$src" 2>&1 >/dev/null | strip_dbg > "$G/$name.got"
+    wr 60 wasmtime run --dir . "$R" check "$src" 2>&1 >/dev/null | strip_dbg > "$G/$name.got"
     if ! cmp -s "$G/$name.got" "tests/lang/multiline/$name.out"; then
       verdict="FAIL (diag)"
     fi

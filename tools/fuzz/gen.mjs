@@ -547,7 +547,7 @@ function genProgram(seed) {
 // survives exec, and an unresolvable binary must die nonzero, never fall
 // through silently).
 // ---------------------------------------------------------------------------
-const WASMTIME_ARGS = ['run', '-W', 'max-wasm-stack=1073741824', '--dir', '.'];
+const WASMTIME_ARGS = ['run', '--dir', '.'];
 
 function runT(sec, cmd, args) {
   return new Promise((done) => {

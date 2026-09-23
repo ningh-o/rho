@@ -1,0 +1,36 @@
+// exit: 0
+// the dead branch references functions that do not exist and binds wrong
+// types — none of it may reach check or the artifact (spec §7.3)
+const native: bool = false;
+const mode: i32 = 1;
+
+fn real() -> i32 { return 7; }
+
+fn main() -> i32 {
+  if native {
+    let x: i32 = no_such_function_anywhere(1, 2, 3);
+    let y: i32 = "a string is not an i32";
+    printf("{}", x + y);
+  }
+  if native {
+    printf("{}", "dead then\n");
+  } else {
+    printf("{}", "live else\n");
+  }
+  if !native {
+    printf("{}", "not native\n");
+  }
+  if mode == 1 {
+    printf("{}", "mode one\n");
+  }
+  if mode + 1 == 2 && native == false {
+    printf("{}", "folded arith\n");
+  }
+  if mode != 1 || native {
+    printf("{}", "not this one\n");
+  } else {
+    printf("{}", "or else\n");
+  }
+  printf("{}", "alive\n");
+  return real() - 7;
+}

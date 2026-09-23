@@ -1,0 +1,3 @@
+// a subpackage is its own package behind its own facade
+use scale;
+pub use scale;

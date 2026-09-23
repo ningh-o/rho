@@ -1,0 +1,7 @@
+// diag
+// module file names cannot contain dots; my.mod.rho is not a module
+use my.mod;
+
+fn main() -> i32 {
+  return 0;
+}

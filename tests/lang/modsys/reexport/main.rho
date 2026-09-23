@@ -1,0 +1,13 @@
+// exit: 0
+// callers still reach everything through the namespace, explicitly
+use mc;
+
+fn main() -> i32 {
+  printf("{}\n", mc.parse("hello"));
+  printf("{}\n", mc.open());
+  printf("{}\n", mc.p("hi!"));
+  printf("{}\n", mc.engine.reveal());
+  printf("{}\n", mc.digs());
+  printf("{}\n", mc.all());
+  return 0;
+}

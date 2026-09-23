@@ -1,0 +1,15 @@
+// diag
+// the if form with value arms is not a returning tail under the current
+// law: value arms produce values, they do not return. The diagnostic is
+// deterministic — no stack-depth drift, no compiler recursion.
+fn down(n: i32) -> i32 {
+  if n == 0 {
+    0
+  } else {
+    down(n - 1)
+  }
+}
+
+fn main() -> i32 {
+  down(3)
+}

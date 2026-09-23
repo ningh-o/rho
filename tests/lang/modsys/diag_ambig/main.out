@@ -1,0 +1,1 @@
+tests/lang/modsys/diag_ambig/main.rho:3:1: error: ambiguous use `both`: both `tests/lang/modsys/diag_ambig/both/lib.rho` and `tests/lang/modsys/diag_ambig/both.rho` exist

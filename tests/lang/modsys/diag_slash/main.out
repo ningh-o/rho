@@ -1,0 +1,1 @@
+tests/lang/modsys/diag_slash/main.rho:3:7: error: module paths use dots: write `a.b`, not `a/b`

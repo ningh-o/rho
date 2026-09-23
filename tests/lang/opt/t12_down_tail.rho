@@ -1,0 +1,14 @@
+// exit: 0
+// a non-void self-call in tail position stays a loop: 300k deep under the
+// default wasmtime stack (no max-wasm-stack on the run step)
+fn down(n: i32) -> i32 {
+  if n == 0 {
+    return 0;
+  }
+  return down(n - 1);
+}
+
+fn main() -> i32 {
+  printf("{}\n", down(300000));
+  return 0;
+}

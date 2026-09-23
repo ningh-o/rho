@@ -1,0 +1,1 @@
+tests/lang/params/f07_diag_root_type.rho:2:1: error: `scale`: root consts are build parameters and must be bool, i32, or string

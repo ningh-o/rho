@@ -1,0 +1,11 @@
+// exit: 0
+// the alias renames the binding: a package facade, a loose file module,
+// and a three-segment path
+use pair as p;
+use extra.deep.mod as dm;
+
+fn main() -> i32 {
+  printf("{}\n", p.who());
+  printf("{}\n", dm.name());
+  return 0;
+}

@@ -1,0 +1,6 @@
+// refuse: 2
+// --set names a parameter the root does not declare: a clear CLI refusal
+const verbose: bool = false;
+fn main() -> i32 {
+  return 0;
+}

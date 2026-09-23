@@ -1,0 +1,16 @@
+// exit: 0
+// the dead branch's `return` must NOT satisfy the function; with the
+// branch dead the trailing return is the fn's real one
+const live: bool = false;
+
+fn needs_tail() -> i32 {
+  if live {
+    return 1;
+  }
+  return 5;
+}
+
+fn main() -> i32 {
+  printf("{}\n", needs_tail());
+  return 0;
+}

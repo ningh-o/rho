@@ -1,0 +1,2 @@
+// the interior module; this facade flattens it
+pub use lex;

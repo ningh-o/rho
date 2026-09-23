@@ -1,0 +1,2 @@
+rho: build parameter `verbose` expects bool, got `notabool`
+rho: build parameter `level` expects i32, got `yes`

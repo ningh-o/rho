@@ -121,6 +121,7 @@ pub struct Expr {
   ret: *TypeAst,          // Closure
   q_ok: i32,
   q_err: i32,
+  fold_live: i32, // ExIf: 1 = then is live, 2 = else is live (comptime-folded condition; check)
   else_if: *Expr, // ExIf: the else-if chain (null = else is items[1] or none)
   fnval: bool,
   caps: []*check.Sym, // CLOSURE: copy-captured outer locals (check)
@@ -260,6 +261,7 @@ pub struct Decl {
   ceval_is_int: bool,
   ceval_i: u64,
   ceval_f: f64,
+  ceval_b: bool,
 }
 
 // ------------------------------------------------------------- parser -----
@@ -310,7 +312,7 @@ fn expect_tok(p: *Parser, k: lex.Tok, what: string) -> *lex.Token {
     return advance(p);
   }
   let t: *lex.Token = pk(p);
-  cli.err_at(t.file, t.line, t.col, cli.cat5("expected ", what, cli.cat(" (", lex.tok_name(k)), "), found ", lex.tok_name(t.kind)));
+  cli.err_at(t.file, t.line, t.col, "expected " + what + " (" + lex.tok_name(k) + "), found " + lex.tok_name(t.kind));
   return t;
 }
 
@@ -323,7 +325,7 @@ fn expect_ident(p: *Parser, what: string) -> *lex.Token {
     return advance(p);
   }
   let t: *lex.Token = pk(p);
-  cli.err_at(t.file, t.line, t.col, cli.cat3("expected ", what, cli.cat3(", found ", lex.tok_name(t.kind), "")));
+  cli.err_at(t.file, t.line, t.col, "expected " + what + ", found " + lex.tok_name(t.kind) + "");
   return t;
 }
 
@@ -435,7 +437,7 @@ fn parse_type(p: *Parser) -> *TypeAst {
     }
     return t;
   }
-  cli.err_at(start.file, start.line, start.col, cli.cat3("expected a type, found ", lex.tok_name(start.kind), ""));
+  cli.err_at(start.file, start.line, start.col, "expected a type, found " + lex.tok_name(start.kind) + "");
   t = new TypeAst { kind: TypeAstKind.TaPrim, prim: 0, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null, file: start.file, line: start.line, col: start.col };
   return t;
 }
@@ -448,7 +450,7 @@ fn type_as_expr(p: *Parser) -> *Expr {
     binop: lex.Tok.TkEof, unop: lex.Tok.TkEof,
     args: fresh_expr_vec(), arg_names: fresh_str_vec(), items: fresh_stmt_vec(),
     ty: parse_type(p), arms: fresh_arm_vec(), params: fresh_param_vec(), ret: null,
-    q_ok: 0, q_err: 0, else_if: null, fnval: false, caps: make([]*check.Sym, 0), typed: null, sym: null, spread: false,
+    q_ok: 0, q_err: 0, fold_live: 0, else_if: null, fnval: false, caps: make([]*check.Sym, 0), typed: null, sym: null, spread: false,
   };
   return e;
 }
@@ -494,7 +496,7 @@ pub fn mkexpr(kind: ExprKind, file: string, line: i32, col: i32) -> *Expr {
     binop: lex.Tok.TkEof, unop: lex.Tok.TkEof,
     args: fresh_expr_vec(), arg_names: fresh_str_vec(), items: fresh_stmt_vec(),
     ty: null, arms: fresh_arm_vec(), params: fresh_param_vec(), ret: null,
-    q_ok: 0, q_err: 0, else_if: null, fnval: false, caps: make([]*check.Sym, 0), typed: null, sym: null, spread: false,
+    q_ok: 0, q_err: 0, fold_live: 0, else_if: null, fnval: false, caps: make([]*check.Sym, 0), typed: null, sym: null, spread: false,
   };
 }
 
@@ -773,7 +775,7 @@ fn parse_primary(p: *Parser) -> *Expr {
           arm.pk = PatKind.PatUnit;
         }
       } else {
-        cli.err_at(pt.file, pt.line, pt.col, cli.cat3("expected a pattern, found ", lex.tok_name(pt.kind), ""));
+        cli.err_at(pt.file, pt.line, pt.col, "expected a pattern, found " + lex.tok_name(pt.kind) + "");
         advance(p);
         continue;
       }
@@ -835,7 +837,7 @@ fn parse_primary(p: *Parser) -> *Expr {
     e.items = parse_block(p);
     return e;
   }
-  cli.err_at(start.file, start.line, start.col, cli.cat3("expected an expression, found ", lex.tok_name(start.kind), ""));
+  cli.err_at(start.file, start.line, start.col, "expected an expression, found " + lex.tok_name(start.kind) + "");
   advance(p);
   return mkexpr(ExprKind.ExInt, start.file, start.line, start.col);
 }
@@ -1083,7 +1085,7 @@ fn parse_stmt_raw(p: *Parser) -> *Stmt {
   } else {
     s.tail = false;
     let t: *lex.Token = pk(p);
-    cli.err_at(t.file, t.line, t.col, cli.cat3("expected `;`, found ", lex.tok_name(t.kind), ""));
+    cli.err_at(t.file, t.line, t.col, "expected `;`, found " + lex.tok_name(t.kind) + "");
   }
   return s;
 }
@@ -1100,7 +1102,7 @@ pub fn parse_file(path: string, src: string) -> *Decl {
     tparams: fresh_str_vec(), is_method: false, recv: "", decls: fresh_decl_vec(),
     target: null, tparam_bounds: fresh_type_vec(),
     templ: null,
-    templated: false, tenv: null, owner: null, ceval_ok: false, ceval_is_int: false, ceval_i: 0, ceval_f: 0.0,
+    templated: false, tenv: null, owner: null, ceval_ok: false, ceval_is_int: false, ceval_i: 0, ceval_f: 0.0, ceval_b: false,
   };
   while !at_eof(p) {
     let start: *lex.Token = pk(p);
@@ -1113,16 +1115,34 @@ pub fn parse_file(path: string, src: string) -> *Decl {
       body: fresh_stmt_vec(), tparams: fresh_str_vec(), is_method: false,
       recv: "", decls: fresh_decl_vec(), target: null,
       tparam_bounds: fresh_type_vec(), templ: null,
-    templated: false, tenv: null, owner: null, ceval_ok: false, ceval_is_int: false, ceval_i: 0, ceval_f: 0.0,
+    templated: false, tenv: null, owner: null, ceval_ok: false, ceval_is_int: false, ceval_i: 0, ceval_f: 0.0, ceval_b: false,
     };
     if accept(p, lex.Tok.KwUse) {
       d.kind = DeclKind.DkUse;
+      // dot-separated identifier segments (`use a.b.c;`); the slash form is
+      // retired — one clear diag, then the segments after it still parse so
+      // the recovery stays single-diag
       loop {
         let seg: *lex.Token = expect_ident(p, "module path segment");
         d.path.push(seg.text);
-        if !accept(p, lex.Tok.PSlash) {
-          break;
+        if accept(p, lex.Tok.PDot) {
+          continue;
         }
+        if at(p, lex.Tok.PSlash) {
+          // the slash form is retired: one clear diag, then the segments
+          // after it still parse so the recovery stays single-diag
+          let st: *lex.Token = pk(p);
+          cli.err_at(st.file, st.line, st.col, "module paths use dots: write `a.b`, not `a/b`");
+          advance(p);
+          continue;
+        }
+        break;
+      }
+      // `as x` renames the binding; the alias rides `name`, which DkUse
+      // otherwise leaves empty
+      if accept(p, lex.Tok.KwAs) {
+        let al: *lex.Token = expect_ident(p, "module alias");
+        d.name = al.text;
       }
       expect_tok(p, lex.Tok.PSemi, "`;`");
     } else if accept(p, lex.Tok.KwExtern) {
@@ -1186,7 +1206,7 @@ pub fn parse_file(path: string, src: string) -> *Decl {
           body: fresh_stmt_vec(), tparams: fresh_str_vec(), is_method: false,
           recv: "", target: null, tparam_bounds: fresh_type_vec(), decls: fresh_decl_vec(),
           templ: null, templated: false, tenv: null, owner: null,
-          ceval_ok: false, ceval_is_int: false, ceval_i: 0, ceval_f: 0.0,
+          ceval_ok: false, ceval_is_int: false, ceval_i: 0, ceval_f: 0.0, ceval_b: false,
         };
         expect_tok(p, lex.Tok.KwFn, "`fn`");
         let mn: *lex.Token = expect_ident(p, "trait method name");
@@ -1223,7 +1243,7 @@ pub fn parse_file(path: string, src: string) -> *Decl {
           body: fresh_stmt_vec(), tparams: fresh_str_vec(), is_method: false,
           recv: "", target: null, tparam_bounds: fresh_type_vec(), decls: fresh_decl_vec(),
           templ: null, templated: false, tenv: null, owner: null,
-          ceval_ok: false, ceval_is_int: false, ceval_i: 0, ceval_f: 0.0,
+          ceval_ok: false, ceval_is_int: false, ceval_i: 0, ceval_f: 0.0, ceval_b: false,
         };
         expect_tok(p, lex.Tok.KwFn, "`fn`");
         let mn: *lex.Token = expect_ident(p, "method name");
@@ -1326,7 +1346,7 @@ pub fn parse_file(path: string, src: string) -> *Decl {
       d.init = parse_expr(p);
       expect_tok(p, lex.Tok.PSemi, "`;`");
     } else {
-      cli.err_at(start.file, start.line, start.col, cli.cat3("expected a declaration (fn/struct/enum/static/const/use), found ", lex.tok_name(start.kind), ""));
+      cli.err_at(start.file, start.line, start.col, "expected a declaration (fn/struct/enum/static/const/use), found " + lex.tok_name(start.kind) + "");
       advance(p);
       continue;
     }

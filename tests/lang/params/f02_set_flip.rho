@@ -1,0 +1,18 @@
+// exit: 0
+// the same source builds two ways: the default says quiet, --set verbose=true
+// says loud (the run.sh passes the .set file's pairs)
+const verbose: bool = false;
+const level: i32 = 1;
+const label: string = "orig";
+
+fn main() -> i32 {
+  if verbose {
+    printf("verbose on, level {}\n", level);
+  } else {
+    printf("{}", "quiet\n");
+  }
+  if level > 0 {
+    printf("{}", "positive\n");
+  }
+  return 0;
+}

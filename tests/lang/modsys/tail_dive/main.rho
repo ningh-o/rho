@@ -1,0 +1,12 @@
+// build
+// the bare self-call tail is a returning tail: the compile is clean and
+// its diagnostics are deterministic at any stack depth (the return-ness
+// judgment is cycle-safe: a callee mid-judgment answers from its declared
+// signature, and the verdict is memoized)
+fn dive(n: i32) -> i32 {
+  dive(n + 1)
+}
+
+fn main() -> i32 {
+  dive(0)
+}

@@ -1,0 +1,4 @@
+use util;
+pub fn pubf() -> i32 {
+  return util.f();
+}

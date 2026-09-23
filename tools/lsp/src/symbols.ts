@@ -333,9 +333,11 @@ export function indexSymbols(src: string): SymbolIndex {
     if (kw === 'use') {
       let j = skipTrivia(src, i + kw.length);
       const pathStart = j;
-      while (j < src.length && /[A-Za-z0-9_/]/.test(src[j])) j++;
+      while (j < src.length && /[A-Za-z0-9_./]/.test(src[j])) j++;
       const path = src.slice(pathStart, j);
-      const bind = path.split('/').pop() ?? path;
+      // the dot round: use paths are dot-separated (the slash form is the
+      // boot era's); accept both so old sources keep their symbols
+      const bind = path.split(/[./]/).pop() ?? path;
       topLevel.push({
         kind: 'use',
         name: bind,

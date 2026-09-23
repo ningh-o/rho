@@ -1,10 +1,10 @@
 #!/bin/sh
 # The bootstrap gate: one command, one verdict per leg.
 #
-#   tools/gate.sh --wasm     this round's acceptance: the seven wasm legs,
-#                            no native crossings (~1 min measured)
+#   tools/gate.sh --wasm     this round's acceptance: the wasm legs, no
+#                            native crossings (~2 min measured)
 #   tools/gate.sh            full run (the wasm legs + the crossings)
-#   tools/gate.sh --fast     full run minus the self chain (~4 min)
+#   tools/gate.sh --fast     full run minus the self chains (~4 min)
 #
 # Self-sufficient: if the oracle (build/rho-boot) is missing or older than
 # its sources (boot/src, boot/prelude, tools/embed.py), the gate rebuilds
@@ -14,24 +14,37 @@
 # Legs (functional equivalence is the law: same program in, same stdout +
 # exit code out — never a byte compare of two compilers' wasm):
 #   1 boot-selftest    the oracle is healthy (goldens + diag)
-#   2 build-mirror     boot compiles the mirror to wasm
-#   3 corpus-diff      every corpus program: boot-built vs mirror-built
-#                      wasm artifacts run with identical stdout + exit;
-#                      the boot runs are the corpus goldens
-#   4 self-chain       mirror builds itself -> child; child builds itself
-#                      -> grandchild; the grandchild rebuilds every corpus
-#                      program and matches the boot goldens in behavior
+#   2 build-mirror     the pinned seed builds the mirror (the frontier leg:
+#                      the mirror's own sources speak the seed's language)
+#   3 corpus-diff      every corpus program: boot-era entries boot-built vs
+#                      mirror-built with identical stdout + exit; seed-era
+#                      entries (boot cannot parse them) graded against their
+#                      committed .out goldens; boot runs stay the boot-era
+#                      corpus goldens
+#   4 self-chain       the full ring: mirror builds itself -> child; child
+#                      builds itself -> grandchild; the grandchild rebuilds
+#                      every corpus program and matches the golden in
+#                      behavior
 #   5 seed-chain       the pinned self-built seed (boot/rho-seed.wasm)
-#                      builds the mirror: byte-identical while the mirror
-#                      stays within the pin's feature set, behavior-graded
-#                      after the frontier moves past it
-#   6 web-root         boot builds the wasm-only root (web.wasm): version,
-#                      hello build, the native refusal, and the size win
-#                      (reachability drops the six native backend modules)
-#   7 crossings        per image target: mirror builds itself + a hello
-#                      smoke (build-only; exec natively is never done here
-#                      — a corrupt image wedges the kernel, SIGKILL-proof)
-#   6 diag-parity      tests/diag/*.rho: mirror's diagnostics are byte-
+#                      builds the mirror: the frontier every run; the leg
+#                      first re-checks the pin against the SHA-256 slot
+#                      docs/bootstrap.md records (tools/reseed.sh --check)
+#   6 web-root         the mirror builds its own root with --set
+#                      native=false (web.wasm): version, hello build, the
+#                      native refusal, and the fold's fingerprints — the
+#                      size win, no native-module qualified name anywhere
+#                      in the artifact, a smaller function section (the
+#                      six native backend modules are gone)
+#   7 web-chain        the web ring: web.wasm builds itself -> child ->
+#                      grandchild, all --set native=false; the grandchild
+#                      matches the web behavior law, stays pruned, and
+#                      rebuilds every corpus program to the goldens
+#   8 crossings        per image target: mirror builds itself + a hello
+#                      smoke, each image statically structure-checked with
+#                      tools/image-check.py (exec natively is never done
+#                      here — a corrupt image wedges the kernel,
+#                      SIGKILL-proof; the structure probe is the evidence)
+#   9 diag-parity      tests/diag/*.rho: mirror's diagnostics are byte-
 #                      identical to boot's
 set -u
 cd "$(dirname "$0")/.."
@@ -61,7 +74,7 @@ run_t() {
 wasmtime_run() {
   t=$1; shift
   perl -e 'alarm shift; exec @ARGV or die "wasmtime_run: cannot exec $ARGV[0]: $!\n"' "$t" \
-    wasmtime run -W max-wasm-stack=1073741824 --dir . "$@"
+    wasmtime run --dir . "$@"
 }
 
 # strip the temporary WE debug prints (scratch lines in boot/src:
@@ -73,6 +86,39 @@ wasmtime_run() {
 # filtered.
 strip_dbg() {
   grep -v -e '^HEAP@' -e '^WE '
+}
+
+# wasm_funcs <file> — the count of entries in the artifact's function
+# section (a static walk: custom sections aside, section id 3 carries one
+# ULEB128 vector length and nothing else worth parsing). The fold's
+# structural evidence: the six native backend modules a web build drops
+# are a few hundred functions gone (measured 2026-09-24: 1158 full vs
+# 944 web).
+wasm_funcs() {
+  python3 - "$1" <<'PYEOF'
+import sys
+b = open(sys.argv[1], "rb").read()
+if b[:4] != b"\x00asm":
+    sys.exit(f"wasm_funcs: {sys.argv[1]}: not a wasm module")
+def leb(p):
+    r = s = 0
+    while True:
+        x = b[p]; p += 1
+        r |= (x & 0x7F) << s
+        if not x & 0x80:
+            return r, p
+        s += 7
+p = 8
+while p < len(b):
+    sid = b[p]; p += 1
+    size, p = leb(p)
+    if sid == 3:
+        n, _ = leb(p)
+        print(n)
+        sys.exit(0)
+    p += size
+sys.exit(f"wasm_funcs: {sys.argv[1]}: no function section")
+PYEOF
 }
 
 # the gate is invoked directly (no Makefile target): if the oracle is
@@ -99,13 +145,18 @@ leg() {
 
 # cross_smoke <target> <image> — hello build for one native target; the
 # image must actually exist (a silent exit-0 with no write is not a green)
+# and must parse as that target's image (tools/image-check.py: static
+# structure only — a corrupt image is never exec'd here)
 cross_smoke() {
-  wasmtime_run 90 $G/m.wasm build corpus/001_hello.rho --target "$1" -o "$2" && [ -f "$2" ]
+  wasmtime_run 90 $G/m.wasm build corpus/001_hello.rho --target "$1" -o "$2" &&
+    [ -f "$2" ] && run_t 10 python3 tools/image-check.py "$2" "$1" >/dev/null
 }
 
-# cross_self <target> <image> — the full self-build for one native target
+# cross_self <target> <image> — the full self-build for one native target,
+# structure-checked like the smoke
 cross_self() {
-  wasmtime_run 900 $G/m.wasm build libs/compiler/full.rho --target "$1" -o "$2" && [ -f "$2" ]
+  wasmtime_run 900 $G/m.wasm build libs/compiler/cli.rho --target "$1" -o "$2" &&
+    [ -f "$2" ] && run_t 10 python3 tools/image-check.py "$2" "$1" >/dev/null
 }
 
 echo "== rho bootstrap gate $(date '+%H:%M:%S') =="
@@ -113,12 +164,15 @@ echo "== rho bootstrap gate $(date '+%H:%M:%S') =="
 # 1 — the oracle
 leg boot-selftest run_t 10 ./build/rho-boot selftest
 
-# 2 — boot compiles the mirror. The old image is removed first: a failed
-# build must not leave the three mirror-side legs below grading last run's
-# compiler. Boot builds the mirror in under a second (measured 0.6s); the
-# 60s cap is headroom for a cold machine, not slack.
+# 2 — the mirror. Since the dot round the mirror's own sources speak the
+# pinned seed's language (dots, `as`, `pub use`, and since the params
+# round the merged root's own `if (native)` fold), which boot — frozen —
+# cannot compile: the seed builds the mirror, and this leg enforces the
+# frontier (docs/bootstrap.md, the re-pinning ritual's step 3). The old
+# image is removed first: a failed build must not leave the mirror-side
+# legs grading last run's compiler.
 rm -f $G/m.wasm
-leg build-mirror run_t 60 ./build/rho-boot build libs/compiler/full.rho --target wasm32-wasi -o $G/m.wasm
+leg build-mirror wasmtime_run 900 boot/rho-seed.wasm build libs/compiler/cli.rho --target wasm32-wasi -o $G/m.wasm
 
 # every leg below grades the mirror THIS run produced; without one there is
 # nothing to compare and the leg goes RED saying so — it never falls back
@@ -129,7 +183,11 @@ no_mirror() {
   FAIL=$((FAIL+1))
 }
 
-# 3 — corpus differential (wasm): boot artifact vs mirror artifact
+# 3 — corpus differential (wasm): two eras, one law. Boot-era programs:
+# boot builds and runs them (the frozen oracle) and the mirror must match
+# that behavior. Seed-era programs (the dot-round corpus, e.g. 032): boot
+# cannot even parse them, so the committed .out golden — generated by the
+# self-built chain — is the oracle the mirror must meet.
 printf '%-24s' corpus-diff
 if [ ! -f $G/m.wasm ]; then
   no_mirror corpus-diff
@@ -140,21 +198,36 @@ for src in corpus/*.rho; do
   name=$(basename "$src" .rho)
   total=$((total+1))
   rm -f $G/corpus/${name}.boot.wasm $G/corpus/${name}.self.wasm
-  run_t 10 ./build/rho-boot build "$src" --target wasm32-wasi -o $G/corpus/${name}.boot.wasm >/dev/null 2>&1 || { echo "corpus $name: boot build failed"; diffs=$((diffs+1)); continue; }
-  [ -f $G/corpus/${name}.boot.wasm ] || { echo "corpus $name: boot produced no artifact"; diffs=$((diffs+1)); continue; }
-  wasmtime_run 10 $G/m.wasm build "$src" --target wasm32-wasi -o $G/corpus/${name}.self.wasm >/dev/null 2>&1 || { echo "corpus $name: mirror build failed"; diffs=$((diffs+1)); continue; }
-  [ -f $G/corpus/${name}.self.wasm ] || { echo "corpus $name: mirror produced no artifact"; diffs=$((diffs+1)); continue; }
-  bout=$(wasmtime_run 10 $G/corpus/${name}.boot.wasm 2>/dev/null); brc=$?
-  sout=$(wasmtime_run 10 $G/corpus/${name}.self.wasm 2>/dev/null); src_rc=$?
-  bout=$(printf '%s' "$bout" | strip_dbg)
-  sout=$(printf '%s' "$sout" | strip_dbg)
-  # boot is the frozen oracle: its behavior is the corpus golden the
-  # self-chain leg tests the grandchild against
-  printf '%s' "$bout" > $G/corpus/${name}.golden.out
-  printf '%s\n' "$brc" > $G/corpus/${name}.golden.rc
-  if [ "$bout" != "$sout" ] || [ "$brc" != "$src_rc" ]; then
-    echo "corpus $name: behavior differs (boot rc=$brc mirror rc=$src_rc)"
-    diffs=$((diffs+1))
+  run_t 10 ./build/rho-boot build "$src" --target wasm32-wasi -o $G/corpus/${name}.boot.wasm >/dev/null 2>&1
+  if [ -f $G/corpus/${name}.boot.wasm ]; then
+    wasmtime_run 10 $G/m.wasm build "$src" --target wasm32-wasi -o $G/corpus/${name}.self.wasm >/dev/null 2>&1 || { echo "corpus $name: mirror build failed"; diffs=$((diffs+1)); continue; }
+    [ -f $G/corpus/${name}.self.wasm ] || { echo "corpus $name: mirror produced no artifact"; diffs=$((diffs+1)); continue; }
+    bout=$(wasmtime_run 10 $G/corpus/${name}.boot.wasm 2>/dev/null); brc=$?
+    sout=$(wasmtime_run 10 $G/corpus/${name}.self.wasm 2>/dev/null); src_rc=$?
+    bout=$(printf '%s' "$bout" | strip_dbg)
+    sout=$(printf '%s' "$sout" | strip_dbg)
+    # boot is the frozen oracle: its behavior is the corpus golden the
+    # self-chain leg tests the grandchild against
+    printf '%s' "$bout" > $G/corpus/${name}.golden.out
+    printf '%s\n' "$brc" > $G/corpus/${name}.golden.rc
+    if [ "$bout" != "$sout" ] || [ "$brc" != "$src_rc" ]; then
+      echo "corpus $name: behavior differs (boot rc=$brc mirror rc=$src_rc)"
+      diffs=$((diffs+1))
+    fi
+  else
+    wasmtime_run 10 $G/m.wasm build "$src" --target wasm32-wasi -o $G/corpus/${name}.self.wasm >/dev/null 2>&1 || { echo "corpus $name: mirror build failed"; diffs=$((diffs+1)); continue; }
+    [ -f $G/corpus/${name}.self.wasm ] || { echo "corpus $name: mirror produced no artifact"; diffs=$((diffs+1)); continue; }
+    sout=$(wasmtime_run 10 $G/corpus/${name}.self.wasm 2>/dev/null); src_rc=$?
+    sout=$(printf '%s' "$sout" | strip_dbg)
+    want_out=$(cat "corpus/$name.out" 2>/dev/null)
+    want_rc=$(sed -n 's|^// exit: ||p' "$src" | head -1)
+    [ -n "$want_rc" ] || want_rc=0
+    printf '%s' "$want_out" > $G/corpus/${name}.golden.out
+    printf '%s\n' "$want_rc" > $G/corpus/${name}.golden.rc
+    if [ "$sout" != "$want_out" ] || [ "$src_rc" != "$want_rc" ]; then
+      echo "corpus $name: seed-era golden differs (want rc=$want_rc mirror rc=$src_rc)"
+      diffs=$((diffs+1))
+    fi
   fi
 done
 if [ "$diffs" = 0 ]; then echo "GREEN ($total programs)"; PASS=$((PASS+1))
@@ -173,9 +246,9 @@ if [ "$FAST" = 0 ]; then
   # HEAP@ scratch lines, and the verdict line owns the leg's output
   if [ ! -f $G/m.wasm ]; then
     no_mirror self-chain
-  elif ! wasmtime_run 900 $G/m.wasm build libs/compiler/full.rho --target wasm32-wasi -o $G/child.wasm >/dev/null 2>&1 || [ ! -f $G/child.wasm ]; then
+  elif ! wasmtime_run 900 $G/m.wasm build libs/compiler/cli.rho --target wasm32-wasi -o $G/child.wasm >/dev/null 2>&1 || [ ! -f $G/child.wasm ]; then
     echo "RED (child build failed)"; FAIL=$((FAIL+1))
-  elif ! wasmtime_run 900 $G/child.wasm build libs/compiler/full.rho --target wasm32-wasi -o $G/grandchild.wasm >/dev/null 2>&1 || [ ! -f $G/grandchild.wasm ]; then
+  elif ! wasmtime_run 900 $G/child.wasm build libs/compiler/cli.rho --target wasm32-wasi -o $G/grandchild.wasm >/dev/null 2>&1 || [ ! -f $G/grandchild.wasm ]; then
     echo "RED (grandchild build failed)"; FAIL=$((FAIL+1))
   else
     mkdir -p $G/selfchain
@@ -231,7 +304,16 @@ fi
 # the mirror grows past the pin, the leg grades behavior instead and
 # says so — the ritual for re-pinning lives in docs/bootstrap.md.
 printf '%-24s' seed-chain
-if [ ! -f boot/rho-seed.wasm ]; then
+# the pin is checked against the SHA-256 slot docs/bootstrap.md records
+# (tools/reseed.sh --check) BEFORE anything else: a rotted record would
+# make every verdict below mean nothing
+pinmsg=$(sh tools/reseed.sh --check 2>&1)
+pinrc=$?
+if [ "$pinrc" != 0 ]; then
+  echo RED
+  printf '%s\n' "$pinmsg" | tail -2 | sed 's/^/    /'
+  FAIL=$((FAIL+1))
+elif [ ! -f boot/rho-seed.wasm ]; then
   echo "RED (no pinned seed at boot/rho-seed.wasm)"
   FAIL=$((FAIL+1))
 else
@@ -240,7 +322,7 @@ else
   sv=$(wasmtime_run 10 boot/rho-seed.wasm --version 2>/dev/null)
   if [ "$sv" = "rho 0.4.0" ]; then
     rm -f $G/seed-m.wasm
-    if wasmtime_run 900 boot/rho-seed.wasm build libs/compiler/full.rho --target wasm32-wasi -o $G/seed-m.wasm >/dev/null 2>&1 && [ -f $G/seed-m.wasm ]; then
+    if wasmtime_run 900 boot/rho-seed.wasm build libs/compiler/cli.rho --target wasm32-wasi -o $G/seed-m.wasm >/dev/null 2>&1 && [ -f $G/seed-m.wasm ]; then
       # the seed building the mirror IS the child build; when the
       # self-chain leg ran, grade against its child.wasm
       if [ -f $G/child.wasm ] && cmp -s $G/seed-m.wasm $G/child.wasm; then
@@ -267,9 +349,12 @@ else
   fi
 fi
 
-# 5b — the wasm-only web root: the browser artifact. Same driver, no
-# native backends; a native target must refuse with exit 2 and the
-# one-line reason, exactly like boot refuses what it does not ship.
+# 5b — the web configuration: the browser artifact, the one package root
+# compiled with `--set native=false`. The fold drops the native pipe and
+# its six backends from the artifact; a native target must refuse with
+# exit 2 and the one-line reason, exactly like boot refuses what it does
+# not ship. This run's own mirror (m.wasm) is the builder: the leg thus
+# exercises the mirror's own --set and folding on itself.
 printf '%-24s' web-root
 if [ ! -f $G/m.wasm ]; then
   no_mirror web-root
@@ -277,8 +362,9 @@ else
   rm -f $G/web.wasm
   webok=0
   websize=0
-  if run_t 60 ./build/rho-boot build libs/compiler/web.rho --target wasm32-wasi -o $G/web.wasm >/dev/null 2>&1 && [ -f $G/web.wasm ]; then
+  if wasmtime_run 900 $G/m.wasm build libs/compiler/cli.rho --target wasm32-wasi --set native=false -o $G/web.wasm >/dev/null 2>&1 && [ -f $G/web.wasm ]; then
     websize=$(wc -c < $G/web.wasm | tr -d ' ')
+    fullsize=$(wc -c < $G/m.wasm | tr -d ' ')
     vout=$(wasmtime_run 10 $G/web.wasm --version 2>/dev/null)
     rm -rf $G/whello.wasm
     wasmtime_run 90 $G/web.wasm build corpus/001_hello.rho --target wasm32-wasi -o $G/whello.wasm >/dev/null 2>&1
@@ -287,22 +373,106 @@ else
     # the refusal: exit code 2, one clear line (rc read via a re-run)
     wasmtime_run 30 $G/web.wasm build corpus/001_hello.rho --target arm64-mac -o $G/never.out >/dev/null 2>&1
     natrc=$?
+    # the fold's fingerprints: the six native backend modules are gone
+    # from the artifact — their diag strings ("rho: macho64: …") absent,
+    # the function section visibly smaller, the file strictly lighter.
+    # The positive control keeps the greps honest: if the FULL artifact
+    # ever loses the string too, the leg re-points instead of passing
+    # vacuously.
+    fgm=$(grep -ac macho64 $G/m.wasm); fgw=$(grep -ac macho64 $G/web.wasm)
+    few=$(grep -ac elf64 $G/web.wasm)
+    ffnfull=$(wasm_funcs $G/m.wasm); ffnweb=$(wasm_funcs $G/web.wasm)
     if [ "$vout" = "rho 0.4.0" ] && [ "$hrun" = "hello, world" ] && [ "$natrc" = 2 ] &&
-       printf '%s' "$nat" | grep -q "not linked in this build"; then
+       printf '%s' "$nat" | grep -q "not linked in this build" &&
+       [ "$fgm" -ge 1 ] && [ "$fgw" -eq 0 ] && [ "$few" -eq 0 ] &&
+       [ -n "$ffnfull" ] && [ -n "$ffnweb" ] && [ "$ffnweb" -lt "$ffnfull" ] &&
+       [ "$websize" -lt "$fullsize" ]; then
       webok=1
     fi
   fi
   if [ "$webok" = 1 ]; then
-    fullsize=$(wc -c < $G/m.wasm | tr -d ' ')
-    echo "GREEN ($(printf '%s' $websize | awk '{printf "%.1f", $1/1048576}') MiB vs $(printf '%s' $fullsize | awk '{printf "%.1f", $1/1048576}') MiB full)"
+    echo "GREEN ($(printf '%s' $websize | awk '{printf "%.1f", $1/1048576}') MiB vs $(printf '%s' $fullsize | awk '{printf "%.1f", $1/1048576}') MiB full; $ffnweb fns vs $ffnfull; native diag strings absent)"
     PASS=$((PASS+1))
   else
-    echo "RED"
+    echo "RED (v=${vout:-?} hello=${hrun:-?} rc=${natrc:-?} macho64 full=${fgm:-?} web=${fgw:-?} elf64 web=${few:-?} fns ${ffnweb:-?}/${ffnfull:-?} bytes ${websize:-?}/${fullsize:-?})"
     FAIL=$((FAIL+1))
   fi
 fi
 
-# 6 — diagnostics parity
+# 7 — the web ring: the web configuration's own bootstrap loop. web.wasm
+# builds itself -> child -> grandchild, all --set native=false. The
+# grandchild must satisfy the web behavior law (version, hello, the
+# native refusal), stay pruned (the fold's fingerprints — same evidence
+# web-root uses), and rebuild every corpus program to the goldens
+# corpus-diff laid down: the web compiler is a full citizen of the same
+# functional-equivalence law, not a shrugged-off subset.
+printf '%-24s' web-chain
+if [ ! -f $G/web.wasm ] || [ ! -f $G/m.wasm ]; then
+  echo "RED (no fresh web root: web-root failed)"
+  FAIL=$((FAIL+1))
+else
+  rm -f $G/web-child.wasm $G/web-grandchild.wasm
+  if ! wasmtime_run 900 $G/web.wasm build libs/compiler/cli.rho --target wasm32-wasi --set native=false -o $G/web-child.wasm >/dev/null 2>&1 || [ ! -f $G/web-child.wasm ]; then
+    echo "RED (web child build failed)"; FAIL=$((FAIL+1))
+  elif ! wasmtime_run 900 $G/web-child.wasm build libs/compiler/cli.rho --target wasm32-wasi --set native=false -o $G/web-grandchild.wasm >/dev/null 2>&1 || [ ! -f $G/web-grandchild.wasm ]; then
+    echo "RED (web grandchild build failed)"; FAIL=$((FAIL+1))
+  else
+    ringok=1; wnote=""
+    # the web behavior law, on the grandchild
+    wv=$(wasmtime_run 10 $G/web-grandchild.wasm --version 2>/dev/null)
+    [ "$wv" = "rho 0.4.0" ] || { ringok=0; wnote="$wnote version"; }
+    rm -f $G/wghello.wasm
+    wasmtime_run 90 $G/web-grandchild.wasm build corpus/001_hello.rho --target wasm32-wasi -o $G/wghello.wasm >/dev/null 2>&1
+    wh=$(wasmtime_run 10 $G/wghello.wasm 2>/dev/null)
+    [ "$wh" = "hello, world" ] || { ringok=0; wnote="$wnote hello"; }
+    rm -f $G/wgnever.out
+    wasmtime_run 30 $G/web-grandchild.wasm build corpus/001_hello.rho --target arm64-mac -o $G/wgnever.out >/dev/null 2>&1
+    wnrc=$?
+    wnat=$(wasmtime_run 30 $G/web-grandchild.wasm build corpus/001_hello.rho --target arm64-mac -o $G/wgnever.out 2>&1)
+    { [ "$wnrc" = 2 ] && printf '%s' "$wnat" | grep -q "not linked in this build"; } ||
+      { ringok=0; wnote="$wnote refusal"; }
+    # stays pruned
+    [ "$(grep -ac macho64 $G/web-grandchild.wasm)" = 0 ] || { ringok=0; wnote="$wnote macho64"; }
+    [ "$(grep -ac elf64 $G/web-grandchild.wasm)" = 0 ] || { ringok=0; wnote="$wnote elf64"; }
+    wgfn=$(wasm_funcs $G/web-grandchild.wasm)
+    mfn=$(wasm_funcs $G/m.wasm)
+    { [ -n "$wgfn" ] && [ -n "$mfn" ] && [ "$wgfn" -lt "$mfn" ]; } ||
+      { ringok=0; wnote="$wnote fns"; }
+    # the corpus, rebuilt by the web grandchild to the shared goldens
+    mkdir -p $G/webchain
+    wdiffs=0; wtotal=0
+    for src in corpus/*.rho; do
+      name=$(basename "$src" .rho)
+      wtotal=$((wtotal+1))
+      goutf=$G/corpus/${name}.golden.out; grcf=$G/corpus/${name}.golden.rc
+      if [ ! -f "$goutf" ] || [ ! -f "$grcf" ]; then
+        echo "webchain $name: no golden (corpus-diff failed?)"
+        wdiffs=$((wdiffs+1)); continue
+      fi
+      rm -f $G/webchain/${name}.wasm
+      if ! wasmtime_run 10 $G/web-grandchild.wasm build "$src" --target wasm32-wasi -o $G/webchain/${name}.wasm >/dev/null 2>&1 || [ ! -f $G/webchain/${name}.wasm ]; then
+        echo "webchain $name: grandchild-web build failed"
+        wdiffs=$((wdiffs+1)); continue
+      fi
+      cout=$(wasmtime_run 10 $G/webchain/${name}.wasm 2>/dev/null); crc=$?
+      cout=$(printf '%s' "$cout" | strip_dbg)
+      if [ "$cout" != "$(cat "$goutf")" ] || [ "$crc" != "$(cat "$grcf")" ]; then
+        echo "webchain $name: behavior differs from golden (rc=$crc golden rc=$(cat "$grcf"))"
+        wdiffs=$((wdiffs+1))
+      fi
+    done
+    [ "$wdiffs" = 0 ] || { ringok=0; wnote="$wnote corpus($wdiffs/$wtotal)"; }
+    if [ "$ringok" = 1 ]; then
+      echo "GREEN ($wtotal programs via the web grandchild; $wgfn fns vs $mfn full)"
+      PASS=$((PASS+1))
+    else
+      echo "RED ($wnote)"
+      FAIL=$((FAIL+1))
+    fi
+  fi
+fi
+
+# 9 — diagnostics parity
 printf '%-24s' diag-parity
 if [ ! -f $G/m.wasm ]; then
   no_mirror diag-parity

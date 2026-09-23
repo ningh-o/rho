@@ -38,8 +38,11 @@ if [ ! -f "$B" ]; then
 fi
 if [ ! -f "$M" ]; then
   echo "opt: no mirror at $M — building it"
-  perl -e 'alarm shift; exec @ARGV or die "cannot exec $ARGV[0]\n"' 60 \
-    "$B" build libs/compiler/full.rho --target wasm32-wasi -o "$M" || {
+  # the mirror's own sources speak the pinned seed's language (dots, and
+  # since the params round the merged root's own fold), so the seed
+  # builds it (docs/bootstrap.md, the re-pinning ritual)
+  wasmtime run --dir . boot/rho-seed.wasm \
+    build libs/compiler/cli.rho --target wasm32-wasi -o "$M" >/dev/null 2>&1 || {
     echo "opt: mirror build failed"
     exit 2
   }
@@ -72,7 +75,7 @@ for src in tests/lang/opt/[st]*.rho; do
   if [ -z "$verdict" ]; then
     want_exit=$(head -1 "$src" | sed 's|// exit: ||')
     rm -f "$G/$name.wasm" "$G/$name.got"
-    if ! wr 90 wasmtime run -W max-wasm-stack=1073741824 --dir . "$M" build "$src" \
+    if ! wr 90 wasmtime run --dir . "$M" build "$src" \
         --target wasm32-wasi -o "$G/$name.wasm" >/dev/null 2>&1 || [ ! -f "$G/$name.wasm" ]; then
       verdict="FAIL (mirror build)"
     else
@@ -95,9 +98,13 @@ for src in tests/lang/opt/[st]*.rho; do
   # regenerate it fresh every run (a cached mainir would grade the
   # previous mirror)
   if [ -z "$verdict" ] && { [ -f "tests/lang/opt/$name.fold" ] || [ -f "tests/lang/opt/$name.no" ]; }; then
-    sym="rho_$(printf '%s' "$src" | tr '/.' '__')"
-    wr 90 wasmtime run -W max-wasm-stack=1073741824 --dir . "$M" build "$src" \
-      --target wasm32-wasi -o "$G/$name.wasm" --dump-ir 2>"$G/$name.ir" >/dev/null
+    # the dumps run under -g: the pins anchor on full internal names, which
+    # no naming-scheme change touches (the default artifact uses the
+    # shortest serial names — tests/lang/params pins that scheme). The root
+    # is module index 0, so a single-file program's entry is `rho_0__main`.
+    sym="rho_0__main"
+    wr 90 wasmtime run --dir . "$M" build "$src" \
+      --target wasm32-wasi -o "$G/$name.wasm" --dump-ir -g 2>"$G/$name.ir" >/dev/null
     awk -v fn="$sym" 'BEGIN{p=0} /^fn /{p=0} index($0, fn){p=1} p' "$G/$name.ir" | strip_dbg > "$G/$name.mainir"
   fi
   # fold markers: main's dump section must contain each marker line
@@ -123,8 +130,8 @@ for src in tests/lang/opt/[st]*.rho; do
   # global pins: the dump's `^global ` list is the artifact's data image
   # after reachability — .g must appear, .gno must not
   if [ -z "$verdict" ] && { [ -f "tests/lang/opt/$name.g" ] || [ -f "tests/lang/opt/$name.gno" ]; }; then
-    wr 90 wasmtime run -W max-wasm-stack=1073741824 --dir . "$M" build "$src" \
-      --target wasm32-wasi -o "$G/$name.wasm" --dump-ir 2>"$G/$name.ir" >/dev/null
+    wr 90 wasmtime run --dir . "$M" build "$src" \
+      --target wasm32-wasi -o "$G/$name.wasm" --dump-ir -g 2>"$G/$name.ir" >/dev/null
     grep -E '^global ' "$G/$name.ir" | strip_dbg > "$G/$name.gl"
   fi
   if [ -z "$verdict" ] && [ -f "tests/lang/opt/$name.g" ]; then

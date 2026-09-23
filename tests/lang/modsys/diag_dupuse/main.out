@@ -1,0 +1,1 @@
+tests/lang/modsys/diag_dupuse/main.rho:4:1: error: duplicate name `a`

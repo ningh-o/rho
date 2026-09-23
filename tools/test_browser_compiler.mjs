@@ -1,17 +1,32 @@
 // Drives the compiler wasm exactly the way the browser playground does,
 // over every corpus program, and compares stdout/exit against the .out
-// files. `node tools/test_browser_compiler.mjs [compiler.wasm]`
+// files. A corpus program's module files (the dot round's packages, e.g.
+// corpus/geom/) are mounted beside /main.rho so `use` resolves in the
+// guest exactly as it does on disk. `node tools/test_browser_compiler.mjs [compiler.wasm]`
 import { readFileSync, readdirSync } from "node:fs";
 import { runWasm, createFS } from "../site/assets/wasi.js";
 
 const compilerPath = process.argv[2] || "build/rho.wasm";
 const compilerBytes = readFileSync(compilerPath);
 
-async function rhoCompile(source) {
+function mountRhoTree(fs, hostDir, guestDir) {
+  for (const e of readdirSync(hostDir, { withFileTypes: true })) {
+    const hp = `${hostDir}/${e.name}`;
+    const gp = `${guestDir}${e.name}`;
+    if (e.isDirectory()) {
+      mountRhoTree(fs, hp, `${gp}/`);
+    } else if (e.name.endsWith(".rho")) {
+      fs.write(gp, readFileSync(hp));
+    }
+  }
+}
+
+async function rhoCompile(source, name) {
   const fs = createFS();
-  fs.write("/main.rho", new TextEncoder().encode(source));
+  mountRhoTree(fs, "corpus", "/");
+  fs.write(`/${name}.rho`, new TextEncoder().encode(source));
   const wasiOpts = {
-    args: ["rho", "build", "/main.rho", "--target", "wasm32-wasi", "-o", "/out.wasm"],
+    args: ["rho", "build", `/${name}.rho`, "--target", "wasm32-wasi", "-o", "/out.wasm"],
     fs,
     onStdout: () => {},
     onStderr: () => {},
@@ -41,7 +56,7 @@ for (const file of readdirSync(dir).filter((f) => f.endsWith(".rho")).sort()) {
     // no .out file: the program prints nothing
   }
   const t0 = performance.now();
-  const compiled = await rhoCompile(source);
+  const compiled = await rhoCompile(source, name);
   const tCompile = performance.now() - t0;
   if (!compiled.ok) {
     console.log(`FAIL ${name} (compile): ${compiled.stderr.split("\n")[0]}`);

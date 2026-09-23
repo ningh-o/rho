@@ -1,0 +1,1 @@
+tests/lang/modsys/diag_pkgpriv/main.rho:3:1: error: `store.util` is package-private (use the package facade `store`)

@@ -1,0 +1,13 @@
+// exit: 0
+// heavy is referenced only from the dead branch: reachability must drop it
+// whole from the artifact (.irno pins its absence in the dump)
+const native: bool = false;
+use helper;
+use heavy;
+fn main() -> i32 {
+  helper.hello();
+  if native {
+    heavy.crunch();
+  }
+  return 0;
+}

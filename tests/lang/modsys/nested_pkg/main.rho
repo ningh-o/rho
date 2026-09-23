@@ -1,0 +1,10 @@
+// exit: 0
+use garden;
+use garden.roses;
+
+fn main() -> i32 {
+  printf("{}\n", garden.bloom());
+  printf("{}\n", garden.kind());
+  printf("{}\n", roses.kind());
+  return 0;
+}

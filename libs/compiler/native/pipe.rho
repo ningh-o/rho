@@ -10,17 +10,17 @@ use check;
 use ir;
 use lower;
 use emit_wasm;
-use native/emit_arm64;
-use native/emit_amd64;
-use native/asm64;
-use native/asm86;
-use native/macho64;
-use native/elf64;
+use native.emit_arm64;
+use native.emit_amd64;
+use native.asm64;
+use native.asm86;
+use native.macho64;
+use native.elf64;
 
 // ============== 0.3.2 image layer ==========================================
 // ---- runtime blobs (byte-identical to boot's cli.c) ----------------------
 
-fn rt_arm64() -> string { return """.section __TEXT,__text,regular,pure_instructions
+fn rt_arm64(heap: string) -> string { return """.section __TEXT,__text,regular,pure_instructions
 .globl _rho_rt_start
 _rho_rt_start:
   adrp x8, _rho_rt_argc@PAGE
@@ -31,8 +31,8 @@ _rho_rt_start:
   str x1, [x8]
   adrp x8, _rho_rt_heap@PAGE
   add x8, x8, _rho_rt_heap@PAGEOFF
-  adrp x9, _rho__prelude___HEAP@PAGE
-  add x9, x9, _rho__prelude___HEAP@PAGEOFF
+  adrp x9, """ + heap + """@PAGE
+  add x9, x9, """ + heap + """@PAGEOFF
   str x8, [x9]
   bl _main
   mov x16, #1
@@ -110,7 +110,7 @@ _rho_rt_argv:
   .quad 0
 """; }
 
-fn rt_amd64_linux() -> string { return """.text
+fn rt_amd64_linux(heap: string) -> string { return """.text
 rho_rt_start:
   movq (%rsp), %rax
   leaq rho_rt_argc(%rip), %rcx
@@ -119,7 +119,7 @@ rho_rt_start:
   leaq rho_rt_argv(%rip), %rcx
   movq %rax, (%rcx)
   leaq _rho_rt_heap(%rip), %rax
-  leaq rho__prelude___HEAP(%rip), %rcx
+  leaq """ + heap + """(%rip), %rcx
   movq %rax, (%rcx)
   call main
   movl %eax, %edi
@@ -162,7 +162,7 @@ rho_rt_argv:
   .quad 0
 """; }
 
-fn rt_arm64_linux() -> string { return """.text
+fn rt_arm64_linux(heap: string) -> string { return """.text
 rho_rt_start:
   ldr x10, [sp]
   adrp x8, rho_rt_argc@PAGE
@@ -174,8 +174,8 @@ rho_rt_start:
   str x10, [x8]
   adrp x8, _rho_rt_heap@PAGE
   add x8, x8, _rho_rt_heap@PAGEOFF
-  adrp x9, rho__prelude___HEAP@PAGE
-  add x9, x9, rho__prelude___HEAP@PAGEOFF
+  adrp x9, """ + heap + """@PAGE
+  add x9, x9, """ + heap + """@PAGEOFF
   str x8, [x9]
   bl main
   mov x8, #93
@@ -241,13 +241,30 @@ rho_rt_argv:
 static mut ARM64_MAC_HDR: u64 = 856;
 static mut ELF64_HDR: u64 = 232;
 
+// the prelude heap cell's assembly label, spelled for the target's object
+// format (mach-o prefixes C-visible externs with an underscore). The label
+// comes from sym_symbol so the internal-symbol law stays one law — the old
+// blobs hardcoded the pre-shortening spelling and broke the moment symbols
+// slimmed.
+fn heap_label(target: i32) -> string {
+  let sym: *check.Sym = lower.prelude_fn("HEAP");
+  let mut s: string = "rho_1__HEAP";
+  if sym != null {
+    s = lower.sym_symbol(sym);
+  }
+  if target == 2 {
+    return "_" + s;
+  }
+  return s;
+}
+
 // native image pipeline: runtime blob + emitted text -> assemble -> write
 // the image. Returns 0 on success; the caller prints the artifact line.
 fn build_native_image(target: i32, text: []u8, out_path: string) -> i32 {
   if target == 0 {
     // amd64-linux: rho's own assembly -> own assembler -> static ELF;
     // no libc, no interpreter, no external toolchain anywhere
-    let full: string = cli.cat(rt_amd64_linux(), cli.bytes_as_string(text));
+    let full: string = rt_amd64_linux(heap_label(target)) + cli.bytes_as_string(text);
     let r: *asm64.AResult = asm86.asm86_assemble(full, 0x400000 + ELF64_HDR, 0x1000, 0);
     if !r.ok {
       return 1;
@@ -260,7 +277,7 @@ fn build_native_image(target: i32, text: []u8, out_path: string) -> i32 {
   }
   if target == 4 {
     // arm64-linux: raw syscalls, the asm-generic table (write=64, exit=93)
-    let full: string = cli.cat(rt_arm64_linux(), cli.bytes_as_string(text));
+    let full: string = rt_arm64_linux(heap_label(target)) + cli.bytes_as_string(text);
     let r: *asm64.AResult = asm64.asm64_assemble(full, 0x400000 + ELF64_HDR, 0x1000, 0);
     if !r.ok {
       return 1;
@@ -275,7 +292,7 @@ fn build_native_image(target: i32, text: []u8, out_path: string) -> i32 {
     // arm64-mac: static Mach-O with an ad-hoc signature; image base
     // VM 0x100000000 + the fixed 856-byte load-command block; 16K pages —
     // Apple Silicon maps segments on 16K boundaries
-    let full: string = cli.cat(rt_arm64(), cli.bytes_as_string(text));
+    let full: string = rt_arm64(heap_label(target)) + cli.bytes_as_string(text);
     let r: *asm64.AResult = asm64.asm64_assemble(full, (0x100000000 as u64) + ARM64_MAC_HDR, 0x4000,
                                      (0x100000000 as u64) + 0x1000000);
     if !r.ok {
@@ -313,7 +330,7 @@ pub fn pipe_emit(target: i32, out_path: string) -> i32 {
     // the assembly text rides next to the image — the toolchain never
     // shells out to an assembler, so this sidecar is the only way to
     // read what the backend emitted (debug surface, harmless to build)
-    cli.write_file(cli.cat3(out_path, ".s", ""), cli.bytes_as_string(bytes));
+    cli.write_file(out_path + ".s" + "", cli.bytes_as_string(bytes));
     let rc: i32 = build_native_image(target, bytes, out_path);
     if rc != 0 {
       return 1;
@@ -322,7 +339,7 @@ pub fn pipe_emit(target: i32, out_path: string) -> i32 {
   }
   // shared native tail (amd64-mac): write the assembly text and stop.
   // The toolchain does not shell out to an assembler/linker.
-  let s_path: string = cli.cat3(out_path, ".s", "");
+  let s_path: string = out_path + ".s" + "";
   cli.write_file(s_path, cli.bytes_as_string(bytes));
   return 0;
 }

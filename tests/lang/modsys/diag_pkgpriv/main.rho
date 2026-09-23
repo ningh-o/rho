@@ -1,0 +1,7 @@
+// diag
+// a package's plain files are private; only the facade crosses
+use store.util;
+
+fn main() -> i32 {
+  return 0;
+}

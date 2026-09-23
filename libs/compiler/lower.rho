@@ -276,8 +276,8 @@ fn push_vreg(items: []*ir.IRVreg, v: *ir.IRVreg) -> []*ir.IRVreg {
   return out;
 }
 
-fn rc_inc_v(c: *LCtx, p: *ir.IRVreg) { rc_call1(c, "rho__rc_inc", p); }
-fn rc_dec_v(c: *LCtx, p: *ir.IRVreg) { rc_call1(c, "rho__rc_dec", p); }
+fn rc_inc_v(c: *LCtx, p: *ir.IRVreg) { rc_call1(c, synth_name("rho__rc_inc"), p); }
+fn rc_dec_v(c: *LCtx, p: *ir.IRVreg) { rc_call1(c, synth_name("rho__rc_dec"), p); }
 
 // bind a name to a slot in the current scope
 fn lbind(c: *LCtx, name: string, slot: *ir.IRSlot) {
@@ -487,8 +487,7 @@ pub fn value_fn_for(t: *parse.Type, retain: bool) -> string {
   if t.kind == check.TypeKind.TyFn { kindp = "f_"; }
   if t.kind == check.TypeKind.TyWeak { kindp = "w_"; }
   if t.kind == check.TypeKind.TyDyn { kindp = "y_"; }
-  let sym: string = cli.cat3("rho__", cli.cat3(retain_which(retain), cli.cat3("$", kindp, ""), ""),
-                         rho_sanitize(t.mangled));
+  let sym: string = synth_name("rho__" + retain_which(retain) + "$" + kindp + "" + "" + rho_sanitize(t.mangled));
   tm2_put(cache, t.mangled, sym);
   // synthesize the walker body
   let lf: *ir.IRFn = rc_new_fn(sym);
@@ -530,9 +529,9 @@ fn value_walk(c: *LCtx, t: *parse.Type, addr: *ir.IRVreg, retain: bool) {
   if t.kind == check.TypeKind.TyWeak {
     let h: *ir.IRVreg = v_load(c, addr, ir.IRType.ItPtr);
     if retain {
-      rc_call1(c, "rho__rc_winc", h);
+      rc_call1(c, synth_name("rho__rc_winc"), h);
     } else {
-      rc_call1(c, "rho__rc_wdec", h);
+      rc_call1(c, synth_name("rho__rc_wdec"), h);
     }
     return;
   }
@@ -585,9 +584,9 @@ fn value_walk(c: *LCtx, t: *parse.Type, addr: *ir.IRVreg, retain: bool) {
     }
     let buf: *ir.IRVreg = v_load(c, addr, ir.IRType.ItPtr);
     if retain {
-      rc_call1(c, "rho__rc_inch", buf);
+      rc_call1(c, synth_name("rho__rc_inch"), buf);
     } else {
-      rc_call1(c, "rho__rc_dech", buf);
+      rc_call1(c, synth_name("rho__rc_dech"), buf);
     }
     return;
   }
@@ -968,6 +967,10 @@ pub fn const_eval(e: *parse.Expr, m: *check.Module) -> *CV {
   }
   if e.kind == parse.ExprKind.ExName {
     let mut sym: *check.Sym = check.sm_get(m.syms, e.sv);
+    if sym == null {
+      // root build parameters are visible in every module (spec §7.2)
+      sym = check.param_lookup(e.sv);
+    }
     if sym == null && check.prelude_module != null && check.prelude_module != m {
       sym = check.sm_get(check.prelude_module.syms, e.sv);
     }
@@ -977,6 +980,7 @@ pub fn const_eval(e: *parse.Expr, m: *check.Module) -> *CV {
         r.is_int = sym.decl.ceval_is_int;
         r.i = sym.decl.ceval_i;
         r.f = sym.decl.ceval_f;
+        r.b = sym.decl.ceval_b;
         check.cur_module = saved;
         return r;
       }
@@ -985,6 +989,7 @@ pub fn const_eval(e: *parse.Expr, m: *check.Module) -> *CV {
       sym.decl.ceval_is_int = v.is_int;
       sym.decl.ceval_i = v.i;
       sym.decl.ceval_f = v.f;
+      sym.decl.ceval_b = v.b;
       r.ok = v.ok;
       r.is_int = v.is_int;
       r.i = v.i;
@@ -1145,7 +1150,7 @@ fn lit_bytes(c: *LCtx, s: string) -> i32 {
     i += 1;
   }
   bytes = push_u8(bytes, 0); // NUL pad for C interop debugging
-  let label: string = cli.cat3("str", cli.itoa(ir.g_lit_counter as i64), "");
+  let label: string = "str" + cli.itoa(ir.g_lit_counter as i64) + "";
   ir.g_lit_counter += 1;
   let l: *ir.IRLit = new ir.IRLit { label: label, bytes: bytes };
   c.f.literals = push_lit(c.f.literals, l);
@@ -1169,7 +1174,178 @@ fn ret_dest(c: *LCtx) -> *ir.IRVreg {
   return v_load(c, v_slotaddr(c, c.f.out_slot), ir.IRType.ItPtr);
 }
 
-// mangled symbol for a module-level symbol: rho_<path>__<name>
+// internal symbol names use SHORT module indices: every module path gets
+// a dense integer at first use (the root pre-seeded as 0 by
+// lower_program, the prelude as 1), so an internal symbol is
+// `rho_<idx>__<name>` instead of carrying the whole sanitized module
+// path. The long forms appeared thousands of times per artifact (panic
+// strings embed them, shim names concatenate them, the native assemblers
+// emit them as labels) at ~30 bytes of prefix each — roughly 340 KB of
+// the shipped wasm was module paths. Export/import ABI names are
+// untouched: externs keep their C name and the wasm exports are the
+// fixed `memory`/`_start`.
+pub static mut g_mod_idx_paths: *cli.Vec[string] = 0 as *cli.Vec[string];
+
+fn mod_index(path: string) -> i32 {
+  if g_mod_idx_paths != null {
+    let mut i: usize = 0;
+    while i < g_mod_idx_paths.n {
+      if cli.streq(g_mod_idx_paths.items[i], path) {
+        return i as i32;
+      }
+      i += 1;
+    }
+  } else {
+    g_mod_idx_paths = new cli.Vec[string] { items: make([]string, 32), n: 0 };
+  }
+  g_mod_idx_paths.push(path);
+  return g_mod_idx_paths.n as i32 - 1;
+}
+
+// =========== artifact symbol naming (the one naming site) ==================
+//
+// Internal symbols — user items and the synthesized helpers alike — get
+// the shortest serial names a..z, aa..zz, ... Nothing outside the
+// artifact can call them by name (wasm calls by index and exports only
+// `memory`/`_start`; the native images carry no symbol table), so the
+// names exist only to be unique. The allocator skips the names that must
+// stay: every extern's C ABI name (wasi imports and the native RT hooks
+// share one assembly-level symbol namespace — a collision would
+// misdirect a call) and the fixed exports. `-g` keeps the full
+// rho_<mod-index>__<name> form for debugging (dumps, panic stamps); a
+// reusable-library artifact keeps its pub items' names (the API
+// contract) — no lib compile mode exists yet, so the app rule is the
+// only active one.
+pub static mut g_full_names: bool = false;
+pub static mut g_lib_artifact: bool = false;
+static mut g_short_n: i32 = 0;
+static mut g_taken: *cli.Vec[string] = 0 as *cli.Vec[string];
+// flat parallel pairs: synthesized base name, assigned short name
+static mut g_synth_names: *cli.Vec[string] = 0 as *cli.Vec[string];
+// flat parallel pairs: long-form identity base, assigned short name
+static mut g_short_keys: *cli.Vec[string] = 0 as *cli.Vec[string];
+static mut g_short_vals: *cli.Vec[string] = 0 as *cli.Vec[string];
+
+pub fn reset_naming() {
+  g_short_n = 0;
+  g_taken = null;
+  g_synth_names = null;
+  g_short_keys = null;
+  g_short_vals = null;
+}
+
+// the nth shortest name: a..z, aa..zz, aaa...
+fn short_candidate(n: i32) -> string {
+  let digits: *cli.Vec[u8] = new cli.Vec[u8] { items: make([]u8, 8), n: 0 };
+  let mut v: i32 = n;
+  loop {
+    digits.push((97 + (v % 26)) as u8);
+    if v < 26 {
+      break;
+    }
+    v = v / 26 - 1;
+  }
+  let out: *cli.Vec[u8] = new cli.Vec[u8] { items: make([]u8, 8), n: 0 };
+  let mut i: usize = digits.n;
+  while i > 0 {
+    i -= 1;
+    out.push(digits.items[i]);
+  }
+  return intrinsics.slice_string(out.items[0..out.n]);
+}
+
+fn taken_has(s: string) -> bool {
+  if g_taken == null {
+    return false;
+  }
+  let mut i: usize = 0;
+  while i < g_taken.n {
+    if cli.streq(g_taken.items[i], s) {
+      return true;
+    }
+    i += 1;
+  }
+  return false;
+}
+
+// reserve every extern's C ABI name in one module's symbol table
+fn take_externs(m: *check.Module) {
+  if m == null {
+    return;
+  }
+  let mut i: usize = 0;
+  while i < m.syms.n {
+    let s: *check.Sym = m.syms.items[i].val;
+    if s.kind == check.SymKind.SyExtern && !taken_has(s.name) {
+      g_taken.push(s.name);
+    }
+    i += 1;
+  }
+}
+
+// the reserved set, built once per compilation at the first allocation —
+// by lowering time every module (prelude with its target tail, the root,
+// every aux) is registered, so the extern sweep is complete
+fn collect_reserved() {
+  g_taken = new cli.Vec[string] { items: make([]string, 64), n: 0 };
+  g_taken.push("_start");
+  g_taken.push("memory");
+  take_externs(check.prelude_module);
+  take_externs(check.g_param_owner);
+  if check.g_aux_modules != null {
+    let mut i: usize = 0;
+    while i < check.g_aux_modules.n {
+      take_externs(check.g_aux_modules.items[i]);
+      i += 1;
+    }
+  }
+}
+
+fn next_short_name() -> string {
+  if g_taken == null {
+    collect_reserved();
+  }
+  loop {
+    let cand: string = short_candidate(g_short_n);
+    g_short_n += 1;
+    if !taken_has(cand) {
+      return cand;
+    }
+  }
+}
+
+// synthesized-helper naming: the same serial names, cached per readable
+// base so every site that spells `rho__rc_inc` lands on one function.
+// `-g` keeps the readable base.
+pub fn synth_name(base: string) -> string {
+  if g_full_names {
+    return base;
+  }
+  if g_synth_names == null {
+    g_synth_names = new cli.Vec[string] { items: make([]string, 32), n: 0 };
+  }
+  let mut i: usize = 0;
+  while i < g_synth_names.n {
+    if cli.streq(g_synth_names.items[i], base) {
+      return g_synth_names.items[i + 1];
+    }
+    i += 2;
+  }
+  let short: string = next_short_name();
+  g_synth_names.push(base);
+  g_synth_names.push(short);
+  return short;
+}
+
+// the lib rule's visibility test: a pub item keeps its name in a
+// reusable-library artifact
+fn sym_is_pub(s: *check.Sym) -> bool {
+  return s.decl != null && s.decl.pub_;
+}
+
+// symbol for a module-level symbol: the shortest serial name by default,
+// rho_<mod-index>__<name> under `-g` (and for pub items in a lib
+// artifact, should that compile mode exist)
 pub fn sym_symbol(s: *check.Sym) -> string {
   if s.symbol != "" {
     return s.symbol;
@@ -1177,22 +1353,77 @@ pub fn sym_symbol(s: *check.Sym) -> string {
   if s.kind == check.SymKind.SyExtern {
     return s.name; // C ABI name; emitter adds prefix per target
   }
-  let mut path: string = "";
+  let mut keep_full: bool = g_full_names;
+  if !keep_full && g_lib_artifact && sym_is_pub(s) {
+    keep_full = true;
+  }
+  // the long form is the identity base even when it is not emitted: two
+  // syms that the long law spelled identically (a method template and the
+  // concrete clone callers resolve to) must also share one short name, or
+  // the string-keyed call graph splits and reachability drops the body
+  let base: string = long_form(s);
+  if keep_full {
+    s.symbol = base;
+    return s.symbol;
+  }
+  s.symbol = intern_short(base);
+  return s.symbol;
+}
+
+// rho_<mod-index>__<name> (methods fold in the receiver: `to_str` is
+// defined once per type in a module and the bare name would collide)
+fn long_form(s: *check.Sym) -> string {
+  let mut idx: i32 = 0;
   if s.owner != null {
-    path = rho_sanitize(s.owner.path);
+    idx = mod_index(s.owner.path);
   }
   // instantiation markers (`push$u8`) must not fold to the same token as a
   // plain identifier (`push_u8`), so `$` escapes to `_Q_`
   let name: string = rho_sanitize_sym(s.name);
-  // methods fold in the receiver name: `to_str` is defined once per type in
-  // a module and the bare name would collide
   if s.decl != null && s.decl.is_method && len(s.decl.recv) > 0 {
-    s.symbol = cli.cat5("rho_", path, "__", rho_sanitize(s.decl.recv), cli.cat3("_", name, ""));
-    return s.symbol;
+    return "rho_" + cli.itoa(idx as i64) + "__" + rho_sanitize(s.decl.recv) + "_" + name + "";
   }
-  let sym: string = cli.cat3("rho_", cli.cat3(path, "__", name), "");
-  s.symbol = sym;
-  return sym;
+  return "rho_" + cli.itoa(idx as i64) + "__" + name + "";
+}
+
+// one short name per distinct long-form base — flat parallel pairs
+fn intern_short(base: string) -> string {
+  if g_short_keys != null {
+    let mut i: usize = 0;
+    while i < g_short_keys.n {
+      if cli.streq(g_short_keys.items[i], base) {
+        return g_short_vals.items[i];
+      }
+      i += 1;
+    }
+  } else {
+    g_short_keys = new cli.Vec[string] { items: make([]string, 64), n: 0 };
+    g_short_vals = new cli.Vec[string] { items: make([]string, 64), n: 0 };
+  }
+  let short: string = next_short_name();
+  g_short_keys.push(base);
+  g_short_vals.push(short);
+  return short;
+}
+
+// is this call target one of the synthesized helpers (rc walkers,
+// retainers, shims, eq/env glue)? The tail-call law in opt asks for the
+// CLASS, never the spelling — under the default the helpers carry the
+// shortest serial names, and `-g` restores the readable `rho__` forms.
+pub fn is_synth_callee(callee: string) -> bool {
+  if g_full_names {
+    return len(callee) >= 5 && cli.streq(callee[0..5], "rho__");
+  }
+  if g_synth_names != null {
+    let mut i: usize = 1;
+    while i < g_synth_names.n {
+      if cli.streq(g_synth_names.items[i], callee) {
+        return true;
+      }
+      i += 2;
+    }
+  }
+  return false;
 }
 
 fn rho_sanitize_sym(s: string) -> string {
@@ -1228,7 +1459,7 @@ fn panic_call(c: *LCtx, msg: string) {
   // panics from generated checks are otherwise indistinguishable
   let site: i32 = ir.g_panic_site;
   ir.g_panic_site += 1;
-  let m: string = cli.cat3("[", cli.cat3(c.f.symbol, "#", cli.cat3(cli.itoa(site as i64), "] ", msg)), "");
+  let m: string = "[" + c.f.symbol + "#" + cli.itoa(site as i64) + "] " + msg + "";
   let lit: i32 = lit_bytes(c, m);
   let tmp: *ir.IRSlot = new_slot(c, 24, 8, "panicstr");
   let addr: *ir.IRVreg = v_slotaddr(c, tmp);
@@ -1490,7 +1721,7 @@ fn retain_or_inc(c: *LCtx, t: *parse.Type, v: *ir.IRVreg) {
   } else if t.kind == check.TypeKind.TyPtr {
     rc_inc_v(c, v);
   } else if t.kind == check.TypeKind.TyWeak {
-    rc_call1(c, "rho__rc_winc", v);
+    rc_call1(c, synth_name("rho__rc_winc"), v);
   }
 }
 
@@ -1528,7 +1759,7 @@ pub fn push_str(items: []string, v: string) -> []string {
 }
 
 fn shim_for(fn_: *check.Sym) -> string {
-  let shim_name: string = cli.cat3("rho__shim_", sym_symbol(fn_), "");
+  let shim_name: string = synth_name("rho__shim_" + sym_symbol(fn_) + "");
   if g_shims == null {
     g_shims = new cli.Vec[string] { items: make([]string, 64), n: 0 };
   }
@@ -1625,7 +1856,7 @@ static mut g_dyn_shims: *cli.Vec[string] = 0 as *cli.Vec[string];
 // arrives as self — a sibling of shim_for with the receiver folded into
 // the hidden parameter
 fn dyn_shim_for(fn_: *check.Sym) -> string {
-  let shim_name: string = cli.cat3("rho__dshim_", sym_symbol(fn_), "");
+  let shim_name: string = synth_name("rho__dshim_" + sym_symbol(fn_) + "");
   if g_dyn_shims == null {
     g_dyn_shims = new cli.Vec[string] { items: make([]string, 64), n: 0 };
   }
@@ -1853,14 +2084,17 @@ fn rc_runtime_build() {
   while variant < 4 {
     let retain: bool = (variant & 1) == 0;
     let from_data: bool = (variant & 2) == 0;
-    let mut nm: string = "rho__rc_dec";
+    // compose the readable base FIRST, then intern: the header-convention
+    // variant must land on the same serial name the call sites spell
+    // (`rho__rc_inch`), never a letter with `h` glued on after the fact
+    let mut base: string = "rho__rc_dec";
     if retain {
-      nm = "rho__rc_inc";
+      base = "rho__rc_inc";
     }
     if !from_data {
-      nm = cli.cat3(nm, "h", "");
+      base = base + "h";
     }
-    let lf: *ir.IRFn = rc_new_fn(nm);
+    let lf: *ir.IRFn = rc_new_fn(synth_name(base));
     let c: *LCtx = rc_ctx(lf);
     let ps: *ir.IRSlot = new_slot(c, 8, 8, "p");
     lf.params = push_islot(lf.params, ps);
@@ -1947,7 +2181,7 @@ fn rc_runtime_build() {
   // __rc_winc(h) / __rc_wdec(h): weak count up/down; last weak of a dead
   // object frees the storage
   {
-    let lf: *ir.IRFn = rc_new_fn("rho__rc_winc");
+    let lf: *ir.IRFn = rc_new_fn(synth_name("rho__rc_winc"));
     let c: *LCtx = rc_ctx(lf);
     let hs: *ir.IRSlot = new_slot(c, 8, 8, "h");
     lf.params = push_islot(lf.params, hs);
@@ -1966,7 +2200,7 @@ fn rc_runtime_build() {
     finish_fn_c(c);
   }
   {
-    let lf: *ir.IRFn = rc_new_fn("rho__rc_wdec");
+    let lf: *ir.IRFn = rc_new_fn(synth_name("rho__rc_wdec"));
     let c: *LCtx = rc_ctx(lf);
     let hs: *ir.IRSlot = new_slot(c, 8, 8, "h");
     lf.params = push_islot(lf.params, hs);
@@ -1999,7 +2233,7 @@ fn rc_runtime_build() {
   }
   // __rc_wref(p) -> header: weak.from on a data pointer
   {
-    let lf: *ir.IRFn = rc_new_fn("rho__rc_wref");
+    let lf: *ir.IRFn = rc_new_fn(synth_name("rho__rc_wref"));
     let c: *LCtx = rc_ctx(lf);
     lf.ret = null;
     let ps: *ir.IRSlot = new_slot(c, 8, 8, "p");
@@ -2027,7 +2261,7 @@ fn rc_runtime_build() {
   }
   // __rc_wget(h) -> data pointer or null when dead
   {
-    let lf: *ir.IRFn = rc_new_fn("rho__rc_wget");
+    let lf: *ir.IRFn = rc_new_fn(synth_name("rho__rc_wget"));
     let c: *LCtx = rc_ctx(lf);
     let hs: *ir.IRSlot = new_slot(c, 8, 8, "h");
     lf.params = push_islot(lf.params, hs);
@@ -2084,7 +2318,7 @@ fn eq_fn_for(t: *parse.Type) -> string {
   if found != "" {
     return found;
   }
-  let sym: string = cli.cat3("rho__eq$", rho_sanitize(t.mangled), "");
+  let sym: string = synth_name("rho__eq$" + rho_sanitize(t.mangled) + "");
   tm2_put(ir.g_eq_fns, t.mangled, sym);
   let lf: *ir.IRFn = rc_new_fn(sym);
   let c: *LCtx = rc_ctx(lf);
@@ -2276,7 +2510,7 @@ fn lift_closure(c: *LCtx, e: *parse.Expr, envdrop_out: *cli.Vec[string]) -> stri
   let agg_ret: bool = ret != null && ty_is_aggregate(ret);
   let clo_id: i32 = ir.g_closure_counter;
   ir.g_closure_counter += 1;
-  let sym_name: string = cli.cat3(c.f.symbol, "__clo", cli.cat3(cli.itoa(clo_id as i64), "", ""));
+  let sym_name: string = c.f.symbol + "__clo" + cli.itoa(clo_id as i64) + "" + "";
   let lf: *ir.IRFn = rc_new_fn(sym_name);
   lf.ret = ret;
   let cc: *LCtx = rc_ctx(lf);
@@ -2353,7 +2587,7 @@ fn lift_closure(c: *LCtx, e: *parse.Expr, envdrop_out: *cli.Vec[string]) -> stri
   ir.g_ir_fns.push(lf);
 
   // env drop glue: releases every captured value when the env object dies
-  let envdrop: string = cli.cat3("rho__envdrop$", cli.itoa(clo_id as i64), "");
+  let envdrop: string = synth_name("rho__envdrop$" + cli.itoa(clo_id as i64) + "");
   let df: *ir.IRFn = rc_new_fn(envdrop);
   let dc: *LCtx = rc_ctx(df);
   let das: *ir.IRSlot = new_slot(dc, 8, 8, "addr");
@@ -2997,6 +3231,51 @@ fn lv_expr(c: *LCtx, e: *parse.Expr) -> *ir.IRVreg {
     return compute_call_value(c, e);
   }
   if e.kind == parse.ExprKind.ExIf {
+    // comptime-folded condition (spec §7.3): only the live branch lowers —
+    // the dead one was never checked and is never walked here, so the
+    // functions it alone reaches stay unreachable and get shaken out
+    if e.fold_live == 1 || e.fold_live == 2 {
+      if e.fold_live == 1 && (t == null || t.kind == check.TypeKind.TyVoid) {
+        scope_push_l(c);
+        lv_stmts(c, e.items.items[0].stmts);
+        run_defers(c, c.scope.parent);
+        scope_pop_release(c);
+        return v_const(c, 0, ir.IRType.ItU8);
+      }
+      if e.fold_live == 1 {
+        let then_stmts: *cli.Vec[*parse.Stmt] = e.items.items[0].stmts;
+        let tv: *ir.IRVreg = block_value(c, then_stmts, t);
+        if ty_is_managed(t) && !arm_value_owned(then_stmts) {
+          retain_or_inc(c, t, tv);
+        }
+        return tv;
+      }
+      if t == null || t.kind == check.TypeKind.TyVoid {
+        scope_push_l(c);
+        if e.else_if != null {
+          lv_expr(c, e.else_if); // the chain node carries its own fold
+        } else if e.items.n > 1 {
+          lv_stmts(c, e.items.items[1].stmts);
+        }
+        run_defers(c, c.scope.parent);
+        scope_pop_release(c);
+        return v_const(c, 0, ir.IRType.ItU8);
+      }
+      if e.else_if != null {
+        return lv_expr(c, e.else_if); // nested ifs normalize their own arms
+      }
+      if e.items.n > 1 {
+        let es: *cli.Vec[*parse.Stmt] = e.items.items[1].stmts;
+        let ev: *ir.IRVreg = block_value(c, es, t);
+        if ty_is_managed(t) && !arm_value_owned(es) {
+          retain_or_inc(c, t, ev);
+        }
+        return ev;
+      }
+      // live side is nothing: a void if in value position (the checker
+      // typed it void, so this is unreachable from well-typed code)
+      return v_const(c, 0, ir.IRType.ItU8);
+    }
     if t == null || t.kind == check.TypeKind.TyVoid {
       // statement context: no value to merge
       let then_b: *ir.IRBlock = new_block(c);
@@ -3668,7 +3947,7 @@ fn compute_call_value(c: *LCtx, e: *parse.Expr) -> *ir.IRVreg {
      cli.streq(e.a.a.sv, "weak") && cli.streq(e.a.sv, "from") {
     let p: *ir.IRVreg = lv_expr(c, e.args.items[0]);
     let call: *ir.IRIns = emit(c, ir.IROp.IrCall);
-    call.callee = "rho__rc_wref";
+    call.callee = synth_name("rho__rc_wref");
     call.args = push_vreg(call.args, p);
     call.dst = new_vreg(c, ir.IRType.ItPtr);
     return call.dst;
@@ -3678,7 +3957,7 @@ fn compute_call_value(c: *LCtx, e: *parse.Expr) -> *ir.IRVreg {
      e.a.a.typed != null && e.a.a.typed.kind == check.TypeKind.TyWeak {
     let w: *ir.IRVreg = lv_expr(c, e.a.a);
     let call: *ir.IRIns = emit(c, ir.IROp.IrCall);
-    call.callee = "rho__rc_wget";
+    call.callee = synth_name("rho__rc_wget");
     call.args = push_vreg(call.args, w);
     call.dst = new_vreg(c, ir.IRType.ItPtr);
     return call.dst;
@@ -4316,7 +4595,7 @@ fn lower_static(fn_sym: *check.Sym) {
   if d.kind == parse.DeclKind.DkStatic && d.init != null && d.init.kind == parse.ExprKind.ExStr {
     // {buf, ptr, len} with relocations into rodata
     let sv: string = d.init.sv;
-    let label: string = cli.cat3(g.symbol, "_str", "");
+    let label: string = g.symbol + "_str" + "";
     let mut bytes: []u8 = make([]u8, 0);
     let mut si: usize = 0;
     while si < len(sv) {
@@ -4327,7 +4606,7 @@ fn lower_static(fn_sym: *check.Sym) {
     let lit: *ir.IRLit = new ir.IRLit { label: label, bytes: bytes };
     // the emitter emits this literal block next to the global's data
     g.relocs = push_str(g.relocs, label);
-    g.relocs = push_str(g.relocs, cli.cat3(label, "_b", ""));
+    g.relocs = push_str(g.relocs, label + "_b" + "");
     g.relocs = push_str(g.relocs, "");
     let len_v: i64 = len(sv) as i64;
     let mut w: i32 = 0;
@@ -4385,6 +4664,16 @@ pub fn lower_program() {
   ir.g_lit_counter = 0;
   ir.g_closure_counter = 0;
   g_shims = null;
+  // internal symbol law: the root module is index 0 (a single-file
+  // program's entry is `rho_0__main`), the prelude index 1; every other
+  // module takes the next free index at its first symbol
+  g_mod_idx_paths = new cli.Vec[string] { items: make([]string, 32), n: 0 };
+  if ir.g_root_module != null {
+    g_mod_idx_paths.push(ir.g_root_module.path);
+  }
+  if check.prelude_module != null {
+    g_mod_idx_paths.push(check.prelude_module.path);
+  }
   rc_runtime_build(); // __rc_inc/dec/w* helpers every managed program needs
   // module order: prelude first, then the user module (C's g_module_order)
   let mut mi: i32 = 0;

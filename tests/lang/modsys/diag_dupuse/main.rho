@@ -1,0 +1,8 @@
+// diag
+// the second binding lands on an occupied name: boot's duplicate-name law
+use d.a;
+use d.b as a;
+
+fn main() -> i32 {
+  return 0;
+}

@@ -54,7 +54,7 @@
       <p>
         A rho program is a set of functions; execution starts at <b>main</b>.
         Types are written after a colon, the return type after <b>-&gt;</b>, and
-        every statement ends with a semicolon. <b>print</b> comes from the
+        every statement ends with a semicolon. <b>printf</b> comes from the
         prelude — the standard library that every program imports implicitly.
       </p>
       <template data-example="hello"></template>
@@ -164,8 +164,9 @@
       <p>
         Functions and types can take type parameters. Instantiation is implicit
         and <b>monomorphizing</b>: each distinct concrete use compiles a
-        specialized copy, verified per instantiation. There are no trait bounds
-        to fight — if an instantiation type-checks, it works.
+        specialized copy, verified per instantiation. Trait bounds constrain
+        what a generic body may assume — it can use only the operations its
+        bounds supply.
       </p>
       <template data-example="generics"></template>
     </section>
@@ -199,7 +200,7 @@
         One binary does everything:
       </p>
       <ul>
-        <li><b>rho build main.rho</b> — emit a runnable wasm32-wasi module (the default); <b>--target arm64-mac</b> / <b>amd64-linux</b> / <b>amd64-mac</b> emit assembly for the platform toolchain instead</li>
+        <li><b>rho build main.rho</b> — emit a runnable wasm32-wasi module (the default); <b>--set name=value</b> overrides a root const (a build parameter the whole program sees); <b>--target arm64-mac</b> / <b>amd64-linux</b> / <b>amd64-mac</b> emit assembly for the platform toolchain instead</li>
         <li><b>rho run main.rho</b> — build and execute (wasm32-wasi, via any WASI runtime)</li>
         <li><b>rho test</b> — compile and run every corpus program (wasm32-wasi, via a WASI runtime)</li>
         <li><b>rho fmt</b> — canonical formatting; one style, no configuration</li>
@@ -220,7 +221,7 @@
 
   <footer class="site">
     <div class="wrap">
-      ρ 0.3.1 — the boot compiler is the reference toolchain.
+      ρ — the site ships the self-hosted compiler; the frozen boot compiler remains the bootstrap seed.
       <a href="https://github.com/ningh-o/rho">source</a>
       · <a href="spec/spec.md">spec</a>
       · <a href="tutorial.html">tutorial</a>

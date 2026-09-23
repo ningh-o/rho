@@ -1,0 +1,9 @@
+pub fn parse(s: string) -> usize {
+  return len(s);
+}
+fn secret() -> i32 {
+  return 1;
+}
+pub fn reveal() -> i32 {
+  return secret();
+}

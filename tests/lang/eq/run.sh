@@ -24,8 +24,9 @@ if [ ! -f "$B" ]; then
 fi
 if [ ! -f "$M" ]; then
   echo "eq: no mirror at $M — building it"
-  perl -e 'alarm shift; exec @ARGV or die "cannot exec $ARGV[0]\n"' 60 \
-    "$B" build libs/compiler/full.rho --target wasm32-wasi -o "$M" || {
+  perl -e 'alarm shift; exec @ARGV or die "cannot exec $ARGV[0]\n"' 900 \
+    wasmtime run --dir . boot/rho-seed.wasm \
+    build libs/compiler/cli.rho --target wasm32-wasi -o "$M" || {
     echo "eq: mirror build failed"
     exit 2
   }
@@ -61,7 +62,7 @@ for src in tests/lang/eq/e*.rho; do
     "// reject:"*)
       want=$(head -1 "$src" | sed 's|// reject: ||')
       rm -f "$G/$name.err"
-      if wr 90 wasmtime run -W max-wasm-stack=1073741824 --dir . "$M" build "$src" \
+      if wr 90 wasmtime run --dir . "$M" build "$src" \
           --target wasm32-wasi -o "$G/$name.wasm" >/dev/null 2>"$G/$name.err"; then
         verdict="FAIL (accepted a program it must reject)"
       elif ! grep -qF "$want" "$G/$name.err"; then
@@ -72,7 +73,7 @@ for src in tests/lang/eq/e*.rho; do
     *)
       want_exit=$(head -1 "$src" | sed 's|// exit: ||')
       rm -f "$G/$name.wasm" "$G/$name.got"
-      if ! wr 90 wasmtime run -W max-wasm-stack=1073741824 --dir . "$M" build "$src" \
+      if ! wr 90 wasmtime run --dir . "$M" build "$src" \
           --target wasm32-wasi -o "$G/$name.wasm" >/dev/null 2>&1 || [ ! -f "$G/$name.wasm" ]; then
         verdict="FAIL (mirror build)"
       else

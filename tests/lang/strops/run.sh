@@ -48,7 +48,7 @@ for src in tests/lang/strops/s*.rho tests/lang/strops/d*.rho; do
     if ! wr 60 "$B" build "$src" --target wasm32-wasi -o "$G/$name.wasm" >/dev/null 2>&1 || [ ! -f "$G/$name.wasm" ]; then
       verdict="FAIL (build)"
     else
-      wr 10 wasmtime run -W max-wasm-stack=1073741824 --dir . "$G/$name.wasm" 2>/dev/null | strip_dbg > "$G/$name.got"
+      wr 10 wasmtime run --dir . "$G/$name.wasm" 2>/dev/null | strip_dbg > "$G/$name.got"
       got_exit=$?
       if ! cmp -s "$G/$name.got" "tests/lang/strops/$name.out"; then
         verdict="FAIL (output)"

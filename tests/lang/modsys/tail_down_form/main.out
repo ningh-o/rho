@@ -1,0 +1,2 @@
+tests/lang/modsys/tail_down_form/main.rho:5:1: error: missing return: `down` is `i32`
+tests/lang/modsys/tail_down_form/main.rho:13:1: error: missing return: `main` is `i32`

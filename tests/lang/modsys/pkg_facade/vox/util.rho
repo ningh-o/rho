@@ -1,0 +1,9 @@
+pub fn tag() -> i32 {
+  return 11;
+}
+fn interior() -> i32 {
+  return 5;
+}
+pub fn through() -> i32 {
+  return interior();
+}

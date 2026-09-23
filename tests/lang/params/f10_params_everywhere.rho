@@ -1,0 +1,28 @@
+// exit: 0
+// params ride every comptime lane: static initializers, const-to-const
+// chains, sized types, ordinary expressions
+const tab_size: i32 = 4;
+const greeting: string = "ok";
+
+static mut COUNTER: i32 = tab_size * 2;
+const CHAINED: i32 = tab_size + 1;
+
+fn sized() -> i32 {
+  let mut total: i32 = 0;
+  let buf: []i32 = make([]i32, tab_size);
+  let mut i: i32 = 0;
+  while i < tab_size {
+    buf[i] = i;
+    total += buf[i];
+    i += 1;
+  }
+  return total + len(buf) as i32;
+}
+
+fn main() -> i32 {
+  printf("{}\n", COUNTER);
+  printf("{}\n", CHAINED);
+  printf("{}\n", sized());
+  printf("{}\n", tab_size * 10 + CHAINED);
+  return 0;
+}

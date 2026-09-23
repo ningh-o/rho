@@ -555,7 +555,9 @@ fn tco_push_arg(args: []*ir.IRVreg, v: *ir.IRVreg) -> []*ir.IRVreg {
 }
 
 fn tco_is_rc_sym(s: string) -> bool {
-  return len(s) >= 5 && cli.streq(s[0..5], "rho__");
+  // the class, not the spelling: the helpers carry the shortest serial
+  // names in the default artifact (lower.is_synth_callee owns the law)
+  return lower.is_synth_callee(s);
 }
 
 // parse the entry block's parameter-setup prefix. Returns the number of
@@ -803,9 +805,9 @@ fn tco_fn(f: *ir.IRFn) -> i64 {
           let walker: string = lower.value_fn_for(tp.pt, true);
           tco_call1(f, pin, walker, arg);
         } else if tp.pt.kind == check.TypeKind.TyWeak {
-          tco_call1(f, pin, "rho__rc_winc", arg);
+          tco_call1(f, pin, lower.synth_name("rho__rc_winc"), arg);
         } else {
-          tco_call1(f, pin, "rho__rc_inc", arg);
+          tco_call1(f, pin, lower.synth_name("rho__rc_inc"), arg);
         }
       }
       p += 1;

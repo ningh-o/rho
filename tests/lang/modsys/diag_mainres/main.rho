@@ -1,0 +1,7 @@
+// diag
+// main is reserved in the root file, aliased bindings included
+use d.other as main;
+
+fn main() -> i32 {
+  return 0;
+}

@@ -24,16 +24,16 @@ pub static mut g_label_amd: i32 = 0;
 
 fn m_sym(e: *MCtx, s: string) -> string {
   if e.is_mac {
-    return cli.cat3("_", s, "");
+    return "_" + s + "";
   }
   return s;
 }
 
 fn m_lit(e: *MCtx, l: string) -> string {
   if e.is_mac {
-    return cli.cat3("L", l, "");
+    return "L" + l + "";
   }
-  return cli.cat3(".", l, "");
+  return "." + l + "";
 }
 
 fn m_slot_off(e: *MCtx, s: *ir.IRSlot) -> i64 {
@@ -87,18 +87,18 @@ fn m_vreg_off(e: *MCtx, v: *ir.IRVreg) -> i64 {
 fn m_ld(e: *MCtx, off: i64, size: i64, flt: bool, reg: string) {
   if flt {
     if size == 4 {
-      emit_arm64.bs(e.out, cli.cat5("  movss ", cli.itoa(off), "(%rbp), ", reg, "\n"));
+      emit_arm64.bs(e.out, "  movss " + cli.itoa(off) + "(%rbp), " + reg + "\n");
     } else {
-      emit_arm64.bs(e.out, cli.cat5("  movsd ", cli.itoa(off), "(%rbp), ", reg, "\n"));
+      emit_arm64.bs(e.out, "  movsd " + cli.itoa(off) + "(%rbp), " + reg + "\n");
     }
   } else if size == 1 {
-    emit_arm64.bs(e.out, cli.cat5("  movsbq ", cli.itoa(off), "(%rbp), ", reg, "\n"));
+    emit_arm64.bs(e.out, "  movsbq " + cli.itoa(off) + "(%rbp), " + reg + "\n");
   } else if size == 2 {
-    emit_arm64.bs(e.out, cli.cat5("  movswq ", cli.itoa(off), "(%rbp), ", reg, "\n"));
+    emit_arm64.bs(e.out, "  movswq " + cli.itoa(off) + "(%rbp), " + reg + "\n");
   } else if size == 4 {
-    emit_arm64.bs(e.out, cli.cat5("  movslq ", cli.itoa(off), "(%rbp), ", reg, "\n"));
+    emit_arm64.bs(e.out, "  movslq " + cli.itoa(off) + "(%rbp), " + reg + "\n");
   } else {
-    emit_arm64.bs(e.out, cli.cat5("  movq ", cli.itoa(off), "(%rbp), ", reg, "\n"));
+    emit_arm64.bs(e.out, "  movq " + cli.itoa(off) + "(%rbp), " + reg + "\n");
   }
 }
 
@@ -106,18 +106,18 @@ fn m_ld(e: *MCtx, off: i64, size: i64, flt: bool, reg: string) {
 fn m_st(e: *MCtx, off: i64, size: i64, flt: bool, reg: string) {
   if flt {
     if size == 4 {
-      emit_arm64.bs(e.out, cli.cat5("  movss ", reg, ", ", cli.itoa(off), "(%rbp)\n"));
+      emit_arm64.bs(e.out, "  movss " + reg + ", " + cli.itoa(off) + "(%rbp)\n");
     } else {
-      emit_arm64.bs(e.out, cli.cat5("  movsd ", reg, ", ", cli.itoa(off), "(%rbp)\n"));
+      emit_arm64.bs(e.out, "  movsd " + reg + ", " + cli.itoa(off) + "(%rbp)\n");
     }
   } else if size == 1 {
-    emit_arm64.bs(e.out, cli.cat5("  movb ", reg, ", ", cli.itoa(off), "(%rbp)\n"));
+    emit_arm64.bs(e.out, "  movb " + reg + ", " + cli.itoa(off) + "(%rbp)\n");
   } else if size == 2 {
-    emit_arm64.bs(e.out, cli.cat5("  movw ", reg, ", ", cli.itoa(off), "(%rbp)\n"));
+    emit_arm64.bs(e.out, "  movw " + reg + ", " + cli.itoa(off) + "(%rbp)\n");
   } else if size == 4 {
-    emit_arm64.bs(e.out, cli.cat5("  movl ", reg, ", ", cli.itoa(off), "(%rbp)\n"));
+    emit_arm64.bs(e.out, "  movl " + reg + ", " + cli.itoa(off) + "(%rbp)\n");
   } else {
-    emit_arm64.bs(e.out, cli.cat5("  movq ", reg, ", ", cli.itoa(off), "(%rbp)\n"));
+    emit_arm64.bs(e.out, "  movq " + reg + ", " + cli.itoa(off) + "(%rbp)\n");
   }
 }
 
@@ -147,9 +147,9 @@ fn m_cmp(e: *MCtx, i: *ir.IRIns) {
     m_ld(e, ao, i.size, false, "%rax");
     m_ld(e, bo, i.size, false, "%rcx");
     emit_arm64.bs(e.out, "  cmpq %rcx, %rax\n");
-    emit_arm64.bs(e.out, cli.cat4("  set", cli.cat3(m_cc(i.cc, false, u), " %al\n", ""), "", ""));
+    emit_arm64.bs(e.out, "  set" + m_cc(i.cc, false, u) + " %al\n" + "" + "" + "");
     emit_arm64.bs(e.out, "  movzbq %al, %rax\n");
-    emit_arm64.bs(e.out, cli.cat4("  movq %rax, ", cli.cat3(cli.itoa(dof), "(%rbp)\n", ""), "", ""));
+    emit_arm64.bs(e.out, "  movq %rax, " + cli.itoa(dof) + "(%rbp)\n" + "" + "" + "");
     return;
   }
   // floats: NaN-safe comparisons — the width rides the OPERAND type
@@ -158,7 +158,7 @@ fn m_cmp(e: *MCtx, i: *ir.IRIns) {
   let sfx: string = m_sfx(size64);
   m_ld(e, ao, if size64 { 8 } else { 4 }, true, "%xmm0");
   m_ld(e, bo, if size64 { 8 } else { 4 }, true, "%xmm1");
-  emit_arm64.bs(e.out, cli.cat5("  ucomi", sfx, " %xmm1, %xmm0\n", "", ""));
+  emit_arm64.bs(e.out, "  ucomi" + sfx + " %xmm1, %xmm0\n" + "" + "");
   let cc: string = m_cc(i.cc, true, false);
   if cli.streq(cc, "e") {
     // eq = ZF && !PF
@@ -176,7 +176,7 @@ fn m_cmp(e: *MCtx, i: *ir.IRIns) {
     emit_arm64.bs(e.out, "  setae %al\n  setnp %cl\n  andb %cl, %al\n");
   }
   emit_arm64.bs(e.out, "  movzbq %al, %rax\n");
-  emit_arm64.bs(e.out, cli.cat4("  movq %rax, ", cli.cat3(cli.itoa(dof), "(%rbp)\n", ""), "", ""));
+  emit_arm64.bs(e.out, "  movq %rax, " + cli.itoa(dof) + "(%rbp)\n" + "" + "" + "");
 }
 
 fn m_divmod(e: *MCtx, i: *ir.IRIns, is_mod: bool) {
@@ -194,36 +194,36 @@ fn m_divmod(e: *MCtx, i: *ir.IRIns, is_mod: bool) {
     }
     m_ld(e, ao, fw, true, "%xmm0");
     m_ld(e, bo, fw, true, "%xmm1");
-    emit_arm64.bs(e.out, cli.cat5("  div", sfx, " %xmm1, %xmm0\n", "", ""));
+    emit_arm64.bs(e.out, "  div" + sfx + " %xmm1, %xmm0\n" + "" + "");
     m_st(e, dof, fw, true, "%xmm0");
     return;
   }
   let ext: string = m_ext(i.signed_ops);
-  emit_arm64.bs(e.out, cli.cat4("Ldiv", cli.cat3(l, "_guard:\n", ""), "", ""));
+  emit_arm64.bs(e.out, "Ldiv" + l + "_guard:\n" + "" + "" + "");
   m_ld(e, bo, i.size, false, "%rcx");
   emit_arm64.bs(e.out, "  testq %rcx, %rcx\n");
-  emit_arm64.bs(e.out, cli.cat4("  jne Ldiv", cli.cat3(l, "_nz\n", ""), "", ""));
-  emit_arm64.bs(e.out, cli.cat4("  movq ", cli.cat3(cli.itoa(ao), "(%rbp), %rdi\n", ""), "", ""));
-  emit_arm64.bs(e.out, cli.cat4("  jmp Ldiv", cli.cat3(l, "_neg\n", ""), "", ""));
-  emit_arm64.bs(e.out, cli.cat4("Ldiv", cli.cat3(l, "_neg:\n", ""), "", ""));
-  emit_arm64.bs(e.out, cli.cat4("  call ", cli.cat3(m_sym(e, emit_wasm.prelude_symbol("__panic_div")), "\n", ""), "", ""));
-  emit_arm64.bs(e.out, cli.cat4("Ldiv", cli.cat3(l, "_nz:\n", ""), "", ""));
+  emit_arm64.bs(e.out, "  jne Ldiv" + l + "_nz\n" + "" + "" + "");
+  emit_arm64.bs(e.out, "  movq " + cli.itoa(ao) + "(%rbp), %rdi\n" + "" + "" + "");
+  emit_arm64.bs(e.out, "  jmp Ldiv" + l + "_neg\n" + "" + "" + "");
+  emit_arm64.bs(e.out, "Ldiv" + l + "_neg:\n" + "" + "" + "");
+  emit_arm64.bs(e.out, "  call " + m_sym(e, emit_wasm.prelude_symbol("__panic_div")) + "\n" + "" + "" + "");
+  emit_arm64.bs(e.out, "Ldiv" + l + "_nz:\n" + "" + "" + "");
   if i.signed_ops {
     // MIN / -1 wraps to MIN: special-case divisor == -1
     emit_arm64.bs(e.out, "  cmpq $-1, %rcx\n");
-    emit_arm64.bs(e.out, cli.cat4("  jne Ldiv", cli.cat3(l, "_ok\n", ""), "", ""));
+    emit_arm64.bs(e.out, "  jne Ldiv" + l + "_ok\n" + "" + "" + "");
     m_ld(e, ao, i.size, false, "%rax");
     emit_arm64.bs(e.out, "  negq %rax\n");
     if is_mod {
       emit_arm64.bs(e.out, "  xorq %rdx, %rdx\n");
     }
-    emit_arm64.bs(e.out, cli.cat4("  jmp Ldiv", cli.cat3(l, "_done\n", ""), "", ""));
-    emit_arm64.bs(e.out, cli.cat4("Ldiv", cli.cat3(l, "_ok:\n", ""), "", ""));
+    emit_arm64.bs(e.out, "  jmp Ldiv" + l + "_done\n" + "" + "" + "");
+    emit_arm64.bs(e.out, "Ldiv" + l + "_ok:\n" + "" + "" + "");
   }
   m_ld(e, ao, i.size, false, "%rax");
-  emit_arm64.bs(e.out, cli.cat4("  ", cli.cat3(ext, "\n", ""), "", ""));
-  emit_arm64.bs(e.out, cli.cat4("  ", cli.cat3(m_divmn(i.signed_ops), " %rcx\n", ""), "", ""));
-  emit_arm64.bs(e.out, cli.cat4("Ldiv", cli.cat3(l, "_done:\n", ""), "", ""));
+  emit_arm64.bs(e.out, "  " + ext + "\n" + "" + "" + "");
+  emit_arm64.bs(e.out, "  " + m_divmn(i.signed_ops) + " %rcx\n" + "" + "" + "");
+  emit_arm64.bs(e.out, "Ldiv" + l + "_done:\n" + "" + "" + "");
   if is_mod {
     m_st(e, dof, 8, false, "%rdx");
   } else {
@@ -276,14 +276,14 @@ fn m_edge(e: *MCtx, succ: *ir.IRBlock) {
     let s: i64 = srcs[pick];
     if done_at < 0 {
       // cycle: break it through the temp slot at -frame-8
-      emit_arm64.bs(e.out, cli.cat4("  movq ", cli.cat3(cli.itoa(s), "(%rbp), %rax\n", ""), "", ""));
-      emit_arm64.bs(e.out, cli.cat4("  movq %rax, -", cli.cat3(cli.itoa(e.frame - 8), "(%rbp)\n", ""), "", ""));
+      emit_arm64.bs(e.out, "  movq " + cli.itoa(s) + "(%rbp), %rax\n" + "" + "" + "");
+      emit_arm64.bs(e.out, "  movq %rax, -" + cli.itoa(e.frame - 8) + "(%rbp)\n" + "" + "" + "");
       dsts[pick] = s; // copy temp -> dst next round
       srcs[pick] = -(e.frame - 8);
       continue;
     }
-    emit_arm64.bs(e.out, cli.cat4("  movq ", cli.cat3(cli.itoa(s), "(%rbp), %rax\n", ""), "", ""));
-    emit_arm64.bs(e.out, cli.cat4("  movq %rax, ", cli.cat3(cli.itoa(d), "(%rbp)\n", ""), "", ""));
+    emit_arm64.bs(e.out, "  movq " + cli.itoa(s) + "(%rbp), %rax\n" + "" + "" + "");
+    emit_arm64.bs(e.out, "  movq %rax, " + cli.itoa(d) + "(%rbp)\n" + "" + "" + "");
     // remove pick from both
     let mut j: usize = pick;
     while j + 1 < len(dsts) {
@@ -301,7 +301,7 @@ fn m_call(e: *MCtx, i: *ir.IRIns) {
   let mut fi: i32 = 0;
   if i.callee_vreg != null {
     // indirect target rides in r10, outside the arg regs
-    emit_arm64.bs(e.out, cli.cat4("  movq ", cli.cat3(cli.itoa(m_vreg_off(e, i.callee_vreg)), "(%rbp), %r10\n", ""), "", ""));
+    emit_arm64.bs(e.out, "  movq " + cli.itoa(m_vreg_off(e, i.callee_vreg)) + "(%rbp), %r10\n" + "" + "" + "");
   }
   let mut k: usize = 0;
   while k < len(i.args) {
@@ -311,24 +311,24 @@ fn m_call(e: *MCtx, i: *ir.IRIns) {
     if is_float_arg && fi < 8 {
       // f32 args ride the low lane: movss, never the 8-byte movsd form
       if a.ty == ir.IRType.ItF32 {
-        emit_arm64.bs(e.out, cli.cat4("  movss ", cli.cat3(cli.itoa(off), "(%rbp), %xmm", ""), cli.cat3(cli.itoa(fi as i64), "\n", ""), ""));
+        emit_arm64.bs(e.out, "  movss " + cli.itoa(off) + "(%rbp), %xmm" + "" + cli.itoa(fi as i64) + "\n" + "" + "");
       } else {
-        emit_arm64.bs(e.out, cli.cat4("  movsd ", cli.cat3(cli.itoa(off), "(%rbp), %xmm", ""), cli.cat3(cli.itoa(fi as i64), "\n", ""), ""));
+        emit_arm64.bs(e.out, "  movsd " + cli.itoa(off) + "(%rbp), %xmm" + "" + cli.itoa(fi as i64) + "\n" + "" + "");
       }
       fi += 1;
     } else if !is_float_arg && ri < 6 {
-      emit_arm64.bs(e.out, cli.cat4("  movq ", cli.cat3(cli.itoa(off), "(%rbp), ", ""), cli.cat3(m_intreg(ri), "\n", ""), ""));
+      emit_arm64.bs(e.out, "  movq " + cli.itoa(off) + "(%rbp), " + "" + m_intreg(ri) + "\n" + "" + "");
       ri += 1;
     } else {
       // stack arg (rare): push
-      emit_arm64.bs(e.out, cli.cat4("  movq ", cli.cat3(cli.itoa(off), "(%rbp), %rax\n  pushq %rax\n", ""), "", ""));
+      emit_arm64.bs(e.out, "  movq " + cli.itoa(off) + "(%rbp), %rax\n  pushq %rax\n" + "" + "" + "");
     }
     k += 1;
   }
   if i.callee_vreg != null {
     emit_arm64.bs(e.out, "  call *%r10\n");
   } else {
-    emit_arm64.bs(e.out, cli.cat4("  call ", cli.cat3(m_sym(e, i.callee), "\n", ""), "", ""));
+    emit_arm64.bs(e.out, "  call " + m_sym(e, i.callee) + "\n" + "" + "" + "");
   }
   if i.dst != null {
     let f: bool = ir.ir_is_float_t(i.dst.ty);
@@ -362,9 +362,9 @@ fn m_ins(e: *MCtx, i: *ir.IRIns) {
   if i.op == ir.IROp.IrConst {
     let dof: i64 = m_vreg_off(e, i.dst);
     if i.imm >= -2147483648 && i.imm <= 2147483647 {
-      emit_arm64.bs(e.out, cli.cat5("  movq $", cli.itoa(i.imm), ", ", cli.itoa(dof), "(%rbp)\n"));
+      emit_arm64.bs(e.out, "  movq $" + cli.itoa(i.imm) + ", " + cli.itoa(dof) + "(%rbp)\n");
     } else {
-      emit_arm64.bs(e.out, cli.cat5("  movabsq $", cli.itoa(i.imm), ", %rax\n  movq %rax, ", cli.itoa(dof), "(%rbp)\n"));
+      emit_arm64.bs(e.out, "  movabsq $" + cli.itoa(i.imm) + ", %rax\n  movq %rax, " + cli.itoa(dof) + "(%rbp)\n");
     }
     return;
   }
@@ -375,10 +375,10 @@ fn m_ins(e: *MCtx, i: *ir.IRIns) {
     let lbl: i32 = g_label_amd;
     g_label_amd += 1;
     if i.dst.ty == ir.IRType.ItF32 {
-      emit_arm64.bs(e.out, cli.cat4("  movss Lfconst", cli.cat3(cli.itoa(lbl as i64), "(%rip), %xmm0\n", ""), "", ""));
+      emit_arm64.bs(e.out, "  movss Lfconst" + cli.itoa(lbl as i64) + "(%rip), %xmm0\n" + "" + "" + "");
       m_st(e, m_vreg_off(e, i.dst), 4, true, "%xmm0");
     } else {
-      emit_arm64.bs(e.out, cli.cat4("  movsd Lfconst", cli.cat3(cli.itoa(lbl as i64), "(%rip), %xmm0\n", ""), "", ""));
+      emit_arm64.bs(e.out, "  movsd Lfconst" + cli.itoa(lbl as i64) + "(%rip), %xmm0\n" + "" + "" + "");
       m_st(e, m_vreg_off(e, i.dst), 8, true, "%xmm0");
     }
     if g_fconsts == null {
@@ -403,14 +403,14 @@ fn m_ins(e: *MCtx, i: *ir.IRIns) {
       m_ld(e, ao, fw, true, "%xmm0");
       m_ld(e, bo, fw, true, "%xmm1");
       let fmn: string = m_fmn(i.op);
-      emit_arm64.bs(e.out, cli.cat5("  ", fmn, sfx, " %xmm1, %xmm0\n", ""));
+      emit_arm64.bs(e.out, "  " + fmn + sfx + " %xmm1, %xmm0\n" + "");
       m_st(e, dof, fw, true, "%xmm0");
       return;
     }
     let mn: string = m_imn(i.op);
     m_ld(e, ao, 8, false, "%rax");
     m_ld(e, bo, 8, false, "%rcx");
-    emit_arm64.bs(e.out, cli.cat5("  ", mn, " %rcx, %rax\n", "", ""));
+    emit_arm64.bs(e.out, "  " + mn + " %rcx, %rax\n" + "" + "");
     emit_arm64.m_canon(e, dof, i.a.ty);
     m_st(e, dof, 8, false, "%rax");
     return;
@@ -426,7 +426,7 @@ fn m_ins(e: *MCtx, i: *ir.IRIns) {
     m_ld(e, ao, 8, false, "%rax");
     m_ld(e, bo, 8, false, "%rcx");
     let mn: string = m_shmn(i.op, i.signed_ops);
-    emit_arm64.bs(e.out, cli.cat5("  ", mn, " %cl, %rax\n", "", ""));
+    emit_arm64.bs(e.out, "  " + mn + " %cl, %rax\n" + "" + "");
     if i.op == ir.IROp.IrShl {
       emit_arm64.m_canon(e, dof, i.a.ty);
     }
@@ -441,7 +441,7 @@ fn m_ins(e: *MCtx, i: *ir.IRIns) {
     let dof: i64 = m_vreg_off(e, i.dst);
     m_ld(e, m_vreg_off(e, i.addr), 8, false, "%rax");
     if i.is_float {
-      emit_arm64.bs(e.out, cli.cat4("  ", cli.cat3(m_ldf(i.size), " (%rax), %xmm0\n", ""), "", ""));
+      emit_arm64.bs(e.out, "  " + m_ldf(i.size) + " (%rax), %xmm0\n" + "" + "" + "");
     } else if i.size == 1 {
       if lower.ty_is_signed_int(i.dst.ty) { emit_arm64.bs(e.out, "  movsbq (%rax), %rax\n"); } else { emit_arm64.bs(e.out, "  movzbq (%rax), %rax\n"); }
     } else if i.size == 2 {
@@ -462,7 +462,7 @@ fn m_ins(e: *MCtx, i: *ir.IRIns) {
     m_ld(e, m_vreg_off(e, i.addr), 8, false, "%rax");
     m_ld(e, m_vreg_off(e, i.a), i.size, i.is_float, if i.is_float { "%xmm0" } else { "%rcx" });
     if i.is_float {
-      emit_arm64.bs(e.out, cli.cat4("  ", cli.cat3(m_ldf(i.size), " %xmm0, (%rax)\n", ""), "", ""));
+      emit_arm64.bs(e.out, "  " + m_ldf(i.size) + " %xmm0, (%rax)\n" + "" + "" + "");
     } else if i.size == 1 {
       emit_arm64.bs(e.out, "  movb %cl, (%rax)\n");
     } else if i.size == 2 {
@@ -478,18 +478,18 @@ fn m_ins(e: *MCtx, i: *ir.IRIns) {
     let dof: i64 = m_vreg_off(e, i.dst);
     if i.lit == -1 {
       // global symbol address
-      emit_arm64.bs(e.out, cli.cat5("  leaq ", m_sym(e, i.callee), "(%rip), %rax\n", "", ""));
+      emit_arm64.bs(e.out, "  leaq " + m_sym(e, i.callee) + "(%rip), %rax\n" + "" + "");
     } else {
-      emit_arm64.bs(e.out, cli.cat5("  leaq ", cli.itoa(m_slot_off(e, i.slot)), "(%rbp), %rax\n", "", ""));
+      emit_arm64.bs(e.out, "  leaq " + cli.itoa(m_slot_off(e, i.slot)) + "(%rbp), %rax\n" + "" + "");
     }
-    emit_arm64.bs(e.out, cli.cat5("  movq %rax, ", cli.itoa(dof), "(%rbp)\n", "", ""));
+    emit_arm64.bs(e.out, "  movq %rax, " + cli.itoa(dof) + "(%rbp)\n" + "" + "");
     return;
   }
   if i.op == ir.IROp.IrAddi {
     let dof: i64 = m_vreg_off(e, i.dst);
     m_ld(e, m_vreg_off(e, i.a), 8, false, "%rax");
-    emit_arm64.bs(e.out, cli.cat5("  addq $", cli.itoa(i.imm), ", %rax\n", "", ""));
-    emit_arm64.bs(e.out, cli.cat5("  movq %rax, ", cli.itoa(dof), "(%rbp)\n", "", ""));
+    emit_arm64.bs(e.out, "  addq $" + cli.itoa(i.imm) + ", %rax\n" + "" + "");
+    emit_arm64.bs(e.out, "  movq %rax, " + cli.itoa(dof) + "(%rbp)\n" + "" + "");
     return;
   }
   if i.op == ir.IROp.IrCast {
@@ -525,15 +525,15 @@ fn m_ins(e: *MCtx, i: *ir.IRIns) {
         ld2 = "movswq";
         ld4 = "movslq";
       }
-      let tail: string = cli.cat3(cli.itoa(sof), "(%rbp), %rax\n", "");
+      let tail: string = cli.itoa(sof) + "(%rbp), %rax\n" + "";
       if fw == 1 {
-        emit_arm64.bs(e.out, cli.cat5("  ", ld1, " ", tail, ""));
+        emit_arm64.bs(e.out, "  " + ld1 + " " + tail + "");
       } else if fw == 2 {
-        emit_arm64.bs(e.out, cli.cat5("  ", ld2, " ", tail, ""));
+        emit_arm64.bs(e.out, "  " + ld2 + " " + tail + "");
       } else if fw == 4 {
-        emit_arm64.bs(e.out, cli.cat5("  ", ld4, " ", tail, ""));
+        emit_arm64.bs(e.out, "  " + ld4 + " " + tail + "");
       } else {
-        emit_arm64.bs(e.out, cli.cat5("  movq ", cli.itoa(sof), "(%rbp), %rax\n", "", ""));
+        emit_arm64.bs(e.out, "  movq " + cli.itoa(sof) + "(%rbp), %rax\n" + "" + "");
       }
       let cvt: string = m_cvt_i2f(i.cast_to == ir.IRType.ItF32);
       let lbl: i32 = g_label_amd;
@@ -541,15 +541,15 @@ fn m_ins(e: *MCtx, i: *ir.IRIns) {
       if !sgn && fw == 8 {
         let l: string = cli.itoa(lbl as i64);
         emit_arm64.bs(e.out, "  testq %rax, %rax\n");
-        emit_arm64.bs(e.out, cli.cat3("  js Li2f", l, "_hi\n"));
-        emit_arm64.bs(e.out, cli.cat5("  ", cvt, " %rax, %xmm0\n  jmp Li2f", cli.cat3(l, "_done\n", ""), ""));
-        emit_arm64.bs(e.out, cli.cat3("Li2f", l, "_hi:\n"));
+        emit_arm64.bs(e.out, "  js Li2f" + l + "_hi\n");
+        emit_arm64.bs(e.out, "  " + cvt + " %rax, %xmm0\n  jmp Li2f" + l + "_done\n" + "" + "");
+        emit_arm64.bs(e.out, "Li2f" + l + "_hi:\n");
         emit_arm64.bs(e.out, "  movq %rax, %rcx\n  shrq $1, %rcx\n  andq $1, %rax\n  orq %rcx, %rax\n");
-        emit_arm64.bs(e.out, cli.cat5("  ", cvt, " %rax, %xmm0\n", "", ""));
-        emit_arm64.bs(e.out, cli.cat5("  add", if i.cast_to == ir.IRType.ItF32 { "ss" } else { "sd" }, " %xmm0, %xmm0\n", "", ""));
-        emit_arm64.bs(e.out, cli.cat3("Li2f", l, "_done:\n"));
+        emit_arm64.bs(e.out, "  " + cvt + " %rax, %xmm0\n" + "" + "");
+        emit_arm64.bs(e.out, "  add" + if i.cast_to == ir.IRType.ItF32 { "ss" } else { "sd" } + " %xmm0, %xmm0\n" + "" + "");
+        emit_arm64.bs(e.out, "Li2f" + l + "_done:\n");
       } else {
-        emit_arm64.bs(e.out, cli.cat5("  ", cvt, " %rax, %xmm0\n", "", ""));
+        emit_arm64.bs(e.out, "  " + cvt + " %rax, %xmm0\n" + "" + "");
       }
       m_st(e, dof, if i.cast_to == ir.IRType.ItF32 { 4 } else { 8 }, true, "%xmm0");
     } else if i.cast == ir.IRCastKind.CastF2i {
@@ -557,10 +557,10 @@ fn m_ins(e: *MCtx, i: *ir.IRIns) {
       let to32: bool = !(i.cast_to == ir.IRType.ItI64 || i.cast_to == ir.IRType.ItU64);
       // the 32-bit form saturates at the 32-bit bounds (spec §4.2)
       if to32 {
-        emit_arm64.bs(e.out, cli.cat5("  ", m_cvt_f2i(i.cast_from == ir.IRType.ItF32), "l %xmm0, %eax\n", "", ""));
+        emit_arm64.bs(e.out, "  " + m_cvt_f2i(i.cast_from == ir.IRType.ItF32) + "l %xmm0, %eax\n" + "" + "");
         emit_arm64.bs(e.out, "  movslq %eax, %rax\n");
       } else {
-        emit_arm64.bs(e.out, cli.cat5("  ", m_cvt_f2i(i.cast_from == ir.IRType.ItF32), "q %xmm0, %rax\n", "", ""));
+        emit_arm64.bs(e.out, "  " + m_cvt_f2i(i.cast_from == ir.IRType.ItF32) + "q %xmm0, %rax\n" + "" + "");
       }
       m_st(e, dof, 8, false, "%rax");
     } else if i.cast == ir.IRCastKind.CastF32F64 {
@@ -574,11 +574,11 @@ fn m_ins(e: *MCtx, i: *ir.IRIns) {
     } else if i.cast == ir.IRCastKind.CastReinterp {
       // exact bit move xmm <- slot, gpr <- xmm (f32_bits/f64_bits)
       if i.cast_from == ir.IRType.ItF32 {
-        emit_arm64.bs(e.out, cli.cat4("  movss ", cli.cat3(cli.itoa(sof), "(%rbp), %xmm0\n", ""), "", ""));
+        emit_arm64.bs(e.out, "  movss " + cli.itoa(sof) + "(%rbp), %xmm0\n" + "" + "" + "");
         emit_arm64.bs(e.out, "  movd %xmm0, %eax\n");
         m_st(e, dof, 4, false, "%rax");
       } else {
-        emit_arm64.bs(e.out, cli.cat4("  movsd ", cli.cat3(cli.itoa(sof), "(%rbp), %xmm0\n", ""), "", ""));
+        emit_arm64.bs(e.out, "  movsd " + cli.itoa(sof) + "(%rbp), %xmm0\n" + "" + "" + "");
         emit_arm64.bs(e.out, "  movq %xmm0, %rax\n");
         m_st(e, dof, 8, false, "%rax");
       }
@@ -595,27 +595,27 @@ fn m_ins(e: *MCtx, i: *ir.IRIns) {
     if i.size < 0 {
       m_ld(e, m_vreg_off(e, i.b), 8, false, "%rcx"); // runtime count
     } else {
-      emit_arm64.bs(e.out, cli.cat4("  movq $", cli.cat3(cli.itoa(i.size), ", %rcx\n", ""), "", ""));
+      emit_arm64.bs(e.out, "  movq $" + cli.itoa(i.size) + ", %rcx\n" + "" + "" + "");
     }
     emit_arm64.bs(e.out, "  cld\n  rep movsb\n");
     return;
   }
   if i.op == ir.IROp.IrZero {
     m_ld(e, m_vreg_off(e, i.addr), 8, false, "%rax");
-    emit_arm64.bs(e.out, cli.cat4("  movq $", cli.cat3(cli.itoa(i.size), ", %rcx\n  movq $0, %rdx\n", ""), "", ""));
+    emit_arm64.bs(e.out, "  movq $" + cli.itoa(i.size) + ", %rcx\n  movq $0, %rdx\n" + "" + "" + "");
     let lbl: i32 = g_label_amd;
     g_label_amd += 1;
     let l: string = cli.itoa(lbl as i64);
-    emit_arm64.bs(e.out, cli.cat4("Lzero", cli.cat3(l, ":\n  testq %rcx, %rcx\n  jz Lzero", cli.cat3(l, "_end\n", "")), "", ""));
-    emit_arm64.bs(e.out, cli.cat4("  movb %dl, (%rax)\n  incq %rax\n  decq %rcx\n  jnz Lzero", cli.cat3(l, "\n", ""), "", ""));
-    emit_arm64.bs(e.out, cli.cat3("Lzero", cli.cat3(l, "_end:\n", ""), ""));
+    emit_arm64.bs(e.out, "Lzero" + l + ":\n  testq %rcx, %rcx\n  jz Lzero" + l + "_end\n" + "" + "" + "");
+    emit_arm64.bs(e.out, "  movb %dl, (%rax)\n  incq %rax\n  decq %rcx\n  jnz Lzero" + l + "\n" + "" + "" + "");
+    emit_arm64.bs(e.out, "Lzero" + l + "_end:\n" + "" + "");
     return;
   }
   if i.op == ir.IROp.IrLitaddr {
     let dof: i64 = m_vreg_off(e, i.dst);
     let lit: *ir.IRLit = e.fn_.literals[i.lit as usize];
-    emit_arm64.bs(e.out, cli.cat5("  leaq ", m_lit(e, lit.label), "(%rip), %rax\n", "", ""));
-    emit_arm64.bs(e.out, cli.cat5("  movq %rax, ", cli.itoa(dof), "(%rbp)\n", "", ""));
+    emit_arm64.bs(e.out, "  leaq " + m_lit(e, lit.label) + "(%rip), %rax\n" + "" + "");
+    emit_arm64.bs(e.out, "  movq %rax, " + cli.itoa(dof) + "(%rbp)\n" + "" + "");
     return;
   }
   if i.op == ir.IROp.IrCall {
@@ -629,18 +629,18 @@ fn m_term(e: *MCtx) {
   if fn_.cur.term_op == 100 {
     let to: *ir.IRBlock = fn_.cur.br_true;
     m_edge(e, to);
-    emit_arm64.bs(e.out, cli.cat5("  jmp L", cli.itoa(fn_.uid as i64), "_", cli.itoa(to.id as i64), "\n"));
+    emit_arm64.bs(e.out, "  jmp L" + cli.itoa(fn_.uid as i64) + "_" + cli.itoa(to.id as i64) + "\n");
   } else if fn_.cur.term_op == 101 {
     let tt: *ir.IRBlock = fn_.cur.br_true;
     let ff: *ir.IRBlock = fn_.cur.br_false;
     let cof: i64 = m_vreg_off(e, fn_.cur.cbr_cond);
-    emit_arm64.bs(e.out, cli.cat5("  cmpb $0, ", cli.itoa(cof), "(%rbp)\n", "", ""));
-    emit_arm64.bs(e.out, cli.cat5("  je Lcbf", cli.itoa(g_label_amd as i64), "\n", "", ""));
+    emit_arm64.bs(e.out, "  cmpb $0, " + cli.itoa(cof) + "(%rbp)\n" + "" + "");
+    emit_arm64.bs(e.out, "  je Lcbf" + cli.itoa(g_label_amd as i64) + "\n" + "" + "");
     m_edge(e, tt);
-    emit_arm64.bs(e.out, cli.cat5("  jmp L", cli.itoa(fn_.uid as i64), "_", cli.itoa(tt.id as i64), "\n"));
-    emit_arm64.bs(e.out, cli.cat5("Lcbf", cli.itoa(g_label_amd as i64), ":\n", "", ""));
+    emit_arm64.bs(e.out, "  jmp L" + cli.itoa(fn_.uid as i64) + "_" + cli.itoa(tt.id as i64) + "\n");
+    emit_arm64.bs(e.out, "Lcbf" + cli.itoa(g_label_amd as i64) + ":\n" + "" + "");
     m_edge(e, ff);
-    emit_arm64.bs(e.out, cli.cat5("  jmp L", cli.itoa(fn_.uid as i64), "_", cli.itoa(ff.id as i64), "\n"));
+    emit_arm64.bs(e.out, "  jmp L" + cli.itoa(fn_.uid as i64) + "_" + cli.itoa(ff.id as i64) + "\n");
     g_label_amd += 1;
   } else if fn_.cur.term_op == 102 {
     if fn_.cur.ret_val != null {
@@ -664,17 +664,17 @@ fn m_fn(e: *MCtx, fn_: *ir.IRFn) {
   g_fn_uid += 1;
   m_layout(e);
   let s: string = m_sym(e, fn_.symbol);
-  emit_arm64.bs(e.out, cli.cat5("\n  ", s, ":\n", "", ""));
+  emit_arm64.bs(e.out, "\n  " + s + ":\n" + "" + "");
   emit_arm64.bs(e.out, "  pushq %rbp\n  movq %rsp, %rbp\n");
   if e.frame != 0 {
-    emit_arm64.bs(e.out, cli.cat5("  subq $", cli.itoa(e.frame), ", %rsp\n", "", ""));
+    emit_arm64.bs(e.out, "  subq $" + cli.itoa(e.frame) + ", %rsp\n" + "" + "");
   }
   // spill register params into their slots
   let mut ri: i32 = 0;
   let mut fi: i32 = 0;
   if fn_.returns_aggregate {
     ri += 1; // rdi carries the out pointer
-    emit_arm64.bs(e.out, cli.cat5("  movq %rdi, ", cli.itoa(m_slot_off(e, fn_.out_slot)), "(%rbp)\n", "", ""));
+    emit_arm64.bs(e.out, "  movq %rdi, " + cli.itoa(m_slot_off(e, fn_.out_slot)) + "(%rbp)\n" + "" + "");
   }
   let mut p: usize = 0;
   while p < len(fn_.params) {
@@ -687,20 +687,20 @@ fn m_fn(e: *MCtx, fn_: *ir.IRFn) {
     if isf && fi < 8 {
       // f32 params arrive in the low lane (movss); movsd would read 8 bytes
       if pt.kind == check.TypeKind.TyF32 {
-        emit_arm64.bs(e.out, cli.cat5("  movss %xmm", cli.itoa(fi as i64), ", ", cli.itoa(m_slot_off(e, slot)), "(%rbp)\n"));
+        emit_arm64.bs(e.out, "  movss %xmm" + cli.itoa(fi as i64) + ", " + cli.itoa(m_slot_off(e, slot)) + "(%rbp)\n");
       } else {
-        emit_arm64.bs(e.out, cli.cat5("  movsd %xmm", cli.itoa(fi as i64), ", ", cli.itoa(m_slot_off(e, slot)), "(%rbp)\n"));
+        emit_arm64.bs(e.out, "  movsd %xmm" + cli.itoa(fi as i64) + ", " + cli.itoa(m_slot_off(e, slot)) + "(%rbp)\n");
       }
       fi += 1;
     } else if !isf && ri < 6 {
-      emit_arm64.bs(e.out, cli.cat5("  movq ", m_intreg(ri), ", ", cli.itoa(m_slot_off(e, slot)), "(%rbp)\n"));
+      emit_arm64.bs(e.out, "  movq " + m_intreg(ri) + ", " + cli.itoa(m_slot_off(e, slot)) + "(%rbp)\n");
       ri += 1;
     } else {
       // stack param: above the saved rbp and return address
       let stack_index: i32 = (if isf { fi } else { ri }) + p as i32;
       let over: i32 = if stack_index - 6 > 0 { stack_index - 6 } else { 0 };
-      emit_arm64.bs(e.out, cli.cat5("  movq ", cli.itoa((16 + 8 * over) as i64), "(%rbp), %rax\n", "", ""));
-      emit_arm64.bs(e.out, cli.cat5("  movq %rax, ", cli.itoa(m_slot_off(e, slot)), "(%rbp)\n", "", ""));
+      emit_arm64.bs(e.out, "  movq " + cli.itoa((16 + 8 * over) as i64) + "(%rbp), %rax\n" + "" + "");
+      emit_arm64.bs(e.out, "  movq %rax, " + cli.itoa(m_slot_off(e, slot)) + "(%rbp)\n" + "" + "");
     }
     p += 1;
   }
@@ -708,7 +708,7 @@ fn m_fn(e: *MCtx, fn_: *ir.IRFn) {
   while bi < len(fn_.blocks) {
     let b: *ir.IRBlock = fn_.blocks[bi];
     e.fn_.cur = b;
-    emit_arm64.bs(e.out, cli.cat5("L", cli.itoa(e.fn_.uid as i64), "_", cli.itoa(b.id as i64), ":\n"));
+    emit_arm64.bs(e.out, "L" + cli.itoa(e.fn_.uid as i64) + "_" + cli.itoa(b.id as i64) + ":\n");
     let mut ii: usize = 0;
     while ii < len(b.ins) {
       m_ins(e, b.ins[ii]);
@@ -749,14 +749,14 @@ pub fn emit_amd64_text(target: i32) -> []u8 {
     let mut j: usize = 0;
     while j < len(fn_.literals) {
       let l: *ir.IRLit = fn_.literals[j];
-      emit_arm64.bs(out, cli.cat5("  .p2align 3\n", m_lit(e, l.label), ":\n  .quad 0x8000000000000000\n  .quad 0\n  .quad 0\n", m_lit(e, cli.cat3(l.label, "_b", "")), ":\n  .ascii \""));
+      emit_arm64.bs(out, "  .p2align 3\n" + m_lit(e, l.label) + ":\n  .quad 0x8000000000000000\n  .quad 0\n  .quad 0\n" + m_lit(e, l.label + "_b" + "") + ":\n  .ascii \"");
       let mut k: usize = 0;
       while k < len(l.bytes) {
         let ch: u8 = l.bytes[k];
         if ch >= 0x20 && ch < 0x7F && ch != 34 && ch != 92 {
           emit_wasm.b8(out, ch);
         } else {
-          emit_arm64.bs(out, cli.cat3("\\", emit_arm64.oct3(ch), ""));
+          emit_arm64.bs(out, "\\" + emit_arm64.oct3(ch) + "");
         }
         k += 1;
       }
@@ -772,14 +772,14 @@ pub fn emit_amd64_text(target: i32) -> []u8 {
     let g: *ir.IRGlobal = ir.g_ir_globals.items[i];
     if g.static_lit != null {
       let l: *ir.IRLit = g.static_lit;
-      emit_arm64.bs(out, cli.cat5("  .p2align 3\n", m_lit(e, l.label), ":\n  .quad 0x8000000000000000\n  .quad 0\n  .quad 0\n", m_lit(e, cli.cat3(l.label, "_b", "")), ":\n  .ascii \""));
+      emit_arm64.bs(out, "  .p2align 3\n" + m_lit(e, l.label) + ":\n  .quad 0x8000000000000000\n  .quad 0\n  .quad 0\n" + m_lit(e, l.label + "_b" + "") + ":\n  .ascii \"");
       let mut k: usize = 0;
       while k < len(l.bytes) {
         let ch: u8 = l.bytes[k];
         if ch >= 0x20 && ch < 0x7F && ch != 34 && ch != 92 {
           emit_wasm.b8(out, ch);
         } else {
-          emit_arm64.bs(out, cli.cat3("\\", emit_arm64.oct3(ch), ""));
+          emit_arm64.bs(out, "\\" + emit_arm64.oct3(ch) + "");
         }
         k += 1;
       }
@@ -795,10 +795,10 @@ pub fn emit_amd64_text(target: i32) -> []u8 {
         // .long with the FLOAT bits — a .quad of the double's bits would
         // hand movss 8 wrong bytes
         let bits32: u32 = intrinsics.f32_bits(fc.v as f32);
-        emit_arm64.bs(out, cli.cat5("  .p2align 2\nLfconst", cli.itoa(fc.lbl as i64), ":\n  .long ", cli.utoa(bits32 as u64), "\n"));
+        emit_arm64.bs(out, "  .p2align 2\nLfconst" + cli.itoa(fc.lbl as i64) + ":\n  .long " + cli.utoa(bits32 as u64) + "\n");
       } else {
         let bits: u64 = intrinsics.f64_bits(fc.v);
-        emit_arm64.bs(out, cli.cat5("  .p2align 3\nLfconst", cli.itoa(fc.lbl as i64), ":\n  .quad ", cli.utoa(bits), "\n"));
+        emit_arm64.bs(out, "  .p2align 3\nLfconst" + cli.itoa(fc.lbl as i64) + ":\n  .quad " + cli.utoa(bits) + "\n");
       }
       n += 1;
     }
@@ -806,14 +806,14 @@ pub fn emit_amd64_text(target: i32) -> []u8 {
   i = 0;
   while i < ir.g_ir_globals.n {
     let g: *ir.IRGlobal = ir.g_ir_globals.items[i];
-    emit_arm64.bs(out, cli.cat5("\n  .globl ", m_sym(e, g.symbol), "\n", "", ""));
+    emit_arm64.bs(out, "\n  .globl " + m_sym(e, g.symbol) + "\n" + "" + "");
     if e.is_mac {
       emit_arm64.bs(out, ".section __DATA,__data\n");
     } else {
       emit_arm64.bs(out, ".section .data\n");
     }
-    emit_arm64.bs(out, cli.cat5("  .p2align ", cli.itoa(emit_arm64.glob_p2align(g.align)), "\n", "", ""));
-    emit_arm64.bs(out, cli.cat5(m_sym(e, g.symbol), ":\n", "", "", ""));
+    emit_arm64.bs(out, "  .p2align " + cli.itoa(emit_arm64.glob_p2align(g.align)) + "\n" + "" + "");
+    emit_arm64.bs(out, m_sym(e, g.symbol) + ":\n" + "" + "" + "");
     emit_arm64.emit_glob_data(out, g, m_globpre(e.is_mac));
     i += 1;
   }
@@ -824,10 +824,10 @@ pub fn emit_amd64_text(target: i32) -> []u8 {
     } else {
       emit_arm64.bs(out, ".text\n");
     }
-    emit_arm64.bs(out, cli.cat5("\n  .globl ", m_sym(e, "main"), "\n", "", ""));
-    emit_arm64.bs(out, cli.cat5(m_sym(e, "main"), ":\n", "", "", ""));
+    emit_arm64.bs(out, "\n  .globl " + m_sym(e, "main") + "\n" + "" + "");
+    emit_arm64.bs(out, m_sym(e, "main") + ":\n" + "" + "" + "");
     emit_arm64.bs(out, "  pushq %rbp\n  movq %rsp, %rbp\n");
-    emit_arm64.bs(out, cli.cat5("  call ", m_sym(e, ir.g_main_cell.items[0]), "\n", "", ""));
+    emit_arm64.bs(out, "  call " + m_sym(e, ir.g_main_cell.items[0]) + "\n" + "" + "");
     emit_arm64.bs(out, "  movq %rbp, %rsp\n  popq %rbp\n  ret\n");
   }
   return out.items[0..out.n];

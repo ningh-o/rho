@@ -1,0 +1,20 @@
+// exit: 0
+// else-if chains fold link by link: each cond decides its own node
+const a: bool = false;
+const b: bool = true;
+
+fn main() -> i32 {
+  if a {
+    printf("{}", "arm a\n");
+  } else if b {
+    printf("{}", "arm b\n");
+  } else {
+    printf("{}", "arm c\n");
+  }
+  if a || b {
+    printf("{}", "either\n");
+  } else {
+    printf("{}", "neither\n");
+  }
+  return 0;
+}

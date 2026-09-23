@@ -1,0 +1,7 @@
+// diag
+// a/b/lib.rho and a/b.rho cannot both be the real body
+use both;
+
+fn main() -> i32 {
+  return 0;
+}

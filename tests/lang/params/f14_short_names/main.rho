@@ -1,0 +1,19 @@
+// exit: 0
+// the artifact's internal symbols carry the shortest serial names a..z,
+// aa.. (nothing outside the artifact calls them by name: wasm calls by
+// index and exports only memory/_start, native images carry no symbol
+// table). The dump must hold no long internal name anywhere, and every
+// fn line must be a one-or-two-letter name. `-g` (f15) keeps the long
+// forms.
+const native: bool = false;
+use helper;
+fn entry_work() -> i32 {
+  return helper.double(20);
+}
+fn main() -> i32 {
+  if native {
+    helper.double(1);
+  }
+  printf("{}", "f14 ok\n");
+  return entry_work() - 40;
+}

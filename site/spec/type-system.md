@@ -1,8 +1,9 @@
 # The rho type system
 
-Types, their rules, and how the checker enforces them — aligned with the
-boot compiler (`boot/src/check.c`). Surface syntax lives in
-[syntax.md](syntax.md).
+Types, their rules, and how the checker enforces them — the current law,
+carried by the self-hosted compiler (`libs/compiler`); the frozen boot
+seed keeps its era's rules (no element-wise aggregate `==`). Surface
+syntax lives in [syntax.md](syntax.md).
 
 ## Types
 

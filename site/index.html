@@ -111,8 +111,9 @@
     <section class="chapter" id="quickstart">
       <h2>Build it in a minute</h2>
       <p>
-        The whole toolchain is one C program. A C compiler and make are the
-        only requirements to build it:
+        The bootstrap compiler is one C program: a C compiler and make are the
+        only requirements. The shipped toolchain is rho compiled by rho — boot
+        is the seed that rebuilds that chain:
       </p>
       <div class="example">
         <div class="bar"><span>sh</span></div>
@@ -142,7 +143,7 @@ hello, world</pre>
 
   <footer class="site">
     <div class="wrap">
-      ρ 0.3.1 — the boot compiler is the reference toolchain.
+      ρ — the site ships the self-hosted compiler; the frozen boot compiler remains the bootstrap seed.
       <a href="https://github.com/ningh-o/rho">source</a>
       · <a href="spec.html">spec</a>
       · <a href="tutorial.html">tutorial</a>
