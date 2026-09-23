@@ -5,9 +5,10 @@
 //
 //   rho build rho-pkg.rho -o rho-pkg.wasm --target wasm32-wasi
 //
-// The subcommand line arrives on STDIN (wasm rho programs have no argv):
+// The subcommand line arrives as ARGV (the prelude's __program_args
+// reads the guest args wasmtime passes after the module):
 //
-//   printf 'install --frozen\n' | wasmtime run --dir . rho-pkg.wasm
+//   wasmtime run --dir . rho-pkg.wasm install --frozen
 //
 // Exit codes: 0 ok, 1 error, 2 usage. Operates on the current directory
 // (the package root): rho.toml / rho.lock / vendor/.
@@ -169,26 +170,6 @@ fn push_str(xs: []string, s: string) -> []string {
   return grown;
 }
 
-fn split_ws(s: string) -> []string {
-  let mut out: []string = make([]string, 0);
-  let mut cur: string = "";
-  let mut i: usize = 0;
-  while (i < len(s)) {
-    if ((s[i] == " "[0]) || (s[i] == "\t"[0])) {
-      if (len(cur) > 0) {
-        out = push_str(out, cur);
-        cur = "";
-      }
-    } else {
-      cur = (cur + singleton(s[i]));
-    }
-    i += 1;
-  }
-  if (len(cur) > 0) {
-    out = push_str(out, cur);
-  }
-  return out;
-}
 
 fn split_lines(text: string) -> []string {
   let mut out: []string = make([]string, 0);
@@ -814,7 +795,7 @@ fn lock_string(m: *Manifest, pkgs: []*Locked) -> string {
 // ------------------------------------------------------- commands ---------
 fn usage() -> i32 {
   printf("rho-pkg — the rho package tool (docs/package-manager.md)\n");
-  printf("the subcommand line arrives on stdin:\n");
+  printf("usage: rho-pkg <subcommand> [args...]\n");
   printf("  init <name>\n");
   printf("  add <name> --path <dir> | --git <url> --rev <rev>\n");
   printf("  install [--frozen]\n");
@@ -1027,26 +1008,19 @@ fn cmd_install(frozen: bool) -> i32 {
 }
 
 // ------------------------------------------------------- main -------------
-fn read_stdin_line() -> string {
-  // read 8192 into a larger buffer so the trailing slice stays interior
-  // (a zero-length slice at the end boundary panics)
-  let buf: []u8 = make([]u8, 9216);
-  let n: isize = __read(0, buf.ptr, 8192);
-  if (n <= 0) {
-    return "";
-  }
-  let mut slen: usize = 0;
-  while (slen < n as usize) {
-    if (buf[slen] == "\n"[0]) {
-      break;
-    }
-    slen += 1;
-  }
-  return intrinsics.slice_string(buf[0..slen]);
-}
-
 fn main() -> i32 {
-  let args: []string = split_ws(chop(read_stdin_line()));
+  // argv, not stdin: the prelude's __program_args reads the guest args
+  // wasmtime passes after the module (argv[0] is the module name, so it
+  // is dropped). The old stdin-line UI was a workaround for a wasm trap
+  // that no longer exists — each argument arrives whole, no whitespace
+  // splitting, so a `--path` value may contain spaces.
+  let raw: []string = __program_args();
+  let mut args: []string = make([]string, 0);
+  let mut ai: usize = 1;
+  while ai < len(raw) {
+    args = push_str(args, raw[ai]);
+    ai += 1;
+  }
   if (len(args) == 0) {
     return usage();
   }

@@ -1,0 +1,13 @@
+// exit: 0
+// s10 — global tree-shaking: statics nobody references never enter the
+// artifact, however public; a referenced static stays. The .g/.gno pins
+// read the dump's `^global ` list — the artifact's data image after
+// reachability.
+static mut LIVE: i64 = 7;
+static mut DEAD: i64 = 9;
+pub static mut DEAD_PUB: i64 = 11;
+
+fn main() -> i32 {
+  printf("{}\n", LIVE);
+  return 0;
+}

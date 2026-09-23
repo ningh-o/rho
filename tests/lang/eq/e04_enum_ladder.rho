@@ -1,0 +1,51 @@
+// exit: 0
+// the variant ladder: payloads on every rung compare, not just the
+// first gated one (a historical emitter bug made every rung after the
+// first compare nothing — same-tag values of later variants read equal;
+// this suite is its pin)
+enum Op {
+  None,
+  Push(i64),
+  Named(string),
+}
+
+enum Deep {
+  Unit,
+  Inner(Inner),
+}
+
+struct Inner {
+  v: i64,
+}
+
+enum Holder {
+  Empty,
+  Holds(*Inner),
+}
+
+fn main() -> i32 {
+  let a: Op = Op.Named("x");
+  let b: Op = Op.Named("x");
+  let c: Op = Op.Named("y");
+  if a == b { printf("str-eq\n"); } else { printf("BAD\n"); }
+  if a == c { printf("BAD\n"); } else { printf("str-ne\n"); }
+  let p: Op = Op.Push(1);
+  let q: Op = Op.Push(2);
+  if p == q { printf("BAD\n"); } else { printf("int-ne\n"); }
+  if Op.None == Op.None { printf("unit\n"); } else { printf("BAD\n"); }
+  if a != c { printf("form\n"); } else { printf("BAD\n"); }
+  let inners: []Inner = make([]Inner, 3);
+  inners[0].v = 3;
+  inners[1].v = 3;
+  inners[2].v = 4;
+  let d1: Deep = Deep.Inner(inners[0]);
+  let d2: Deep = Deep.Inner(inners[1]);
+  let d3: Deep = Deep.Inner(inners[2]);
+  if d1 == d2 { printf("agg-eq\n"); } else { printf("BAD\n"); }
+  if d1 == d3 { printf("BAD\n"); } else { printf("agg-ne\n"); }
+  let obj: *Inner = new Inner { v: 1 };
+  let twin: *Inner = new Inner { v: 1 };
+  if Holder.Holds(obj) == Holder.Holds(obj) { printf("ptr-same\n"); } else { printf("BAD\n"); }
+  if Holder.Holds(obj) == Holder.Holds(twin) { printf("BAD\n"); } else { printf("ptr-twin\n"); }
+  return 0;
+}

@@ -3,7 +3,6 @@ tuple payload: eq=true ne=false
 tuple differs: eq=false ne=true
 cross variant: eq=false ne=true
 struct payload: eq=true ne=false
-struct differs: eq=true ne=false
 struct vs unit: eq=false ne=true
 float payload: eq=true ne=false
 float differs: eq=false
@@ -11,5 +10,3 @@ zero vs add: eq=false ne=true
 ptr payload same obj: eq=true ne=false
 ptr payload twin obj: eq=false ne=true
 ptr payload vs empty: eq=false ne=true
-later variants: Neg(1)==Neg(2) -> true
-later variants: Neg(7)==Neg(-7) -> true

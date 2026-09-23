@@ -2,7 +2,10 @@
 // copying an enum value copies the payload with it: a managed payload is
 // retained once per copy, so writes through either binding hit the same
 // object; match binds the payload by copy; equality compares tag then
-// payload, recursing field-wise — two fresh equal payloads test equal.
+// payload. Held is a later variant, where boot (frozen) skips the
+// payload compare and the mirror compares the pointer by identity —
+// that disagreement is pinned in tests/lang/eq, and this record keeps
+// only what both compilers answer identically.
 struct Node {
   v: i32,
 }
@@ -42,7 +45,7 @@ fn main() -> i32 {
     Item.Held(n) => printf("via original: v={} sum={}\n", n.v, sum),
     _ => printf("other\n"),
   }
-  printf("eq: same={} fresh={}\n", (it == it2), (Item.Held(new Node { v: 1 }) == Item.Held(new Node { v: 1 })));
+  printf("eq: same={}\n", (it == it2));
   printf("count eq: {} {}\n", (Item.Count(3) == Item.Count(3)), (Item.Count(3) == Item.Count(4)));
   printf("tags: {} {} {}\n", (Item.Nothing == Item.Nothing), (Item.Count(1) == Item.Nothing), (it != Item.Nothing));
   printf("label: {}\n", label(it));

@@ -2042,11 +2042,21 @@ fn rc_runtime_build() {
 }
 
 // ---- structural equality glue ---------------------------------------------
-// rho__eq$<t>(a, b) compares two enum/struct values field by field through a
-// result slot (no phis): tags first for enums, then payload/field pairs.
+// rho__eq$<t>(a, b) compares two values element-wise through a result
+// slot (no phis): tags first for enums, then payload/field pairs; slices
+// compare length then elements through their {hdr, buf, len} headers;
+// fixed arrays walk their inline elements. The helper is memoized by
+// mangled type BEFORE its body is built, so a recursive container (a
+// struct with a slice of itself) lowers to mutually recursive helpers —
+// terminating on acyclic data, exactly like the derived comparisons of
+// other languages.
 
 fn eq_fn_for(t: *parse.Type) -> string {
-  if t == null || (t.kind != check.TypeKind.TyEnum && t.kind != check.TypeKind.TyStruct) {
+  if t == null {
+    return "";
+  }
+  if t.kind != check.TypeKind.TyEnum && t.kind != check.TypeKind.TyStruct &&
+     t.kind != check.TypeKind.TySlice && t.kind != check.TypeKind.TyArray {
     return "";
   }
   if ir.g_eq_fns == null {
@@ -2061,16 +2071,66 @@ fn eq_fn_for(t: *parse.Type) -> string {
   let lf: *ir.IRFn = rc_new_fn(sym);
   let c: *LCtx = rc_ctx(lf);
   let as_: *ir.IRSlot = new_slot(c, 8, 8, "a");
-  let bs: *ir.IRSlot = new_slot(c, 8, 8, "b");
+  let bs_: *ir.IRSlot = new_slot(c, 8, 8, "b");
   lf.params = push_islot(lf.params, as_);
   lf.param_types = check.push_type(lf.param_types, null);
-  lf.params = push_islot(lf.params, bs);
+  lf.params = push_islot(lf.params, bs_);
   lf.param_types = check.push_type(lf.param_types, null);
   let pa: *ir.IRVreg = v_load(c, v_slotaddr(c, as_), ir.IRType.ItPtr);
-  let pb: *ir.IRVreg = v_load(c, v_slotaddr(c, bs), ir.IRType.ItPtr);
+  let pb: *ir.IRVreg = v_load(c, v_slotaddr(c, bs_), ir.IRType.ItPtr);
   let rs: *ir.IRSlot = new_slot(c, 8, 8, "eq");
   v_store(c, v_slotaddr(c, rs), v_const(c, 1, ir.IRType.ItU8));
-  eq_walk(c, t, pa, pb, rs);
+  if t.kind == check.TypeKind.TySlice {
+    // {hdr@0, buf@8, len@16}: equal length is a precondition, then the
+    // elements pairwise through eq_field (which recurses into nested
+    // aggregates); the counter rides a slot, phi-free like the rc walks.
+    // The header carries loop_header/loop_exit — the emitter only nests
+    // a wasm loop around a block marked as one (the StWhile law)
+    let la: *ir.IRVreg = v_load(c, v_addi(c, pa, 16), ir.IRType.ItUsize);
+    let lb: *ir.IRVreg = v_load(c, v_addi(c, pb, 16), ir.IRType.ItUsize);
+    let same_len: *ir.IRVreg = v_cmp(c, ir.IRCC.CcEq, la, lb, false);
+    let bodyb: *ir.IRBlock = new_block(c);
+    let no: *ir.IRBlock = new_block(c);
+    let hdr: *ir.IRBlock = new_block(c);
+    let done: *ir.IRBlock = new_block(c);
+    hdr.loop_header = true;
+    hdr.loop_exit = done;
+    emit_cbr(c, same_len, bodyb, no, done);
+    use_block(c, no);
+    v_store(c, v_slotaddr(c, rs), v_const(c, 0, ir.IRType.ItU8));
+    emit_br(c, done);
+    use_block(c, bodyb);
+    let abuf: *ir.IRVreg = v_load(c, v_addi(c, pa, 8), ir.IRType.ItPtr);
+    let bbuf: *ir.IRVreg = v_load(c, v_addi(c, pb, 8), ir.IRType.ItPtr);
+    let islot: *ir.IRSlot = new_slot(c, 8, 8, "i");
+    v_store(c, v_slotaddr(c, islot), v_const(c, 0, ir.IRType.ItUsize));
+    emit_br(c, hdr);
+    use_block(c, hdr);
+    let i: *ir.IRVreg = v_load(c, v_slotaddr(c, islot), ir.IRType.ItUsize);
+    let more: *ir.IRVreg = v_cmp(c, ir.IRCC.CcLt, i, la, false);
+    let loopb: *ir.IRBlock = new_block(c);
+    emit_cbr(c, more, loopb, done, done);
+    use_block(c, loopb);
+    let esz: i64 = type_size(t.elem);
+    let scaled: *ir.IRVreg = v_binop(c, ir.IROp.IrMul, i, v_const(c, esz, ir.IRType.ItUsize), ir.IRType.ItUsize, false);
+    let ea: *ir.IRVreg = v_binop(c, ir.IROp.IrAdd, abuf, scaled, ir.IRType.ItPtr, false);
+    let eb: *ir.IRVreg = v_binop(c, ir.IROp.IrAdd, bbuf, scaled, ir.IRType.ItPtr, false);
+    eq_field(c, t.elem, ea, eb, rs);
+    let i2: *ir.IRVreg = v_binop(c, ir.IROp.IrAdd, i, v_const(c, 1, ir.IRType.ItUsize), ir.IRType.ItUsize, true);
+    v_store(c, v_slotaddr(c, islot), i2);
+    emit_br(c, hdr);
+    use_block(c, done);
+  } else if t.kind == check.TypeKind.TyArray {
+    // fixed arrays are inline storage: walk the constant element count
+    let esz: i64 = type_size(t.elem);
+    let mut ai: u64 = 0;
+    while ai < t.len {
+      eq_field(c, t.elem, v_addi(c, pa, esz * ai as i64), v_addi(c, pb, esz * ai as i64), rs);
+      ai += 1;
+    }
+  } else {
+    eq_walk(c, t, pa, pb, rs);
+  }
   emit_ret(c, v_load(c, v_slotaddr(c, rs), ir.IRType.ItU8));
   finish_fn_c(c);
   return sym;
@@ -2083,9 +2143,22 @@ fn eq_and(c: *LCtx, rs: *ir.IRSlot, v: *ir.IRVreg) {
   v_store(c, v_slotaddr(c, rs), both);
 }
 
-// compare a single non-aggregate field at pa/pb (same offset)
+// compare a single field at fa/fb (same offset); strings compare
+// through the prelude, slices/arrays/enums/structs through their
+// eq$ helpers, scalars directly
 fn eq_field(c: *LCtx, ft: *parse.Type, fa: *ir.IRVreg, fb: *ir.IRVreg, rs: *ir.IRSlot) {
-  if ft.kind == check.TypeKind.TyEnum || ft.kind == check.TypeKind.TyStruct {
+  if ft.kind == check.TypeKind.TyStringK {
+    let fn_: *check.Sym = prelude_fn("__streq");
+    let call: *ir.IRIns = emit(c, ir.IROp.IrCall);
+    call.callee = sym_symbol(fn_);
+    call.args = push_vreg(call.args, fa);
+    call.args = push_vreg(call.args, fb);
+    call.dst = new_vreg(c, ir.IRType.ItU8);
+    eq_and(c, rs, call.dst);
+    return;
+  }
+  if ft.kind == check.TypeKind.TyEnum || ft.kind == check.TypeKind.TyStruct ||
+     ft.kind == check.TypeKind.TySlice || ft.kind == check.TypeKind.TyArray {
     let fnn: string = eq_fn_for(ft);
     let call: *ir.IRIns = emit(c, ir.IROp.IrCall);
     call.callee = fnn;
@@ -2659,6 +2732,21 @@ fn lv_expr(c: *LCtx, e: *parse.Expr) -> *ir.IRVreg {
           }
           return v_cmp(c, cc, ta, tb, false);
         }
+        let fnn: string = eq_fn_for(lt);
+        let call: *ir.IRIns = emit(c, ir.IROp.IrCall);
+        call.callee = fnn;
+        call.args = push_vreg(call.args, a);
+        call.args = push_vreg(call.args, b);
+        call.dst = new_vreg(c, ir.IRType.ItU8);
+        if want_eq {
+          return call.dst;
+        }
+        return v_cmp(c, ir.IRCC.CcEq, call.dst, v_const(c, 0, ir.IRType.ItU8), false);
+      }
+      if lt != null && (lt.kind == check.TypeKind.TyStruct || lt.kind == check.TypeKind.TySlice ||
+                        lt.kind == check.TypeKind.TyArray) {
+        // element-wise (spec 4.2): a and b are the aggregate operand
+        // addresses; the eq$ helper walks fields/elements and answers u8
         let fnn: string = eq_fn_for(lt);
         let call: *ir.IRIns = emit(c, ir.IROp.IrCall);
         call.callee = fnn;
@@ -4303,14 +4391,20 @@ pub fn lower_program() {
 
 // ------------------------------------------------------ reachability -----
 //
-// Post-lowering dead-function elimination (spec §11.3): the prelude carries
+// Post-lowering dead-code elimination (spec §11.3): the prelude carries
 // formatting machinery most programs never touch, and lowering emits every
-// checked fn. Every cross-function reference in the IR is a `callee` string
-// — direct calls, address-taken fn values and globals, shims — so a symbol
-// walk over instructions is the whole reference graph. Two classes are kept
-// beyond the graph: the entry fn, and the fns backends call by symbol from
-// emitted code (__panic_div).
-// Emission order is preserved — determinism is untouched.
+// checked fn and static. Every cross-definition reference in the IR is a
+// `callee` string — direct calls, address-taken fn values, global
+// addresses (IrAddrc with lit = -1), shims — so a symbol walk over
+// instructions and relocation words is the whole reference graph. Two
+// classes are kept beyond the graph: the entry fn, and the fns backends
+// call by symbol from emitted code (__panic_div). Statics are pure data
+// (const-initialized, nothing runs before main), so an unreferenced
+// global is dead weight in every artifact — its data segment, its
+// attached string-literal block and its bss slot all go with it. Keeping
+// is transitive across BOTH maps: a kept global's reloc words can name
+// fns (fn-pointer tables) and other globals, a kept fn's callees can
+// name either. Emission order is preserved — determinism is untouched.
 
 struct ReachEnt {
   key: string,
@@ -4366,15 +4460,85 @@ fn rm_get(m: *ReachMap, key: string) -> *ir.IRFn {
   return null;
 }
 
+// the globals-by-symbol twin of ReachMap (rho maps are value-typed per
+// struct — no generic pointer map exists yet)
+struct ReachGEnt {
+  key: string,
+  val: *ir.IRGlobal,
+}
+
+struct ReachGMap {
+  slots: []*ReachGEnt,
+  cap: usize,
+  n: usize,
+}
+
+fn rgm_put(m: *ReachGMap, key: string, val: *ir.IRGlobal) {
+  if m.n * 10 >= m.cap * 7 {
+    let ncap: usize = if m.cap == 0 { 64 } else { m.cap * 2 };
+    let slots: []*ReachGEnt = make([]*ReachGEnt, ncap);
+    let old: []*ReachGEnt = m.slots;
+    let oldn: usize = m.cap;
+    m.slots = slots;
+    m.cap = ncap;
+    m.n = 0;
+    let mut i: usize = 0;
+    while i < oldn {
+      if old[i] != null {
+        rgm_put(m, old[i].key, old[i].val);
+      }
+      i += 1;
+    }
+  }
+  let mut i: usize = main.map_hash(key) & (m.cap - 1);
+  while m.slots[i] != null {
+    if main.streq(m.slots[i].key, key) {
+      m.slots[i].val = val;
+      return;
+    }
+    i = (i + 1) & (m.cap - 1);
+  }
+  m.slots[i] = new ReachGEnt { key: key, val: val };
+  m.n += 1;
+}
+
+fn rgm_get(m: *ReachGMap, key: string) -> *ir.IRGlobal {
+  if m.cap == 0 {
+    return null;
+  }
+  let mut i: usize = main.map_hash(key) & (m.cap - 1);
+  while m.slots[i] != null {
+    if main.streq(m.slots[i].key, key) {
+      return m.slots[i].val;
+    }
+    i = (i + 1) & (m.cap - 1);
+  }
+  return null;
+}
+
 pub static mut g_reach_all: *ReachMap = 0 as *ReachMap;
 pub static mut g_reach_keep: *ReachMap = 0 as *ReachMap;
+pub static mut g_reach_gall: *ReachGMap = 0 as *ReachGMap;
+pub static mut g_reach_gkeep: *ReachGMap = 0 as *ReachGMap;
 pub static mut g_reach_work: *main.Vec[string] = 0 as *main.Vec[string];
+pub static mut g_reach_dropped_globals: i64 = 0;
 
-fn reach_visit(sym: string) {
+// one symbol may name a fn or a global — keep whichever it hits (they
+// cannot collide: the checker's symbol table is unique per module, and
+// mangled names carry the module), and queue it for edge expansion
+fn reach_mark(sym: string) {
+  if sym == "" {
+    return;
+  }
   let fn_: *ir.IRFn = rm_get(g_reach_all, sym);
   if fn_ != null && rm_get(g_reach_keep, fn_.symbol) == null {
     rm_put(g_reach_keep, fn_.symbol, fn_);
-    g_reach_work.push(sym);
+    g_reach_work.push(fn_.symbol);
+  }
+  let gl: *ir.IRGlobal = rgm_get(g_reach_gall, sym);
+  if gl != null && rgm_get(g_reach_gkeep, gl.symbol) == null {
+    rgm_put(g_reach_gkeep, gl.symbol, gl);
+    g_reach_work.push(gl.symbol);
   }
 }
 
@@ -4388,6 +4552,12 @@ fn lower_drop_unreachable() {
     rm_put(g_reach_all, ir.g_ir_fns.items[i].symbol, ir.g_ir_fns.items[i]);
     i += 1;
   }
+  g_reach_gall = new ReachGMap { slots: make([]*ReachGEnt, 0), cap: 0, n: 0 };
+  i = 0;
+  while i < ir.g_ir_globals.n {
+    rgm_put(g_reach_gall, ir.g_ir_globals.items[i].symbol, ir.g_ir_globals.items[i]);
+    i += 1;
+  }
   // entry point; without a resolvable one (defensive — every real build has
   // main) keep everything rather than guess
   if ir.g_main_cell == null || ir.g_main_cell.items[0] == "" ||
@@ -4395,30 +4565,41 @@ fn lower_drop_unreachable() {
     return;
   }
   g_reach_keep = new ReachMap { slots: make([]*ReachEnt, 0), cap: 0, n: 0 };
+  g_reach_gkeep = new ReachGMap { slots: make([]*ReachGEnt, 0), cap: 0, n: 0 };
   g_reach_work = new main.Vec[string] { items: make([]string, 64), n: 0 };
-  reach_visit(ir.g_main_cell.items[0]);
+  reach_mark(ir.g_main_cell.items[0]);
   // the divide-by-zero check every backend emits references by symbol
-  reach_visit(emit_wasm.prelude_symbol("__panic_div"));
+  reach_mark(emit_wasm.prelude_symbol("__panic_div"));
   while g_reach_work.n > 0 {
     let sym: string = g_reach_work.pop();
     let fn_: *ir.IRFn = rm_get(g_reach_all, sym);
-    if fn_ == null {
-      continue;
-    }
-    let mut bi: usize = 0;
-    while bi < len(fn_.blocks) {
-      let b: *ir.IRBlock = fn_.blocks[bi];
-      let mut ii: usize = 0;
-      while ii < len(b.ins) {
-        if b.ins[ii].callee != "" {
-          reach_visit(b.ins[ii].callee);
+    if fn_ != null {
+      let mut bi: usize = 0;
+      while bi < len(fn_.blocks) {
+        let b: *ir.IRBlock = fn_.blocks[bi];
+        let mut ii: usize = 0;
+        while ii < len(b.ins) {
+          if b.ins[ii].callee != "" {
+            reach_mark(b.ins[ii].callee);
+          }
+          ii += 1;
         }
-        ii += 1;
+        bi += 1;
       }
-      bi += 1;
+    }
+    let gl: *ir.IRGlobal = rgm_get(g_reach_gall, sym);
+    if gl != null {
+      // reloc words name labels — fn symbols or other globals' symbols
+      // (today only the attached string-literal labels, which ride along
+      // with this global either way; the walk keeps the law future-proof)
+      let mut ri: usize = 0;
+      while ri < len(gl.relocs) {
+        reach_mark(gl.relocs[ri]);
+        ri += 1;
+      }
     }
   }
-  // filter in place, preserving emission order
+  // filter fns in place, preserving emission order
   let mut w: usize = 0;
   i = 0;
   while i < ir.g_ir_fns.n {
@@ -4430,4 +4611,20 @@ fn lower_drop_unreachable() {
     i += 1;
   }
   ir.g_ir_fns.n = w;
+  // filter globals the same way: unreferenced statics (however public,
+  // whole unused `use`d modules included) never enter any artifact
+  g_reach_dropped_globals = 0;
+  w = 0;
+  i = 0;
+  while i < ir.g_ir_globals.n {
+    let gl: *ir.IRGlobal = ir.g_ir_globals.items[i];
+    if rgm_get(g_reach_gkeep, gl.symbol) != null {
+      ir.g_ir_globals.items[w] = gl;
+      w += 1;
+    } else {
+      g_reach_dropped_globals += 1;
+    }
+    i += 1;
+  }
+  ir.g_ir_globals.n = w;
 }

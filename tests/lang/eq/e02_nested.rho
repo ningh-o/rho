@@ -1,0 +1,29 @@
+// exit: 0
+// nested containers: [][]i64 compares through the element helper
+// recursively; a difference deep inside one inner slice shows
+fn row(n: i64, v: i64) -> []i64 {
+  let xs: []i64 = make([]i64, n);
+  let mut i: usize = 0;
+  while i < n {
+    xs[i] = v;
+    i += 1;
+  }
+  return xs;
+}
+
+fn grid(v: i64) -> [][]i64 {
+  let g: [][]i64 = make([][]i64, 2);
+  g[0] = row(2, v);
+  g[1] = row(2, v + 1);
+  return g;
+}
+
+fn main() -> i32 {
+  if grid(1) == grid(1) { printf("n-eq\n"); } else { printf("BAD\n"); }
+  if grid(1) == grid(2) { printf("BAD\n"); } else { printf("n-ne\n"); }
+  let ragged: [][]i64 = make([][]i64, 2);
+  ragged[0] = row(1, 1);
+  ragged[1] = row(2, 2);
+  if grid(1) == ragged { printf("BAD\n"); } else { printf("n-shape\n"); }
+  return 0;
+}

@@ -1,0 +1,14 @@
+// exit: 0
+// s12 — a static only a dead fn touches dies with the fn: fn-shaking and
+// global-shaking compose (the reachability walk expands edges only from
+// KEPT definitions, so ORPHAN is never marked)
+static mut ORPHAN: i64 = 5;
+
+fn dead_user() -> i64 {
+  return ORPHAN;
+}
+
+fn main() -> i32 {
+  printf("{}\n", 42);
+  return 0;
+}

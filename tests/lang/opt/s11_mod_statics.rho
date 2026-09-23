@@ -1,0 +1,11 @@
+// exit: 0
+// s11 — module-level tree-shaking: a `use`d module contributes only the
+// statics its reachable fns actually touch; the module's other public
+// statics (and, if nothing in it is called, the whole module's data)
+// never enter the artifact.
+use mod11;
+
+fn main() -> i32 {
+  printf("{}\n", mod11.read_used());
+  return 0;
+}

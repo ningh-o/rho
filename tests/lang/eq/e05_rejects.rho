@@ -1,0 +1,10 @@
+// reject: needs a comparable element type
+// a slice of fn values never compares
+fn main() -> i32 {
+  let xs: []fn(i64) -> i64 = make([]fn(i64) -> i64, 2);
+  let ys: []fn(i64) -> i64 = make([]fn(i64) -> i64, 2);
+  if xs == ys {
+    return 1;
+  }
+  return 0;
+}

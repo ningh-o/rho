@@ -1,0 +1,29 @@
+// exit: 0
+// structs compare field-wise: ints, strings (through __streq), nested
+// structs, and struct fields reached as slice elements
+struct Inner {
+  v: i64,
+}
+
+struct Pair {
+  a: string,
+  b: string,
+  n: Inner,
+}
+
+fn main() -> i32 {
+  let ps: []Pair = make([]Pair, 2);
+  ps[0].a = "hi"; ps[0].b = "lo"; ps[0].n.v = 7;
+  ps[1].a = "hi"; ps[1].b = "lo"; ps[1].n.v = 7;
+  if ps[0] == ps[1] { printf("p-eq\n"); } else { printf("BAD\n"); }
+  ps[1].b = "zz";
+  if ps[0] == ps[1] { printf("BAD\n"); } else { printf("p-str\n"); }
+  ps[1].b = "lo";
+  ps[1].n.v = 9;
+  if ps[0] == ps[1] { printf("BAD\n"); } else { printf("p-nest\n"); }
+  ps[1].n.v = 7;
+  ps[1].a = "HI";
+  if ps[0] == ps[1] { printf("BAD\n"); } else { printf("p-case\n"); }
+  if ps[0] == ps[0] { printf("self\n"); } else { printf("BAD\n"); }
+  return 0;
+}

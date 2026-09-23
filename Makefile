@@ -49,13 +49,14 @@ test: build/rho-boot
 	./build/rho-boot selftest
 
 # the language suites (boot features: strops/multiline/modsys;
-# mirror-only: opt). Each runner is self-sufficient and prints its own
-# verdict.
+# mirror-only: opt, eq). Each runner is self-sufficient and prints its
+# own verdict.
 test-lang: build/rho-boot
 	sh tests/lang/strops/run.sh
 	sh tests/lang/multiline/run.sh
 	sh tests/lang/modsys/run.sh
 	sh tests/lang/opt/run.sh
+	sh tests/lang/eq/run.sh
 
 test-site: build/rho-boot build/rho.wasm
 	./build/rho-boot test corpus --target wasm32-wasi

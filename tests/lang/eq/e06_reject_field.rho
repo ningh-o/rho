@@ -1,0 +1,13 @@
+// reject: needs comparable fields
+// a struct holding a fn field never compares
+struct F {
+  cb: fn(i64) -> i64,
+}
+
+fn main() -> i32 {
+  let fs: []F = make([]F, 2);
+  if fs[0] == fs[1] {
+    return 1;
+  }
+  return 0;
+}

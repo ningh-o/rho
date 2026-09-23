@@ -116,9 +116,9 @@ fn main() -> i32 {
 }
 RHO
 cd "$CONS"
-printf 'add json --path vendor/json\n' | wasmtime run --dir . "$WORK/rho-pkg.wasm" \
+wasmtime run --dir . "$WORK/rho-pkg.wasm" add json --path vendor/json \
   >"$WORK/pkg-add.log" || { cat "$WORK/pkg-add.log"; fail "rho-pkg add failed"; }
-printf 'install --frozen\n' | wasmtime run --dir . "$WORK/rho-pkg.wasm" \
+wasmtime run --dir . "$WORK/rho-pkg.wasm" install --frozen \
   >"$WORK/pkg-frozen.log" || { cat "$WORK/pkg-frozen.log"; fail "rho-pkg install --frozen failed"; }
 grep -q '"json"' "$CONS/rho.lock" || fail "rho.lock does not mention json"
 "$BOOT" run main.rho >"$WORK/consumer.got" || fail "the consumer failed to run"

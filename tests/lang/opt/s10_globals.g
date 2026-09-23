@@ -1,0 +1,1 @@
+^global rho_tests_lang_opt_s10_globals_rho__LIVE size=8

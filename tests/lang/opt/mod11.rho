@@ -1,0 +1,9 @@
+// mod11 — the helper module for s11: a wholly-unused `use`d module is
+// dead code; a used module's untouched statics are dead code too. Only
+// what the reachable fns reference survives.
+pub static mut DEAD_IN_USED_MOD: i64 = 3;
+pub static USED_IN_USED_MOD: i64 = 4;
+
+pub fn read_used() -> i64 {
+  return USED_IN_USED_MOD;
+}

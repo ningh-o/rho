@@ -1050,8 +1050,16 @@ pub fn resolve_type_in_module(m: *Module, ta: *parse.TypeAst) -> *parse.Type {
     if ta.size == null {
       result = ty_slice(elem);
     } else {
-      // TODO(check L6): const-evaluated array sizes land with const_eval
-      result = ty_slice(elem);
+      // const-evaluated array sizes: the size expression folds through
+      // the same const lane static initializers use (literals, named
+      // consts, and their arithmetic)
+      let v: *lower.CV = lower.const_eval(ta.size, m);
+      if v.ok && v.is_int && v.i > 0 {
+        result = ty_array(elem, v.i);
+      } else {
+        main.err_at(ta.file, ta.line, ta.col, "array size must be a positive constant");
+        result = ty_err();
+      }
     }
   } else if ta.kind == parse.TypeAstKind.TaNamed {
     let last: string = ta.path.items[ta.path.n - 1];
@@ -1207,6 +1215,77 @@ fn ty_is_flt(t: *parse.Type) -> bool {
 
 fn types_compatible(got: *parse.Type, expected: *parse.Type) -> bool {
   return got == expected;
+}
+
+// spec 4.2: the types that may take part in element-wise aggregate
+// equality, recursively. Ints, floats, bools, strings, pointers and weak
+// handles compare directly; enums, structs, arrays and slices compare
+// element-wise, so their parts must in turn be comparable; fn values,
+// dyn and err payloads never do. A recursive container (a struct with a
+// slice of itself) is legal data — the in-flight edge imposes no
+// further constraint, so it reads as comparable and the recursion
+// stops (lowering's eq-helpers memoize the same way).
+fn ty_comparable_rec(t: *parse.Type, seen: []string) -> bool {
+  if t == null {
+    return false;
+  }
+  if ty_is_int(t) || ty_is_flt(t) {
+    return true;
+  }
+  if t.kind == TypeKind.TyBool || t.kind == TypeKind.TyStringK ||
+     t.kind == TypeKind.TyPtr || t.kind == TypeKind.TyNull ||
+     t.kind == TypeKind.TyWeak {
+    return true;
+  }
+  if t.kind == TypeKind.TyArray || t.kind == TypeKind.TySlice {
+    return ty_comparable_rec(t.elem, seen);
+  }
+  if t.kind == TypeKind.TyEnum || t.kind == TypeKind.TyStruct {
+    let mut i: usize = 0;
+    while i < len(seen) {
+      if main.streq(seen[i], t.mangled) {
+        return true;
+      }
+      i += 1;
+    }
+    let deeper: []string = lower.push_str(seen, t.mangled);
+    if t.kind == TypeKind.TyEnum {
+      let d: *parse.Decl = t.rec.decl;
+      let mut vi: usize = 0;
+      while vi < d.variants.n {
+        let v: *parse.VariantAst = d.variants.items[vi];
+        let mut nf: usize = 0;
+        if v.vkind == parse.VarKind.VarTuple {
+          nf = v.types.n;
+        } else if v.vkind == parse.VarKind.VarStruct {
+          nf = v.fields.n;
+        }
+        let mut fi: usize = 0;
+        while fi < nf {
+          if !ty_comparable_rec(variant_field_type(t, vi as i32, fi as i32), deeper) {
+            return false;
+          }
+          fi += 1;
+        }
+        vi += 1;
+      }
+      return true;
+    }
+    let rec: *parse.RecType = t.rec;
+    let mut fi2: usize = 0;
+    while fi2 < rec.decl.fields.n {
+      if !ty_comparable_rec(struct_field_type(rec, fi2), deeper) {
+        return false;
+      }
+      fi2 += 1;
+    }
+    return true;
+  }
+  return false;
+}
+
+pub fn ty_comparable(t: *parse.Type) -> bool {
+  return ty_comparable_rec(t, make([]string, 0));
 }
 
 fn require(got_in: *parse.Type, expected: *parse.Type, e: *parse.Expr, what: string) {
@@ -1435,6 +1514,20 @@ fn check_expr(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
              (l.kind == TypeKind.TyWeak && (r.kind == TypeKind.TyWeak || r.kind == TypeKind.TyNull)) ||
              (l.kind == TypeKind.TyStringK && r.kind == TypeKind.TyStringK);
         if l.kind == TypeKind.TyEnum && l == r {
+          ok = true;
+        } else if l.kind == TypeKind.TyStruct && r.kind == TypeKind.TyStruct && l == r {
+          // element-wise (spec 4.2): every field must itself be comparable
+          if !ty_comparable(l) {
+            main.err_at(e.file, e.line, e.col, main.cat3("== on `", ty_name(l), "` needs comparable fields"));
+            return ty_err();
+          }
+          ok = true;
+        } else if (l.kind == TypeKind.TyArray || l.kind == TypeKind.TySlice) && l == r {
+          // element-wise (spec 4.2): same element type, itself comparable
+          if !ty_comparable(l.elem) {
+            main.err_at(e.file, e.line, e.col, main.cat5("== on `", ty_name(l), "` needs a comparable element type, found `", ty_name(l.elem), "`"));
+            return ty_err();
+          }
           ok = true;
         } else if l.kind == TypeKind.TyStruct || r.kind == TypeKind.TyStruct || l.kind == TypeKind.TyArray {
           ok = false;

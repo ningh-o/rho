@@ -1354,6 +1354,37 @@ fn emit_region_run(c: *WFnCtx, b_in: *ir.IRBlock, from_in: *ir.IRBlock) {
   }
 }
 
+// does a then-arm chain (straight brs through single-pred unlabeled
+// blocks) land exactly on `target`? Bounded and LINEAR — the half-
+// diamond check runs on every cbr, and chain_terminal's full recursive
+// arm walk is quadratic-or-worse on the big generated functions of the
+// compiler compiling itself (measured: a self-build went from ~13 s to
+// 5+ CPU minutes)
+fn arm_falls_into(c: *WFnCtx, from: *ir.IRBlock, target: *ir.IRBlock) -> bool {
+  let mut cur: *ir.IRBlock = from;
+  let mut steps: i32 = 0;
+  while cur != null && steps < 8 {
+    if cur == target {
+      return true;
+    }
+    if cur.term_op == 0 || cur.term_op == 102 {
+      return false;
+    }
+    if cur.term_op == 100 {
+      let t: *ir.IRBlock = cur.br_true;
+      if inlineable(c, t) {
+        cur = t;
+      } else {
+        return t == target;
+      }
+    } else {
+      return false;
+    }
+    steps += 1;
+  }
+  return false;
+}
+
 fn emit_region(c: *WFnCtx, b_in: *ir.IRBlock, from_in: *ir.IRBlock) -> *ir.IRBlock {
   let mut started_loop: bool = false; // this invocation opened the loop labels
   let mut my_header: *ir.IRBlock = null;
@@ -1515,6 +1546,31 @@ fn emit_region(c: *WFnCtx, b_in: *ir.IRBlock, from_in: *ir.IRBlock) -> *ir.IRBlo
     // whose label/code lives with the first diamond that claimed it.
     let t2: *ir.IRBlock = b.br_true;
     let f2: *ir.IRBlock = b.br_false;
+    // half-diamond: the then-arm's chain continues INTO the else target
+    // (the eq-walk's variant ladder — each rung br's to the next gate,
+    // which is also this cbr's else edge). Without a label on that
+    // target the then-arm's br resolves to depth 0 (past the whole
+    // construct) and the target gets emitted inline after it, dead —
+    // every rung but the first compared nothing. Wrap the if in a block
+    // labeled by the else target: both arms br to it, its code follows.
+    if f2 != null && !f2.emitted && !has_target(c, f2) && !f2.loop_header &&
+       arm_falls_into(c, t2, f2) {
+      push_label_n(c, 0, f2);
+      b8(c.body, 0x02); // block (label: the else target)
+      b8(c.body, 0x40);
+      lget(c, b.cbr_cond);
+      b8(c.body, 0x04); // if
+      b8(c.body, 0x40);
+      emit_region_run(c, t2, b);
+      b8(c.body, 0x05); // else
+      wasm_br(c, b, f2); // explicit, so the else edge's phi copies run
+      b8(c.body, 0x0B); // end if
+      b8(c.body, 0x0B); // end block
+      pop_label(c);
+      from = b;
+      b = f2;
+      continue;
+    }
     let mut join: *ir.IRBlock = null;
     if b.join_hint != null {
       join = b.join_hint;
@@ -2203,6 +2259,10 @@ pub fn lower_dump_ir() {
           eprintf("{}", " imm=");
           eprintf("{}", main.itoa(ins.imm));
         }
+        if (ins.op == ir.IROp.IrDiv || ins.op == ir.IROp.IrMod ||
+             ins.op == ir.IROp.IrShr || ins.op == ir.IROp.IrCmp) && ins.signed_ops {
+          eprintf("{}", " signed");
+        }
         if ins.size != 0 {
           eprintf("{}", " sz=");
           eprintf("{}", main.itoa(ins.size));
@@ -2234,5 +2294,18 @@ pub fn lower_dump_ir() {
       b += 1;
     }
     i += 1;
+  }
+  // the artifact's data image: every global that survived reachability.
+  // Mirror-only surface (boot's dump is frozen) — the shake tests pin
+  // dead statics' absence here.
+  let mut g: usize = 0;
+  while g < ir.g_ir_globals.n {
+    let gl: *ir.IRGlobal = ir.g_ir_globals.items[g];
+    eprintf("{}", "global ");
+    eprintf("{}", gl.symbol);
+    eprintf("{}", " size=");
+    eprintf("{}", main.itoa(gl.size));
+    eprintf("{}", "\n");
+    g += 1;
   }
 }

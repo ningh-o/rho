@@ -245,25 +245,56 @@ fn ac_divmod(e: *ACtx, i: *ir.IRIns, is_mod: bool) {
     ac_st(e, dof, fw, true, r0);
     return;
   }
+  // the div/mod lane: a 32-bit signed div must run in W registers — an
+  // 8-byte zero-extending load turns -7 into 4294967289 and the 64-bit
+  // sdiv answers a different question entirely (first exercised by
+  // corpus 042's -7/-2 corners; the W-form reads only the low 32 bits,
+  // which is exactly the lane's two's-complement value)
+  let lane32: bool = i.a.ty == ir.IRType.ItI32 || i.a.ty == ir.IRType.ItU32;
+  let mut rs: string = "x9";
+  let mut ra: string = "x10";
+  let mut rd: string = "x8";
+  let mut ldr_lane: string = "  ldr x9, [x12]\n";
+  let mut ldr_lane_a: string = "  ldr x10, [x12]\n";
+  if lane32 {
+    rs = "w9";
+    ra = "w10";
+    rd = "w8";
+    // plain W loads: the W-form sdiv/udiv read only the low 32 bits,
+    // which is the lane's two's-complement value; ldrsw (the extending
+    // form) is X-register-only by encoding
+    ldr_lane = "  ldr w9, [x12]\n";
+    ldr_lane_a = "  ldr w10, [x12]\n";
+  }
   let lbl: i32 = g_label64;
   g_label64 += 1;
-  ac_ld(e, bo, 8, false, "x9");
-  bs(e.out, main.cat4("  cbnz x9, Ldz", main.cat3(main.itoa(lbl as i64), "\n", ""), "", ""));
-  bs(e.out, main.cat4("  bl ", main.cat3(ac_sym(e, emit_wasm.prelude_symbol("__panic_div")), "\n", ""), "", ""));
-  bs(e.out, main.cat4("Ldz", main.cat3(main.itoa(lbl as i64), ":\n", ""), "", ""));
+  let dz: string = "Ldz" + main.itoa(lbl as i64);
+  let mn_lbl: string = "Lmin" + main.itoa(lbl as i64);
+  let done_lbl: string = "Ldone" + main.itoa(lbl as i64);
+  ac_addr_into(e, bo);
+  bs(e.out, ldr_lane);
+  bs(e.out, "  cbnz " + rs + ", " + dz + "\n");
+  bs(e.out, "  bl " + ac_sym(e, emit_wasm.prelude_symbol("__panic_div")) + "\n");
+  bs(e.out, dz + ":\n");
   if i.signed_ops {
-    bs(e.out, main.cat4("  cmp x9, #-1\n  b.ne Lmin", main.cat3(main.itoa(lbl as i64), "\n", ""), "", ""));
-    ac_ld(e, ao, 8, false, "x8");
-    bs(e.out, main.cat4("  neg x8, x8\n  mov x9, #0\n  b Ldone", main.cat3(main.itoa(lbl as i64), "\n", ""), "", ""));
-    bs(e.out, main.cat4("Lmin", main.cat3(main.itoa(lbl as i64), ":\n", ""), "", ""));
+    bs(e.out, "  cmp " + rs + ", #-1\n");
+    bs(e.out, "  b.ne " + mn_lbl + "\n");
+    ac_addr_into(e, ao);
+    bs(e.out, ldr_lane_a);
+    bs(e.out, "  neg " + rd + ", " + ra + "\n");
+    bs(e.out, "  mov " + rs + ", #0\n");
+    bs(e.out, "  b " + done_lbl + "\n");
+    bs(e.out, mn_lbl + ":\n");
   }
-  ac_ld(e, ao, 8, false, "x10");
+  ac_addr_into(e, ao);
+  bs(e.out, ldr_lane_a);
   let mn: string = ac_divmn(i.signed_ops);
-  bs(e.out, main.cat5("  ", mn, " x8, x10, x9\n", "", ""));
+  bs(e.out, "  " + mn + " " + rd + ", " + ra + ", " + rs + "\n");
   if is_mod {
-    bs(e.out, "  msub x8, x8, x9, x10\n");
+    bs(e.out, "  msub " + rd + ", " + rd + ", " + rs + ", " + ra + "\n");
   }
-  bs(e.out, main.cat4("Ldone", main.cat3(main.itoa(lbl as i64), ":\n", ""), "", ""));
+  bs(e.out, done_lbl + ":\n");
+  ac_canon(e, dof, i.a.ty);
   ac_st(e, dof, 8, false, "x8");
 }
 

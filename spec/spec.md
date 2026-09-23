@@ -144,13 +144,19 @@ copies. Aggregates are passed by reference to a caller-made temporary (a
 documented deviation from the C ABI, which only matters for `extern`
 functions — hosted externs use scalars and pointers only).
 
-### 3.3 Emission: unreachable functions are dropped
+### 3.3 Emission: unreachable code is dropped
 
 After lowering, a reachability pass over the IR keeps the entry function,
 every function referenced by static initializers, the runtime helpers the
 backend calls by symbol, and everything transitively reachable. Dropped
 functions never appear in the artifact — prelude formatting machinery a
-program never prints with costs nothing. The pass preserves emission order,
+program never prints with costs nothing. The same walk now keeps only the
+globals a surviving definition references (an unreferenced static is pure
+dead data — its data segment, bss slot and attached string-literal block
+all go), so a wholly-unused `use`d module or an untouched public static
+costs nothing either. Keeping is transitive across both maps: a kept
+global's relocation words can name functions and other globals, a kept
+function's callees can name either. The pass preserves emission order,
 so determinism is untouched.
 
 ### 3.4 rc-pair elimination
@@ -198,8 +204,9 @@ stdout and exit code, so a misfold is a red gate, not a silent change.
 - 0.0.x — boot compiler era (C). The language surface **only grows**.
 - 0.0.5 is the freeze (declared with 0.0.5f): the 0.1.0 self-hosted
   compiler must be writable in exactly the language 0.0.5 defines.
-  Escape analysis and element-wise aggregate `==` are explicitly deferred
-  to the self-hosted compiler.
+  Escape analysis is explicitly deferred to the self-hosted compiler;
+  element-wise aggregate `==` was deferred with it and has since arrived
+  there (Operators, type-system spec) — boot still rejects it, frozen.
 - 0.1.0 — self-hosting. The C compiler is thereafter frozen forever; it
   exists only to seed new-host bootstraps. Language evolution continues in
   the self-hosted compiler only.

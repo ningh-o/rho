@@ -17,6 +17,13 @@
 #   <name>.no                 — optional: grep -E patterns that must NOT
 #                             appear in main's dump section (e.g. '^  cmp '
 #                             when every comparison folded away)
+#   <name>.g                  — optional: grep -E patterns that MUST appear
+#                             among the dump's `^global ` lines (a static
+#                             survived reachability)
+#   <name>.gno                — optional: grep -E patterns that must NOT
+#                             appear among the dump's `^global ` lines
+#                             (the static was tree-shaken out of the
+#                             artifact entirely)
 #
 # Usage: sh tests/lang/opt/run.sh   (from anywhere; builds the mirror if
 # build/gate/m.wasm is missing)
@@ -112,6 +119,31 @@ for src in tests/lang/opt/s*.rho; do
         break
       fi
     done < "tests/lang/opt/$name.no"
+  fi
+  # global pins: the dump's `^global ` list is the artifact's data image
+  # after reachability — .g must appear, .gno must not
+  if [ -z "$verdict" ] && { [ -f "tests/lang/opt/$name.g" ] || [ -f "tests/lang/opt/$name.gno" ]; }; then
+    wr 90 wasmtime run -W max-wasm-stack=1073741824 --dir . "$M" build "$src" \
+      --target wasm32-wasi -o "$G/$name.wasm" --dump-ir 2>"$G/$name.ir" >/dev/null
+    grep -E '^global ' "$G/$name.ir" | strip_dbg > "$G/$name.gl"
+  fi
+  if [ -z "$verdict" ] && [ -f "tests/lang/opt/$name.g" ]; then
+    while IFS= read -r pat; do
+      [ -z "$pat" ] && continue
+      if ! grep -qE "$pat" "$G/$name.gl"; then
+        verdict="FAIL (global missing: $pat)"
+        break
+      fi
+    done < "tests/lang/opt/$name.g"
+  fi
+  if [ -z "$verdict" ] && [ -f "tests/lang/opt/$name.gno" ]; then
+    while IFS= read -r pat; do
+      [ -z "$pat" ] && continue
+      if grep -qE "$pat" "$G/$name.gl"; then
+        verdict="FAIL (global survived: $pat)"
+        break
+      fi
+    done < "tests/lang/opt/$name.gno"
   fi
   if [ -n "$verdict" ]; then
     echo "$name: $verdict"

@@ -34,7 +34,9 @@ round (see the fixture script for the living proof):
   `__open`/`__read`/`__write`/`__close` over the preopened working
   directory (fd 3; wasmtime needs `--dir .`), stdin via `__read(0, ...)`,
   stdout via `printf`. Probed end to end with `wasmtime run --dir .`.
-- **No argv** (`__program_args` currently traps on wasm), **no
+- **argv works on wasm** (`__program_args` reads the guest args via
+  `args_sizes_get`/`args_get`; wasmtime passes them after the module),
+  **no
   `fd_readdir`**, **no `path_create_directory`**, **no process spawn**:
   the emitter wires a fixed wasi import table (`boot/src/emit_wasm.c`,
   `wasi_imports[]`: fd_write, proc_exit, args_sizes_get, args_get,
@@ -48,9 +50,10 @@ round (see the fixture script for the living proof):
 
 Three consequences shape everything below:
 
-1. The tool's **UI is stdin**, not argv: the subcommand line is piped in
-   (`echo "install --frozen" | wasmtime run --dir . rho-pkg.wasm`). A thin
-   wrapper can read real argv and pipe it through.
+1. The tool's **UI is argv** (`wasmtime run --dir . rho-pkg.wasm install
+   --frozen`; the prelude's `__program_args` reads it, and argv[0] — the
+   module name — is dropped). It was a stdin-line UI while `__program_args`
+   trapped on wasm; the trap is gone and the UI moved (2026-09-23).
 2. The tool **cannot enumerate or create directories**, so it never copies
    or materializes packages. Dependencies are consumed **in place**
    ("vendored by reference", §4); cloning is the one step the shell does
@@ -221,18 +224,18 @@ modulo the file-IO hooks.
 
 ## 8. Commands
 
-The subcommand line arrives on **stdin** (argv is unavailable to a wasm
-rho program, §2); flags are `--flag value` pairs separated by single
-spaces. Exit codes: `0` ok, `1` error, `2` usage.
+The subcommand line arrives as **argv** after the module (§2); each
+argument arrives whole — no whitespace splitting — so a `--path` value
+may contain spaces. Exit codes: `0` ok, `1` error, `2` usage.
 
 ```sh
 RHO_PKG="wasmtime run --dir . rho-pkg.wasm"   # the wrapper line
 
-printf 'init myapp\n'                  | $RHO_PKG   # scaffold rho.toml + myapp.rho
-printf 'add mathx --path vendor/mathx\n' | $RHO_PKG # edit manifest + resolve + lock
-printf 'add jsonx --git https://... --rev <sha>\n' | $RHO_PKG
-printf 'install\n'                     | $RHO_PKG   # resolve + verify + write rho.lock
-printf 'install --frozen\n'            | $RHO_PKG   # verify only (CI)
+$RHO_PKG init myapp                                # scaffold rho.toml + myapp.rho
+$RHO_PKG add mathx --path vendor/mathx             # edit manifest + resolve + lock
+$RHO_PKG add jsonx --git https://... --rev <sha>
+$RHO_PKG install                        # resolve + verify + write rho.lock
+$RHO_PKG install --frozen               # verify only (CI)
 ```
 
 - `init <name>` — writes a minimal `rho.toml` and the executable entry
@@ -257,10 +260,10 @@ rho check main.rho
 The recommended flow for an application:
 
 ```sh
-printf 'init app\n' | wasmtime run --dir . rho-pkg.wasm
+wasmtime run --dir . rho-pkg.wasm init app
 # put/copy/clone dependencies into vendor/ (§7 for git)
-printf 'add mathx --path vendor/mathx\n' | wasmtime run --dir . rho-pkg.wasm
-printf 'install --frozen\n' | wasmtime run --dir . rho-pkg.wasm   # CI gate
+wasmtime run --dir . rho-pkg.wasm add mathx --path vendor/mathx
+wasmtime run --dir . rho-pkg.wasm install --frozen   # CI gate
 rho run main.rho
 ```
 
@@ -275,8 +278,8 @@ Trade-offs, stated plainly:
 - **No copying also means no drift protection for path deps.** A path
   dependency is whatever sits at its path; the lock pins the *decision*,
   not the bytes (no hashing in v1). Content hashes are future work (§10).
-- **The stdin UI is a constraint artifact**, not an aesthetic. The
-  wrapper-script pattern restores a normal CLI for humans.
+- The stdin UI was a constraint artifact and is retired; the tool is a
+  normal CLI guest now.
 - **The tool is wasm-only today** because native images cannot do file IO
   yet (§2). The source uses only the per-target file-IO hooks, so the
   native port is a rebuild, not a rewrite — blocked on the mirror, not on

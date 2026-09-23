@@ -1374,6 +1374,10 @@ fn build_to(path: string, target: i32, out_path: string, check_only: bool) -> i3
     bytes = emit_amd64.emit_amd64_text(target);
   }
   if target == 0 || target == 2 || target == 4 {
+    // the assembly text rides next to the image — the toolchain never
+    // shells out to an assembler, so this sidecar is the only way to
+    // read what the backend emitted (debug surface, harmless to build)
+    write_file(cat3(out_path, ".s", ""), bytes_as_string(bytes));
     let rc: i32 = build_native_image(target, bytes, out_path);
     if rc != 0 {
       return 1;

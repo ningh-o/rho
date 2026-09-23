@@ -68,7 +68,7 @@ grep -q "$REV2" "$APP/rho.toml" ||
 
 # ---- 3. install before the clone: must print the clone command ------------
 cd "$APP"
-if printf 'install\n' | $PKG >"$WORK/step3" 2>&1; then
+if $PKG install >"$WORK/step3" 2>&1; then
   fail "install succeeded while strlib was not cloned"
 fi
 grep -q "git clone https://rho-fixture.local/strlib vendor/strlib" "$WORK/step3" ||
@@ -78,8 +78,8 @@ grep -q "git clone https://rho-fixture.local/strlib vendor/strlib" "$WORK/step3"
 git -c url."$REMOTE".insteadOf="https://rho-fixture.local/strlib" \
   clone -q https://rho-fixture.local/strlib vendor/strlib
 git -C vendor/strlib checkout -q "$REV2"
-printf 'install\n' | $PKG >/dev/null || fail "install failed with the dep cloned"
-printf 'install --frozen\n' | $PKG >/dev/null || fail "install --frozen failed"
+$PKG install >/dev/null || fail "install failed with the dep cloned"
+$PKG install --frozen >/dev/null || fail "install --frozen failed"
 
 # ---- 5. the regenerated lock is byte-identical to the committed one -------
 diff -q "$RESTORE_LOCK" "$APP/rho.lock" >/dev/null ||
@@ -91,29 +91,29 @@ diff -u "$APP/golden.out" "$WORK/app.out" || fail "app output differs from golde
 
 # ---- 7. wrong checkout rev: both gates reject, repair message printed -----
 git -C vendor/strlib checkout -q "$REV1"
-if printf 'install --frozen\n' | $PKG >/dev/null 2>&1; then
+if $PKG install --frozen >/dev/null 2>&1; then
   fail "frozen gate passed at the wrong rev"
 fi
-if printf 'install\n' | $PKG >"$WORK/step7" 2>&1; then
+if $PKG install >"$WORK/step7" 2>&1; then
   fail "install passed at the wrong rev"
 fi
 grep -q "checkout $REV2" "$WORK/step7" || fail "no repair command for the wrong rev"
 git -C vendor/strlib checkout -q "$REV2"
-printf 'install\n' | $PKG >/dev/null || fail "install failed after repair"
+$PKG install >/dev/null || fail "install failed after repair"
 
 # ---- 8. tampered lock: frozen rejects; install repairs byte-identically ---
 sed 's/^version = "0.1.0"$/version = "9.9.9"/' "$APP/rho.lock" >"$WORK/tampered"
 mv "$WORK/tampered" "$APP/rho.lock"
-if printf 'install --frozen\n' | $PKG >/dev/null 2>&1; then
+if $PKG install --frozen >/dev/null 2>&1; then
   fail "frozen gate passed with a tampered lock"
 fi
-printf 'install\n' | $PKG >/dev/null || fail "install failed to repair the lock"
+$PKG install >/dev/null || fail "install failed to repair the lock"
 diff -q "$RESTORE_LOCK" "$APP/rho.lock" >/dev/null ||
   fail "repaired lock is not byte-identical to the committed one"
 
 # ---- 9. usage errors exit 2 ------------------------------------------------
-if printf '' | $PKG >/dev/null 2>&1; then
-  fail "empty stdin should be a usage error (exit 2)"
+if $PKG >/dev/null 2>&1; then
+  fail "no arguments should be a usage error (exit 2)"
 fi
 
 echo "pkg-fixture ok"

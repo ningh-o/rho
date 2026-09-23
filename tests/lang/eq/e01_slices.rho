@@ -1,0 +1,26 @@
+// exit: 0
+// slices compare element-wise: equal content, unequal content, unequal
+// length, the != form, and two empty slices
+fn mk(n: i64, v: i64) -> []i64 {
+  let xs: []i64 = make([]i64, n);
+  let mut i: usize = 0;
+  while i < n {
+    xs[i] = v;
+    i += 1;
+  }
+  return xs;
+}
+
+fn main() -> i32 {
+  if mk(3, 7) == mk(3, 7) { printf("s-eq\n"); } else { printf("BAD\n"); }
+  if mk(3, 7) == mk(3, 8) { printf("BAD\n"); } else { printf("s-ne\n"); }
+  if mk(2, 7) == mk(3, 7) { printf("BAD\n"); } else { printf("s-len\n"); }
+  if mk(1, 1) != mk(1, 2) { printf("ne-ok\n"); } else { printf("BAD\n"); }
+  if mk(0, 0) == mk(0, 0) { printf("empty-eq\n"); } else { printf("BAD\n"); }
+  let a: []i64 = mk(2, 5);
+  if a == a { printf("self\n"); } else { printf("BAD\n"); }
+  let part: []i64 = a[0..1];
+  let whole: []i64 = mk(1, 5);
+  if part == whole { printf("sub-eq\n"); } else { printf("BAD\n"); }
+  return 0;
+}

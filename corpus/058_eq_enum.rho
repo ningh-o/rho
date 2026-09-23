@@ -1,10 +1,13 @@
 // exit: 0
 // ==/!= on enums compare tag first, then payload recursively (spec/
 // type-system.md "enums compare tag then payload, compiler-generated,
-// recursive"). Current behavior of record, boot and mirror in agreement:
-// the generated comparator compares payloads for the FIRST payload-
-// bearing variant only — later variants with payloads compare equal on a
-// matching tag alone (pinned in the "later variants" section below).
+// recursive"). Boot, frozen, compares payloads for the FIRST payload-
+// bearing variant only — later variants with payloads compare equal on
+// a matching tag alone. The mirror's emitter learned half-diamonds
+// (2026-09-23) and compares every rung, so the two compilers DISAGREE
+// there by design; the lines that pinned the quirk moved to
+// tests/lang/eq/e04_enum_ladder.rho, and this record keeps only the
+// comparisons both compilers still answer identically.
 struct Node {
   v: i32,
 }
@@ -36,9 +39,7 @@ fn main() -> i32 {
   printf("cross variant: eq={} ne={}\n", (a1 == Op.Neg(3)), (a1 != Op.Neg(3)));
   let r1: Shape = Shape.Rect(w: 2, h: 5);
   let r2: Shape = Shape.Rect(w: 2, h: 5);
-  let r3: Shape = Shape.Rect(w: 2, h: 6);
   printf("struct payload: eq={} ne={}\n", (r1 == r2), (r1 != r2));
-  printf("struct differs: eq={} ne={}\n", (r1 == r3), (r1 != r3));
   printf("struct vs unit: eq={} ne={}\n", (r1 == Shape.Point), (r1 != Shape.Point));
   printf("float payload: eq={} ne={}\n", (Shape.Circle(1.5) == Shape.Circle(1.5)), (Shape.Circle(1.5) != Shape.Circle(1.5)));
   printf("float differs: eq={}\n", (Shape.Circle(1.5) == Shape.Circle(2.5)));
@@ -51,9 +52,5 @@ fn main() -> i32 {
   printf("ptr payload same obj: eq={} ne={}\n", (h1 == h2), (h1 != h2));
   printf("ptr payload twin obj: eq={} ne={}\n", (h1 == h3), (h1 != h3));
   printf("ptr payload vs empty: eq={} ne={}\n", (h1 == Holder.Empty), (h1 != Holder.Empty));
-  let g1: Op = Op.Neg(1);
-  let g2: Op = Op.Neg(2);
-  printf("later variants: Neg(1)==Neg(2) -> {}\n", (g1 == g2));
-  printf("later variants: Neg(7)==Neg(-7) -> {}\n", (Op.Neg(7) == Op.Neg((-7))));
   return 0;
 }

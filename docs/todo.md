@@ -2,7 +2,8 @@
 
 Living backlog. This file holds only what is still undone. The wasm
 bootstrap is closed (its closing measurements are recorded once, below);
-boot is frozen by decision; the native wave and the optimizer are in.
+boot is frozen by decision; the native wave, the optimizer and
+element-wise aggregate equality are in.
 
 ## The wasm bootstrap — closed, measured 2026-09-23
 
@@ -83,47 +84,142 @@ The pre-seat notes (loop-carried field reassignment, asm_split_lines
 ceiling, mac heap segment) never fired once these three fell; the
 62.9 MB self-build assembly text rides the wasm32 heap fine today.
 
-## The optimizer — landed 2026-09-23
+## The optimizer — landed 2026-09-23, tree-shaking completed same day
 
 `libs/compiler/opt.rho` (spec §3.6): constant folding + dead-instruction
 elimination, mirror-only, on by default (`--no-opt` disables). The gate's
 differential legs are the referee (92 programs × boot vs mirror, plus
 the grandchild chain), and `tests/lang/opt/` pins the folds themselves
-(9 cases: arith chains, wrap edges at both widths, shift masking +
+(12 cases: arith chains, wrap edges at both widths, shift masking +
 i64/u64 lanes, comparison folding, divisor-0 trap survival, the signed
-−1 wrap law, the const-lane cast corner, the i64-min dogfood, and
-uncalled-fn tree-shaking — s07
-caught the first cut of the cast folds diverging from the runtime and
-narrowed them to the two evidenced shapes: integer bitcopy, and sext
-i32→i64). The differential fuzzer
+−1 wrap law, the const-lane cast corner, the i64-min dogfood, fn
+tree-shaking — s07 caught the first cut of the cast folds diverging
+from the runtime and narrowed them to the two evidenced shapes: integer
+bitcopy, and sext i32→i64 — and s10–s12 pin the GLOBAL shake: dead,
+public-dead, module-dead and orphaned statics never enter the artifact,
+asserted against the dump's `^global ` list). The differential fuzzer
 re-ran with the optimizer live: **1000/1000 seeds identical behavior**
-(seeds 1..1000, 96 s, 2026-09-23). Artifact effect: −2.1% total bytes across the corpus programs (small
-programs are prelude-dominated; constant-heavy user code gains more),
-−1.4% on the compiler's own 4.2 MB self-build — and the pass costs
-~0.5% compile time (12.70 s vs 12.64 s for the full self-build,
-noise-level).
+(seeds 1..1000, 96 s), and again after the global shake (87.6 s, 0
+differences). Artifact effect: −2.1% total bytes across the corpus
+programs (small programs are prelude-dominated; constant-heavy user
+code gains more), −1.4% on the compiler's own 4.2 MB self-build — and
+the pass costs ~0.5% compile time (12.70 s vs 12.64 s for the full
+self-build, noise-level).
+
+The reachability walk now covers globals too (spec §11.3): unreferenced
+statics are pure dead data (rho statics are const-initialized; nothing
+runs before main), so their data segments, bss slots and attached
+string-literal blocks all go. Keeping is transitive across both maps —
+a kept global's reloc words can name fns and other globals, a kept
+fn's callees can name either. A wholly-unused `use`d module costs
+nothing.
+
+## The emitter half-diamond — fixed 2026-09-23
+
+The eq-walk's variant ladder exposed a historical wasm-emitter bug: a
+cbr whose then-arm chain continues into the ELSE target emitted that
+target inline after a depth-0 br (dead), so **every enum variant rung
+after the first compared nothing** — same-tag values of later payload
+variants read equal. Corpus 058/098 pinned the quirk as shared boot/
+mirror behavior; the mirror now nests a `block $else-target` around
+the if (both arms br to it, its code follows) and the pins moved to
+`tests/lang/eq/e04_enum_ladder.rho`. Boot, frozen, keeps the quirk —
+the two compilers disagree there by design, and the corpus records
+only what they agree on. The half-diamond check must stay linear
+(`arm_falls_into`, ≤8 steps): chain_terminal's recursive walk on every
+cbr made a self-build take 5+ CPU minutes (13 s is the bar).
+
+## Element-wise aggregate == — landed 2026-09-23
+
+Spec §4.2's deferred feature, now in the self-hosted compiler (boot
+still rejects it, frozen): `==`/`!=` on structs, fixed arrays and
+slices compare element-wise through memoized `rho__eq$<t>` helpers —
+slices compare lengths first, then elements; struct/enum FIELDS now
+recurse properly (string fields used to compare one raw word — a
+pointer). Every participating type must itself be comparable (ints,
+floats, bools, strings, pointers, weak handles, and the aggregate
+kinds recursively; `fn`/`dyn`/`err` are rejected with a diagnostic).
+Recursive containers lower to mutually recursive helpers, terminating
+on acyclic data. `tests/lang/eq/` (6 cases) is the pin — mirror-only,
+like every language feature past the freeze. Fixed arrays have no
+user-visible construction path yet, so their eq support is compiled
+but untested end to end; slices and structs are fully covered.
+
+## Native real-machine exec — arm64-mac measured 2026-09-23
+
+`tools/native-exec.sh` (deliberately OUTSIDE the gate — a corrupt image
+can wedge the kernel, so the gate stays build-only): builds each
+program to wasm and to arm64-mac, runs the wasm under wasmtime as the
+behavioral baseline, then execs the native image directly on this
+Apple-Silicon machine (fresh mktemp path per image, alarm-capped, exec
+only after a clean build). **18 ok, 1 known** across a representative
+corpus slice plus the whole eq suite — the eq$ helpers run correctly
+natively. Two real assembler/emitter bugs fell on the way:
+
+1. **Missing mnemonics** — `sxtb`/`sxth`/`uxth` (SBFM/UBFM aliases):
+   corpus 042's i8/i16 signed corners were unbuildable natively; the
+   crossings never emit them.
+2. **W-form data-processing encoded as X-form** — `ar_dprec2`/
+   `ar_dprec3` hardcoded sf=1, so `sdiv w8, w10, w9` assembled as a
+   64-bit SDIV over operands a W load had just zero-extended: −7/2
+   read as 4294967289/2 = 2147483644. Every W-lane sdiv/udiv/lslv/
+   lsrv/asrv/madd/msub rode the same encoders. Divmod also gained the
+   W lane itself (it loaded 8-byte zero-extending operands and divided
+   at 64 bits regardless of the operand type).
+
+`rho build --target <native>` now also writes the assembly sidecar
+(`<out>.s`) — the toolchain never shells out, so it is the only way to
+read what a backend emitted.
+
+### Known: corpus 081 SIGSEGVs natively (pre-existing)
+
+`corpus/081_generics_bounds.rho` crashes (rc 139) natively — the
+pre-change mirror reproduces it, so it predates everything above.
+Minimal repro (the tail alone or the head alone both pass; the
+COMBINATION crashes at main's epilogue after both lines print):
+
+```rho
+fn main() -> i32 {
+  printf("first={}\n", 5);
+  let tags: []string = make([]string, 3);   // []i64 is fine
+  printf("x={}\n", 3);
+  return 0;
+}
+```
+
+Diagnosis so far: the fault is inside an rc helper (`rho__rc_inc`/
+`rc_dec` — the `>> 63` sign check of the count) called with **x0 =
+0x100000000** — the image's own base, page-aligned, i.e. a leaked ADRP
+result that reached a pointer slot; the value rides a stack slot into
+the call (all 7 rc call sites in the repro's asm load x0 correctly, so
+the corruption happens earlier — suspect the variadic-call
+materialization or the []string make/zero-walk interacting with heap
+state; the .s sidecar + `lldb -o 'settings set target.disable-aslr
+false'` reproduce it deterministically). wasm-side behavior is
+correct; `KNOWN` in tools/native-exec.sh carries it — remove that
+entry when it falls.
 
 ## Later batches
 
-- Native real-machine exec verification: the gate never runs a native
-  image; per-target exec happens on real hardware / in a container —
-  the crossings are green, so this is unblocked.
+- Native 081: the known arm64 SIGSEGV above (the only red in
+  native-exec) — diagnosed to a leaked ADRP page address reaching an
+  rc helper's argument.
+- amd64-linux / arm64-linux exec: needs a container or matching
+  hardware; the crossings stay build-only until then.
 - In-container corpus: the corpus differential re-run inside a Linux
   container, per native target.
 - GitHub release: owner-decided NOT this round — the release (and the
   zips carrying self-built native clients) waits until the native wave
   lands.
-- Package-manager polish: argv instead of stdin (`__program_args`
-  works on wasm, measured), native pkg targets after the crossings.
 - Bench the shipped compiler: the suite's rho lane builds with the boot
   seed; running it through the mirror (optimizer on) alongside is a
   methodology decision plus a full re-record — owner's call.
 
-## 0.2 backlog (unchanged)
+## 0.2 backlog (unchanged except where struck)
 
+- ~~element-wise `==` on structs/arrays/slices~~ — landed 2026-09-23
+  (see above).
 - linear-scan register allocator (replaces spill-everything)
-- element-wise `==` on structs/arrays/slices (spec §4.2 defers to
-  self-host)
 - escape analysis / rc-pair elimination (spec §3.4, §11.5)
 
 ## Standard library
