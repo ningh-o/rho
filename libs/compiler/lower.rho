@@ -1,6 +1,6 @@
 // lowering (lower.c port LOW-2..LOW-8): builders, glue synthesis,
 // layout, the rc runtime, closure lifting, and reachability
-use main;
+use cli;
 use lex;
 use parse;
 use check;
@@ -290,7 +290,7 @@ fn lookup_slot(c: *LCtx, name: string) -> *ir.IRSlot {
   while s != null {
     let mut b: *BindEnt = s.bindings;
     while b != null {
-      if main.streq(b.name, name) {
+      if cli.streq(b.name, name) {
         return b.slot;
       }
       b = b.next;
@@ -383,7 +383,7 @@ fn tm2_new() -> *TypeMap2 {
 pub static mut g_rel_fns: *TypeMap2 = 0 as *TypeMap2;
 pub static mut g_ret_fns: *TypeMap2 = 0 as *TypeMap2;
 
-fn ty_is_managed(t: *parse.Type) -> bool {
+pub fn ty_is_managed(t: *parse.Type) -> bool {
   if t == null {
     return false;
   }
@@ -447,7 +447,7 @@ fn rho_sanitize(s: string) -> string {
 fn tm2_get(m: *TypeMap2, key: string) -> string {
   let mut i: usize = 0;
   while i < m.n {
-    if main.streq(m.items[i].key, key) {
+    if cli.streq(m.items[i].key, key) {
       return m.items[i].val;
     }
     i += 1;
@@ -463,7 +463,7 @@ fn tm2_put(m: *TypeMap2, key: string, val: string) {
 
 // lazily synthesize rho__rel$<t> / rho__ret$<t>: walk the value of type t at
 // the sole pointer parameter. Returns "" for unmanaged types.
-fn value_fn_for(t: *parse.Type, retain: bool) -> string {
+pub fn value_fn_for(t: *parse.Type, retain: bool) -> string {
   if t == null || !ty_is_managed(t) {
     return "";
   }
@@ -487,7 +487,7 @@ fn value_fn_for(t: *parse.Type, retain: bool) -> string {
   if t.kind == check.TypeKind.TyFn { kindp = "f_"; }
   if t.kind == check.TypeKind.TyWeak { kindp = "w_"; }
   if t.kind == check.TypeKind.TyDyn { kindp = "y_"; }
-  let sym: string = main.cat3("rho__", main.cat3(retain_which(retain), main.cat3("$", kindp, ""), ""),
+  let sym: string = cli.cat3("rho__", cli.cat3(retain_which(retain), cli.cat3("$", kindp, ""), ""),
                          rho_sanitize(t.mangled));
   tm2_put(cache, t.mangled, sym);
   // synthesize the walker body
@@ -509,7 +509,7 @@ fn finish_fn_c(c: *LCtx) {
     emit_ret(c, null);
   }
   if ir.g_ir_fns == null {
-    ir.g_ir_fns = new main.Vec[*ir.IRFn] { items: make([]*ir.IRFn, 256), n: 0 };
+    ir.g_ir_fns = new cli.Vec[*ir.IRFn] { items: make([]*ir.IRFn, 256), n: 0 };
   }
   ir.g_ir_fns.push(c.f);
 }
@@ -750,7 +750,7 @@ fn type_align(t: *parse.Type) -> i64 {
   return 8;
 }
 
-fn type_size(t: *parse.Type) -> i64 {
+pub fn type_size(t: *parse.Type) -> i64 {
   if t == null {
     return 0;
   }
@@ -784,7 +784,7 @@ fn type_size(t: *parse.Type) -> i64 {
     // zero-size field and trapping downstream
     let esz: i64 = type_size(t.elem);
     if esz <= 0 {
-      main.err_at("", 0, 0, "array element type has no size (self-containing struct?)");
+      cli.err_at("", 0, 0, "array element type has no size (self-containing struct?)");
       return 8;
     }
     return esz * (t.len as i64);
@@ -1088,7 +1088,7 @@ pub fn ir_type_of(t: *parse.Type) -> ir.IRType {
   return ir.IRType.ItPtr;
 }
 
-fn ty_is_aggregate(t: *parse.Type) -> bool {
+pub fn ty_is_aggregate(t: *parse.Type) -> bool {
   if t.kind == check.TypeKind.TyStruct || t.kind == check.TypeKind.TyEnum ||
      t.kind == check.TypeKind.TyArray || t.kind == check.TypeKind.TySlice ||
      t.kind == check.TypeKind.TyStringK || t.kind == check.TypeKind.TyFn ||
@@ -1145,7 +1145,7 @@ fn lit_bytes(c: *LCtx, s: string) -> i32 {
     i += 1;
   }
   bytes = push_u8(bytes, 0); // NUL pad for C interop debugging
-  let label: string = main.cat3("str", main.itoa(ir.g_lit_counter as i64), "");
+  let label: string = cli.cat3("str", cli.itoa(ir.g_lit_counter as i64), "");
   ir.g_lit_counter += 1;
   let l: *ir.IRLit = new ir.IRLit { label: label, bytes: bytes };
   c.f.literals = push_lit(c.f.literals, l);
@@ -1187,16 +1187,16 @@ pub fn sym_symbol(s: *check.Sym) -> string {
   // methods fold in the receiver name: `to_str` is defined once per type in
   // a module and the bare name would collide
   if s.decl != null && s.decl.is_method && len(s.decl.recv) > 0 {
-    s.symbol = main.cat5("rho_", path, "__", rho_sanitize(s.decl.recv), main.cat3("_", name, ""));
+    s.symbol = cli.cat5("rho_", path, "__", rho_sanitize(s.decl.recv), cli.cat3("_", name, ""));
     return s.symbol;
   }
-  let sym: string = main.cat3("rho_", main.cat3(path, "__", name), "");
+  let sym: string = cli.cat3("rho_", cli.cat3(path, "__", name), "");
   s.symbol = sym;
   return sym;
 }
 
 fn rho_sanitize_sym(s: string) -> string {
-  let buf: *main.Vec[u8] = new main.Vec[u8] { items: make([]u8, 32), n: 0 };
+  let buf: *cli.Vec[u8] = new cli.Vec[u8] { items: make([]u8, 32), n: 0 };
   let mut i: usize = 0;
   while i < len(s) {
     let c: u8 = s[i];
@@ -1228,7 +1228,7 @@ fn panic_call(c: *LCtx, msg: string) {
   // panics from generated checks are otherwise indistinguishable
   let site: i32 = ir.g_panic_site;
   ir.g_panic_site += 1;
-  let m: string = main.cat3("[", main.cat3(c.f.symbol, "#", main.cat3(main.itoa(site as i64), "] ", msg)), "");
+  let m: string = cli.cat3("[", cli.cat3(c.f.symbol, "#", cli.cat3(cli.itoa(site as i64), "] ", msg)), "");
   let lit: i32 = lit_bytes(c, m);
   let tmp: *ir.IRSlot = new_slot(c, 24, 8, "panicstr");
   let addr: *ir.IRVreg = v_slotaddr(c, tmp);
@@ -1445,7 +1445,7 @@ fn expr_owned(e: *parse.Expr) -> bool {
   }
   if e.kind == parse.ExprKind.ExCall {
     // weak.get() lends the object without taking a count: it is a borrow
-    if e.a.kind == parse.ExprKind.ExField && main.streq(e.a.sv, "get") && e.a.a != null &&
+    if e.a.kind == parse.ExprKind.ExField && cli.streq(e.a.sv, "get") && e.a.a != null &&
        e.a.a.typed != null && e.a.a.typed.kind == check.TypeKind.TyWeak {
       return false;
     }
@@ -1496,7 +1496,7 @@ fn retain_or_inc(c: *LCtx, t: *parse.Type, v: *ir.IRVreg) {
 
 // a block arm's value is pre-owned when its trailing expression is an
 // owning producer (or a nested if, which normalizes itself)
-fn arm_value_owned(stmts: *main.Vec[*parse.Stmt]) -> bool {
+fn arm_value_owned(stmts: *cli.Vec[*parse.Stmt]) -> bool {
   if stmts.n == 0 {
     return true; // void-ish; nothing to normalize
   }
@@ -1514,7 +1514,7 @@ fn arm_value_owned(stmts: *main.Vec[*parse.Stmt]) -> bool {
 // Static fn references materialize as {shim, null}: the shim drops env and
 // forwards. Boot-era captures are copies — immutable snapshots.
 
-pub static mut g_shims: *main.Vec[string] = 0 as *main.Vec[string];
+pub static mut g_shims: *cli.Vec[string] = 0 as *cli.Vec[string];
 
 pub fn push_str(items: []string, v: string) -> []string {
   let out: []string = make([]string, len(items) + 1);
@@ -1528,13 +1528,13 @@ pub fn push_str(items: []string, v: string) -> []string {
 }
 
 fn shim_for(fn_: *check.Sym) -> string {
-  let shim_name: string = main.cat3("rho__shim_", sym_symbol(fn_), "");
+  let shim_name: string = cli.cat3("rho__shim_", sym_symbol(fn_), "");
   if g_shims == null {
-    g_shims = new main.Vec[string] { items: make([]string, 64), n: 0 };
+    g_shims = new cli.Vec[string] { items: make([]string, 64), n: 0 };
   }
   let mut i: usize = 0;
   while i < g_shims.n {
-    if main.streq(g_shims.items[i], shim_name) {
+    if cli.streq(g_shims.items[i], shim_name) {
       return shim_name;
     }
     i += 1;
@@ -1611,7 +1611,7 @@ fn dyn_method_on(t_in: *parse.Type, name: string) -> *check.Sym {
   let mut i: usize = 0;
   while i < len(t.rec.methods) {
     let m: *check.Sym = t.rec.methods[i];
-    if main.streq(m.name, name) {
+    if cli.streq(m.name, name) {
       return m;
     }
     i += 1;
@@ -1619,19 +1619,19 @@ fn dyn_method_on(t_in: *parse.Type, name: string) -> *check.Sym {
   return null;
 }
 
-static mut g_dyn_shims: *main.Vec[string] = 0 as *main.Vec[string];
+static mut g_dyn_shims: *cli.Vec[string] = 0 as *cli.Vec[string];
 
 // the vtable slot for an impl method: signature (args..., env) where env
 // arrives as self — a sibling of shim_for with the receiver folded into
 // the hidden parameter
 fn dyn_shim_for(fn_: *check.Sym) -> string {
-  let shim_name: string = main.cat3("rho__dshim_", sym_symbol(fn_), "");
+  let shim_name: string = cli.cat3("rho__dshim_", sym_symbol(fn_), "");
   if g_dyn_shims == null {
-    g_dyn_shims = new main.Vec[string] { items: make([]string, 64), n: 0 };
+    g_dyn_shims = new cli.Vec[string] { items: make([]string, 64), n: 0 };
   }
   let mut i: usize = 0;
   while i < g_dyn_shims.n {
-    if main.streq(g_dyn_shims.items[i], shim_name) {
+    if cli.streq(g_dyn_shims.items[i], shim_name) {
       return shim_name;
     }
     i += 1;
@@ -1713,7 +1713,7 @@ fn vtable_ensure(c: *LCtx, conc: *parse.Type, tr: *parse.RecType) -> *ir.IRVreg 
   let dz: *ir.IRIns = emit(c, ir.IROp.IrStore);
   dz.addr = h16;
   dz.a = nullp;
-  if main.g_target_wasm {
+  if cli.g_target_wasm {
     dz.size = 4;
   } else {
     dz.size = 8;
@@ -1858,7 +1858,7 @@ fn rc_runtime_build() {
       nm = "rho__rc_inc";
     }
     if !from_data {
-      nm = main.cat3(nm, "h", "");
+      nm = cli.cat3(nm, "h", "");
     }
     let lf: *ir.IRFn = rc_new_fn(nm);
     let c: *LCtx = rc_ctx(lf);
@@ -2084,7 +2084,7 @@ fn eq_fn_for(t: *parse.Type) -> string {
   if found != "" {
     return found;
   }
-  let sym: string = main.cat3("rho__eq$", rho_sanitize(t.mangled), "");
+  let sym: string = cli.cat3("rho__eq$", rho_sanitize(t.mangled), "");
   tm2_put(ir.g_eq_fns, t.mangled, sym);
   let lf: *ir.IRFn = rc_new_fn(sym);
   let c: *LCtx = rc_ctx(lf);
@@ -2270,13 +2270,13 @@ fn eq_walk(c: *LCtx, t: *parse.Type, pa: *ir.IRVreg, pb: *ir.IRVreg, rs: *ir.IRS
 
 // lift a closure literal into a standalone fn + env snapshot layout;
 // returns the code symbol, with the env drop glue name in envdrop_out
-fn lift_closure(c: *LCtx, e: *parse.Expr, envdrop_out: *main.Vec[string]) -> string {
+fn lift_closure(c: *LCtx, e: *parse.Expr, envdrop_out: *cli.Vec[string]) -> string {
   let ft: *parse.Type = e.typed;
   let ret: *parse.Type = ft.ret;
   let agg_ret: bool = ret != null && ty_is_aggregate(ret);
   let clo_id: i32 = ir.g_closure_counter;
   ir.g_closure_counter += 1;
-  let sym_name: string = main.cat3(c.f.symbol, "__clo", main.cat3(main.itoa(clo_id as i64), "", ""));
+  let sym_name: string = cli.cat3(c.f.symbol, "__clo", cli.cat3(cli.itoa(clo_id as i64), "", ""));
   let lf: *ir.IRFn = rc_new_fn(sym_name);
   lf.ret = ret;
   let cc: *LCtx = rc_ctx(lf);
@@ -2353,7 +2353,7 @@ fn lift_closure(c: *LCtx, e: *parse.Expr, envdrop_out: *main.Vec[string]) -> str
   ir.g_ir_fns.push(lf);
 
   // env drop glue: releases every captured value when the env object dies
-  let envdrop: string = main.cat3("rho__envdrop$", main.itoa(clo_id as i64), "");
+  let envdrop: string = cli.cat3("rho__envdrop$", cli.itoa(clo_id as i64), "");
   let df: *ir.IRFn = rc_new_fn(envdrop);
   let dc: *LCtx = rc_ctx(df);
   let das: *ir.IRSlot = new_slot(dc, 8, 8, "addr");
@@ -2428,9 +2428,9 @@ fn compute_addr(c: *LCtx, e: *parse.Expr) -> *ir.IRVreg {
     }
     if value_t != null && (value_t.kind == check.TypeKind.TySlice || value_t.kind == check.TypeKind.TyStringK) {
       let mut off: i64 = 0;
-      if main.streq(e.sv, "len") {
+      if cli.streq(e.sv, "len") {
         off = 16;
-      } else if main.streq(e.sv, "ptr") {
+      } else if cli.streq(e.sv, "ptr") {
         off = 8;
       } else {
         panic_call(c, "internal: bad slice field");
@@ -2490,7 +2490,7 @@ fn field_index_of(e: *parse.Expr, rec: *parse.RecType) -> i32 {
   let mut i: usize = 0;
   while i < d.fields.n {
     let fa: *parse.FieldAst = d.fields.items[i];
-    if main.streq(fa.name, e.sv) {
+    if cli.streq(fa.name, e.sv) {
       return i as i32;
     }
     i += 1;
@@ -2906,7 +2906,7 @@ fn lv_expr(c: *LCtx, e: *parse.Expr) -> *ir.IRVreg {
     return lower_new(c, e);
   }
   if e.kind == parse.ExprKind.ExClosure {
-    let envdrop_box: *main.Vec[string] = new main.Vec[string] { items: make([]string, 1), n: 1 };
+    let envdrop_box: *cli.Vec[string] = new cli.Vec[string] { items: make([]string, 1), n: 1 };
     let sym_name: string = lift_closure(c, e, envdrop_box);
     // env object: header + snapshot of every capture
     let mut esz: i64 = 0;
@@ -2942,7 +2942,7 @@ fn lv_expr(c: *LCtx, e: *parse.Expr) -> *ir.IRVreg {
     let dr: *ir.IRIns = emit(c, ir.IROp.IrStore);
     dr.addr = obj16;
     dr.a = dropv;
-    if main.g_target_wasm {
+    if cli.g_target_wasm {
       dr.size = 4;
     } else {
       dr.size = 8;
@@ -3045,7 +3045,7 @@ fn lv_expr(c: *LCtx, e: *parse.Expr) -> *ir.IRVreg {
     let cond2: *ir.IRVreg = lv_expr(c, e.a);
     emit_cbr(c, cond2, then_b2, false_b2, join2);
     use_block(c, then_b2);
-    let then_stmts: *main.Vec[*parse.Stmt] = e.items.items[0].stmts;
+    let then_stmts: *cli.Vec[*parse.Stmt] = e.items.items[0].stmts;
     let tv: *ir.IRVreg = block_value(c, then_stmts, t);
     if ty_is_managed(t) && !arm_value_owned(then_stmts) {
       retain_or_inc(c, t, tv);
@@ -3060,7 +3060,7 @@ fn lv_expr(c: *LCtx, e: *parse.Expr) -> *ir.IRVreg {
         ev = lv_expr(c, e.else_if); // nested ifs normalize their own arms
       } else {
         let els2: *parse.Stmt = e.items.items[1];
-        let es: *main.Vec[*parse.Stmt] = els2.stmts;
+        let es: *cli.Vec[*parse.Stmt] = els2.stmts;
         ev = block_value(c, es, t);
         if ty_is_managed(t) && !arm_value_owned(es) {
           retain_or_inc(c, t, ev);
@@ -3219,7 +3219,7 @@ fn lv_expr(c: *LCtx, e: *parse.Expr) -> *ir.IRVreg {
 
 fn is_make_call(e: *parse.Expr) -> bool {
   return e.kind == parse.ExprKind.ExCall && e.a.kind == parse.ExprKind.ExName &&
-         main.streq(e.a.sv, "make") && e.typed != null &&
+         cli.streq(e.a.sv, "make") && e.typed != null &&
          e.typed.kind == check.TypeKind.TySlice;
 }
 
@@ -3277,7 +3277,7 @@ fn lower_make(c: *LCtx, e: *parse.Expr, dest_in: *ir.IRVreg) -> *ir.IRVreg {
   let dr: *ir.IRIns = emit(c, ir.IROp.IrStore);
   dr.addr = obj16;
   dr.a = drop0;
-  if main.g_target_wasm {
+  if cli.g_target_wasm {
     dr.size = 4;
   } else {
     dr.size = 8;
@@ -3335,7 +3335,7 @@ fn lower_new(c: *LCtx, e: *parse.Expr) -> *ir.IRVreg {
   let dr: *ir.IRIns = emit(c, ir.IROp.IrStore);
   dr.addr = obj16;
   dr.a = dropv;
-  if main.g_target_wasm {
+  if cli.g_target_wasm {
     dr.size = 4;
   } else {
     dr.size = 8;
@@ -3350,7 +3350,7 @@ fn lower_new(c: *LCtx, e: *parse.Expr) -> *ir.IRVreg {
     let init: *parse.Expr = e.args.items[i];
     let mut j: usize = 0;
     while j < sd.fields.n {
-      if main.streq(sd.fields.items[j].name, fa.name) {
+      if cli.streq(sd.fields.items[j].name, fa.name) {
         let off: i64 = struct_field_offset(rec, j);
         let ft: *parse.Type = check.struct_field_type(rec, j);
         let faddr: *ir.IRVreg = v_addi(c, data, off);
@@ -3419,7 +3419,7 @@ fn lower_enum_ctor(c: *LCtx, e: *parse.Expr, dest_in: *ir.IRVreg) -> *ir.IRVreg 
       fidx = -1;
       let mut j: usize = 0;
       while j < v.fields.n {
-        if nm != "" && main.streq(v.fields.items[j].name, nm) {
+        if nm != "" && cli.streq(v.fields.items[j].name, nm) {
           fidx = j as i32;
           j = v.fields.n; // break
         } else {
@@ -3483,7 +3483,7 @@ fn make_slice(c: *LCtx, slice_t: *parse.Type, n: *ir.IRVreg, dest_in: *ir.IRVreg
   let dr: *ir.IRIns = emit(c, ir.IROp.IrStore);
   dr.addr = obj16;
   dr.a = drop0;
-  if main.g_target_wasm {
+  if cli.g_target_wasm {
     dr.size = 4;
   } else {
     dr.size = 8;
@@ -3511,7 +3511,7 @@ fn make_slice(c: *LCtx, slice_t: *parse.Type, n: *ir.IRVreg, dest_in: *ir.IRVreg
   return dest;
 }
 
-fn build_call(c: *LCtx, fn_: *check.Sym, receiver: *parse.Expr, args_exprs: *main.Vec[*parse.Expr], out: *ir.IRVreg, scalar_dst: *main.Vec[*ir.IRVreg]) {
+fn build_call(c: *LCtx, fn_: *check.Sym, receiver: *parse.Expr, args_exprs: *cli.Vec[*parse.Expr], out: *ir.IRVreg, scalar_dst: *cli.Vec[*ir.IRVreg]) {
   // args: vregs for scalars, addresses for aggregates; the method receiver,
   // when present, is argument 0
   let mut call_args: []*ir.IRVreg = make([]*ir.IRVreg, 0);
@@ -3654,7 +3654,7 @@ fn push_usize(items: []usize, v: usize) -> []usize {
 
 fn compute_call_value(c: *LCtx, e: *parse.Expr) -> *ir.IRVreg {
   // builtins
-  if e.a.kind == parse.ExprKind.ExName && main.streq(e.a.sv, "len") {
+  if e.a.kind == parse.ExprKind.ExName && cli.streq(e.a.sv, "len") {
     let arg: *parse.Expr = e.args.items[0];
     let at: *parse.Type = arg.typed;
     if at.kind == check.TypeKind.TyArray {
@@ -3665,7 +3665,7 @@ fn compute_call_value(c: *LCtx, e: *parse.Expr) -> *ir.IRVreg {
   }
   // weak.from(p) -> __rc_wref(p): bumps wrc, returns the header handle
   if e.a.kind == parse.ExprKind.ExField && e.a.a.kind == parse.ExprKind.ExName &&
-     main.streq(e.a.a.sv, "weak") && main.streq(e.a.sv, "from") {
+     cli.streq(e.a.a.sv, "weak") && cli.streq(e.a.sv, "from") {
     let p: *ir.IRVreg = lv_expr(c, e.args.items[0]);
     let call: *ir.IRIns = emit(c, ir.IROp.IrCall);
     call.callee = "rho__rc_wref";
@@ -3674,7 +3674,7 @@ fn compute_call_value(c: *LCtx, e: *parse.Expr) -> *ir.IRVreg {
     return call.dst;
   }
   // w.get() -> __rc_wget(w): data pointer or null when the object died
-  if e.a.kind == parse.ExprKind.ExField && main.streq(e.a.sv, "get") &&
+  if e.a.kind == parse.ExprKind.ExField && cli.streq(e.a.sv, "get") &&
      e.a.a.typed != null && e.a.a.typed.kind == check.TypeKind.TyWeak {
     let w: *ir.IRVreg = lv_expr(c, e.a.a);
     let call: *ir.IRIns = emit(c, ir.IROp.IrCall);
@@ -3685,41 +3685,41 @@ fn compute_call_value(c: *LCtx, e: *parse.Expr) -> *ir.IRVreg {
   }
   // intrinsics.* — raw-memory kernel (spec §10)
   if e.a.kind == parse.ExprKind.ExField && e.a.a.kind == parse.ExprKind.ExName &&
-     main.streq(e.a.a.sv, "intrinsics") {
+     cli.streq(e.a.a.sv, "intrinsics") {
     let name: string = e.a.sv;
-    if main.streq(name, "load_u8") || main.streq(name, "load_u32") ||
-       main.streq(name, "load_u64") || main.streq(name, "load_i64") {
+    if cli.streq(name, "load_u8") || cli.streq(name, "load_u32") ||
+       cli.streq(name, "load_u64") || cli.streq(name, "load_i64") {
       let mut it: ir.IRType = ir.IRType.ItI64;
-      if main.streq(name, "load_u8") {
+      if cli.streq(name, "load_u8") {
         it = ir.IRType.ItU8;
-      } else if main.streq(name, "load_u32") {
+      } else if cli.streq(name, "load_u32") {
         it = ir.IRType.ItU32;
-      } else if main.streq(name, "load_u64") {
+      } else if cli.streq(name, "load_u64") {
         it = ir.IRType.ItU64;
       }
       let p: *ir.IRVreg = lv_expr(c, e.args.items[0]);
       return v_load(c, p, it);
     }
-    if main.streq(name, "store_u8") || main.streq(name, "store_u32") ||
-       main.streq(name, "store_u64") || main.streq(name, "store_i64") {
+    if cli.streq(name, "store_u8") || cli.streq(name, "store_u32") ||
+       cli.streq(name, "store_u64") || cli.streq(name, "store_i64") {
       let p: *ir.IRVreg = lv_expr(c, e.args.items[0]);
       let v: *ir.IRVreg = lv_expr(c, e.args.items[1]);
       v_store(c, p, v);
       return v_const(c, 0, ir.IRType.ItU8);
     }
-    if main.streq(name, "f64_bits") || main.streq(name, "f32_bits") {
+    if cli.streq(name, "f64_bits") || cli.streq(name, "f32_bits") {
       let v: *ir.IRVreg = lv_expr(c, e.args.items[0]);
-      if main.streq(name, "f64_bits") {
+      if cli.streq(name, "f64_bits") {
         return v_cast(c, v, ir.IRType.ItU64);
       }
       return v_cast(c, v, ir.IRType.ItU32);
     }
-    if main.streq(name, "mem_size") {
+    if cli.streq(name, "mem_size") {
       let ms: *ir.IRIns = emit(c, ir.IROp.IrMemsize);
       ms.dst = new_vreg(c, ir.IRType.ItUsize);
       return ms.dst;
     }
-    if main.streq(name, "mem_grow") {
+    if cli.streq(name, "mem_grow") {
       // evaluate the argument BEFORE emitting the intrinsic: emitting
       // first appends the argument's load after the grow in the block,
       // and the grow then reads an uninitialized slot (boot's 0.4.1
@@ -3731,7 +3731,7 @@ fn compute_call_value(c: *LCtx, e: *parse.Expr) -> *ir.IRVreg {
       mg.dst = new_vreg(c, ir.IRType.ItUsize);
       return mg.dst;
     }
-    if main.streq(name, "memcpy") {
+    if cli.streq(name, "memcpy") {
       let dst: *ir.IRVreg = lv_expr(c, e.args.items[0]);
       let src: *ir.IRVreg = lv_expr(c, e.args.items[1]);
       let cp: *ir.IRIns = emit(c, ir.IROp.IrCopymem);
@@ -3741,7 +3741,7 @@ fn compute_call_value(c: *LCtx, e: *parse.Expr) -> *ir.IRVreg {
       cp.size = -1;
       return v_const(c, 0, ir.IRType.ItU8);
     }
-    if main.streq(name, "slice_string") {
+    if cli.streq(name, "slice_string") {
       let base: *ir.IRVreg = lv_expr(c, e.args.items[0]); // []u8 aggregate address
       let len_v: *ir.IRVreg = v_load(c, v_addi(c, base, 16), ir.IRType.ItUsize);
       let ptr: *ir.IRVreg = v_load(c, v_addi(c, base, 8), ir.IRType.ItPtr);
@@ -3767,7 +3767,7 @@ fn compute_call_value(c: *LCtx, e: *parse.Expr) -> *ir.IRVreg {
       let dr: *ir.IRIns = emit(c, ir.IROp.IrStore);
       dr.addr = obj16;
       dr.a = drop0;
-      if main.g_target_wasm {
+      if cli.g_target_wasm {
         dr.size = 4;
       } else {
         dr.size = 8;
@@ -3880,11 +3880,11 @@ fn compute_call_value(c: *LCtx, e: *parse.Expr) -> *ir.IRVreg {
   if ret != null && ty_is_aggregate(ret) {
     let tmp: *ir.IRSlot = new_slot(c, type_size(ret), type_align(ret), "ret");
     let out: *ir.IRVreg = v_slotaddr(c, tmp);
-    let dst_box: *main.Vec[*ir.IRVreg] = new main.Vec[*ir.IRVreg] { items: make([]*ir.IRVreg, 1), n: 1 };
+    let dst_box: *cli.Vec[*ir.IRVreg] = new cli.Vec[*ir.IRVreg] { items: make([]*ir.IRVreg, 1), n: 1 };
     build_call(c, fn_, method_receiver(e.a), e.args, out, dst_box);
     return out; // value address
   }
-  let dst_box2: *main.Vec[*ir.IRVreg] = new main.Vec[*ir.IRVreg] { items: make([]*ir.IRVreg, 1), n: 1 };
+  let dst_box2: *cli.Vec[*ir.IRVreg] = new cli.Vec[*ir.IRVreg] { items: make([]*ir.IRVreg, 1), n: 1 };
   build_call(c, fn_, method_receiver(e.a), e.args, null, dst_box2);
   return dst_box2.items[0];
 }
@@ -3923,7 +3923,7 @@ fn lv_agg(c: *LCtx, e: *parse.Expr, dest: *ir.IRVreg) {
     if fn_ != null && fn_.type.ret != null && ty_is_aggregate(fn_.type.ret) {
       // call straight into dest — one path for every call (variadic
       // construction and owned-arg releases included)
-      let dst_box: *main.Vec[*ir.IRVreg] = new main.Vec[*ir.IRVreg] { items: make([]*ir.IRVreg, 1), n: 1 };
+      let dst_box: *cli.Vec[*ir.IRVreg] = new cli.Vec[*ir.IRVreg] { items: make([]*ir.IRVreg, 1), n: 1 };
       build_call(c, fn_, method_receiver(e.a), e.args, dest, dst_box);
       return;
     }
@@ -3948,7 +3948,7 @@ fn lv_agg(c: *LCtx, e: *parse.Expr, dest: *ir.IRVreg) {
 
 // block statements with a trailing value; returns value vreg (scalars) or
 // address (aggregates); NULL when the block produces nothing
-fn block_value(c: *LCtx, stmts: *main.Vec[*parse.Stmt], t: *parse.Type) -> *ir.IRVreg {
+fn block_value(c: *LCtx, stmts: *cli.Vec[*parse.Stmt], t: *parse.Type) -> *ir.IRVreg {
   scope_push_l(c);
   let mut tail: *ir.IRVreg = null;
   let mut i: usize = 0;
@@ -4208,7 +4208,7 @@ fn push_stmt(items: []*parse.Stmt, s: *parse.Stmt) -> []*parse.Stmt {
   return out;
 }
 
-fn lv_stmts(c: *LCtx, stmts: *main.Vec[*parse.Stmt]) {
+fn lv_stmts(c: *LCtx, stmts: *cli.Vec[*parse.Stmt]) {
   let mut i: usize = 0;
   while i < stmts.n {
     lv_stmt(c, stmts.items[i]);
@@ -4283,9 +4283,9 @@ fn lower_fn(fn_sym: *check.Sym) -> *ir.IRFn {
     }
     i += 1;
   }
-  if fn_sym.owner == ir.g_root_module && main.streq(fn_sym.name, "main") {
+  if fn_sym.owner == ir.g_root_module && cli.streq(fn_sym.name, "main") {
     if ir.g_main_cell == null {
-      ir.g_main_cell = new main.Vec[string] { items: make([]string, 1), n: 1 };
+      ir.g_main_cell = new cli.Vec[string] { items: make([]string, 1), n: 1 };
     }
     ir.g_main_cell.items[0] = fn_.symbol;
   }
@@ -4316,7 +4316,7 @@ fn lower_static(fn_sym: *check.Sym) {
   if d.kind == parse.DeclKind.DkStatic && d.init != null && d.init.kind == parse.ExprKind.ExStr {
     // {buf, ptr, len} with relocations into rodata
     let sv: string = d.init.sv;
-    let label: string = main.cat3(g.symbol, "_str", "");
+    let label: string = cli.cat3(g.symbol, "_str", "");
     let mut bytes: []u8 = make([]u8, 0);
     let mut si: usize = 0;
     while si < len(sv) {
@@ -4327,7 +4327,7 @@ fn lower_static(fn_sym: *check.Sym) {
     let lit: *ir.IRLit = new ir.IRLit { label: label, bytes: bytes };
     // the emitter emits this literal block next to the global's data
     g.relocs = push_str(g.relocs, label);
-    g.relocs = push_str(g.relocs, main.cat3(label, "_b", ""));
+    g.relocs = push_str(g.relocs, cli.cat3(label, "_b", ""));
     g.relocs = push_str(g.relocs, "");
     let len_v: i64 = len(sv) as i64;
     let mut w: i32 = 0;
@@ -4370,10 +4370,10 @@ fn lower_static(fn_sym: *check.Sym) {
 }
 
 pub fn lower_program() {
-  ir.g_ir_fns = new main.Vec[*ir.IRFn] { items: make([]*ir.IRFn, 1024), n: 0 };
-  ir.g_ir_globals = new main.Vec[*ir.IRGlobal] { items: make([]*ir.IRGlobal, 64), n: 0 };
+  ir.g_ir_fns = new cli.Vec[*ir.IRFn] { items: make([]*ir.IRFn, 1024), n: 0 };
+  ir.g_ir_globals = new cli.Vec[*ir.IRGlobal] { items: make([]*ir.IRGlobal, 64), n: 0 };
   if ir.g_main_cell == null {
-    ir.g_main_cell = new main.Vec[string] { items: make([]string, 1), n: 1 };
+    ir.g_main_cell = new cli.Vec[string] { items: make([]string, 1), n: 1 };
   }
   ir.g_main_cell.items[0] = "";
   // per-compile caches: stale symbols would point at previous compiles'
@@ -4399,7 +4399,7 @@ pub fn lower_program() {
       // module (a separate Module object at the same path) — lowering it
       // again would emit the root's statics twice (duplicate labels in
       // the native assemblers, dead duplicate globals on wasm)
-      if ir.g_root_module != null && main.streq(m.path, ir.g_root_module.path) {
+      if ir.g_root_module != null && cli.streq(m.path, ir.g_root_module.path) {
         m = null;
       }
     }
@@ -4468,9 +4468,9 @@ fn rm_put(m: *ReachMap, key: string, val: *ir.IRFn) {
       i += 1;
     }
   }
-  let mut i: usize = main.map_hash(key) & (m.cap - 1);
+  let mut i: usize = cli.map_hash(key) & (m.cap - 1);
   while m.slots[i] != null {
-    if main.streq(m.slots[i].key, key) {
+    if cli.streq(m.slots[i].key, key) {
       m.slots[i].val = val;
       return;
     }
@@ -4484,9 +4484,9 @@ fn rm_get(m: *ReachMap, key: string) -> *ir.IRFn {
   if m.cap == 0 {
     return null;
   }
-  let mut i: usize = main.map_hash(key) & (m.cap - 1);
+  let mut i: usize = cli.map_hash(key) & (m.cap - 1);
   while m.slots[i] != null {
-    if main.streq(m.slots[i].key, key) {
+    if cli.streq(m.slots[i].key, key) {
       return m.slots[i].val;
     }
     i = (i + 1) & (m.cap - 1);
@@ -4524,9 +4524,9 @@ fn rgm_put(m: *ReachGMap, key: string, val: *ir.IRGlobal) {
       i += 1;
     }
   }
-  let mut i: usize = main.map_hash(key) & (m.cap - 1);
+  let mut i: usize = cli.map_hash(key) & (m.cap - 1);
   while m.slots[i] != null {
-    if main.streq(m.slots[i].key, key) {
+    if cli.streq(m.slots[i].key, key) {
       m.slots[i].val = val;
       return;
     }
@@ -4540,9 +4540,9 @@ fn rgm_get(m: *ReachGMap, key: string) -> *ir.IRGlobal {
   if m.cap == 0 {
     return null;
   }
-  let mut i: usize = main.map_hash(key) & (m.cap - 1);
+  let mut i: usize = cli.map_hash(key) & (m.cap - 1);
   while m.slots[i] != null {
-    if main.streq(m.slots[i].key, key) {
+    if cli.streq(m.slots[i].key, key) {
       return m.slots[i].val;
     }
     i = (i + 1) & (m.cap - 1);
@@ -4554,7 +4554,7 @@ pub static mut g_reach_all: *ReachMap = 0 as *ReachMap;
 pub static mut g_reach_keep: *ReachMap = 0 as *ReachMap;
 pub static mut g_reach_gall: *ReachGMap = 0 as *ReachGMap;
 pub static mut g_reach_gkeep: *ReachGMap = 0 as *ReachGMap;
-pub static mut g_reach_work: *main.Vec[string] = 0 as *main.Vec[string];
+pub static mut g_reach_work: *cli.Vec[string] = 0 as *cli.Vec[string];
 pub static mut g_reach_dropped_globals: i64 = 0;
 
 // one symbol may name a fn or a global — keep whichever it hits (they
@@ -4600,7 +4600,7 @@ fn lower_drop_unreachable() {
   }
   g_reach_keep = new ReachMap { slots: make([]*ReachEnt, 0), cap: 0, n: 0 };
   g_reach_gkeep = new ReachGMap { slots: make([]*ReachGEnt, 0), cap: 0, n: 0 };
-  g_reach_work = new main.Vec[string] { items: make([]string, 64), n: 0 };
+  g_reach_work = new cli.Vec[string] { items: make([]string, 64), n: 0 };
   reach_mark(ir.g_main_cell.items[0]);
   // the divide-by-zero check every backend emits references by symbol
   reach_mark(emit_wasm.prelude_symbol("__panic_div"));

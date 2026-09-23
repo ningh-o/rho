@@ -147,8 +147,9 @@ in a temp dir only):
 
 ## Constraints this shape works around
 
-Probed against `./build/rho-boot` (rho 0.4.0); revisit when the
-self-hosting mirror lands:
+Probed against `./build/rho-boot` (rho 0.4.0) and re-probed against the
+self-hosted mirror on 2026-09-23 (the era of the pinned seed) — all three
+constraints hold on both ends:
 
 - `new` builds structs only, so the enum payload rides in
   `Json.v` and every value is a `*Json` handle.

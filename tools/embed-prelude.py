@@ -33,13 +33,13 @@ ROOT = Path(__file__).resolve().parent.parent
 MIRROR = ROOT / "libs" / "compiler" / "prelude_src.rho"
 
 READ_PRELUDE = """pub fn read_prelude(tail: string) -> Result[string, string] {
-  if main.streq(tail, "mac.rho") {
+  if cli.streq(tail, "mac.rho") {
     return Result.Ok(prelude_core_src() + prelude_mac_src());
   }
-  if main.streq(tail, "wasi.rho") {
+  if cli.streq(tail, "wasi.rho") {
     return Result.Ok(prelude_core_src() + prelude_wasi_src());
   }
-  if main.streq(tail, "hosted.rho") {
+  if cli.streq(tail, "hosted.rho") {
     return Result.Ok(prelude_core_src() + prelude_hosted_src());
   }
   return Result.Ok(prelude_core_src());

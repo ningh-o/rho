@@ -1,5 +1,5 @@
 // the IR structures (lower.c port LOW-1)
-use main;
+use cli;
 use parse;
 use check;
 use lower;
@@ -124,7 +124,7 @@ pub struct IRFn {
   vreg_base: i32, // vreg slot offset base = named slot count at layout
 }
 
-pub static mut g_ir_fns: *main.Vec[*IRFn] = 0 as *main.Vec[*IRFn];
+pub static mut g_ir_fns: *cli.Vec[*IRFn] = 0 as *cli.Vec[*IRFn];
 pub static mut g_ir_uid: i32 = 0;
 
 pub struct IRGlobal {
@@ -137,8 +137,8 @@ pub struct IRGlobal {
   is_extern: bool,
 }
 
-pub static mut g_ir_globals: *main.Vec[*IRGlobal] = 0 as *main.Vec[*IRGlobal];
-pub static mut g_main_cell: *main.Vec[string] = 0 as *main.Vec[string]; // [main symbol]
+pub static mut g_ir_globals: *cli.Vec[*IRGlobal] = 0 as *cli.Vec[*IRGlobal];
+pub static mut g_main_cell: *cli.Vec[string] = 0 as *cli.Vec[string]; // [main symbol]
 pub static mut g_root_module: *check.Module = 0 as *check.Module;
 pub static mut g_panic_site: i32 = 0;
 pub static mut g_lit_counter: i32 = 0;

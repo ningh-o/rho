@@ -1,7 +1,7 @@
 #!/bin/sh
 # The bootstrap gate: one command, one verdict per leg.
 #
-#   tools/gate.sh --wasm     this round's acceptance: the five wasm legs,
+#   tools/gate.sh --wasm     this round's acceptance: the seven wasm legs,
 #                            no native crossings (~1 min measured)
 #   tools/gate.sh            full run (the wasm legs + the crossings)
 #   tools/gate.sh --fast     full run minus the self chain (~4 min)
@@ -21,7 +21,14 @@
 #   4 self-chain       mirror builds itself -> child; child builds itself
 #                      -> grandchild; the grandchild rebuilds every corpus
 #                      program and matches the boot goldens in behavior
-#   5 crossings        per image target: mirror builds itself + a hello
+#   5 seed-chain       the pinned self-built seed (boot/rho-seed.wasm)
+#                      builds the mirror: byte-identical while the mirror
+#                      stays within the pin's feature set, behavior-graded
+#                      after the frontier moves past it
+#   6 web-root         boot builds the wasm-only root (web.wasm): version,
+#                      hello build, the native refusal, and the size win
+#                      (reachability drops the six native backend modules)
+#   7 crossings        per image target: mirror builds itself + a hello
 #                      smoke (build-only; exec natively is never done here
 #                      — a corrupt image wedges the kernel, SIGKILL-proof)
 #   6 diag-parity      tests/diag/*.rho: mirror's diagnostics are byte-
@@ -98,7 +105,7 @@ cross_smoke() {
 
 # cross_self <target> <image> — the full self-build for one native target
 cross_self() {
-  wasmtime_run 900 $G/m.wasm build libs/compiler/main.rho --target "$1" -o "$2" && [ -f "$2" ]
+  wasmtime_run 900 $G/m.wasm build libs/compiler/full.rho --target "$1" -o "$2" && [ -f "$2" ]
 }
 
 echo "== rho bootstrap gate $(date '+%H:%M:%S') =="
@@ -111,7 +118,7 @@ leg boot-selftest run_t 10 ./build/rho-boot selftest
 # compiler. Boot builds the mirror in under a second (measured 0.6s); the
 # 60s cap is headroom for a cold machine, not slack.
 rm -f $G/m.wasm
-leg build-mirror run_t 60 ./build/rho-boot build libs/compiler/main.rho --target wasm32-wasi -o $G/m.wasm
+leg build-mirror run_t 60 ./build/rho-boot build libs/compiler/full.rho --target wasm32-wasi -o $G/m.wasm
 
 # every leg below grades the mirror THIS run produced; without one there is
 # nothing to compare and the leg goes RED saying so — it never falls back
@@ -166,9 +173,9 @@ if [ "$FAST" = 0 ]; then
   # HEAP@ scratch lines, and the verdict line owns the leg's output
   if [ ! -f $G/m.wasm ]; then
     no_mirror self-chain
-  elif ! wasmtime_run 900 $G/m.wasm build libs/compiler/main.rho --target wasm32-wasi -o $G/child.wasm >/dev/null 2>&1 || [ ! -f $G/child.wasm ]; then
+  elif ! wasmtime_run 900 $G/m.wasm build libs/compiler/full.rho --target wasm32-wasi -o $G/child.wasm >/dev/null 2>&1 || [ ! -f $G/child.wasm ]; then
     echo "RED (child build failed)"; FAIL=$((FAIL+1))
-  elif ! wasmtime_run 900 $G/child.wasm build libs/compiler/main.rho --target wasm32-wasi -o $G/grandchild.wasm >/dev/null 2>&1 || [ ! -f $G/grandchild.wasm ]; then
+  elif ! wasmtime_run 900 $G/child.wasm build libs/compiler/full.rho --target wasm32-wasi -o $G/grandchild.wasm >/dev/null 2>&1 || [ ! -f $G/grandchild.wasm ]; then
     echo "RED (grandchild build failed)"; FAIL=$((FAIL+1))
   else
     mkdir -p $G/selfchain
@@ -215,6 +222,84 @@ if [ "$WASM" = 0 ]; then
     rm -f $G/self_${t}
     leg "cross-$t-self" cross_self "$t" $G/self_${t}
   done
+fi
+
+# 5a — the pinned seed: the feature frontier. The seed is a frozen
+# self-built compiler; the mirror's sources may use anything the seed
+# accepts. While the mirror still fits boot's subset, the seed's build
+# of it is byte-identical to boot's (same compiler, same source); once
+# the mirror grows past the pin, the leg grades behavior instead and
+# says so — the ritual for re-pinning lives in docs/bootstrap.md.
+printf '%-24s' seed-chain
+if [ ! -f boot/rho-seed.wasm ]; then
+  echo "RED (no pinned seed at boot/rho-seed.wasm)"
+  FAIL=$((FAIL+1))
+else
+  seedok=0
+  seednote=""
+  sv=$(wasmtime_run 10 boot/rho-seed.wasm --version 2>/dev/null)
+  if [ "$sv" = "rho 0.4.0" ]; then
+    rm -f $G/seed-m.wasm
+    if wasmtime_run 900 boot/rho-seed.wasm build libs/compiler/full.rho --target wasm32-wasi -o $G/seed-m.wasm >/dev/null 2>&1 && [ -f $G/seed-m.wasm ]; then
+      # the seed building the mirror IS the child build; when the
+      # self-chain leg ran, grade against its child.wasm
+      if [ -f $G/child.wasm ] && cmp -s $G/seed-m.wasm $G/child.wasm; then
+        seedok=1
+        seednote="current (byte-identical to the chain's child)"
+      else
+        rm -rf $G/seedhello.wasm
+        if wasmtime_run 90 $G/seed-m.wasm build corpus/001_hello.rho --target wasm32-wasi -o $G/seedhello.wasm >/dev/null 2>&1; then
+          sh=$(wasmtime_run 10 $G/seedhello.wasm 2>/dev/null)
+          if [ "$sh" = "hello, world" ]; then
+            seedok=1
+            seednote="older pin, still builds the mirror (behavior-graded)"
+          fi
+        fi
+      fi
+    fi
+  fi
+  if [ "$seedok" = 1 ]; then
+    echo "GREEN ($seednote)"
+    PASS=$((PASS+1))
+  else
+    echo "RED"
+    FAIL=$((FAIL+1))
+  fi
+fi
+
+# 5b — the wasm-only web root: the browser artifact. Same driver, no
+# native backends; a native target must refuse with exit 2 and the
+# one-line reason, exactly like boot refuses what it does not ship.
+printf '%-24s' web-root
+if [ ! -f $G/m.wasm ]; then
+  no_mirror web-root
+else
+  rm -f $G/web.wasm
+  webok=0
+  websize=0
+  if run_t 60 ./build/rho-boot build libs/compiler/web.rho --target wasm32-wasi -o $G/web.wasm >/dev/null 2>&1 && [ -f $G/web.wasm ]; then
+    websize=$(wc -c < $G/web.wasm | tr -d ' ')
+    vout=$(wasmtime_run 10 $G/web.wasm --version 2>/dev/null)
+    rm -rf $G/whello.wasm
+    wasmtime_run 90 $G/web.wasm build corpus/001_hello.rho --target wasm32-wasi -o $G/whello.wasm >/dev/null 2>&1
+    hrun=$(wasmtime_run 10 $G/whello.wasm 2>/dev/null)
+    nat=$(wasmtime_run 30 $G/web.wasm build corpus/001_hello.rho --target arm64-mac -o $G/never.out 2>&1)
+    # the refusal: exit code 2, one clear line (rc read via a re-run)
+    wasmtime_run 30 $G/web.wasm build corpus/001_hello.rho --target arm64-mac -o $G/never.out >/dev/null 2>&1
+    natrc=$?
+    if [ "$vout" = "rho 0.4.0" ] && [ "$hrun" = "hello, world" ] && [ "$natrc" = 2 ] &&
+       printf '%s' "$nat" | grep -q "not linked in this build"; then
+      webok=1
+    fi
+  fi
+  if [ "$webok" = 1 ]; then
+    fullsize=$(wc -c < $G/m.wasm | tr -d ' ')
+    echo "GREEN ($(printf '%s' $websize | awk '{printf "%.1f", $1/1048576}') MiB vs $(printf '%s' $fullsize | awk '{printf "%.1f", $1/1048576}') MiB full)"
+    PASS=$((PASS+1))
+  else
+    echo "RED"
+    FAIL=$((FAIL+1))
+  fi
 fi
 
 # 6 — diagnostics parity

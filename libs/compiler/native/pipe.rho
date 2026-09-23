@@ -1,0 +1,328 @@
+// native/pipe.rho — the native image pipeline behind the package root:
+// the six backend modules (arm64/amd64 emitters, the two assemblers, the
+// Mach-O and ELF writers), the per-target runtime blobs, and the one
+// entry the root calls when build_to surfaces RC_NATIVE. The wasm-only
+// web root does not use this module — reachability drops it (and the six
+// backends) from that artifact entirely.
+use cli;
+use parse;
+use check;
+use ir;
+use lower;
+use emit_wasm;
+use native/emit_arm64;
+use native/emit_amd64;
+use native/asm64;
+use native/asm86;
+use native/macho64;
+use native/elf64;
+
+// ============== 0.3.2 image layer ==========================================
+// ---- runtime blobs (byte-identical to boot's cli.c) ----------------------
+
+fn rt_arm64() -> string { return """.section __TEXT,__text,regular,pure_instructions
+.globl _rho_rt_start
+_rho_rt_start:
+  adrp x8, _rho_rt_argc@PAGE
+  add x8, x8, _rho_rt_argc@PAGEOFF
+  str w0, [x8]
+  adrp x8, _rho_rt_argv@PAGE
+  add x8, x8, _rho_rt_argv@PAGEOFF
+  str x1, [x8]
+  adrp x8, _rho_rt_heap@PAGE
+  add x8, x8, _rho_rt_heap@PAGEOFF
+  adrp x9, _rho__prelude___HEAP@PAGE
+  add x9, x9, _rho__prelude___HEAP@PAGEOFF
+  str x8, [x9]
+  bl _main
+  mov x16, #1
+  movk x16, #32, lsl 16
+  svc #0x80
+.globl _write
+_write:
+  mov x16, #4
+  movk x16, #32, lsl 16
+  svc #0x80
+  b.cs L_write_e
+  ret
+L_write_e:
+  neg x0, x0
+  ret
+.globl _exit
+_exit:
+  mov x16, #1
+  movk x16, #32, lsl 16
+  svc #0x80
+.globl _open
+_open:
+  mov x16, #5
+  svc #0x80
+  b.cs L_open_e
+  ret
+L_open_e:
+  neg x0, x0
+  ret
+.globl _read
+_read:
+  mov x16, #3
+  svc #0x80
+  b.cs L_read_e
+  ret
+L_read_e:
+  neg x0, x0
+  ret
+.globl _close
+_close:
+  mov x16, #6
+  svc #0x80
+  b.cs L_close_e
+  ret
+L_close_e:
+  neg x0, x0
+  ret
+.globl _rename
+_rename:
+  mov x16, #128
+  movk x16, #32, lsl 16
+  svc #0x80
+  b.cs L_rename_e
+  ret
+L_rename_e:
+  neg x0, x0
+  ret
+.globl __NSGetArgc
+__NSGetArgc:
+  adrp x0, _rho_rt_argc@PAGE
+  add x0, x0, _rho_rt_argc@PAGEOFF
+  ret
+.globl __NSGetArgv
+__NSGetArgv:
+  adrp x0, _rho_rt_argv@PAGE
+  add x0, x0, _rho_rt_argv@PAGEOFF
+  ret
+.data
+.globl _rho_rt_argc
+_rho_rt_argc:
+  .long 0
+  .long 0
+.globl _rho_rt_argv
+_rho_rt_argv:
+  .quad 0
+"""; }
+
+fn rt_amd64_linux() -> string { return """.text
+rho_rt_start:
+  movq (%rsp), %rax
+  leaq rho_rt_argc(%rip), %rcx
+  movl %eax, (%rcx)
+  leaq 8(%rsp), %rax
+  leaq rho_rt_argv(%rip), %rcx
+  movq %rax, (%rcx)
+  leaq _rho_rt_heap(%rip), %rax
+  leaq rho__prelude___HEAP(%rip), %rcx
+  movq %rax, (%rcx)
+  call main
+  movl %eax, %edi
+  movl $60, %eax
+  syscall
+write:
+  movl $1, %eax
+  syscall
+  ret
+exit:
+  movl $60, %eax
+  syscall
+read:
+  movl $0, %eax
+  syscall
+  ret
+open:
+  movl $2, %eax
+  syscall
+  ret
+close:
+  movl $3, %eax
+  syscall
+  ret
+rename:
+  movl $82, %eax
+  syscall
+  ret
+_NSGetArgc:
+  leaq rho_rt_argc(%rip), %rax
+  ret
+_NSGetArgv:
+  leaq rho_rt_argv(%rip), %rax
+  ret
+.data
+rho_rt_argc:
+  .long 0
+  .long 0
+rho_rt_argv:
+  .quad 0
+"""; }
+
+fn rt_arm64_linux() -> string { return """.text
+rho_rt_start:
+  ldr x10, [sp]
+  adrp x8, rho_rt_argc@PAGE
+  add x8, x8, rho_rt_argc@PAGEOFF
+  str w10, [x8]
+  add x10, sp, #8
+  adrp x8, rho_rt_argv@PAGE
+  add x8, x8, rho_rt_argv@PAGEOFF
+  str x10, [x8]
+  adrp x8, _rho_rt_heap@PAGE
+  add x8, x8, _rho_rt_heap@PAGEOFF
+  adrp x9, rho__prelude___HEAP@PAGE
+  add x9, x9, rho__prelude___HEAP@PAGEOFF
+  str x8, [x9]
+  bl main
+  mov x8, #93
+  svc #0
+.globl write
+write:
+  mov x8, #64
+  svc #0
+  ret
+.globl exit
+exit:
+  mov x8, #93
+  svc #0
+.globl read
+read:
+  mov x8, #63
+  svc #0
+  ret
+.globl open
+open:
+  mov x3, x2
+  mov x2, x1
+  mov x1, x0
+  mov x0, #0
+  sub x0, x0, #100
+  mov x8, #56
+  svc #0
+  ret
+.globl close
+close:
+  mov x8, #57
+  svc #0
+  ret
+.globl rename
+rename:
+  mov x2, x1
+  mov x1, x0
+  mov x0, #0
+  sub x0, x0, #100
+  mov x8, #38
+  svc #0
+  ret
+.globl _NSGetArgc
+_NSGetArgc:
+  adrp x0, rho_rt_argc@PAGE
+  add x0, x0, rho_rt_argc@PAGEOFF
+  ret
+.globl _NSGetArgv
+_NSGetArgv:
+  adrp x0, rho_rt_argv@PAGE
+  add x0, x0, rho_rt_argv@PAGEOFF
+  ret
+.data
+rho_rt_argc:
+  .long 0
+  .long 0
+rho_rt_argv:
+  .quad 0
+"""; }
+
+// ---- build_to native dispatch ---------------------------------------------
+
+static mut ARM64_MAC_HDR: u64 = 856;
+static mut ELF64_HDR: u64 = 232;
+
+// native image pipeline: runtime blob + emitted text -> assemble -> write
+// the image. Returns 0 on success; the caller prints the artifact line.
+fn build_native_image(target: i32, text: []u8, out_path: string) -> i32 {
+  if target == 0 {
+    // amd64-linux: rho's own assembly -> own assembler -> static ELF;
+    // no libc, no interpreter, no external toolchain anywhere
+    let full: string = cli.cat(rt_amd64_linux(), cli.bytes_as_string(text));
+    let r: *asm64.AResult = asm86.asm86_assemble(full, 0x400000 + ELF64_HDR, 0x1000, 0);
+    if !r.ok {
+      return 1;
+    }
+    if !elf64.elf64_write(r, 62, // EM_X86_64
+ 0x400000 + ELF64_HDR, r.data_va, r.heap_va, out_path) {
+      return 1;
+    }
+    return 0;
+  }
+  if target == 4 {
+    // arm64-linux: raw syscalls, the asm-generic table (write=64, exit=93)
+    let full: string = cli.cat(rt_arm64_linux(), cli.bytes_as_string(text));
+    let r: *asm64.AResult = asm64.asm64_assemble(full, 0x400000 + ELF64_HDR, 0x1000, 0);
+    if !r.ok {
+      return 1;
+    }
+    if !elf64.elf64_write(r, 183, // EM_AARCH64
+ 0x400000 + ELF64_HDR, r.data_va, r.heap_va, out_path) {
+      return 1;
+    }
+    return 0;
+  }
+  if target == 2 {
+    // arm64-mac: static Mach-O with an ad-hoc signature; image base
+    // VM 0x100000000 + the fixed 856-byte load-command block; 16K pages —
+    // Apple Silicon maps segments on 16K boundaries
+    let full: string = cli.cat(rt_arm64(), cli.bytes_as_string(text));
+    let r: *asm64.AResult = asm64.asm64_assemble(full, (0x100000000 as u64) + ARM64_MAC_HDR, 0x4000,
+                                     (0x100000000 as u64) + 0x1000000);
+    if !r.ok {
+      return 1;
+    }
+    if !macho64.macho64_write(r, (0x100000000 as u64) + ARM64_MAC_HDR, r.data_va, r.heap_va, out_path) {
+      return 1;
+    }
+    return 0;
+  }
+  // amd64-mac: .s only (Rosetta test vehicle; never assembled in-tree) —
+  // handled by the caller's shared native tail
+  return 0 - 1;
+}
+
+
+// ---- the root's entry point ------------------------------------------------
+//
+// the tail build_to handed over: emit assembly through the target backend,
+// then finish with the in-tree assembler + image writer (or .s only for
+// amd64-mac). Returns 0 on success; the root prints the artifact line.
+pub fn pipe_emit(target: i32, out_path: string) -> i32 {
+  emit_arm64.g_label64 = 0;
+  emit_arm64.g_uid64 = 0;
+  emit_amd64.g_label_amd = 0;
+  emit_amd64.g_fconsts = null;
+  emit_amd64.g_fn_uid = 0;
+  let mut bytes: []u8 = make([]u8, 0);
+  if target == 2 || target == 4 {
+    bytes = emit_arm64.emit_arm64_text(target);
+  } else {
+    bytes = emit_amd64.emit_amd64_text(target);
+  }
+  if target == 0 || target == 2 || target == 4 {
+    // the assembly text rides next to the image — the toolchain never
+    // shells out to an assembler, so this sidecar is the only way to
+    // read what the backend emitted (debug surface, harmless to build)
+    cli.write_file(cli.cat3(out_path, ".s", ""), cli.bytes_as_string(bytes));
+    let rc: i32 = build_native_image(target, bytes, out_path);
+    if rc != 0 {
+      return 1;
+    }
+    return 0;
+  }
+  // shared native tail (amd64-mac): write the assembly text and stop.
+  // The toolchain does not shell out to an assembler/linker.
+  let s_path: string = cli.cat3(out_path, ".s", "");
+  cli.write_file(s_path, cli.bytes_as_string(bytes));
+  return 0;
+}

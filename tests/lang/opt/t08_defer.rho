@@ -1,0 +1,15 @@
+// exit: 0
+// defers run on the way OUT (deepest activation first); a wrongly
+// transformed loop would print the reverse order
+fn d(n: i64) -> i64 {
+  defer printf("d{}\n", n);
+  if n == 0 {
+    return 0;
+  }
+  return d(n - 1);
+}
+
+fn main() -> i32 {
+  printf("{}\n", d(3));
+  return 0;
+}

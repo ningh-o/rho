@@ -1,5 +1,5 @@
 // the mach-o 64-bit writer: Sha256, the section buffer, the image
-use main;
+use cli;
 use asm64;
 
 
@@ -202,14 +202,14 @@ fn sha256_final(s: *Sha256) -> []u8 {
 
 // ---- image writers (elf64.c / macho64.c ports) ----------------------------
 
-pub fn b_put32(b: *main.Vec[u8], v: u32) {
+pub fn b_put32(b: *cli.Vec[u8], v: u32) {
   b.push((v & 255) as u8);
   b.push(((v >> 8) & 255) as u8);
   b.push(((v >> 16) & 255) as u8);
   b.push(((v >> 24) & 255) as u8);
 }
 
-pub fn b_put64(b: *main.Vec[u8], v: u64) {
+pub fn b_put64(b: *cli.Vec[u8], v: u64) {
   let mut i: i32 = 0;
   while i < 8 {
     b.push(((v >> (8 * i)) & 255) as u8);
@@ -217,19 +217,19 @@ pub fn b_put64(b: *main.Vec[u8], v: u64) {
   }
 }
 
-pub fn b_put16(b: *main.Vec[u8], v: u32) {
+pub fn b_put16(b: *cli.Vec[u8], v: u32) {
   b.push((v & 255) as u8);
   b.push(((v >> 8) & 255) as u8);
 }
 
-fn b_put_be32(b: *main.Vec[u8], v: u32) {
+fn b_put_be32(b: *cli.Vec[u8], v: u32) {
   b.push(((v >> 24) & 255) as u8);
   b.push(((v >> 16) & 255) as u8);
   b.push(((v >> 8) & 255) as u8);
   b.push((v & 255) as u8);
 }
 
-fn b_put_be64(b: *main.Vec[u8], v: u64) {
+fn b_put_be64(b: *cli.Vec[u8], v: u64) {
   let mut i: i32 = 7;
   while i >= 0 {
     b.push(((v >> (8 * i)) & 255) as u8);
@@ -237,7 +237,7 @@ fn b_put_be64(b: *main.Vec[u8], v: u64) {
   }
 }
 
-fn b_put_name(b: *main.Vec[u8], name: string) {
+fn b_put_name(b: *cli.Vec[u8], name: string) {
   let n: usize = len(name);
   let mut i: i32 = 0;
   while i < 16 {
@@ -250,7 +250,7 @@ fn b_put_name(b: *main.Vec[u8], name: string) {
   }
 }
 
-fn b_push_str(b: *main.Vec[u8], s: string) {
+fn b_push_str(b: *cli.Vec[u8], s: string) {
   let mut i: usize = 0;
   while i < len(s) {
     b.push(s[i]);
@@ -259,7 +259,7 @@ fn b_push_str(b: *main.Vec[u8], s: string) {
 }
 
 // writes a section_64 entry
-fn macho_sect(b: *main.Vec[u8], sect_name: string, seg_name: string, addr: u64, size: u64, offset: u32, align_exp: u32, flags: u32) {
+fn macho_sect(b: *cli.Vec[u8], sect_name: string, seg_name: string, addr: u64, size: u64, offset: u32, align_exp: u32, flags: u32) {
   b_put_name(b, sect_name);
   b_put_name(b, seg_name);
   b_put64(b, addr);
@@ -310,7 +310,7 @@ pub fn macho64_write(r: *asm64.AResult, text_vaddr: u64, data_vaddr: u64, heap_v
   let sig_size: u64 = ((20 + 88 + 4) as u64) + sig_nslots * (32 as u64);
   let le_fs: u64 = FIXUPS_BYTES + TRIE_BYTES + sig_size;
 
-  let b: *main.Vec[u8] = new main.Vec[u8] { items: make([]u8, 4096), n: 0 };
+  let b: *cli.Vec[u8] = new cli.Vec[u8] { items: make([]u8, 4096), n: 0 };
   b_put32(b, 0xFEEDFACF);
   b_put32(b, 0x0100000C);         // cputype ARM64
   b_put32(b, 0);                  // cpusubtype
@@ -510,7 +510,7 @@ pub fn macho64_write(r: *asm64.AResult, text_vaddr: u64, data_vaddr: u64, heap_v
   // ---- ad-hoc code signature (CS_ADHOC | CS_LINKER_SIGNED) ----
   let ident: string = "rho";
   let ident_len: u64 = 4; // "rho" + NUL
-  let sig: *main.Vec[u8] = new main.Vec[u8] { items: make([]u8, 4096), n: 0 };
+  let sig: *cli.Vec[u8] = new cli.Vec[u8] { items: make([]u8, 4096), n: 0 };
   b_put_be32(sig, 0xFADE0CC0);
   b_put_be32(sig, sig_size as u32);
   b_put_be32(sig, 1);
@@ -581,10 +581,10 @@ pub fn macho64_write(r: *asm64.AResult, text_vaddr: u64, data_vaddr: u64, heap_v
     out_all[b.n + k] = sig.items[k];
     k += 1;
   }
-  return main.write_file(out_path, main.bytes_as_string(out_all));
+  return cli.write_file(out_path, cli.bytes_as_string(out_all));
 }
 
-pub fn b_push_str_bytes(b: *main.Vec[u8], data: *main.Vec[u8]) {
+pub fn b_push_str_bytes(b: *cli.Vec[u8], data: *cli.Vec[u8]) {
   let mut i: usize = 0;
   while i < data.n {
     b.push(data.items[i]);

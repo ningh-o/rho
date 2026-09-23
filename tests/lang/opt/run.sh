@@ -39,7 +39,7 @@ fi
 if [ ! -f "$M" ]; then
   echo "opt: no mirror at $M — building it"
   perl -e 'alarm shift; exec @ARGV or die "cannot exec $ARGV[0]\n"' 60 \
-    "$B" build libs/compiler/main.rho --target wasm32-wasi -o "$M" || {
+    "$B" build libs/compiler/full.rho --target wasm32-wasi -o "$M" || {
     echo "opt: mirror build failed"
     exit 2
   }
@@ -59,7 +59,7 @@ strip_dbg() {
 
 fails=0
 total=0
-for src in tests/lang/opt/s*.rho; do
+for src in tests/lang/opt/[st]*.rho; do
   name=$(basename "$src" .rho)
   total=$((total + 1))
   verdict=""

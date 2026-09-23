@@ -1,7 +1,8 @@
 // opt.rho — the IR optimizer: constant folding + dead-instruction
-// elimination (mirror-only; boot stays frozen, and the gate grades
-// behavior — boot-built vs mirror-built artifacts must run identically,
-// so every fold is semantics-preserving by construction).
+// elimination + tail-call optimization (mirror-only; boot stays frozen,
+// and the gate grades behavior — boot-built vs mirror-built artifacts
+// must run identically, so every fold is semantics-preserving by
+// construction).
 //
 // Folding is vreg-granular and rewrites instructions IN PLACE: a binop
 // whose operands are both known constants becomes an IrConst with the
@@ -27,10 +28,11 @@
 // passes run to a bounded fixpoint; iteration order is the emission
 // order, so the result is deterministic.
 
-use main;
+use cli;
 use parse;
 use check;
 use ir;
+use lower;
 
 pub static mut g_opt_off: bool = false;
 pub static mut g_opt_folds: i64 = 0;
@@ -426,6 +428,432 @@ pub fn run() {
       }
       drounds += 1;
     }
+    tco_fn(f);
     i += 1;
   }
+}
+
+// ==================== tail-call optimization (spec §3.6) ====================
+//
+// A direct self-call in tail position — the call whose result the block's
+// ret returns, or a void call right before the ret — becomes a loop: the
+// arguments are written into the parameters' frame slots and control
+// branches back to the body. The transform is memory-shaped like the rest
+// of the lowering: no phis, the frame slots are the loop-carried state,
+// and the re-executed entry prologue (aggregate params: copy the ABI slot
+// into the local slot, then retain; scalars: retain in place) is exactly
+// what a fresh callee activation would have done.
+//
+// The reference-count discipline is the delicate part. A call's release
+// tail (owned-arg releases, scope releases — every instruction between the
+// call and the ret is an rc walker call or its address materialization)
+// runs BETWEEN the call and the loop-back edge, consuming the counts of
+// the iteration that is ending. The tail site therefore RETAINS every
+// managed argument BEFORE that release tail (pinning both the count and
+// the source bytes) and copies the values into the parameter locals AFTER
+// it, so the next iteration's entry retain finds live data exactly as a
+// real callee would. The entry's own retain pairs with that iteration's
+// release; the tail site's retain pairs with the NEXT iteration's release
+// of the same slot. Net count change per iteration: zero.
+//
+// Guarded conservatively — anything the pass cannot prove, it leaves as a
+// call: synthesized helpers (ret == null), any block whose post-call tail
+// is not pure rc machinery, a ret value that is not the call's own result,
+// an argument count that does not match the parameter list, phis in the
+// entry, or an entry prologue that does not parse as the parameter setup
+// grammar (Addrc abi / Load / Addrc local / Copymem [/ Call walker] per
+// aggregate parameter, Addrc / Call walker per managed scalar).
+
+pub static mut g_opt_tco: i64 = 0;
+
+struct TcoParam {
+  abi: *ir.IRSlot,    // fn_.params[i] — the ABI spill slot
+  local: *ir.IRSlot,  // the slot the body reads (== abi for scalars)
+  pt: *parse.Type,
+  aggregate: bool,
+  managed: bool,
+}
+
+// tiny emit helpers over a bare fn (the lowering's LCtx machinery is
+// private and scope-bound; these only append)
+fn tco_new_vreg(f: *ir.IRFn, ty: ir.IRType) -> *ir.IRVreg {
+  let v: *ir.IRVreg = new ir.IRVreg { id: f.next_vreg, ty: ty };
+  f.next_vreg += 1;
+  return v;
+}
+
+fn tco_new_block(f: *ir.IRFn) -> *ir.IRBlock {
+  let b: *ir.IRBlock = new ir.IRBlock {
+    id: f.next_block, phis: make([]*ir.IRPhi, 0), ins: make([]*ir.IRIns, 0),
+    term_op: 0, br_true: null, br_false: null, ret_val: null,
+    cbr_cond: null, join_hint: null, loop_header: false, loop_exit: null,
+    emitted: false,
+  };
+  f.next_block += 1;
+  f.blocks = tco_push_block(f.blocks, b);
+  return b;
+}
+
+fn tco_push_block(items: []*ir.IRBlock, b: *ir.IRBlock) -> []*ir.IRBlock {
+  let out: []*ir.IRBlock = make([]*ir.IRBlock, len(items) + 1);
+  let mut i: usize = 0;
+  while i < len(items) {
+    out[i] = items[i];
+    i += 1;
+  }
+  out[len(items)] = b;
+  return out;
+}
+
+fn tco_emit(b: *ir.IRBlock, op: ir.IROp) -> *ir.IRIns {
+  let i: *ir.IRIns = new ir.IRIns {
+    op: op, dst: null, a: null, b: null, slot: null, imm: 0, fimm: 0.0,
+    size: 0, is_float: false, signed_ops: true, cc: ir.IRCC.CcEq,
+    cast: ir.IRCastKind.CastBitcopy, cast_from: ir.IRType.ItPtr,
+    cast_to: ir.IRType.ItPtr, callee: "", callee_vreg: null,
+    args: make([]*ir.IRVreg, 0), addr: null, lit: 0, join_hint: null,
+  };
+  b.ins = tco_push_ins(b.ins, i);
+  return i;
+}
+
+fn tco_push_ins(items: []*ir.IRIns, i: *ir.IRIns) -> []*ir.IRIns {
+  let out: []*ir.IRIns = make([]*ir.IRIns, len(items) + 1);
+  let mut k: usize = 0;
+  while k < len(items) {
+    out[k] = items[k];
+    k += 1;
+  }
+  out[len(items)] = i;
+  return out;
+}
+
+fn tco_addrc(f: *ir.IRFn, b: *ir.IRBlock, s: *ir.IRSlot) -> *ir.IRVreg {
+  let v: *ir.IRVreg = tco_new_vreg(f, ir.IRType.ItPtr);
+  let i: *ir.IRIns = tco_emit(b, ir.IROp.IrAddrc);
+  i.dst = v;
+  i.slot = s;
+  return v;
+}
+
+fn tco_call1(f: *ir.IRFn, b: *ir.IRBlock, callee: string, arg: *ir.IRVreg) {
+  let i: *ir.IRIns = tco_emit(b, ir.IROp.IrCall);
+  i.callee = callee;
+  i.args = make([]*ir.IRVreg, 1);
+  i.args[0] = arg;
+}
+
+fn tco_push_arg(args: []*ir.IRVreg, v: *ir.IRVreg) -> []*ir.IRVreg {
+  let out: []*ir.IRVreg = make([]*ir.IRVreg, len(args) + 1);
+  let mut k: usize = 0;
+  while k < len(args) {
+    out[k] = args[k];
+    k += 1;
+  }
+  out[len(args)] = v;
+  return out;
+}
+
+fn tco_is_rc_sym(s: string) -> bool {
+  return len(s) >= 5 && cli.streq(s[0..5], "rho__");
+}
+
+// parse the entry block's parameter-setup prefix. Returns the number of
+// instructions that belong to the prologue, filling `ps`; -1 = the block
+// does not match the grammar (the caller declines the transform).
+fn tco_parse_prologue(f: *ir.IRFn, ps: []*TcoParam) -> i32 {
+  let e: *ir.IRBlock = f.entry;
+  if len(e.phis) != 0 {
+    return -1;
+  }
+  let mut k: usize = 0;
+  let mut i: usize = 0;
+  while i < len(ps) {
+    let p: *TcoParam = ps[i];
+    let pt: *parse.Type = p.pt;
+    if pt == null {
+      return -1;
+    }
+    if p.aggregate {
+      if k + 4 > len(e.ins) {
+        return -1;
+      }
+      if e.ins[k].op != ir.IROp.IrAddrc || e.ins[k].slot != p.abi {
+        return -1;
+      }
+      if e.ins[k + 1].op != ir.IROp.IrLoad {
+        return -1;
+      }
+      if e.ins[k + 2].op != ir.IROp.IrAddrc || e.ins[k + 2].slot == null ||
+         e.ins[k + 2].slot == p.abi {
+        return -1;
+      }
+      p.local = e.ins[k + 2].slot;
+      if e.ins[k + 3].op != ir.IROp.IrCopymem {
+        return -1;
+      }
+      k += 4;
+      if p.managed {
+        if k >= len(e.ins) || e.ins[k].op != ir.IROp.IrCall ||
+           !tco_is_rc_sym(e.ins[k].callee) {
+          return -1;
+        }
+        k += 1;
+      }
+    } else {
+      p.local = p.abi;
+      if p.managed {
+        if k + 2 > len(e.ins) {
+          return -1;
+        }
+        if e.ins[k].op != ir.IROp.IrAddrc || e.ins[k].slot != p.abi {
+          return -1;
+        }
+        if e.ins[k + 1].op != ir.IROp.IrCall {
+          return -1;
+        }
+        if !tco_is_rc_sym(e.ins[k + 1].callee) {
+          return -1;
+        }
+        k += 2;
+      }
+    }
+    i += 1;
+  }
+  return k as i32;
+}
+
+// is every instruction from `k` to the end of the block rc machinery —
+// a walker call or the address materialization feeding one?
+fn tco_rc_tail(b: *ir.IRBlock, k: usize) -> bool {
+  let mut j: usize = k;
+  while j < len(b.ins) {
+    let ins: *ir.IRIns = b.ins[j];
+    if ins.op == ir.IROp.IrCall {
+      if !tco_is_rc_sym(ins.callee) {
+        return false;
+      }
+    } else if ins.op != ir.IROp.IrAddrc {
+      return false;
+    }
+    j += 1;
+  }
+  return true;
+}
+
+// is this block a tail site — a ret whose value is a direct self-call's
+// result, with only rc machinery after the call and a matching argument
+// list? Returns the call's instruction index, or -1.
+fn tco_tail_site(f: *ir.IRFn, np: usize, out_skip: usize, b: *ir.IRBlock) -> i32 {
+  if b.term_op != 102 {
+    return -1;
+  }
+  let mut k: i32 = -1;
+  let mut j: usize = 0;
+  while j < len(b.ins) {
+    if b.ins[j].op == ir.IROp.IrCall && b.ins[j].callee_vreg == null &&
+       cli.streq(b.ins[j].callee, f.symbol) {
+      k = j as i32;
+    }
+    j += 1;
+  }
+  if k < 0 {
+    return -1;
+  }
+  let call: *ir.IRIns = b.ins[k];
+  if !tco_rc_tail(b, k as usize + 1) {
+    return -1;
+  }
+  let val_ok: bool = (b.ret_val == call.dst) ||
+                     (call.dst == null && b.ret_val == null);
+  if !val_ok {
+    return -1;
+  }
+  if len(call.args) != np + out_skip {
+    return -1;
+  }
+  let mut p: usize = 0;
+  while p < np {
+    if call.args[p + out_skip] == null {
+      return -1;
+    }
+    p += 1;
+  }
+  return k;
+}
+
+fn tco_fn(f: *ir.IRFn) -> i64 {
+  // synthesized helpers (rc walkers, eq helpers) carry no checked type and
+  // have private calling conventions — never transformed
+  if f.ret == null {
+    return 0;
+  }
+  // the parameter table; a null param type (closure envs, rc glue) or a
+  // mismatched call shape declines
+  let np: usize = len(f.params);
+  let ps: []*TcoParam = make([]*TcoParam, np);
+  let mut i: usize = 0;
+  while i < np {
+    let mut pt: *parse.Type = null;
+    if i < len(f.param_types) {
+      pt = f.param_types[i];
+    }
+    if pt == null {
+      return 0;
+    }
+    ps[i] = new TcoParam {
+      abi: f.params[i], local: null, pt: pt,
+      aggregate: lower.ty_is_aggregate(pt), managed: lower.ty_is_managed(pt),
+    };
+    i += 1;
+  }
+  let pro: i32 = tco_parse_prologue(f, ps);
+  if pro < 0 {
+    return 0;
+  }
+  let out_skip: usize = if f.returns_aggregate { 1 } else { 0 };
+  // count the tail sites (the rewrite re-runs the same predicate)
+  let mut ntail: i64 = 0;
+  let mut bi: usize = 0;
+  while bi < len(f.blocks) {
+    if tco_tail_site(f, np, out_skip, f.blocks[bi]) >= 0 {
+      ntail += 1;
+    }
+    bi += 1;
+  }
+  if ntail == 0 {
+    return 0;
+  }
+  // split the entry: E keeps the prologue and branches to E2; E2 (the
+  // new loop header) carries the body. X is the loop's exit block —
+  // unreachable by construction (every body exit is a ret), emitted as
+  // the valueless ret the emitters already support after the loop closes.
+  let e: *ir.IRBlock = f.entry;
+  let body: []*ir.IRIns = e.ins;
+  let pro_len: usize = pro as usize;
+  let keep: []*ir.IRIns = make([]*ir.IRIns, pro_len);
+  let mut i2: usize = 0;
+  while i2 < pro_len {
+    keep[i2] = body[i2];
+    i2 += 1;
+  }
+  e.ins = keep;
+  let e2: *ir.IRBlock = tco_new_block(f);
+  let rest: []*ir.IRIns = make([]*ir.IRIns, len(body) - pro_len);
+  let mut i3: usize = pro_len;
+  while i3 < len(body) {
+    rest[i3 - pro_len] = body[i3];
+    i3 += 1;
+  }
+  e2.ins = rest;
+  e2.term_op = e.term_op;
+  e2.br_true = e.br_true;
+  e2.br_false = e.br_false;
+  e2.ret_val = e.ret_val;
+  e2.cbr_cond = e.cbr_cond;
+  let x: *ir.IRBlock = tco_new_block(f);
+  x.term_op = 102;
+  x.ret_val = null;
+  e2.loop_header = true;
+  e2.loop_exit = x;
+  e.term_op = 100;
+  e.br_true = e2;
+  e.br_false = null;
+  // rewrite every tail site: pin the managed arguments, drop the call,
+  // keep the release tail, then move the arguments into the parameter
+  // locals the next iteration reads, and branch back to the body
+  bi = 0;
+  while bi < len(f.blocks) {
+    let b: *ir.IRBlock = f.blocks[bi];
+    if b == e2 || b == x {
+      bi += 1;
+      continue;
+    }
+    let k: i32 = tco_tail_site(f, np, out_skip, b);
+    if k < 0 {
+      bi += 1;
+      continue;
+    }
+    let kk: usize = k as usize;
+    let call: *ir.IRIns = b.ins[kk];
+    // the release tail between the call and the ret, captured before any
+    // of this block's slices are rebuilt
+    let tail: []*ir.IRIns = make([]*ir.IRIns, len(b.ins) - kk - 1);
+    let mut m: usize = 0;
+    while m < len(tail) {
+      tail[m] = b.ins[kk + 1 + m];
+      m += 1;
+    }
+    // argument pinning, before the release tail: managed aggregates via
+    // their value walker (synthesizing it on demand, exactly as the
+    // lowering would), *T via rc_inc, weak handles via rc_winc. Built in
+    // a scratch block so the ordering is explicit, then spliced.
+    let pin: *ir.IRBlock = new ir.IRBlock {
+      id: 0, phis: make([]*ir.IRPhi, 0), ins: make([]*ir.IRIns, 0),
+      term_op: 0, br_true: null, br_false: null, ret_val: null,
+      cbr_cond: null, join_hint: null, loop_header: false, loop_exit: null,
+      emitted: false,
+    };
+    let mut p: usize = 0;
+    while p < np {
+      let arg: *ir.IRVreg = call.args[p + out_skip];
+      let tp: *TcoParam = ps[p];
+      if tp.managed {
+        if tp.aggregate {
+          let walker: string = lower.value_fn_for(tp.pt, true);
+          tco_call1(f, pin, walker, arg);
+        } else if tp.pt.kind == check.TypeKind.TyWeak {
+          tco_call1(f, pin, "rho__rc_winc", arg);
+        } else {
+          tco_call1(f, pin, "rho__rc_inc", arg);
+        }
+      }
+      p += 1;
+    }
+    let nin: []*ir.IRIns = make([]*ir.IRIns, kk + len(pin.ins) + len(tail));
+    let mut w: usize = 0;
+    while w < kk {
+      nin[w] = b.ins[w];
+      w += 1;
+    }
+    let mut r: usize = 0;
+    while r < len(pin.ins) {
+      nin[kk + r] = pin.ins[r];
+      r += 1;
+    }
+    let mut m2: usize = 0;
+    while m2 < len(tail) {
+      nin[kk + len(pin.ins) + m2] = tail[m2];
+      m2 += 1;
+    }
+    b.ins = nin;
+    // move the arguments into the parameter locals; scalars store the
+    // vreg, aggregates copy through the source address
+    p = 0;
+    while p < np {
+      let arg: *ir.IRVreg = call.args[p + out_skip];
+      let tp: *TcoParam = ps[p];
+      let dst: *ir.IRVreg = tco_addrc(f, b, tp.local);
+      if tp.aggregate {
+        let cp: *ir.IRIns = tco_emit(b, ir.IROp.IrCopymem);
+        cp.addr = dst;
+        cp.a = arg;
+        cp.size = lower.type_size(tp.pt);
+      } else {
+        let st: *ir.IRIns = tco_emit(b, ir.IROp.IrStore);
+        st.addr = dst;
+        st.a = arg;
+        st.size = ir.ir_size_of(arg.ty);
+        st.is_float = ir.ir_is_float_t(arg.ty);
+      }
+      p += 1;
+    }
+    b.term_op = 100;
+    b.br_true = e2;
+    b.br_false = null;
+    b.ret_val = null;
+    bi += 1;
+  }
+  g_opt_tco += ntail;
+  return ntail;
 }

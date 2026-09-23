@@ -1,0 +1,15 @@
+// web.rho — the wasm-only package root: the compiler the browser ships.
+// It links no native backend (reachability drops native/pipe.rho and the
+// six backend modules behind it from the artifact); a native target gets
+// the same clear refusal boot gives. Everything else — check, build to
+// wasm32-wasi, fmt, selftest, the optimizer — is the shared driver.
+use cli;
+
+fn main() -> i32 {
+  let rc: i32 = cli.run();
+  if rc == cli.RC_NATIVE {
+    eprintf("{}", "rho: native backends are not linked in this build (the web compiler emits wasm32-wasi only)\n");
+    return 2;
+  }
+  return rc;
+}

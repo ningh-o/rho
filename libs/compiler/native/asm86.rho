@@ -1,5 +1,5 @@
 // the x86-64 assembler
-use main;
+use cli;
 use asm64;
 
 
@@ -40,44 +40,44 @@ fn m_parse_reg(s_in: string) -> *MReg {
         return mreg(R86_64, num);
       }
       let sfx: string = s[di..len(s)];
-      if main.streq(sfx, "d") { return mreg(R86_32, num); }
-      if main.streq(sfx, "w") { return mreg(R86_16, num); }
-      if main.streq(sfx, "b") { return mreg(R86_8, num); }
+      if cli.streq(sfx, "d") { return mreg(R86_32, num); }
+      if cli.streq(sfx, "w") { return mreg(R86_16, num); }
+      if cli.streq(sfx, "b") { return mreg(R86_8, num); }
     }
     return mreg(R86_NONE, 0);
   }
-  if main.streq(s, "rax") { return mreg(R86_64, 0); }
-  if main.streq(s, "rcx") { return mreg(R86_64, 1); }
-  if main.streq(s, "rdx") { return mreg(R86_64, 2); }
-  if main.streq(s, "rbx") { return mreg(R86_64, 3); }
-  if main.streq(s, "rsp") { return mreg(R86_64, 4); }
-  if main.streq(s, "rbp") { return mreg(R86_64, 5); }
-  if main.streq(s, "rsi") { return mreg(R86_64, 6); }
-  if main.streq(s, "rdi") { return mreg(R86_64, 7); }
-  if main.streq(s, "eax") { return mreg(R86_32, 0); }
-  if main.streq(s, "ecx") { return mreg(R86_32, 1); }
-  if main.streq(s, "edx") { return mreg(R86_32, 2); }
-  if main.streq(s, "ebx") { return mreg(R86_32, 3); }
-  if main.streq(s, "esp") { return mreg(R86_32, 4); }
-  if main.streq(s, "ebp") { return mreg(R86_32, 5); }
-  if main.streq(s, "esi") { return mreg(R86_32, 6); }
-  if main.streq(s, "edi") { return mreg(R86_32, 7); }
-  if main.streq(s, "ax") { return mreg(R86_16, 0); }
-  if main.streq(s, "cx") { return mreg(R86_16, 1); }
-  if main.streq(s, "dx") { return mreg(R86_16, 2); }
-  if main.streq(s, "bx") { return mreg(R86_16, 3); }
-  if main.streq(s, "sp") { return mreg(R86_16, 4); }
-  if main.streq(s, "bp") { return mreg(R86_16, 5); }
-  if main.streq(s, "si") { return mreg(R86_16, 6); }
-  if main.streq(s, "di") { return mreg(R86_16, 7); }
-  if main.streq(s, "al") { return mreg(R86_8, 0); }
-  if main.streq(s, "cl") { return mreg(R86_8, 1); }
-  if main.streq(s, "dl") { return mreg(R86_8, 2); }
-  if main.streq(s, "bl") { return mreg(R86_8, 3); }
-  if main.streq(s, "spl") { return mreg(R86_8, 4); }
-  if main.streq(s, "bpl") { return mreg(R86_8, 5); }
-  if main.streq(s, "sil") { return mreg(R86_8, 6); }
-  if main.streq(s, "dil") { return mreg(R86_8, 7); }
+  if cli.streq(s, "rax") { return mreg(R86_64, 0); }
+  if cli.streq(s, "rcx") { return mreg(R86_64, 1); }
+  if cli.streq(s, "rdx") { return mreg(R86_64, 2); }
+  if cli.streq(s, "rbx") { return mreg(R86_64, 3); }
+  if cli.streq(s, "rsp") { return mreg(R86_64, 4); }
+  if cli.streq(s, "rbp") { return mreg(R86_64, 5); }
+  if cli.streq(s, "rsi") { return mreg(R86_64, 6); }
+  if cli.streq(s, "rdi") { return mreg(R86_64, 7); }
+  if cli.streq(s, "eax") { return mreg(R86_32, 0); }
+  if cli.streq(s, "ecx") { return mreg(R86_32, 1); }
+  if cli.streq(s, "edx") { return mreg(R86_32, 2); }
+  if cli.streq(s, "ebx") { return mreg(R86_32, 3); }
+  if cli.streq(s, "esp") { return mreg(R86_32, 4); }
+  if cli.streq(s, "ebp") { return mreg(R86_32, 5); }
+  if cli.streq(s, "esi") { return mreg(R86_32, 6); }
+  if cli.streq(s, "edi") { return mreg(R86_32, 7); }
+  if cli.streq(s, "ax") { return mreg(R86_16, 0); }
+  if cli.streq(s, "cx") { return mreg(R86_16, 1); }
+  if cli.streq(s, "dx") { return mreg(R86_16, 2); }
+  if cli.streq(s, "bx") { return mreg(R86_16, 3); }
+  if cli.streq(s, "sp") { return mreg(R86_16, 4); }
+  if cli.streq(s, "bp") { return mreg(R86_16, 5); }
+  if cli.streq(s, "si") { return mreg(R86_16, 6); }
+  if cli.streq(s, "di") { return mreg(R86_16, 7); }
+  if cli.streq(s, "al") { return mreg(R86_8, 0); }
+  if cli.streq(s, "cl") { return mreg(R86_8, 1); }
+  if cli.streq(s, "dl") { return mreg(R86_8, 2); }
+  if cli.streq(s, "bl") { return mreg(R86_8, 3); }
+  if cli.streq(s, "spl") { return mreg(R86_8, 4); }
+  if cli.streq(s, "bpl") { return mreg(R86_8, 5); }
+  if cli.streq(s, "sil") { return mreg(R86_8, 6); }
+  if cli.streq(s, "dil") { return mreg(R86_8, 7); }
   if asm64.str_starts(s, "xmm") && len(s) == 4 && s[3] >= 48 && s[3] <= 55 {
     return mreg(R86_XMM, (s[3] - 48) as i32);
   }
@@ -205,22 +205,22 @@ fn m_op_imm(a: *asm64.ASMCtx, digit: i32, w: bool, imm: i64, rm: *MReg) {
 
 // jcc/setcc condition suffix -> low opcode nibble
 fn m_cc_op(s: string) -> i32 {
-  if main.streq(s, "o") { return 0; }
-  if main.streq(s, "no") { return 1; }
-  if main.streq(s, "b") { return 2; }
-  if main.streq(s, "ae") { return 3; }
-  if main.streq(s, "e") { return 4; }
-  if main.streq(s, "ne") { return 5; }
-  if main.streq(s, "be") { return 6; }
-  if main.streq(s, "a") { return 7; }
-  if main.streq(s, "s") { return 8; }
-  if main.streq(s, "ns") { return 9; }
-  if main.streq(s, "p") { return 10; }
-  if main.streq(s, "np") { return 11; }
-  if main.streq(s, "l") { return 12; }
-  if main.streq(s, "ge") { return 13; }
-  if main.streq(s, "le") { return 14; }
-  if main.streq(s, "g") { return 15; }
+  if cli.streq(s, "o") { return 0; }
+  if cli.streq(s, "no") { return 1; }
+  if cli.streq(s, "b") { return 2; }
+  if cli.streq(s, "ae") { return 3; }
+  if cli.streq(s, "e") { return 4; }
+  if cli.streq(s, "ne") { return 5; }
+  if cli.streq(s, "be") { return 6; }
+  if cli.streq(s, "a") { return 7; }
+  if cli.streq(s, "s") { return 8; }
+  if cli.streq(s, "ns") { return 9; }
+  if cli.streq(s, "p") { return 10; }
+  if cli.streq(s, "np") { return 11; }
+  if cli.streq(s, "l") { return 12; }
+  if cli.streq(s, "ge") { return 13; }
+  if cli.streq(s, "le") { return 14; }
+  if cli.streq(s, "g") { return 15; }
   return 0 - 1;
 }
 
@@ -291,7 +291,7 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
         if len(o0) > 0 && o0[0] == 36 { // '$': the immediate is the source
           let imm: *asm64.AImm = asm64.asm_parse_imm(o0);
           if !imm.ok {
-            asm64.asm_err(a, main.cat("bad ", main.cat3(mn, " immediate", "")));
+            asm64.asm_err(a, cli.cat("bad ", cli.cat3(mn, " immediate", "")));
             return;
           }
           let rm: *MReg = m_parse_reg(o1);
@@ -301,7 +301,7 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
           }
           let m: *AMem = m_parse_mem(o1);
           if !m.has {
-            asm64.asm_err(a, main.cat("bad ", main.cat3(mn, " operand", "")));
+            asm64.asm_err(a, cli.cat("bad ", cli.cat3(mn, " operand", "")));
             return;
           }
           // imm -> mem: 80/81/83 /digit by width
@@ -328,7 +328,7 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
           let dst: *MReg = m_parse_reg(o1);
           if dst.cls != R86_NONE {
             if dst.cls != src.cls {
-              asm64.asm_err(a, main.cat3(mn, " size mismatch", ""));
+              asm64.asm_err(a, cli.cat3(mn, " size mismatch", ""));
               return;
             }
             m_op_rr(a, p66, if size == 1 { m_alu_opcm(row) - 1 } else { m_alu_opcm(row) }, size == 8, src, dst);
@@ -336,7 +336,7 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
           }
           let m: *AMem = m_parse_mem(o1);
           if !m.has {
-            asm64.asm_err(a, main.cat("bad ", main.cat3(mn, " operand", "")));
+            asm64.asm_err(a, cli.cat("bad ", cli.cat3(mn, " operand", "")));
             return;
           }
           m_op_rm(a, p66, if size == 1 { m_alu_opcm(row) - 1 } else { m_alu_opcm(row) }, size == 8, src, m, false);
@@ -356,7 +356,7 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
 
   // ---- movss / movsd: xmm <-> mem (the rip-relative literal pool rides
   // the load form) ----
-  if (main.streq(mn, "movss") || main.streq(mn, "movsd")) && nops == 2 {
+  if (cli.streq(mn, "movss") || cli.streq(mn, "movsd")) && nops == 2 {
     let prefix: i32 = if mn[4] == 115 { 0xF3 } else { 0xF2 }; // movss F3, movsd F2
     let mut xm: *MReg = mreg(R86_NONE, 0);
     let mut m: *AMem = mem_none();
@@ -371,7 +371,7 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
       opc = 0x10;
     }
     if xm.cls != R86_XMM || !m.has {
-      asm64.asm_err(a, main.cat("bad ", main.cat3(mn, " operand", "")));
+      asm64.asm_err(a, cli.cat("bad ", cli.cat3(mn, " operand", "")));
       return;
     }
     m_prefix_rex(a, prefix, false, xm, mreg(R86_NONE, 0));
@@ -385,11 +385,11 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
   }
 
   // ---- movd / movq with an xmm source: exact bit move xmm -> gpr ----
-  if (main.streq(mn, "movd") || main.streq(mn, "movq")) && nops == 2 && m_parse_reg(ops[0]).cls == R86_XMM {
+  if (cli.streq(mn, "movd") || cli.streq(mn, "movq")) && nops == 2 && m_parse_reg(ops[0]).cls == R86_XMM {
     let xm: *MReg = m_parse_reg(ops[0]);
     let g: *MReg = m_parse_reg(ops[1]);
     if g.cls != R86_32 && g.cls != R86_64 {
-      asm64.asm_err(a, main.cat("bad ", main.cat3(mn, "", "")));
+      asm64.asm_err(a, cli.cat("bad ", cli.cat3(mn, "", "")));
       return;
     }
     asm64.a_emitb(a, 0x66);
@@ -405,18 +405,18 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
     let sfx_s: string = mn[3..len(mn)];
     // 0 b, 1 w, 2 l, 3 q, 4 absq, 5 sbq, 6 swq, 7 slq, 8 zbq, 9 zwq
     let mut sfx: i32 = 0 - 1;
-    if main.streq(sfx_s, "b") { sfx = 0; }
-    else if main.streq(sfx_s, "w") { sfx = 1; }
-    else if main.streq(sfx_s, "l") { sfx = 2; }
-    else if main.streq(sfx_s, "q") { sfx = 3; }
-    else if main.streq(sfx_s, "absq") { sfx = 4; }
-    else if main.streq(sfx_s, "sbq") { sfx = 5; }
-    else if main.streq(sfx_s, "swq") { sfx = 6; }
-    else if main.streq(sfx_s, "slq") { sfx = 7; }
-    else if main.streq(sfx_s, "zbq") { sfx = 8; }
-    else if main.streq(sfx_s, "zwq") { sfx = 9; }
+    if cli.streq(sfx_s, "b") { sfx = 0; }
+    else if cli.streq(sfx_s, "w") { sfx = 1; }
+    else if cli.streq(sfx_s, "l") { sfx = 2; }
+    else if cli.streq(sfx_s, "q") { sfx = 3; }
+    else if cli.streq(sfx_s, "absq") { sfx = 4; }
+    else if cli.streq(sfx_s, "sbq") { sfx = 5; }
+    else if cli.streq(sfx_s, "swq") { sfx = 6; }
+    else if cli.streq(sfx_s, "slq") { sfx = 7; }
+    else if cli.streq(sfx_s, "zbq") { sfx = 8; }
+    else if cli.streq(sfx_s, "zwq") { sfx = 9; }
     if sfx < 0 || nops != 2 {
-      asm64.asm_err(a, main.cat("unhandled `", main.cat3(mn, "' operand forms", "")));
+      asm64.asm_err(a, cli.cat("unhandled `", cli.cat3(mn, "' operand forms", "")));
       return;
     }
 
@@ -543,7 +543,7 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
     return;
   }
 
-  if main.streq(mn, "leaq") && nops == 2 {
+  if cli.streq(mn, "leaq") && nops == 2 {
     let rd: *MReg = m_parse_reg(ops[1]);
     let m: *AMem = m_parse_mem(ops[0]);
     if rd.cls != R86_64 || !m.has {
@@ -555,7 +555,7 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
   }
 
   // ---- multiply / divide ----
-  if main.streq(mn, "imul") && nops == 2 {
+  if cli.streq(mn, "imul") && nops == 2 {
     let dst: *MReg = m_parse_reg(ops[1]);
     let src: *MReg = m_parse_reg(ops[0]);
     if dst.cls != R86_64 || src.cls != R86_64 {
@@ -568,7 +568,7 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
     m_modrm_rr(a, dst, src);
     return;
   }
-  if (main.streq(mn, "idivq") || main.streq(mn, "divq")) && nops == 1 {
+  if (cli.streq(mn, "idivq") || cli.streq(mn, "divq")) && nops == 1 {
     let rm: *MReg = m_parse_reg(ops[0]);
     if rm.cls != R86_64 {
       asm64.asm_err(a, "bad div");
@@ -576,15 +576,15 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
     }
     m_prefix_rex(a, 0, true, mreg(R86_NONE, 0), rm);
     asm64.a_emitb(a, 0xF7);
-    asm64.a_emitb(a, 0xC0 | (if main.streq(mn, "idivq") { 7 } else { 6 }) << 3 | (rm.n & 7));
+    asm64.a_emitb(a, 0xC0 | (if cli.streq(mn, "idivq") { 7 } else { 6 }) << 3 | (rm.n & 7));
     return;
   }
-  if main.streq(mn, "cqo") && nops == 0 {
+  if cli.streq(mn, "cqo") && nops == 0 {
     asm64.a_emitb(a, 0x48);
     asm64.a_emitb(a, 0x99);
     return;
   }
-  if main.streq(mn, "negq") && nops == 1 {
+  if cli.streq(mn, "negq") && nops == 1 {
     let rm: *MReg = m_parse_reg(ops[0]);
     if rm.cls != R86_64 {
       asm64.asm_err(a, "bad negq");
@@ -595,7 +595,7 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
     asm64.a_emitb(a, 0xC0 | 3 << 3 | (rm.n & 7));
     return;
   }
-  if (main.streq(mn, "incq") || main.streq(mn, "decq")) && nops == 1 {
+  if (cli.streq(mn, "incq") || cli.streq(mn, "decq")) && nops == 1 {
     let rm: *MReg = m_parse_reg(ops[0]);
     if rm.cls != R86_64 {
       asm64.asm_err(a, "bad inc/dec");
@@ -603,10 +603,10 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
     }
     m_prefix_rex(a, 0, true, mreg(R86_NONE, 0), rm);
     asm64.a_emitb(a, 0xFF);
-    asm64.a_emitb(a, 0xC0 | (if main.streq(mn, "incq") { 0 } else { 1 }) << 3 | (rm.n & 7));
+    asm64.a_emitb(a, 0xC0 | (if cli.streq(mn, "incq") { 0 } else { 1 }) << 3 | (rm.n & 7));
     return;
   }
-  if main.streq(mn, "testq") && nops == 2 {
+  if cli.streq(mn, "testq") && nops == 2 {
     let src: *MReg = m_parse_reg(ops[0]);
     let dst: *MReg = m_parse_reg(ops[1]);
     if src.cls != R86_64 || dst.cls != R86_64 {
@@ -658,24 +658,24 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
     asm64.a_emitb(a, 0xC0 | (rd.n & 7));
     return;
   }
-  if (main.streq(mn, "andb") || main.streq(mn, "orb")) && nops == 2 {
+  if (cli.streq(mn, "andb") || cli.streq(mn, "orb")) && nops == 2 {
     let src: *MReg = m_parse_reg(ops[0]);
     let dst: *MReg = m_parse_reg(ops[1]);
     if src.cls != R86_8 || dst.cls != R86_8 {
       asm64.asm_err(a, "bad byte logic");
       return;
     }
-    m_op_rr(a, 0, if main.streq(mn, "andb") { 0x20 } else { 0x08 }, false, src, dst);
+    m_op_rr(a, 0, if cli.streq(mn, "andb") { 0x20 } else { 0x08 }, false, src, dst);
     return;
   }
 
   // ---- branches / calls ----
   if mn[0] == 106 && nops == 1 { // 'j'
     let mut cc: i32 = m_cc_op(mn[1..len(mn)]);
-    if cc < 0 && main.streq(mn[1..len(mn)], "z") {
+    if cc < 0 && cli.streq(mn[1..len(mn)], "z") {
       cc = 4; // jz/jnz are je/jne
     }
-    if cc < 0 && main.streq(mn[1..len(mn)], "nz") {
+    if cc < 0 && cli.streq(mn[1..len(mn)], "nz") {
       cc = 5;
     }
     if cc >= 0 {
@@ -687,14 +687,14 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
       return;
     }
   }
-  if main.streq(mn, "jmp") && nops == 1 {
+  if cli.streq(mn, "jmp") && nops == 1 {
     let s: *asm64.ASym = asm64.sym_get(a, ops[0], true);
     asm64.a_emitb(a, 0xE9);
     asm64.a_fixup(a, asm64.FIX_REL32, s.name);
     asm64.a_emit4(a, 0);
     return;
   }
-  if main.streq(mn, "call") && nops == 1 {
+  if cli.streq(mn, "call") && nops == 1 {
     if len(ops[0]) > 0 && ops[0][0] == 42 { // '*'
       let rm: *MReg = m_parse_reg(ops[0][1..len(ops[0])]);
       if rm.cls != R86_64 {
@@ -712,25 +712,25 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
     asm64.a_emit4(a, 0);
     return;
   }
-  if main.streq(mn, "ret") && nops == 0 {
+  if cli.streq(mn, "ret") && nops == 0 {
     asm64.a_emitb(a, 0xC3);
     return;
   }
-  if main.streq(mn, "syscall") && nops == 0 {
+  if cli.streq(mn, "syscall") && nops == 0 {
     asm64.a_emitb(a, 0x0F);
     asm64.a_emitb(a, 0x05);
     return;
   }
-  if main.streq(mn, "cld") && nops == 0 {
+  if cli.streq(mn, "cld") && nops == 0 {
     asm64.a_emitb(a, 0xFC);
     return;
   }
-  if main.streq(mn, "rep") && nops == 1 && main.streq(ops[0], "movsb") {
+  if cli.streq(mn, "rep") && nops == 1 && cli.streq(ops[0], "movsb") {
     asm64.a_emitb(a, 0xF3);
     asm64.a_emitb(a, 0xA4);
     return;
   }
-  if (main.streq(mn, "pushq") || main.streq(mn, "popq")) && nops == 1 {
+  if (cli.streq(mn, "pushq") || cli.streq(mn, "popq")) && nops == 1 {
     let r: *MReg = m_parse_reg(ops[0]);
     if r.cls != R86_64 {
       asm64.asm_err(a, "bad push/pop");
@@ -739,7 +739,7 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
     if r.n >= 8 {
       asm64.a_emitb(a, 0x41);
     }
-    asm64.a_emitb(a, (if main.streq(mn, "pushq") { 0x50 } else { 0x58 }) | (r.n & 7));
+    asm64.a_emitb(a, (if cli.streq(mn, "pushq") { 0x50 } else { 0x58 }) | (r.n & 7));
     return;
   }
 
@@ -748,24 +748,24 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
     let mut sse_pre: i32 = 0;
     let mut sse_opc: i32 = 0;
     let mut sse_hit: bool = true;
-    if main.streq(mn, "addss") { sse_pre = 0xF3; sse_opc = 0x58; }
-    else if main.streq(mn, "addsd") { sse_pre = 0xF2; sse_opc = 0x58; }
-    else if main.streq(mn, "subss") { sse_pre = 0xF3; sse_opc = 0x5C; }
-    else if main.streq(mn, "subsd") { sse_pre = 0xF2; sse_opc = 0x5C; }
-    else if main.streq(mn, "mulss") { sse_pre = 0xF3; sse_opc = 0x59; }
-    else if main.streq(mn, "mulsd") { sse_pre = 0xF2; sse_opc = 0x59; }
-    else if main.streq(mn, "divss") { sse_pre = 0xF3; sse_opc = 0x5E; }
-    else if main.streq(mn, "divsd") { sse_pre = 0xF2; sse_opc = 0x5E; }
-    else if main.streq(mn, "ucomiss") { sse_pre = 0x00; sse_opc = 0x2E; }
-    else if main.streq(mn, "ucomisd") { sse_pre = 0x66; sse_opc = 0x2E; }
-    else if main.streq(mn, "cvtss2sd") { sse_pre = 0xF3; sse_opc = 0x5A; }
-    else if main.streq(mn, "cvtsd2ss") { sse_pre = 0xF2; sse_opc = 0x5A; }
+    if cli.streq(mn, "addss") { sse_pre = 0xF3; sse_opc = 0x58; }
+    else if cli.streq(mn, "addsd") { sse_pre = 0xF2; sse_opc = 0x58; }
+    else if cli.streq(mn, "subss") { sse_pre = 0xF3; sse_opc = 0x5C; }
+    else if cli.streq(mn, "subsd") { sse_pre = 0xF2; sse_opc = 0x5C; }
+    else if cli.streq(mn, "mulss") { sse_pre = 0xF3; sse_opc = 0x59; }
+    else if cli.streq(mn, "mulsd") { sse_pre = 0xF2; sse_opc = 0x59; }
+    else if cli.streq(mn, "divss") { sse_pre = 0xF3; sse_opc = 0x5E; }
+    else if cli.streq(mn, "divsd") { sse_pre = 0xF2; sse_opc = 0x5E; }
+    else if cli.streq(mn, "ucomiss") { sse_pre = 0x00; sse_opc = 0x2E; }
+    else if cli.streq(mn, "ucomisd") { sse_pre = 0x66; sse_opc = 0x2E; }
+    else if cli.streq(mn, "cvtss2sd") { sse_pre = 0xF3; sse_opc = 0x5A; }
+    else if cli.streq(mn, "cvtsd2ss") { sse_pre = 0xF2; sse_opc = 0x5A; }
     else { sse_hit = false; }
     if sse_hit && nops == 2 {
       let dst: *MReg = m_parse_reg(ops[1]);
       let src: *MReg = m_parse_reg(ops[0]);
       if dst.cls != R86_XMM || src.cls != R86_XMM {
-        asm64.asm_err(a, main.cat("bad ", main.cat3(mn, "", "")));
+        asm64.asm_err(a, cli.cat("bad ", cli.cat3(mn, "", "")));
         return;
       }
       m_prefix_rex(a, sse_pre, false, dst, mreg(R86_NONE, 0));
@@ -775,14 +775,14 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
       return;
     }
   }
-  if (main.streq(mn, "cvtsi2sd") || main.streq(mn, "cvtsi2ss")) && nops == 2 {
+  if (cli.streq(mn, "cvtsi2sd") || cli.streq(mn, "cvtsi2ss")) && nops == 2 {
     let dst: *MReg = m_parse_reg(ops[1]);
     let src: *MReg = m_parse_reg(ops[0]);
     if dst.cls != R86_XMM || src.cls != R86_64 {
       asm64.asm_err(a, "bad cvtsi2s*");
       return;
     }
-    m_prefix_rex(a, if main.streq(mn, "cvtsi2sd") { 0xF2 } else { 0xF3 }, true, dst, src);
+    m_prefix_rex(a, if cli.streq(mn, "cvtsi2sd") { 0xF2 } else { 0xF3 }, true, dst, src);
     asm64.a_emitb(a, 0x0F);
     asm64.a_emitb(a, 0x2A);
     m_modrm_rr(a, dst, src);
@@ -805,7 +805,7 @@ fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
     return;
   }
 
-  asm64.asm_err(a, main.cat("unknown instruction `", main.cat3(mn, "'", "")));
+  asm64.asm_err(a, cli.cat("unknown instruction `", cli.cat3(mn, "'", "")));
 }
 
 fn asm86_resolve(a: *asm64.ASMCtx, ly: *asm64.ALayout) {
@@ -816,10 +816,10 @@ fn asm86_resolve(a: *asm64.ASMCtx, ly: *asm64.ALayout) {
     let mut target: u64 = 0;
     if s != null && s.defined {
       target = asm64.a_sec_vaddr(a, ly, s.sec, s.off);
-    } else if main.streq(f.sym, "_rho_rt_heap") {
+    } else if cli.streq(f.sym, "_rho_rt_heap") {
       target = ly.heap_a;
     } else {
-      asm64.asm_err(a, main.cat("undefined symbol `", main.cat3(f.sym, "'", "")));
+      asm64.asm_err(a, cli.cat("undefined symbol `", cli.cat3(f.sym, "'", "")));
       i += 1;
       continue;
     }
@@ -833,7 +833,7 @@ fn asm86_resolve(a: *asm64.ASMCtx, ly: *asm64.ALayout) {
     // from the next byte — the same pc+4 either way
     let d: i64 = target as i64 - ((pc + 4) as i64);
     if d + (1 << 31) < 0 || d >= (1 << 31) {
-      asm64.asm_err(a, main.cat("relocation out of range for `", main.cat3(f.sym, "'", "")));
+      asm64.asm_err(a, cli.cat("relocation out of range for `", cli.cat3(f.sym, "'", "")));
       i += 1;
       continue;
     }
@@ -844,7 +844,7 @@ fn asm86_resolve(a: *asm64.ASMCtx, ly: *asm64.ALayout) {
 
 pub fn asm86_assemble(text: string, base: u64, page: u64, heap_override: u64) -> *asm64.AResult {
   let a: *asm64.ASMCtx = asm64.ac_new(base, false);
-  let lines: *main.Vec[string] = asm64.asm_split_lines(text);
+  let lines: *cli.Vec[string] = asm64.asm_split_lines(text);
   let mut li: usize = 0;
   while li < lines.n {
     let raw: string = asm64.asm_prepare(lines.items[li]);
@@ -857,7 +857,7 @@ pub fn asm86_assemble(text: string, base: u64, page: u64, heap_override: u64) ->
       let label: string = raw[0..len(raw) - 1];
       let s: *asm64.ASym = asm64.sym_get(a, label, true);
       if s.defined {
-        asm64.asm_err(a, main.cat("duplicate label `", main.cat3(label, "'", "")));
+        asm64.asm_err(a, cli.cat("duplicate label `", cli.cat3(label, "'", "")));
         continue;
       }
       s.defined = true;
@@ -877,11 +877,11 @@ pub fn asm86_assemble(text: string, base: u64, page: u64, heap_override: u64) ->
         }
         rest = raw[r..len(raw)];
       }
-      if main.streq(name, ".text") {
+      if cli.streq(name, ".text") {
         a.sec = 0;
-      } else if main.streq(name, ".data") {
+      } else if cli.streq(name, ".data") {
         a.sec = 2;
-      } else if main.streq(name, ".section") {
+      } else if cli.streq(name, ".section") {
         // ".rodata" folds into the text image (one r-x page in the final
         // ELF); ".data" splits off
         if asm64.str_starts(rest, ".rodata") || asm64.str_starts(rest, "__rodata") || asm64.str_starts(rest, "__TEXT") {
@@ -889,16 +889,16 @@ pub fn asm86_assemble(text: string, base: u64, page: u64, heap_override: u64) ->
         } else if asm64.str_starts(rest, ".data") || asm64.str_starts(rest, "__data") || asm64.str_starts(rest, "__DATA") {
           a.sec = 2;
         } else {
-          asm64.asm_err(a, main.cat("unknown section `", main.cat3(rest, "'", "")));
+          asm64.asm_err(a, cli.cat("unknown section `", cli.cat3(rest, "'", "")));
         }
-      } else if main.streq(name, ".globl") {
+      } else if cli.streq(name, ".globl") {
         asm64.sym_get(a, rest, true);
       } else {
         asm64.a_directive_data(a, rest, name);
       }
       continue;
     }
-    let ops: *main.Vec[string] = asm64.asm_split_ops(raw);
+    let ops: *cli.Vec[string] = asm64.asm_split_ops(raw);
     if ops.n > 0 {
       let rest: []string = ops.items[1..ops.n];
       m86_asm_line(a, ops.items[0], rest);

@@ -1,5 +1,5 @@
 // the parser: the AST types and the recursive-descent walkers
-use main;
+use cli;
 use lex;
 use check;
 
@@ -40,10 +40,10 @@ pub enum TypeAstKind {
 pub struct TypeAst {
   kind: TypeAstKind,
   prim: i32,           // TaPrim: index into the primitive name table
-  path: *main.Vec[string],   // TaNamed: segments
-  targs: *main.Vec[*TypeAst],// TaNamed: type arguments
+  path: *cli.Vec[string],   // TaNamed: segments
+  targs: *cli.Vec[*TypeAst],// TaNamed: type arguments
   elem: *TypeAst,      // Ptr/Weak/Array
-  params: *main.Vec[*TypeAst], // Fn
+  params: *cli.Vec[*TypeAst], // Fn
   ret: *TypeAst,       // Fn
   size: *Expr,         // Array: constant length expression
   file: string,
@@ -72,8 +72,8 @@ pub struct FieldAst {
 pub struct VariantAst {
   name: string,
   vkind: VarKind,
-  types: *main.Vec[*TypeAst],  // VarTuple
-  fields: *main.Vec[*FieldAst],// VarStruct
+  types: *cli.Vec[*TypeAst],  // VarTuple
+  fields: *cli.Vec[*FieldAst],// VarStruct
   has_disc: bool,
   disc: u64,
   file: string,
@@ -83,13 +83,13 @@ pub struct VariantAst {
 
 pub struct MatchArm {
   pk: PatKind,
-  pat_path: *main.Vec[string],
+  pat_path: *cli.Vec[string],
   pat_int: u64,
   variant_index: i32,
   disc: u64,
   pat_str: string,
-  pat_names: *main.Vec[string],
-  pat_fields: *main.Vec[*FieldAst],
+  pat_names: *cli.Vec[string],
+  pat_fields: *cli.Vec[*FieldAst],
   body: *Expr,
   file: string,
   line: i32,
@@ -112,12 +112,12 @@ pub struct Expr {
   c: *Expr,
   binop: lex.Tok,
   unop: lex.Tok,
-  args: *main.Vec[*Expr],
-  arg_names: *main.Vec[string], // "" = positional
-  items: *main.Vec[*Stmt],      // Block stmts / If arms / New field names unused
+  args: *cli.Vec[*Expr],
+  arg_names: *cli.Vec[string], // "" = positional
+  items: *cli.Vec[*Stmt],      // Block stmts / If arms / New field names unused
   ty: *TypeAst,
-  arms: *main.Vec[*MatchArm],
-  params: *main.Vec[*Param],    // Closure
+  arms: *cli.Vec[*MatchArm],
+  params: *cli.Vec[*Param],    // Closure
   ret: *TypeAst,          // Closure
   q_ok: i32,
   q_err: i32,
@@ -134,7 +134,7 @@ pub struct Stmt {
   file: string,
   line: i32,
   col: i32,
-  pre: *main.Vec[string],
+  pre: *cli.Vec[string],
   mut_: bool,
   tail: bool,
   name: string,
@@ -142,9 +142,9 @@ pub struct Stmt {
   a: *Expr,
   b: *Expr,
   assign_op: lex.Tok,
-  stmts: *main.Vec[*Stmt],
+  stmts: *cli.Vec[*Stmt],
   cond: *Expr,
-  body: *main.Vec[*Stmt],
+  body: *cli.Vec[*Stmt],
 }
 
 struct TypeEnt { key: string, val: *Type }
@@ -158,7 +158,7 @@ pub fn tm_new() -> *TypeMap {
 pub fn tm_intern(m: *TypeMap, key: string, val: *Type) -> *Type {
   let mut i: usize = 0;
   while i < m.n {
-    if main.streq(m.items[i].key, key) {
+    if cli.streq(m.items[i].key, key) {
       return m.items[i].val;
     }
     i += 1;
@@ -172,7 +172,7 @@ pub fn tm_intern(m: *TypeMap, key: string, val: *Type) -> *Type {
 pub fn tm_lookup(m: *TypeMap, key: string) -> *Type {
   let mut i: usize = 0;
   while i < m.n {
-    if main.streq(m.items[i].key, key) {
+    if cli.streq(m.items[i].key, key) {
       return m.items[i].val;
     }
     i += 1;
@@ -183,7 +183,7 @@ pub fn tm_lookup(m: *TypeMap, key: string) -> *Type {
 pub fn tm_put(m: *TypeMap, key: string, val: *Type) {
   let mut i: usize = 0;
   while i < m.n {
-    if main.streq(m.items[i].key, key) {
+    if cli.streq(m.items[i].key, key) {
       m.items[i].val = val;
       return;
     }
@@ -235,23 +235,23 @@ pub struct Decl {
   file: string,
   line: i32,
   col: i32,
-  pre: *main.Vec[string],
+  pre: *cli.Vec[string],
   pub_: bool,
   is_mut: bool,
   name: string,
-  path: *main.Vec[string],      // Use
-  params: *main.Vec[*Param],    // Fn/Extern
+  path: *cli.Vec[string],      // Use
+  params: *cli.Vec[*Param],    // Fn/Extern
   ret: *TypeAst,
-  fields: *main.Vec[*FieldAst], // Struct
-  variants: *main.Vec[*VariantAst], // Enum
+  fields: *cli.Vec[*FieldAst], // Struct
+  variants: *cli.Vec[*VariantAst], // Enum
   init: *Expr,            // Static/Const
-  body: *main.Vec[*Stmt],       // Fn
-  tparams: *main.Vec[string],
+  body: *cli.Vec[*Stmt],       // Fn
+  tparams: *cli.Vec[string],
   is_method: bool,
   recv: string,
   target: *TypeAst,         // Impl: the type after `for`
-  decls: *main.Vec[*Decl],       // module root
-  tparam_bounds: *main.Vec[*TypeAst], // [T: Bound] — parallel to tparams (check)
+  decls: *cli.Vec[*Decl],       // module root
+  tparam_bounds: *cli.Vec[*TypeAst], // [T: Bound] — parallel to tparams (check)
   templ: *RecType,         // generic definition's RecType (check)
   templated: bool,         // generic template: never lowered directly
   tenv: *TypeMap,          // instantiation env (clones)
@@ -310,12 +310,12 @@ fn expect_tok(p: *Parser, k: lex.Tok, what: string) -> *lex.Token {
     return advance(p);
   }
   let t: *lex.Token = pk(p);
-  main.err_at(t.file, t.line, t.col, main.cat5("expected ", what, main.cat(" (", lex.tok_name(k)), "), found ", lex.tok_name(t.kind)));
+  cli.err_at(t.file, t.line, t.col, cli.cat5("expected ", what, cli.cat(" (", lex.tok_name(k)), "), found ", lex.tok_name(t.kind)));
   return t;
 }
 
 fn at_ident(p: *Parser, s: string) -> bool {
-  return at(p, lex.Tok.TkIdent) && main.streq(pk(p).text, s);
+  return at(p, lex.Tok.TkIdent) && cli.streq(pk(p).text, s);
 }
 
 fn expect_ident(p: *Parser, what: string) -> *lex.Token {
@@ -323,26 +323,26 @@ fn expect_ident(p: *Parser, what: string) -> *lex.Token {
     return advance(p);
   }
   let t: *lex.Token = pk(p);
-  main.err_at(t.file, t.line, t.col, main.cat3("expected ", what, main.cat3(", found ", lex.tok_name(t.kind), "")));
+  cli.err_at(t.file, t.line, t.col, cli.cat3("expected ", what, cli.cat3(", found ", lex.tok_name(t.kind), "")));
   return t;
 }
 
 fn prim_from_name(s: string) -> i32 {
-  if main.streq(s, "bool") { return 0; }
-  if main.streq(s, "i8") { return 1; }
-  if main.streq(s, "i16") { return 2; }
-  if main.streq(s, "i32") { return 3; }
-  if main.streq(s, "i64") { return 4; }
-  if main.streq(s, "u8") { return 5; }
-  if main.streq(s, "u16") { return 6; }
-  if main.streq(s, "u32") { return 7; }
-  if main.streq(s, "u64") { return 8; }
-  if main.streq(s, "f32") { return 9; }
-  if main.streq(s, "f64") { return 10; }
-  if main.streq(s, "string") { return 11; }
-  if main.streq(s, "usize") { return 12; }
-  if main.streq(s, "isize") { return 13; }
-  if main.streq(s, "void") { return 14; }
+  if cli.streq(s, "bool") { return 0; }
+  if cli.streq(s, "i8") { return 1; }
+  if cli.streq(s, "i16") { return 2; }
+  if cli.streq(s, "i32") { return 3; }
+  if cli.streq(s, "i64") { return 4; }
+  if cli.streq(s, "u8") { return 5; }
+  if cli.streq(s, "u16") { return 6; }
+  if cli.streq(s, "u32") { return 7; }
+  if cli.streq(s, "u64") { return 8; }
+  if cli.streq(s, "f32") { return 9; }
+  if cli.streq(s, "f64") { return 10; }
+  if cli.streq(s, "string") { return 11; }
+  if cli.streq(s, "usize") { return 12; }
+  if cli.streq(s, "isize") { return 13; }
+  if cli.streq(s, "void") { return 14; }
   return 0 - 1;
 }
 
@@ -435,7 +435,7 @@ fn parse_type(p: *Parser) -> *TypeAst {
     }
     return t;
   }
-  main.err_at(start.file, start.line, start.col, main.cat3("expected a type, found ", lex.tok_name(start.kind), ""));
+  cli.err_at(start.file, start.line, start.col, cli.cat3("expected a type, found ", lex.tok_name(start.kind), ""));
   t = new TypeAst { kind: TypeAstKind.TaPrim, prim: 0, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null, file: start.file, line: start.line, col: start.col };
   return t;
 }
@@ -454,35 +454,35 @@ fn type_as_expr(p: *Parser) -> *Expr {
 }
 
 // fresh empty containers (no zero values in rho)
-pub fn fresh_str_vec() -> *main.Vec[string] {
-  return new main.Vec[string] { items: make([]string, 4), n: 0 };
+pub fn fresh_str_vec() -> *cli.Vec[string] {
+  return new cli.Vec[string] { items: make([]string, 4), n: 0 };
 }
-pub fn fresh_expr_vec() -> *main.Vec[*Expr] {
-  return new main.Vec[*Expr] { items: make([*Expr], 4), n: 0 };
+pub fn fresh_expr_vec() -> *cli.Vec[*Expr] {
+  return new cli.Vec[*Expr] { items: make([*Expr], 4), n: 0 };
 }
-fn fresh_stmt_vec() -> *main.Vec[*Stmt] {
-  return new main.Vec[*Stmt] { items: make([*Stmt], 4), n: 0 };
+fn fresh_stmt_vec() -> *cli.Vec[*Stmt] {
+  return new cli.Vec[*Stmt] { items: make([*Stmt], 4), n: 0 };
 }
-fn fresh_type_vec() -> *main.Vec[*TypeAst] {
-  return new main.Vec[*TypeAst] { items: make([*TypeAst], 4), n: 0 };
+fn fresh_type_vec() -> *cli.Vec[*TypeAst] {
+  return new cli.Vec[*TypeAst] { items: make([*TypeAst], 4), n: 0 };
 }
-fn fresh_param_vec() -> *main.Vec[*Param] {
-  return new main.Vec[*Param] { items: make([*Param], 4), n: 0 };
+fn fresh_param_vec() -> *cli.Vec[*Param] {
+  return new cli.Vec[*Param] { items: make([*Param], 4), n: 0 };
 }
-fn fresh_arm_vec() -> *main.Vec[*MatchArm] {
-  return new main.Vec[*MatchArm] { items: make([*MatchArm], 4), n: 0 };
+fn fresh_arm_vec() -> *cli.Vec[*MatchArm] {
+  return new cli.Vec[*MatchArm] { items: make([*MatchArm], 4), n: 0 };
 }
-fn fresh_field_vec() -> *main.Vec[*FieldAst] {
-  return new main.Vec[*FieldAst] { items: make([*FieldAst], 4), n: 0 };
+fn fresh_field_vec() -> *cli.Vec[*FieldAst] {
+  return new cli.Vec[*FieldAst] { items: make([*FieldAst], 4), n: 0 };
 }
-fn fresh_variant_vec() -> *main.Vec[*VariantAst] {
-  return new main.Vec[*VariantAst] { items: make([*VariantAst], 4), n: 0 };
+fn fresh_variant_vec() -> *cli.Vec[*VariantAst] {
+  return new cli.Vec[*VariantAst] { items: make([*VariantAst], 4), n: 0 };
 }
-fn fresh_decl_vec() -> *main.Vec[*Decl] {
-  return new main.Vec[*Decl] { items: make([*Decl], 16), n: 0 };
+fn fresh_decl_vec() -> *cli.Vec[*Decl] {
+  return new cli.Vec[*Decl] { items: make([*Decl], 16), n: 0 };
 }
-fn fresh_token_vec() -> *main.Vec[*lex.Token] {
-  return new main.Vec[*lex.Token] { items: make([*lex.Token], 256), n: 0 };
+fn fresh_token_vec() -> *cli.Vec[*lex.Token] {
+  return new cli.Vec[*lex.Token] { items: make([*lex.Token], 256), n: 0 };
 }
 
 
@@ -522,16 +522,16 @@ fn parse_param(p: *Parser) -> *Param {
 }
 
 // a full `(params)` list for externs and closures: no variadic parameter
-fn parse_param_list_raw(p: *Parser, out: *main.Vec[*Param], allow_variadic: bool) {
+fn parse_param_list_raw(p: *Parser, out: *cli.Vec[*Param], allow_variadic: bool) {
   expect_tok(p, lex.Tok.PLparen, "`(`");
   if !at(p, lex.Tok.PRparen) {
     loop {
       let pa: *Param = parse_param(p);
       if out.n > 0 && out.items[out.n - 1].is_variadic {
-        main.err_at(pa.file, pa.line, pa.col, "only the last parameter can be variadic");
+        cli.err_at(pa.file, pa.line, pa.col, "only the last parameter can be variadic");
       }
       if pa.is_variadic && !allow_variadic {
-        main.err_at(pa.file, pa.line, pa.col, "variadic parameters are only for named `fn` declarations");
+        cli.err_at(pa.file, pa.line, pa.col, "variadic parameters are only for named `fn` declarations");
       }
       out.push(pa);
       if !accept(p, lex.Tok.PComma) {
@@ -549,13 +549,13 @@ fn parse_arg_expr(p: *Parser) -> *Expr {
     arg.spread = true;
     if !at(p, lex.Tok.PRparen) {
       let t: *lex.Token = pk(p);
-      main.err_at(t.file, t.line, t.col, "`...` spread must be the last argument");
+      cli.err_at(t.file, t.line, t.col, "`...` spread must be the last argument");
     }
   }
   return arg;
 }
 
-fn parse_tparams(p: *Parser, out: *main.Vec[string], bounds: *main.Vec[*TypeAst]) {
+fn parse_tparams(p: *Parser, out: *cli.Vec[string], bounds: *cli.Vec[*TypeAst]) {
   if !accept(p, lex.Tok.PLbracket) {
     return;
   }
@@ -591,7 +591,7 @@ fn parse_block_stmts(p: *Parser, end: lex.Tok) -> *Stmt {
   return s;
 }
 
-fn parse_block(p: *Parser) -> *main.Vec[*Stmt] {
+fn parse_block(p: *Parser) -> *cli.Vec[*Stmt] {
   expect_tok(p, lex.Tok.PLbrace, "`{`");
   let s: *Stmt = parse_block_stmts(p, lex.Tok.PRbrace);
   expect_tok(p, lex.Tok.PRbrace, "`}`");
@@ -742,7 +742,7 @@ fn parse_primary(p: *Parser) -> *Expr {
                 advance(p);
                 arm.pat_names.push(b.text);
               } else {
-                main.err_at(b.file, b.line, b.col, "expected binding name");
+                cli.err_at(b.file, b.line, b.col, "expected binding name");
                 advance(p);
                 arm.pat_names.push("_");
               }
@@ -773,7 +773,7 @@ fn parse_primary(p: *Parser) -> *Expr {
           arm.pk = PatKind.PatUnit;
         }
       } else {
-        main.err_at(pt.file, pt.line, pt.col, main.cat3("expected a pattern, found ", lex.tok_name(pt.kind), ""));
+        cli.err_at(pt.file, pt.line, pt.col, cli.cat3("expected a pattern, found ", lex.tok_name(pt.kind), ""));
         advance(p);
         continue;
       }
@@ -835,7 +835,7 @@ fn parse_primary(p: *Parser) -> *Expr {
     e.items = parse_block(p);
     return e;
   }
-  main.err_at(start.file, start.line, start.col, main.cat3("expected an expression, found ", lex.tok_name(start.kind), ""));
+  cli.err_at(start.file, start.line, start.col, cli.cat3("expected an expression, found ", lex.tok_name(start.kind), ""));
   advance(p);
   return mkexpr(ExprKind.ExInt, start.file, start.line, start.col);
 }
@@ -853,7 +853,7 @@ fn parse_postfix(p: *Parser) -> *Expr {
           advance(p);
           call.arg_names.push(nm.text);
           call.args.push(parse_arg_expr(p));
-        } else if e.kind == ExprKind.ExName && main.streq(e.sv, "make") && at(p, lex.Tok.PLbracket) {
+        } else if e.kind == ExprKind.ExName && cli.streq(e.sv, "make") && at(p, lex.Tok.PLbracket) {
           call.arg_names.push("");
           call.args.push(type_as_expr(p));
         } else {
@@ -866,7 +866,7 @@ fn parse_postfix(p: *Parser) -> *Expr {
             advance(p);
             call.arg_names.push(nm.text);
             call.args.push(parse_arg_expr(p));
-          } else if e.kind == ExprKind.ExName && main.streq(e.sv, "make") && at(p, lex.Tok.PLbracket) {
+          } else if e.kind == ExprKind.ExName && cli.streq(e.sv, "make") && at(p, lex.Tok.PLbracket) {
             call.arg_names.push("");
             call.args.push(type_as_expr(p));
           } else {
@@ -881,7 +881,7 @@ fn parse_postfix(p: *Parser) -> *Expr {
     }
     if accept(p, lex.Tok.PLbracket) {
       if at(p, lex.Tok.PEllipsis2) {
-        main.err_at(start.file, start.line, start.col, "slice needs a start");
+        cli.err_at(start.file, start.line, start.col, "slice needs a start");
         advance(p);
         parse_expr(p);
         expect_tok(p, lex.Tok.PRbracket, "`]`");
@@ -1083,13 +1083,13 @@ fn parse_stmt_raw(p: *Parser) -> *Stmt {
   } else {
     s.tail = false;
     let t: *lex.Token = pk(p);
-    main.err_at(t.file, t.line, t.col, main.cat3("expected `;`, found ", lex.tok_name(t.kind), ""));
+    cli.err_at(t.file, t.line, t.col, cli.cat3("expected `;`, found ", lex.tok_name(t.kind), ""));
   }
   return s;
 }
 
 pub fn parse_file(path: string, src: string) -> *Decl {
-  let toks: *main.Vec[*lex.Token] = fresh_token_vec();
+  let toks: *cli.Vec[*lex.Token] = fresh_token_vec();
   lex.lex_file(path, src, toks);
   let p: *Parser = new Parser { toks: toks.items, i: 0, bare_self_ok: false };
   let module: *Decl = new Decl {
@@ -1153,7 +1153,7 @@ pub fn parse_file(path: string, src: string) -> *Decl {
         loop {
           let pa: *Param = parse_param(p);
           if d.params.n > 0 && d.params.items[d.params.n - 1].is_variadic {
-            main.err_at(pa.file, pa.line, pa.col, "only the last parameter can be variadic");
+            cli.err_at(pa.file, pa.line, pa.col, "only the last parameter can be variadic");
           }
           d.params.push(pa);
           if !accept(p, lex.Tok.PComma) {
@@ -1293,7 +1293,7 @@ pub fn parse_file(path: string, src: string) -> *Decl {
         }
         if accept(p, lex.Tok.PAssign) {
           if v.vkind != VarKind.VarUnit {
-            main.err_at(vn.file, vn.line, vn.col, "only unit variants take explicit discriminants");
+            cli.err_at(vn.file, vn.line, vn.col, "only unit variants take explicit discriminants");
           }
           let iv: *lex.Token = expect_tok(p, lex.Tok.TkInt, "discriminant");
           v.has_disc = true;
@@ -1326,7 +1326,7 @@ pub fn parse_file(path: string, src: string) -> *Decl {
       d.init = parse_expr(p);
       expect_tok(p, lex.Tok.PSemi, "`;`");
     } else {
-      main.err_at(start.file, start.line, start.col, main.cat3("expected a declaration (fn/struct/enum/static/const/use), found ", lex.tok_name(start.kind), ""));
+      cli.err_at(start.file, start.line, start.col, cli.cat3("expected a declaration (fn/struct/enum/static/const/use), found ", lex.tok_name(start.kind), ""));
       advance(p);
       continue;
     }

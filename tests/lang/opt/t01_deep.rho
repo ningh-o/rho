@@ -1,0 +1,15 @@
+// exit: 0
+// 5M-deep tail recursion: without the tail-call loop the shadow stack
+// exhausts (the same program trap-checks under boot); with it the frame
+// is constant
+fn down(n: i64, acc: i64) -> i64 {
+  if n == 0 {
+    return acc;
+  }
+  return down(n - 1, acc + n);
+}
+
+fn main() -> i32 {
+  printf("{}\n", down(5000000, 0));
+  return 0;
+}

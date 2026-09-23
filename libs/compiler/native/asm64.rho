@@ -1,6 +1,6 @@
 // the arm64 assembler plus the shared assembly frontend (lexer,
 // fixups, section images, AResult)
-use main;
+use cli;
 
 
 // ---- shared assembler helpers ---------------------------------------------
@@ -44,9 +44,9 @@ fn am_put(m: *AMap, key: string, val: *ASym) {
       i += 1;
     }
   }
-  let mut i: usize = main.map_hash(key) & (m.cap - 1);
+  let mut i: usize = cli.map_hash(key) & (m.cap - 1);
   while m.slots[i] != null {
-    if main.streq(m.slots[i].key, key) {
+    if cli.streq(m.slots[i].key, key) {
       m.slots[i].val = val;
       return;
     }
@@ -60,9 +60,9 @@ pub fn am_get(m: *AMap, key: string) -> *ASym {
   if m.cap == 0 {
     return null;
   }
-  let mut i: usize = main.map_hash(key) & (m.cap - 1);
+  let mut i: usize = cli.map_hash(key) & (m.cap - 1);
   while m.slots[i] != null {
-    if main.streq(m.slots[i].key, key) {
+    if cli.streq(m.slots[i].key, key) {
       return m.slots[i].val;
     }
     i = (i + 1) & (m.cap - 1);
@@ -83,10 +83,10 @@ pub static mut FIX_RIPREL: i32 = 8;
 
 // section images: 0 text, 1 strings, 2 data
 pub struct ASMCtx {
-  out: []*main.Vec[u8],
-  syms: *main.Vec[*ASym],
+  out: []*cli.Vec[u8],
+  syms: *cli.Vec[*ASym],
   by_name: *AMap,
-  fixes: *main.Vec[*AFix],
+  fixes: *cli.Vec[*AFix],
   sec: i32,
   base: u64, // vaddr of the first text byte
   errors: i32,
@@ -94,25 +94,25 @@ pub struct ASMCtx {
 }
 
 pub fn ac_new(base: u64, is_arm: bool) -> *ASMCtx {
-  let out: []*main.Vec[u8] = make([]*main.Vec[u8], 3);
+  let out: []*cli.Vec[u8] = make([]*cli.Vec[u8], 3);
   let mut i: usize = 0;
   while i < 3 {
-    out[i] = new main.Vec[u8] { items: make([]u8, 4096), n: 0 };
+    out[i] = new cli.Vec[u8] { items: make([]u8, 4096), n: 0 };
     i += 1;
   }
   return new ASMCtx {
-    out: out, syms: new main.Vec[*ASym] { items: make([]*ASym, 256), n: 0 },
+    out: out, syms: new cli.Vec[*ASym] { items: make([]*ASym, 256), n: 0 },
     by_name: new AMap { slots: make([]*AEnt, 0), cap: 0, n: 0 },
-    fixes: new main.Vec[*AFix] { items: make([]*AFix, 256), n: 0 },
+    fixes: new cli.Vec[*AFix] { items: make([]*AFix, 256), n: 0 },
     sec: 0, base: base, errors: 0, is_arm: is_arm,
   };
 }
 
 pub fn asm_err(a: *ASMCtx, msg: string) {
   if a.is_arm {
-    eprintf("{}", main.cat("rho: asm64: ", main.cat3(msg, "\n", "")));
+    eprintf("{}", cli.cat("rho: asm64: ", cli.cat3(msg, "\n", "")));
   } else {
-    eprintf("{}", main.cat("rho: asm86: ", main.cat3(msg, "\n", "")));
+    eprintf("{}", cli.cat("rho: asm86: ", cli.cat3(msg, "\n", "")));
   }
   a.errors += 1;
 }
@@ -132,7 +132,7 @@ fn a_emit32(a: *ASMCtx, w: u32) {
   a_emit4(a, w);
 }
 
-pub fn a_cur(a: *ASMCtx) -> *main.Vec[u8] {
+pub fn a_cur(a: *ASMCtx) -> *cli.Vec[u8] {
   return a.out[a.sec as usize];
 }
 
@@ -275,7 +275,7 @@ pub fn str_starts(s: string, prefix: string) -> bool {
   if len(s) < len(prefix) {
     return false;
   }
-  return main.streq(s[0..len(prefix)], prefix);
+  return cli.streq(s[0..len(prefix)], prefix);
 }
 
 pub fn str_ends_byte(s: string, last: u8) -> bool {
@@ -283,8 +283,8 @@ pub fn str_ends_byte(s: string, last: u8) -> bool {
 }
 
 // split on '\n' (strtok_r semantics: empty lines skipped)
-pub fn asm_split_lines(text: string) -> *main.Vec[string] {
-  let out: *main.Vec[string] = new main.Vec[string] { items: make([]string, 256), n: 0 };
+pub fn asm_split_lines(text: string) -> *cli.Vec[string] {
+  let out: *cli.Vec[string] = new cli.Vec[string] { items: make([]string, 256), n: 0 };
   let n: usize = len(text);
   let mut start: usize = 0;
   let mut i: usize = 0;
@@ -343,8 +343,8 @@ pub fn asm_prepare(line: string) -> string {
 
 // splits the mnemonic off the first operand, then the rest on top-level
 // commas; bracketed groups and quoted strings keep their commas
-pub fn asm_split_ops(line: string) -> *main.Vec[string] {
-  let ops: *main.Vec[string] = new main.Vec[string] { items: make([]string, 8), n: 0 };
+pub fn asm_split_ops(line: string) -> *cli.Vec[string] {
+  let ops: *cli.Vec[string] = new cli.Vec[string] { items: make([]string, 8), n: 0 };
   let n: usize = len(line);
   let mut p: usize = 0;
   while p < n && (line[p] == 32 || line[p] == 9) {
@@ -419,10 +419,10 @@ fn ar_reg(cls: i32, n: i32) -> *AReg {
 }
 
 fn ar_parse_reg(s: string) -> *AReg {
-  if main.streq(s, "sp") {
+  if cli.streq(s, "sp") {
     return ar_reg(RC_SP, 31);
   }
-  if main.streq(s, "xzr") {
+  if cli.streq(s, "xzr") {
     return ar_reg(RC_X, 31);
   }
   if len(s) >= 2 {
@@ -443,22 +443,22 @@ fn ar_parse_reg(s: string) -> *AReg {
 
 fn ar_cond_code(s: string) -> i32 {
   // ARM condition codes; hs/lo are aliases of cs/cc
-  if main.streq(s, "eq") { return 0; }
-  if main.streq(s, "ne") { return 1; }
-  if main.streq(s, "cs") { return 2; }
-  if main.streq(s, "cc") { return 3; }
-  if main.streq(s, "mi") { return 4; }
-  if main.streq(s, "pl") { return 5; }
-  if main.streq(s, "vs") { return 6; }
-  if main.streq(s, "vc") { return 7; }
-  if main.streq(s, "hi") { return 8; }
-  if main.streq(s, "ls") { return 9; }
-  if main.streq(s, "ge") { return 10; }
-  if main.streq(s, "lt") { return 11; }
-  if main.streq(s, "gt") { return 12; }
-  if main.streq(s, "le") { return 13; }
-  if main.streq(s, "hs") { return 2; }
-  if main.streq(s, "lo") { return 3; }
+  if cli.streq(s, "eq") { return 0; }
+  if cli.streq(s, "ne") { return 1; }
+  if cli.streq(s, "cs") { return 2; }
+  if cli.streq(s, "cc") { return 3; }
+  if cli.streq(s, "mi") { return 4; }
+  if cli.streq(s, "pl") { return 5; }
+  if cli.streq(s, "vs") { return 6; }
+  if cli.streq(s, "vc") { return 7; }
+  if cli.streq(s, "hi") { return 8; }
+  if cli.streq(s, "ls") { return 9; }
+  if cli.streq(s, "ge") { return 10; }
+  if cli.streq(s, "lt") { return 11; }
+  if cli.streq(s, "gt") { return 12; }
+  if cli.streq(s, "le") { return 13; }
+  if cli.streq(s, "hs") { return 2; }
+  if cli.streq(s, "lo") { return 3; }
   return 0 - 1;
 }
 
@@ -479,7 +479,7 @@ fn ar_addsub_imm(a: *ASMCtx, is_sub_in: bool, set: bool, rd: *AReg, rn: *AReg, i
     imm = 0 - imm;
   }
   if imm > 4095 {
-    asm_err(a, main.cat3(mn, main.cat3(" immediate out of range: ", main.itoa(imm), ""), ""));
+    asm_err(a, cli.cat3(mn, cli.cat3(" immediate out of range: ", cli.itoa(imm), ""), ""));
     return;
   }
   let mut base: u32 = 0;
@@ -507,7 +507,7 @@ fn ar_addsub_reg(a: *ASMCtx, is_sub: bool, set: bool, rd: *AReg, rn: *AReg, rm: 
 fn ar_movz(a: *ASMCtx, rd: *AReg, imm: i64, hw: i32) {
   let maxhw: i32 = if rd.cls == RC_X { 3 } else { 1 };
   if imm < 0 || imm > 65535 || hw < 0 || hw > maxhw {
-    asm_err(a, main.cat3("movz/movk out of range: ", main.itoa(imm), ""));
+    asm_err(a, cli.cat3("movz/movk out of range: ", cli.itoa(imm), ""));
     return;
   }
   let base: u32 = if rd.cls == RC_X { 0xD2800000 } else { 0x52800000 };
@@ -517,7 +517,7 @@ fn ar_movz(a: *ASMCtx, rd: *AReg, imm: i64, hw: i32) {
 fn ar_movk(a: *ASMCtx, rd: *AReg, imm: i64, hw: i32) {
   let maxhw: i32 = if rd.cls == RC_X { 3 } else { 1 };
   if imm < 0 || imm > 65535 || hw < 0 || hw > maxhw {
-    asm_err(a, main.cat3("movk out of range: ", main.itoa(imm), ""));
+    asm_err(a, cli.cat3("movk out of range: ", cli.itoa(imm), ""));
     return;
   }
   let base: u32 = if rd.cls == RC_X { 0xF2800000 } else { 0x72800000 };
@@ -531,7 +531,7 @@ fn ar_mem(a: *ASMCtx, base: u32, rt: *AReg, rn: *AReg) {
 
 fn ar_pair(a: *ASMCtx, load: bool, post: bool, rt: *AReg, rt2: *AReg, rn: *AReg, imm: i64) {
   if imm % 8 != 0 || imm > 240 || imm + 256 < 0 {
-    asm_err(a, main.cat3("stp/ldp offset out of range: ", main.itoa(imm), ""));
+    asm_err(a, cli.cat3("stp/ldp offset out of range: ", cli.itoa(imm), ""));
     return;
   }
   let imm7: u32 = ((imm / 8) as u32) & 0x7F;
@@ -587,7 +587,7 @@ fn ar_asm_line(a: *ASMCtx, mn: string, ops: []string) {
     a_emit32(a, 0x54000000 | (cond as u32));
     return;
   }
-  if main.streq(mn, "adrp") && nops == 2 {
+  if cli.streq(mn, "adrp") && nops == 2 {
     let rd: *AReg = ar_parse_reg(ops[0]);
     if rd.cls != RC_X {
       asm_err(a, "bad adrp");
@@ -598,7 +598,7 @@ fn ar_asm_line(a: *ASMCtx, mn: string, ops: []string) {
     a_emit32(a, 0x90000000 | (rd.n as u32));
     return;
   }
-  if (main.streq(mn, "add") || main.streq(mn, "sub")) && nops == 3 {
+  if (cli.streq(mn, "add") || cli.streq(mn, "sub")) && nops == 3 {
     let rd: *AReg = ar_parse_reg(ops[0]);
     let rn: *AReg = ar_parse_reg(ops[1]);
     let is_sub: bool = mn[0] == 115; // 's'
@@ -606,7 +606,7 @@ fn ar_asm_line(a: *ASMCtx, mn: string, ops: []string) {
     if len(o2) > 0 && o2[0] == 35 { // '#'
       let imm: *AImm = asm_parse_imm(o2);
       if !imm.ok {
-        asm_err(a, main.cat("bad ", main.cat3(mn, " immediate", "")));
+        asm_err(a, cli.cat("bad ", cli.cat3(mn, " immediate", "")));
         return;
       }
       ar_addsub_imm(a, is_sub, false, rd, rn, imm.v, mn);
@@ -625,7 +625,7 @@ fn ar_asm_line(a: *ASMCtx, mn: string, ops: []string) {
     }
     return;
   }
-  if main.streq(mn, "cmp") && nops == 2 {
+  if cli.streq(mn, "cmp") && nops == 2 {
     let rn: *AReg = ar_parse_reg(ops[0]);
     let xzr: *AReg = ar_reg(RC_X, 31);
     let o1: string = ops[1];
@@ -637,7 +637,7 @@ fn ar_asm_line(a: *ASMCtx, mn: string, ops: []string) {
     }
     return;
   }
-  if main.streq(mn, "subs") && nops == 3 {
+  if cli.streq(mn, "subs") && nops == 3 {
     let rd: *AReg = ar_parse_reg(ops[0]);
     let rn: *AReg = ar_parse_reg(ops[1]);
     let o2: string = ops[2];
@@ -649,7 +649,7 @@ fn ar_asm_line(a: *ASMCtx, mn: string, ops: []string) {
     }
     return;
   }
-  if main.streq(mn, "cset") && nops == 2 {
+  if cli.streq(mn, "cset") && nops == 2 {
     let rd: *AReg = ar_parse_reg(ops[0]);
     let cond: i32 = ar_cond_code(ops[1]);
     if rd.cls != RC_X || cond < 0 {
@@ -660,7 +660,7 @@ fn ar_asm_line(a: *ASMCtx, mn: string, ops: []string) {
     a_emit32(a, 0x9A9F07E0 | (((cond ^ 1) as u32) << 12) | (rd.n as u32));
     return;
   }
-  if (main.streq(mn, "cbz") || main.streq(mn, "cbnz")) && nops == 2 {
+  if (cli.streq(mn, "cbz") || cli.streq(mn, "cbnz")) && nops == 2 {
     let rt: *AReg = ar_parse_reg(ops[0]);
     let s: *ASym = sym_get(a, ops[1], true);
     a_fixup(a, FIX_CB19, s.name);
@@ -673,39 +673,39 @@ fn ar_asm_line(a: *ASMCtx, mn: string, ops: []string) {
     a_emit32(a, base | (rt.n as u32));
     return;
   }
-  if main.streq(mn, "b") && nops == 1 {
+  if cli.streq(mn, "b") && nops == 1 {
     let s: *ASym = sym_get(a, ops[0], true);
     a_fixup(a, FIX_B26, s.name);
     a_emit32(a, 0x14000000);
     return;
   }
-  if main.streq(mn, "bl") && nops == 1 {
+  if cli.streq(mn, "bl") && nops == 1 {
     let s: *ASym = sym_get(a, ops[0], true);
     a_fixup(a, FIX_BL26, s.name);
     a_emit32(a, 0x94000000);
     return;
   }
-  if main.streq(mn, "blr") && nops == 1 {
+  if cli.streq(mn, "blr") && nops == 1 {
     let rn: *AReg = ar_parse_reg(ops[0]);
     a_emit32(a, 0xD63F0000 | ((rn.n as u32) << 5));
     return;
   }
-  if main.streq(mn, "ret") && nops == 0 {
+  if cli.streq(mn, "ret") && nops == 0 {
     a_emit32(a, 0xD65F03C0);
     return;
   }
-  if main.streq(mn, "svc") && nops == 1 {
+  if cli.streq(mn, "svc") && nops == 1 {
     let imm: *AImm = asm_parse_imm(ops[0]);
     a_emit32(a, 0xD4000001 | ((imm.v as u32) << 5));
     return;
   }
-  if main.streq(mn, "mov") && nops == 2 {
+  if cli.streq(mn, "mov") && nops == 2 {
     let rd: *AReg = ar_parse_reg(ops[0]);
     let o1: string = ops[1];
     if len(o1) > 0 && o1[0] == 35 {
       let imm: *AImm = asm_parse_imm(o1);
       ar_movz(a, rd, imm.v, 0);
-    } else if rd.cls == RC_SP || main.streq(o1, "sp") {
+    } else if rd.cls == RC_SP || cli.streq(o1, "sp") {
       // mov SP, Xn / mov Xd, SP — the ADD-immediate #0 form
       ar_addsub_imm(a, false, false, rd, ar_parse_reg(o1), 0, "mov");
     } else {
@@ -715,12 +715,12 @@ fn ar_asm_line(a: *ASMCtx, mn: string, ops: []string) {
     }
     return;
   }
-  if main.streq(mn, "movz") && nops == 2 {
+  if cli.streq(mn, "movz") && nops == 2 {
     let imm: *AImm = asm_parse_imm(ops[1]);
     ar_movz(a, ar_parse_reg(ops[0]), imm.v, 0);
     return;
   }
-  if main.streq(mn, "movk") && (nops == 2 || nops == 3) {
+  if cli.streq(mn, "movk") && (nops == 2 || nops == 3) {
     let imm: *AImm = asm_parse_imm(ops[1]);
     let mut hw: i32 = 0;
     if nops == 3 && str_starts(ops[2], "lsl") {
@@ -729,7 +729,7 @@ fn ar_asm_line(a: *ASMCtx, mn: string, ops: []string) {
     ar_movk(a, ar_parse_reg(ops[0]), imm.v, hw);
     return;
   }
-  if (main.streq(mn, "stp") || main.streq(mn, "ldp")) && nops >= 3 {
+  if (cli.streq(mn, "stp") || cli.streq(mn, "ldp")) && nops >= 3 {
     let load: bool = mn[0] == 108; // 'l'
     let rt: *AReg = ar_parse_reg(ops[0]);
     let rt2: *AReg = ar_parse_reg(ops[1]);
@@ -746,67 +746,67 @@ fn ar_asm_line(a: *ASMCtx, mn: string, ops: []string) {
         ar_pair(a, load, false, rt, rt2, sp, imm.v);
         return;
       }
-    } else if nops == 4 && main.streq(ops[2], "[sp]") { // post-index [sp], #N
+    } else if nops == 4 && cli.streq(ops[2], "[sp]") { // post-index [sp], #N
       let imm: *AImm = asm_parse_imm(ops[3]);
       if imm.ok {
         ar_pair(a, load, true, rt, rt2, sp, imm.v);
         return;
       }
     }
-    asm_err(a, main.cat("bad ", main.cat3(mn, " addressing", "")));
+    asm_err(a, cli.cat("bad ", cli.cat3(mn, " addressing", "")));
     return;
   }
-  if main.streq(mn, "mul") && nops == 3 {
+  if cli.streq(mn, "mul") && nops == 3 {
     let xzr: *AReg = ar_reg(RC_X, 31);
     ar_dprec3(a, false, ar_parse_reg(ops[0]), ar_parse_reg(ops[1]),
               ar_parse_reg(ops[2]), xzr);
     return;
   }
-  if main.streq(mn, "msub") && nops == 4 {
+  if cli.streq(mn, "msub") && nops == 4 {
     ar_dprec3(a, true, ar_parse_reg(ops[0]), ar_parse_reg(ops[1]),
               ar_parse_reg(ops[2]), ar_parse_reg(ops[3]));
     return;
   }
-  if (main.streq(mn, "sdiv") || main.streq(mn, "udiv")) && nops == 3 {
-    ar_dprec2(a, if main.streq(mn, "sdiv") { 0x03 } else { 0x02 },
+  if (cli.streq(mn, "sdiv") || cli.streq(mn, "udiv")) && nops == 3 {
+    ar_dprec2(a, if cli.streq(mn, "sdiv") { 0x03 } else { 0x02 },
               ar_parse_reg(ops[0]), ar_parse_reg(ops[1]), ar_parse_reg(ops[2]));
     return;
   }
-  if (main.streq(mn, "lslv") || main.streq(mn, "lsrv") || main.streq(mn, "asrv")) && nops == 3 {
-    let op: u32 = if main.streq(mn, "lslv") { 0x08 } else { if main.streq(mn, "lsrv") { 0x09 } else { 0x0A } };
+  if (cli.streq(mn, "lslv") || cli.streq(mn, "lsrv") || cli.streq(mn, "asrv")) && nops == 3 {
+    let op: u32 = if cli.streq(mn, "lslv") { 0x08 } else { if cli.streq(mn, "lsrv") { 0x09 } else { 0x0A } };
     ar_dprec2(a, op, ar_parse_reg(ops[0]), ar_parse_reg(ops[1]), ar_parse_reg(ops[2]));
     return;
   }
-  if (main.streq(mn, "and") || main.streq(mn, "orr") || main.streq(mn, "eor")) && nops == 3 {
+  if (cli.streq(mn, "and") || cli.streq(mn, "orr") || cli.streq(mn, "eor")) && nops == 3 {
     let rd: *AReg = ar_parse_reg(ops[0]);
     let rn: *AReg = ar_parse_reg(ops[1]);
     let rm: *AReg = ar_parse_reg(ops[2]);
-    let opc: i32 = if main.streq(mn, "and") { 0 } else { if main.streq(mn, "orr") { 1 } else { 2 } };
+    let opc: i32 = if cli.streq(mn, "and") { 0 } else { if cli.streq(mn, "orr") { 1 } else { 2 } };
     let mut base: u32 = if rd.cls == RC_X { 0x8A000000 } else { 0x0A000000 };
     base |= (((opc >> 1) as u32) << 30) | (((opc & 1) as u32) << 29);
     a_emit32(a, base | ((rm.n as u32) << 16) | ((rn.n as u32) << 5) | (rd.n as u32));
     return;
   }
-  if main.streq(mn, "neg") && nops == 2 {
+  if cli.streq(mn, "neg") && nops == 2 {
     let rd: *AReg = ar_parse_reg(ops[0]);
     let rm: *AReg = ar_parse_reg(ops[1]);
     let base: u32 = if rd.cls == RC_X { 0xCB0003E0 } else { 0x4B0003E0 };
     a_emit32(a, base | ((rm.n as u32) << 16) | (rd.n as u32));
     return;
   }
-  if main.streq(mn, "sxtw") && nops == 2 {
+  if cli.streq(mn, "sxtw") && nops == 2 {
     let rd: *AReg = ar_parse_reg(ops[0]);
     let rn: *AReg = ar_parse_reg(ops[1]);
     a_emit32(a, 0x93407C00 | ((rn.n as u32) << 5) | (rd.n as u32)); // SBFM Xd, Wn, #0, #31
     return;
   }
-  if main.streq(mn, "uxtw") && nops == 2 {
+  if cli.streq(mn, "uxtw") && nops == 2 {
     let rd: *AReg = ar_parse_reg(ops[0]);
     let rn: *AReg = ar_parse_reg(ops[1]);
     a_emit32(a, 0xD3407C00 | ((rn.n as u32) << 5) | (rd.n as u32)); // UBFM Xd, Wn, #0, #31
     return;
   }
-  if main.streq(mn, "uxtb") && nops == 2 {
+  if cli.streq(mn, "uxtb") && nops == 2 {
     let rd: *AReg = ar_parse_reg(ops[0]);
     let rn: *AReg = ar_parse_reg(ops[1]);
     a_emit32(a, 0x53001C00 | ((rn.n as u32) << 5) | (rd.n as u32)); // UBFM Wd, Wn, #0, #7
@@ -815,37 +815,37 @@ fn ar_asm_line(a: *ASMCtx, mn: string, ops: []string) {
   // narrow sign/zero extends: SBFM/UBFM aliases with imms = width-1
   // (the same shape sxtw/uxtw use; first exercised by corpus 042's
   // i8/i16 signed divmod corners — the crossings never emitted them)
-  if main.streq(mn, "sxtb") && nops == 2 {
+  if cli.streq(mn, "sxtb") && nops == 2 {
     let rd: *AReg = ar_parse_reg(ops[0]);
     let rn: *AReg = ar_parse_reg(ops[1]);
     a_emit32(a, 0x93401C00 | ((rn.n as u32) << 5) | (rd.n as u32)); // SBFM Xd, Wn, #0, #7
     return;
   }
-  if main.streq(mn, "sxth") && nops == 2 {
+  if cli.streq(mn, "sxth") && nops == 2 {
     let rd: *AReg = ar_parse_reg(ops[0]);
     let rn: *AReg = ar_parse_reg(ops[1]);
     a_emit32(a, 0x93403C00 | ((rn.n as u32) << 5) | (rd.n as u32)); // SBFM Xd, Wn, #0, #15
     return;
   }
-  if main.streq(mn, "uxth") && nops == 2 {
+  if cli.streq(mn, "uxth") && nops == 2 {
     let rd: *AReg = ar_parse_reg(ops[0]);
     let rn: *AReg = ar_parse_reg(ops[1]);
     a_emit32(a, 0xD3403C00 | ((rn.n as u32) << 5) | (rd.n as u32)); // UBFM Xd, Wn, #0, #15
     return;
   }
-  if (main.streq(mn, "fadd") || main.streq(mn, "fsub") || main.streq(mn, "fmul") || main.streq(mn, "fdiv")) && nops == 3 {
-    let opcode: u32 = if main.streq(mn, "fmul") { 0 } else { if main.streq(mn, "fdiv") { 1 } else { if main.streq(mn, "fadd") { 2 } else { 3 } } };
+  if (cli.streq(mn, "fadd") || cli.streq(mn, "fsub") || cli.streq(mn, "fmul") || cli.streq(mn, "fdiv")) && nops == 3 {
+    let opcode: u32 = if cli.streq(mn, "fmul") { 0 } else { if cli.streq(mn, "fdiv") { 1 } else { if cli.streq(mn, "fadd") { 2 } else { 3 } } };
     ar_fp3(a, opcode, ar_parse_reg(ops[0]), ar_parse_reg(ops[1]), ar_parse_reg(ops[2]));
     return;
   }
-  if main.streq(mn, "fcmp") && nops == 2 {
+  if cli.streq(mn, "fcmp") && nops == 2 {
     let rn: *AReg = ar_parse_reg(ops[0]);
     let rm: *AReg = ar_parse_reg(ops[1]);
     let base: u32 = 0x1E202000 | ((if rn.cls == RC_VD { 1 << 22 } else { 0 }) as u32);
     a_emit32(a, base | ((rm.n as u32) << 16) | ((rn.n as u32) << 5));
     return;
   }
-  if main.streq(mn, "fcvt") && nops == 2 {
+  if cli.streq(mn, "fcvt") && nops == 2 {
     let rd: *AReg = ar_parse_reg(ops[0]);
     let rn: *AReg = ar_parse_reg(ops[1]);
     if rd.cls == RC_VD && rn.cls == RC_VS {
@@ -857,22 +857,22 @@ fn ar_asm_line(a: *ASMCtx, mn: string, ops: []string) {
     }
     return;
   }
-  if main.streq(mn, "fcvtzs") && nops == 2 {
+  if cli.streq(mn, "fcvtzs") && nops == 2 {
     let rd: *AReg = ar_parse_reg(ops[0]);
     let rn: *AReg = ar_parse_reg(ops[1]);
     a_emit32(a, (if rd.cls == RC_X { 0x9E780000 } else { 0x1E780000 }) | ((rn.n as u32) << 5) | (rd.n as u32));
     return;
   }
-  if (main.streq(mn, "scvtf") || main.streq(mn, "ucvtf")) && nops == 2 {
+  if (cli.streq(mn, "scvtf") || cli.streq(mn, "ucvtf")) && nops == 2 {
     // the emitter always converts from x8: D dest rides sf=1, S dest sf=0
     let rd: *AReg = ar_parse_reg(ops[0]);
     let rn: *AReg = ar_parse_reg(ops[1]);
     if rn.cls != RC_X || (rd.cls != RC_VD && rd.cls != RC_VS) {
-      asm_err(a, main.cat("bad ", main.cat3(mn, "", "")));
+      asm_err(a, cli.cat("bad ", cli.cat3(mn, "", "")));
       return;
     }
     let mut base: u32 = 0x9E220000;
-    if main.streq(mn, "ucvtf") {
+    if cli.streq(mn, "ucvtf") {
       base = 0x9E230000;
     }
     if rd.cls == RC_VS {
@@ -881,15 +881,15 @@ fn ar_asm_line(a: *ASMCtx, mn: string, ops: []string) {
     a_emit32(a, base | ((rn.n as u32) << 5) | (rd.n as u32));
     return;
   }
-  if (main.streq(mn, "scvtf") || main.streq(mn, "ucvtf")) && nops == 2 {
+  if (cli.streq(mn, "scvtf") || cli.streq(mn, "ucvtf")) && nops == 2 {
     let rd: *AReg = ar_parse_reg(ops[0]);
     let rn: *AReg = ar_parse_reg(ops[1]);
     // the emitter always converts from x8: D dest rides sf=1, S dest sf=0
     if rn.cls != RC_X || (rd.cls != RC_VD && rd.cls != RC_VS) {
-      asm_err(a, main.cat3("bad ", mn, ""));
+      asm_err(a, cli.cat3("bad ", mn, ""));
       return;
     }
-    let base: u32 = if main.streq(mn, "scvtf") {
+    let base: u32 = if cli.streq(mn, "scvtf") {
       if rd.cls == RC_VD { 0x9E220000 } else { 0x1E220000 }
     } else {
       if rd.cls == RC_VD { 0x9E230000 } else { 0x1E230000 }
@@ -897,7 +897,7 @@ fn ar_asm_line(a: *ASMCtx, mn: string, ops: []string) {
     a_emit32(a, base | ((rn.n as u32) << 5) | (rd.n as u32));
     return;
   }
-  if main.streq(mn, "fmov") && nops == 2 {
+  if cli.streq(mn, "fmov") && nops == 2 {
     let rd: *AReg = ar_parse_reg(ops[0]);
     let rn: *AReg = ar_parse_reg(ops[1]);
     if rd.cls == RC_X && rn.cls == RC_VD {
@@ -920,25 +920,25 @@ fn ar_asm_line(a: *ASMCtx, mn: string, ops: []string) {
     let src: string = ops[1];
     let mut matched: bool = true;
     let mut base: u32 = 0;
-    if main.streq(mn, "str") && rt.cls == RC_X { base = 0xF9000000; }
-    else if main.streq(mn, "ldr") && rt.cls == RC_X { base = 0xF9400000; }
-    else if main.streq(mn, "str") && rt.cls == RC_W { base = 0xB9000000; }
-    else if main.streq(mn, "ldr") && rt.cls == RC_W { base = 0xB9400000; }
-    else if main.streq(mn, "str") && rt.cls == RC_VS { base = 0xBD000000; }
-    else if main.streq(mn, "ldr") && rt.cls == RC_VS { base = 0xBD400000; }
-    else if main.streq(mn, "str") && rt.cls == RC_VD { base = 0xFD000000; }
-    else if main.streq(mn, "ldr") && rt.cls == RC_VD { base = 0xFD400000; }
-    else if main.streq(mn, "strb") && rt.cls == RC_W { base = 0x39000000; }
-    else if main.streq(mn, "ldrb") && rt.cls == RC_W { base = 0x39400000; }
-    else if main.streq(mn, "strh") && rt.cls == RC_W { base = 0x79000000; }
-    else if main.streq(mn, "ldrh") && rt.cls == RC_W { base = 0x79400000; }
-    else if main.streq(mn, "ldrsb") && rt.cls == RC_X { base = 0x39800000; }
-    else if main.streq(mn, "ldrsh") && rt.cls == RC_X { base = 0x79800000; }
-    else if main.streq(mn, "ldrsw") && rt.cls == RC_X { base = 0xB9800000; }
+    if cli.streq(mn, "str") && rt.cls == RC_X { base = 0xF9000000; }
+    else if cli.streq(mn, "ldr") && rt.cls == RC_X { base = 0xF9400000; }
+    else if cli.streq(mn, "str") && rt.cls == RC_W { base = 0xB9000000; }
+    else if cli.streq(mn, "ldr") && rt.cls == RC_W { base = 0xB9400000; }
+    else if cli.streq(mn, "str") && rt.cls == RC_VS { base = 0xBD000000; }
+    else if cli.streq(mn, "ldr") && rt.cls == RC_VS { base = 0xBD400000; }
+    else if cli.streq(mn, "str") && rt.cls == RC_VD { base = 0xFD000000; }
+    else if cli.streq(mn, "ldr") && rt.cls == RC_VD { base = 0xFD400000; }
+    else if cli.streq(mn, "strb") && rt.cls == RC_W { base = 0x39000000; }
+    else if cli.streq(mn, "ldrb") && rt.cls == RC_W { base = 0x39400000; }
+    else if cli.streq(mn, "strh") && rt.cls == RC_W { base = 0x79000000; }
+    else if cli.streq(mn, "ldrh") && rt.cls == RC_W { base = 0x79400000; }
+    else if cli.streq(mn, "ldrsb") && rt.cls == RC_X { base = 0x39800000; }
+    else if cli.streq(mn, "ldrsh") && rt.cls == RC_X { base = 0x79800000; }
+    else if cli.streq(mn, "ldrsw") && rt.cls == RC_X { base = 0xB9800000; }
     else { matched = false; }
     if matched {
       if len(src) == 0 || src[0] != 91 { // '['
-        asm_err(a, main.cat("bad ", main.cat3(mn, " addressing", "")));
+        asm_err(a, cli.cat("bad ", cli.cat3(mn, " addressing", "")));
         return;
       }
       let rn: *AReg = ar_parse_reg(src[1..len(src)]);
@@ -947,7 +947,7 @@ fn ar_asm_line(a: *ASMCtx, mn: string, ops: []string) {
     }
   }
 
-  asm_err(a, main.cat("unknown instruction `", main.cat3(mn, "'", "")));
+  asm_err(a, cli.cat("unknown instruction `", cli.cat3(mn, "'", "")));
 }
 
 // ---- assembly drivers ------------------------------------------------------
@@ -976,7 +976,7 @@ pub fn wr64le(buf: []u8, at: u64, v: u64) {
 // `.quad`/`.long`/`.byte`/`.zero`/`.p2align`/`.ascii`, shared by both
 // assemblers; returns false for anything unrecognized (skipped by the caller)
 pub fn a_directive_data(a: *ASMCtx, rest: string, which: string) -> bool {
-  if main.streq(which, ".quad") {
+  if cli.streq(which, ".quad") {
     let v: *AImm = asm_parse_imm(rest);
     if v.ok {
       let mut i: i32 = 0;
@@ -996,7 +996,7 @@ pub fn a_directive_data(a: *ASMCtx, rest: string, which: string) -> bool {
     }
     return true;
   }
-  if main.streq(which, ".long") {
+  if cli.streq(which, ".long") {
     let v: *AImm = asm_parse_imm(rest);
     let mut i: i32 = 0;
     while i < 4 {
@@ -1005,12 +1005,12 @@ pub fn a_directive_data(a: *ASMCtx, rest: string, which: string) -> bool {
     }
     return true;
   }
-  if main.streq(which, ".byte") {
+  if cli.streq(which, ".byte") {
     let v: *AImm = asm_parse_imm(rest);
     a_emitb(a, (v.v & 255) as i32);
     return true;
   }
-  if main.streq(which, ".zero") {
+  if cli.streq(which, ".zero") {
     let v: *AImm = asm_parse_imm(rest);
     let mut i: i64 = 0;
     while i < v.v {
@@ -1019,7 +1019,7 @@ pub fn a_directive_data(a: *ASMCtx, rest: string, which: string) -> bool {
     }
     return true;
   }
-  if main.streq(which, ".p2align") {
+  if cli.streq(which, ".p2align") {
     let n: i32 = asm_atoi(rest);
     let mask: u64 = (1 as u64 << n) - 1;
     while (a_cur(a).n as u64) & mask != 0 {
@@ -1027,7 +1027,7 @@ pub fn a_directive_data(a: *ASMCtx, rest: string, which: string) -> bool {
     }
     return true;
   }
-  if main.streq(which, ".ascii") {
+  if cli.streq(which, ".ascii") {
     let q_i: i64 = str_index_from(rest, "\"", 0);
     if q_i < 0 {
       return true;
@@ -1063,10 +1063,10 @@ fn asm64_resolve(a: *ASMCtx, ly: *ALayout) {
     let mut target: u64 = 0;
     if s != null && s.defined {
       target = a_sec_vaddr(a, ly, s.sec, s.off);
-    } else if main.streq(f.sym, "_rho_rt_heap") {
+    } else if cli.streq(f.sym, "_rho_rt_heap") {
       target = ly.heap_a;
     } else {
-      asm_err(a, main.cat("undefined symbol `", main.cat3(f.sym, main.cat("' (fixup kind ", main.cat3(main.itoa(f.kind as i64), ")", "")), "")));
+      asm_err(a, cli.cat("undefined symbol `", cli.cat3(f.sym, cli.cat("' (fixup kind ", cli.cat3(cli.itoa(f.kind as i64), ")", "")), "")));
       i += 1;
       continue;
     }
@@ -1129,7 +1129,7 @@ pub fn a_layout(a: *ASMCtx, page: u64, heap_override: u64) -> *ALayout {
   return ly;
 }
 
-pub struct AResult { ok: bool, text: *main.Vec[u8], strsec: *main.Vec[u8], data: *main.Vec[u8], str_va: u64, data_va: u64, heap_va: u64 }
+pub struct AResult { ok: bool, text: *cli.Vec[u8], strsec: *cli.Vec[u8], data: *cli.Vec[u8], str_va: u64, data_va: u64, heap_va: u64 }
 
 pub fn a_result_failed() -> *AResult {
   return new AResult { ok: false, text: null, strsec: null, data: null, str_va: 0, data_va: 0, heap_va: 0 };
@@ -1144,7 +1144,7 @@ pub fn a_result_failed() -> *AResult {
 // it out right after the data page.
 pub fn asm64_assemble(text: string, base: u64, page: u64, heap_override: u64) -> *AResult {
   let a: *ASMCtx = ac_new(base, true);
-  let lines: *main.Vec[string] = asm_split_lines(text);
+  let lines: *cli.Vec[string] = asm_split_lines(text);
   let mut li: usize = 0;
   while li < lines.n {
     let line: string = asm_prepare(lines.items[li]);
@@ -1164,19 +1164,19 @@ pub fn asm64_assemble(text: string, base: u64, page: u64, heap_override: u64) ->
         }
         rest = line[r..len(line)];
       }
-      if main.streq(name, ".data") {
+      if cli.streq(name, ".data") {
         a.sec = 2;
-      } else if main.streq(name, ".text") || main.streq(name, ".rodata") {
+      } else if cli.streq(name, ".text") || cli.streq(name, ".rodata") {
         // standalone section switches (the ELF dialect emits them)
         a.sec = 0;
-      } else if main.streq(name, ".section") {
+      } else if cli.streq(name, ".section") {
         // the rodata strings fold into the text section image: they ride
         // the same bytes in the final image (one r-x page). mach-o names
         // come in as __text/__rhostr/__data fragments; ELF targets use
         // the plain dot names
-        if main.streq(rest, ".text") || main.streq(rest, ".rodata") {
+        if cli.streq(rest, ".text") || cli.streq(rest, ".rodata") {
           a.sec = 0;
-        } else if main.streq(rest, ".data") {
+        } else if cli.streq(rest, ".data") {
           a.sec = 2;
         } else {
           a.sec = 0;
@@ -1186,7 +1186,7 @@ pub fn asm64_assemble(text: string, base: u64, page: u64, heap_override: u64) ->
             a.sec = 2;
           }
         }
-      } else if main.streq(name, ".globl") {
+      } else if cli.streq(name, ".globl") {
         sym_get(a, rest, true);
       } else {
         // .build_version / .subsections_via_symbols / anything else:
@@ -1199,7 +1199,7 @@ pub fn asm64_assemble(text: string, base: u64, page: u64, heap_override: u64) ->
       let label: string = line[0..len(line) - 1];
       let s: *ASym = sym_get(a, label, true);
       if s.defined {
-        asm_err(a, main.cat("duplicate label `", main.cat3(label, "'", "")));
+        asm_err(a, cli.cat("duplicate label `", cli.cat3(label, "'", "")));
         continue;
       }
       s.defined = true;
@@ -1207,7 +1207,7 @@ pub fn asm64_assemble(text: string, base: u64, page: u64, heap_override: u64) ->
       s.off = a_cur(a).n as u64;
       continue;
     }
-    let ops: *main.Vec[string] = asm_split_ops(line);
+    let ops: *cli.Vec[string] = asm_split_ops(line);
     if ops.n > 0 {
       let rest: []string = ops.items[1..ops.n];
       ar_asm_line(a, ops.items[0], rest);

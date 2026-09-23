@@ -1,0 +1,11 @@
+// reject: itself inline
+// the documented hole: [2]S resolved outside the field window slipped
+// both in-flight guards, compiled, and misbehaved at runtime; the direct
+// shape may also fall to the in-flight guard — either rejection is right
+struct S {
+  a: [2]S,
+}
+
+fn main() -> i32 {
+  return 0;
+}

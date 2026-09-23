@@ -1,0 +1,14 @@
+// exit: 0
+// NOT a tail call: the result feeds an add before the ret — must stay a
+// call (depth 100k of real frames, small enough to survive)
+fn add(n: i64) -> i64 {
+  if n == 0 {
+    return 0;
+  }
+  return add(n - 1) + 1;
+}
+
+fn main() -> i32 {
+  printf("{}\n", add(2000));
+  return 0;
+}

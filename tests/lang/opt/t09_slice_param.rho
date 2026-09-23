@@ -1,0 +1,20 @@
+// exit: 0
+// a slice parameter (managed aggregate): the tail site retains through
+// the value walker and copies through the source address
+fn sum_all(xs: []i64, i: i64, acc: i64) -> i64 {
+  if i == len(xs) {
+    return acc;
+  }
+  return sum_all(xs, i + 1, acc + xs[i]);
+}
+
+fn main() -> i32 {
+  let xs: []i64 = make([]i64, 1000);
+  let mut k: usize = 0;
+  while k < len(xs) {
+    xs[k] = k as i64;
+    k += 1;
+  }
+  printf("{}\n", sum_all(xs, 0, 0));
+  return 0;
+}

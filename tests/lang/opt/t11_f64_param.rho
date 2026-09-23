@@ -1,0 +1,13 @@
+// exit: 0
+// an f64 parameter rides the loop — the scalar store is the float lane
+fn fh(x: f64, n: i64) -> f64 {
+  if n == 0 {
+    return x;
+  }
+  return fh(x + 0.5, n - 1);
+}
+
+fn main() -> i32 {
+  printf("{}\n", fh(0.0, 1000000));
+  return 0;
+}

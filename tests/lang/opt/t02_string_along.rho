@@ -1,0 +1,14 @@
+// exit: 0
+// a string parameter rides 200k loop iterations: the tail site's retain
+// and the iteration's release must balance exactly
+fn walk(s: string, n: i64) -> i64 {
+  if n == 0 {
+    return len(s) as i64;
+  }
+  return walk(s, n - 1);
+}
+
+fn main() -> i32 {
+  printf("{}\n", walk("hello", 5000000));
+  return 0;
+}

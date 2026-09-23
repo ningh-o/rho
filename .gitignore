@@ -1,8 +1,10 @@
 build/
 *.o
 *.wasm
-# the playground ships the compiler itself
+# the playground ships the compiler itself; the bootstrap seed is a pinned
+# self-built compiler (the feature frontier libs/compiler may rely on)
 !site/assets/rho.wasm
+!boot/rho-seed.wasm
 out/
 .DS_Store
 *.o.tmp

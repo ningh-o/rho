@@ -1,5 +1,5 @@
 // the lexer: Tok, Token, the Lexer and its scanners
-use main;
+use cli;
 use fmt;
 
 
@@ -31,8 +31,8 @@ pub struct Token {
   col: i32,
   iv: u64,
   fv: f64,
-  pre: *main.Vec[string], // line comments riding on the next token (for fmt)
-  pending: *main.Vec[string], // lexer-local scratch while scanning
+  pre: *cli.Vec[string], // line comments riding on the next token (for fmt)
+  pending: *cli.Vec[string], // lexer-local scratch while scanning
   pos: usize, // next read position (scratch)
   line2: i32, // lexer line (scratch)
   col2: i32, // lexer col (scratch)
@@ -42,7 +42,7 @@ struct Lexer {
   file: string,
   src: string,
   t: Token, // scratch: carries pos/line/col/pending between helpers
-  out: *main.Vec[*Token],
+  out: *cli.Vec[*Token],
 }
 
 pub fn tok_name(k: Tok) -> string {
@@ -184,36 +184,36 @@ fn spell2(k: Tok) -> string {
 }
 
 fn ident_or_keyword(s: string) -> Tok {
-  if main.streq(s, "fn") { return Tok.KwFn; }
-  if main.streq(s, "let") { return Tok.KwLet; }
-  if main.streq(s, "mut") { return Tok.KwMut; }
-  if main.streq(s, "if") { return Tok.KwIf; }
-  if main.streq(s, "else") { return Tok.KwElse; }
-  if main.streq(s, "while") { return Tok.KwWhile; }
-  if main.streq(s, "loop") { return Tok.KwLoop; }
-  if main.streq(s, "break") { return Tok.KwBreak; }
-  if main.streq(s, "continue") { return Tok.KwContinue; }
-  if main.streq(s, "return") { return Tok.KwReturn; }
-  if main.streq(s, "defer") { return Tok.KwDefer; }
-  if main.streq(s, "struct") { return Tok.KwStruct; }
-  if main.streq(s, "enum") { return Tok.KwEnum; }
-  if main.streq(s, "use") { return Tok.KwUse; }
-  if main.streq(s, "pub") { return Tok.KwPub; }
-  if main.streq(s, "static") { return Tok.KwStatic; }
-  if main.streq(s, "const") { return Tok.KwConst; }
-  if main.streq(s, "match") { return Tok.KwMatch; }
-  if main.streq(s, "as") { return Tok.KwAs; }
-  if main.streq(s, "new") { return Tok.KwNew; }
-  if main.streq(s, "null") { return Tok.KwNull; }
-  if main.streq(s, "true") { return Tok.KwTrue; }
-  if main.streq(s, "false") { return Tok.KwFalse; }
-  if main.streq(s, "weak") { return Tok.KwWeak; }
-  if main.streq(s, "self") { return Tok.KwSelf; }
-  if main.streq(s, "extern") { return Tok.KwExtern; }
-  if main.streq(s, "trait") { return Tok.KwTrait; }
-  if main.streq(s, "impl") { return Tok.KwImpl; }
-  if main.streq(s, "for") { return Tok.KwFor; }
-  if main.streq(s, "dyn") { return Tok.KwDyn; }
+  if cli.streq(s, "fn") { return Tok.KwFn; }
+  if cli.streq(s, "let") { return Tok.KwLet; }
+  if cli.streq(s, "mut") { return Tok.KwMut; }
+  if cli.streq(s, "if") { return Tok.KwIf; }
+  if cli.streq(s, "else") { return Tok.KwElse; }
+  if cli.streq(s, "while") { return Tok.KwWhile; }
+  if cli.streq(s, "loop") { return Tok.KwLoop; }
+  if cli.streq(s, "break") { return Tok.KwBreak; }
+  if cli.streq(s, "continue") { return Tok.KwContinue; }
+  if cli.streq(s, "return") { return Tok.KwReturn; }
+  if cli.streq(s, "defer") { return Tok.KwDefer; }
+  if cli.streq(s, "struct") { return Tok.KwStruct; }
+  if cli.streq(s, "enum") { return Tok.KwEnum; }
+  if cli.streq(s, "use") { return Tok.KwUse; }
+  if cli.streq(s, "pub") { return Tok.KwPub; }
+  if cli.streq(s, "static") { return Tok.KwStatic; }
+  if cli.streq(s, "const") { return Tok.KwConst; }
+  if cli.streq(s, "match") { return Tok.KwMatch; }
+  if cli.streq(s, "as") { return Tok.KwAs; }
+  if cli.streq(s, "new") { return Tok.KwNew; }
+  if cli.streq(s, "null") { return Tok.KwNull; }
+  if cli.streq(s, "true") { return Tok.KwTrue; }
+  if cli.streq(s, "false") { return Tok.KwFalse; }
+  if cli.streq(s, "weak") { return Tok.KwWeak; }
+  if cli.streq(s, "self") { return Tok.KwSelf; }
+  if cli.streq(s, "extern") { return Tok.KwExtern; }
+  if cli.streq(s, "trait") { return Tok.KwTrait; }
+  if cli.streq(s, "impl") { return Tok.KwImpl; }
+  if cli.streq(s, "for") { return Tok.KwFor; }
+  if cli.streq(s, "dyn") { return Tok.KwDyn; }
   return Tok.TkIdent;
 }
 
@@ -294,18 +294,18 @@ fn emit_tok(lx: *Lexer, kind: Tok, start: usize) {
     iv: 0,
     fv: 0.0,
     pre: lx.t.pending,
-    pending: new main.Vec[string] { items: make([]string, 8), n: 0 },
+    pending: new cli.Vec[string] { items: make([]string, 8), n: 0 },
     pos: 0,
     line2: 1,
     col2: 1,
   };
   t.pre = lx.t.pending;
-  lx.t.pending = new main.Vec[string] { items: make([]string, 8), n: 0 };
+  lx.t.pending = new cli.Vec[string] { items: make([]string, 8), n: 0 };
   lx.out.push(t);
 }
 
 fn lex_error(lx: *Lexer, msg: string) {
-  main.err_at(lx.file, lx.t.line2, lx.t.col2, msg);
+  cli.err_at(lx.file, lx.t.line2, lx.t.col2, msg);
 }
 
 // exact decimal float parse (strtod semantics, no libc here):
@@ -457,7 +457,7 @@ fn parse_float(s: string) -> f64 {
 // scan a string literal (the opening quote is at lx.t.pos)
 fn lex_string(lx: *Lexer, start: usize) {
   lx.t.pos += 1;
-  let sb: *main.Vec[u8] = new main.Vec[u8] { items: make([]u8, 32), n: 0 };
+  let sb: *cli.Vec[u8] = new cli.Vec[u8] { items: make([]u8, 32), n: 0 };
   loop {
     if lx.t.pos >= len(lx.src) || lx.src[lx.t.pos] == 10 {
       lex_error(lx, "unterminated string literal");
@@ -521,12 +521,12 @@ fn lex_multiline_string(lx: *Lexer, start: usize) {
   let open_line: i32 = lx.t.line2;
   let open_col: i32 = lx.t.col2;
   lx.t.pos += 3;
-  let sb: *main.Vec[u8] = new main.Vec[u8] { items: make([]u8, 32), n: 0 };
+  let sb: *cli.Vec[u8] = new cli.Vec[u8] { items: make([]u8, 32), n: 0 };
   let mut line: i32 = open_line;
   let mut col: i32 = open_col + 3;
   loop {
     if lx.t.pos >= len(lx.src) {
-      main.err_at(lx.file, line, 1, "unterminated multiline string literal");
+      cli.err_at(lx.file, line, 1, "unterminated multiline string literal");
       break;
     }
     let d: u8 = lx.src[lx.t.pos];
@@ -560,10 +560,10 @@ fn lex_multiline_string(lx: *Lexer, start: usize) {
             lx.t.pos += 2;
             col += 2;
           } else {
-            main.err_at(lx.file, line, col, "malformed \\x escape");
+            cli.err_at(lx.file, line, col, "malformed \\x escape");
           }
         } else {
-          main.err_at(lx.file, line, col, "unknown escape");
+          cli.err_at(lx.file, line, col, "unknown escape");
           sb.push(e);
         }
       }
@@ -590,7 +590,7 @@ fn lex_multiline_string(lx: *Lexer, start: usize) {
   lx.t.col2 = col;
 }
 
-pub fn lex_file(file: string, src: string, out: *main.Vec[*Token]) {
+pub fn lex_file(file: string, src: string, out: *cli.Vec[*Token]) {
   let lx: *Lexer = new Lexer {
     file: file,
     src: src,
@@ -602,15 +602,15 @@ pub fn lex_file(file: string, src: string, out: *main.Vec[*Token]) {
       col: 1,
       iv: 0,
       fv: 0.0,
-      pre: new main.Vec[string] { items: make([]string, 8), n: 0 },
-      pending: new main.Vec[string] { items: make([]string, 8), n: 0 },
+      pre: new cli.Vec[string] { items: make([]string, 8), n: 0 },
+      pending: new cli.Vec[string] { items: make([]string, 8), n: 0 },
       pos: 0,
       line2: 1,
       col2: 1,
     },
     out: out,
   };
-  lx.t.pending = new main.Vec[string] { items: make([]string, 8), n: 0 };
+  lx.t.pending = new cli.Vec[string] { items: make([]string, 8), n: 0 };
   loop {
     if lx.t.pos >= len(src) {
       break;
@@ -718,7 +718,7 @@ pub fn lex_file(file: string, src: string, out: *main.Vec[*Token]) {
       emit_tok(lx, if is_float { Tok.TkFloat } else { Tok.TkInt }, start);
       let mut i: usize = start;
       if is_float {
-        let clean: *main.Vec[u8] = new main.Vec[u8] { items: make([]u8, 64), n: 0 };
+        let clean: *cli.Vec[u8] = new cli.Vec[u8] { items: make([]u8, 64), n: 0 };
         while i < lx.t.pos {
           if src[i] != 95 {
             clean.push(src[i]);
@@ -740,7 +740,7 @@ pub fn lex_file(file: string, src: string, out: *main.Vec[*Token]) {
           }
           let dv: i32 = digit_val(d, base);
           if dv < 0 {
-            main.err_at(file, start_line, start_col, "invalid digit for this base");
+            cli.err_at(file, start_line, start_col, "invalid digit for this base");
             break;
           }
           let next: u64 = v * base + dv as u64;
@@ -750,7 +750,7 @@ pub fn lex_file(file: string, src: string, out: *main.Vec[*Token]) {
           v = next;
         }
         if overflow {
-          main.err_at(file, start_line, start_col, "integer literal too large");
+          cli.err_at(file, start_line, start_col, "integer literal too large");
         }
         lx.out.last().iv = v;
       }
@@ -834,8 +834,8 @@ pub fn lex_file(file: string, src: string, out: *main.Vec[*Token]) {
     col: lx.t.col2,
     iv: 0,
     fv: 0.0,
-    pre: new main.Vec[string] { items: make([]string, 8), n: 0 },
-    pending: new main.Vec[string] { items: make([]string, 8), n: 0 },
+    pre: new cli.Vec[string] { items: make([]string, 8), n: 0 },
+    pending: new cli.Vec[string] { items: make([]string, 8), n: 0 },
     pos: 0,
     line2: 1,
     col2: 1,

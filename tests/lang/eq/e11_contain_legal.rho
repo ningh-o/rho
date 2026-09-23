@@ -1,0 +1,28 @@
+// exit: 0
+// the legal shapes stay legal: every recursion rides an indirection
+// (*T, []T, [2]*T) — the walk must not fire on any of them, declared or
+// constructed
+struct Node {
+  v: i64,
+  next: *Node,
+  kids: []Node,
+}
+
+struct Grid {
+  links: [2]*Node,
+  rows: [4][]Node,
+}
+
+enum Chain {
+  Nil,
+  Cons(i64, *Chain),
+}
+
+fn main() -> i32 {
+  let n: *Node = new Node { v: 1, next: null, kids: make([]Node, 2) };
+  let c: Chain = Chain.Nil;
+  if n.next == null {
+    printf("ok {}\n", len(n.kids) as i64);
+  }
+  return 0;
+}

@@ -1,0 +1,14 @@
+// exit: 0
+// each iteration concatenates a FRESH string (an owned argument hands its
+// +1 across the loop edge — the dangerous transfer)
+fn grow(s: string, n: i64) -> i64 {
+  if n == 0 {
+    return len(s) as i64;
+  }
+  return grow(s + "xy", n - 1);
+}
+
+fn main() -> i32 {
+  printf("{}\n", grow("", 10000));
+  return 0;
+}

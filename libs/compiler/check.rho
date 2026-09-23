@@ -1,7 +1,7 @@
 // the checker (check.c port): semantic types, symbols, the module
 // walk, generics, expression/statement checking, the drivers, and
 // generic fn instantiation
-use main;
+use cli;
 use lex;
 use parse;
 use lower;
@@ -100,28 +100,28 @@ fn ty_prim(prim: i32) -> *parse.Type {
 }
 
 fn ty_ptr(elem: *parse.Type) -> *parse.Type {
-  return ty_intern2(main.cat("*", elem.mangled), new parse.Type {
+  return ty_intern2(cli.cat("*", elem.mangled), new parse.Type {
     kind: TypeKind.TyPtr, elem: elem, len: 0, rec: null,
     params: fresh_type_vec2(), ret: null, mangled: "",
   });
 }
 
 fn ty_weak(elem: *parse.Type) -> *parse.Type {
-  return ty_intern2(main.cat3("weak[", elem.mangled, "]"), new parse.Type {
+  return ty_intern2(cli.cat3("weak[", elem.mangled, "]"), new parse.Type {
     kind: TypeKind.TyWeak, elem: elem, len: 0, rec: null,
     params: fresh_type_vec2(), ret: null, mangled: "",
   });
 }
 
 fn ty_slice(elem: *parse.Type) -> *parse.Type {
-  return ty_intern2(main.cat("[]", elem.mangled), new parse.Type {
+  return ty_intern2(cli.cat("[]", elem.mangled), new parse.Type {
     kind: TypeKind.TySlice, elem: elem, len: 0, rec: null,
     params: fresh_type_vec2(), ret: null, mangled: "",
   });
 }
 
 fn ty_array(elem: *parse.Type, len: u64) -> *parse.Type {
-  return ty_intern2(main.cat3(main.cat3("[", main.itoa(len as i64), "]"), elem.mangled, ""), new parse.Type {
+  return ty_intern2(cli.cat3(cli.cat3("[", cli.itoa(len as i64), "]"), elem.mangled, ""), new parse.Type {
     kind: TypeKind.TyArray, elem: elem, len: len, rec: null,
     params: fresh_type_vec2(), ret: null, mangled: "",
   });
@@ -132,12 +132,12 @@ fn ty_fn(params: []*parse.Type, ret: *parse.Type) -> *parse.Type {
   let mut i: usize = 0;
   while i < len(params) {
     if i > 0 {
-      key = main.cat(key, ";");
+      key = cli.cat(key, ";");
     }
-    key = main.cat(key, params[i].mangled);
+    key = cli.cat(key, params[i].mangled);
     i += 1;
   }
-  key = main.cat3(key, ")->", ret.mangled);
+  key = cli.cat3(key, ")->", ret.mangled);
   return ty_intern2(key, new parse.Type {
     kind: TypeKind.TyFn, elem: null, len: 0, rec: null,
     params: params, ret: ret, mangled: "",
@@ -204,7 +204,7 @@ pub static mut cur_scope: *CScope = 0 as *CScope;
 pub static mut cur_ret: *parse.Type = 0 as *parse.Type;
 pub static mut cur_fn_sym: *Sym = 0 as *Sym;
 pub static mut next_local_id: i32 = 0;
-pub static mut g_cap_list: *main.Vec[*Sym] = 0 as *main.Vec[*Sym];
+pub static mut g_cap_list: *cli.Vec[*Sym] = 0 as *cli.Vec[*Sym];
 pub static mut g_cap_boundary: i32 = 0;
 
 fn scope_push() {
@@ -219,9 +219,9 @@ fn scope_pop() {
 fn scope_decl(name: string, sym: *Sym) {
   if scope_lookup_local(cur_scope, name) != null {
     if cur_fn_sym != null {
-      main.err_at(cur_fn_sym.decl.file, 0, 0, main.cat3("duplicate name `", name, "`"));
+      cli.err_at(cur_fn_sym.decl.file, 0, 0, cli.cat3("duplicate name `", name, "`"));
     } else {
-      main.err_at(cur_module.path, 0, 0, main.cat3("duplicate name `", name, "`"));
+      cli.err_at(cur_module.path, 0, 0, cli.cat3("duplicate name `", name, "`"));
     }
     return;
   }
@@ -232,7 +232,7 @@ fn scope_decl(name: string, sym: *Sym) {
 fn scope_lookup_local(s: *CScope, name: string) -> *Sym {
   let mut b: *Binding = s.bindings;
   while b != null {
-    if main.streq(b.name, name) {
+    if cli.streq(b.name, name) {
       return b.sym;
     }
     b = b.next;
@@ -286,7 +286,7 @@ pub fn sm_new() -> *SymMap {
 fn sm_put(m: *SymMap, key: string, val: *Sym) {
   let mut i: usize = 0;
   while i < m.n {
-    if main.streq(m.items[i].key, key) {
+    if cli.streq(m.items[i].key, key) {
       m.items[i].val = val;
       return;
     }
@@ -300,7 +300,7 @@ fn sm_put(m: *SymMap, key: string, val: *Sym) {
 pub fn sm_get(m: *SymMap, key: string) -> *Sym {
   let mut i: usize = 0;
   while i < m.n {
-    if main.streq(m.items[i].key, key) {
+    if cli.streq(m.items[i].key, key) {
       return m.items[i].val;
     }
     i += 1;
@@ -319,7 +319,7 @@ pub struct Module {
 
 pub static mut cur_module: *Module = 0 as *Module;
 pub static mut prelude_module: *Module = 0 as *Module;
-pub static mut g_aux_modules: *main.Vec[*Module] = 0 as *main.Vec[*Module];
+pub static mut g_aux_modules: *cli.Vec[*Module] = 0 as *cli.Vec[*Module];
 
 // a primitive in the spec sense (§2.1): any named builtin type a method can
 // anchor to — every integer width, bool, the two floats, and string
@@ -347,7 +347,7 @@ struct PrimMethods {
   syms: []*Sym,
 }
 
-pub static mut g_prim_methods: *main.Vec[*PrimMethods] = 0 as *main.Vec[*PrimMethods];
+pub static mut g_prim_methods: *cli.Vec[*PrimMethods] = 0 as *cli.Vec[*PrimMethods];
 
 fn prim_method_find(prim: *parse.Type, name: string) -> *Sym {
   if g_prim_methods == null {
@@ -356,10 +356,10 @@ fn prim_method_find(prim: *parse.Type, name: string) -> *Sym {
   let mut i: usize = 0;
   while i < g_prim_methods.n {
     let v: *PrimMethods = g_prim_methods.items[i];
-    if main.streq(v.key, prim.mangled) {
+    if cli.streq(v.key, prim.mangled) {
       let mut k: usize = 0;
       while k < len(v.syms) {
-        if main.streq(v.syms[k].name, name) {
+        if cli.streq(v.syms[k].name, name) {
           return v.syms[k];
         }
         k += 1;
@@ -391,7 +391,7 @@ fn register_impl_methods(m: *Module, d: *parse.Decl) {
     tgt = tgt.elem;
   }
   if tgt == null || tgt.kind != parse.TypeAstKind.TaNamed || tgt.path.n != 1 {
-    main.err_at(d.file, d.line, d.col, "impl targets a named type (module-qualified or local)");
+    cli.err_at(d.file, d.line, d.col, "impl targets a named type (module-qualified or local)");
     return;
   }
   let tname: string = tgt.path.items[0];
@@ -404,9 +404,9 @@ fn register_impl_methods(m: *Module, d: *parse.Decl) {
       mutable: false, variant_index: 0, local_id: 0, symbol: "",
       owner: m, module: null, trait_rec: null,
     };
-    let key: string = main.cat3(tname, main.cat3(".", md.name, ""), "");
+    let key: string = cli.cat3(tname, cli.cat3(".", md.name, ""), "");
     if sm_get(m.syms, key) != null {
-      main.err_at(md.file, md.line, md.col, main.cat("duplicate method `", main.cat3(key, "`", "")));
+      cli.err_at(md.file, md.line, md.col, cli.cat("duplicate method `", cli.cat3(key, "`", "")));
       i += 1;
       continue;
     }
@@ -414,7 +414,7 @@ fn register_impl_methods(m: *Module, d: *parse.Decl) {
     i += 1;
   }
   let isym: *Sym = new Sym {
-    kind: SymKind.SyImpl, name: main.cat("impl$", main.cat3(d.name, main.cat3("$", tname, ""), "")),
+    kind: SymKind.SyImpl, name: cli.cat("impl$", cli.cat3(d.name, cli.cat3("$", tname, ""), "")),
     type: null, decl: d, mutable: false, variant_index: 0, local_id: 0,
     symbol: "", owner: m, module: null, trait_rec: null,
   };
@@ -437,7 +437,7 @@ fn dyn_type_for(trait_sym: *Sym) -> *parse.Type {
   }
   let t: *parse.Type = new parse.Type {
     kind: TypeKind.TyDyn, elem: null, len: 0, rec: rec,
-    params: fresh_type_vec2(), ret: null, mangled: main.cat3("dyn$", rec.mangled, ""),
+    params: fresh_type_vec2(), ret: null, mangled: cli.cat3("dyn$", rec.mangled, ""),
   };
   parse.tm_intern(g_dyn_types, rec.mangled, t);
   return t;
@@ -459,7 +459,7 @@ fn method_on_type(t: *parse.Type, name: string) -> *Sym {
     let mut i: usize = 0;
     while i < len(t.rec.methods) {
       let m: *Sym = t.rec.methods[i];
-      if main.streq(m.name, name) {
+      if cli.streq(m.name, name) {
         return m;
       }
       i += 1;
@@ -469,7 +469,7 @@ fn method_on_type(t: *parse.Type, name: string) -> *Sym {
       let mut j: usize = 0;
       while j < len(tmpl.methods) {
         let m: *Sym = tmpl.methods[j];
-        if main.streq(m.name, name) {
+        if cli.streq(m.name, name) {
           return m;
         }
         j += 1;
@@ -538,7 +538,7 @@ fn try_dyn_coerce(e: *parse.Expr, got: *parse.Type, expected: *parse.Type) -> bo
     return false; // dyn rides new-allocated struct pointers only
   }
   if !trait_satisfied(expected.rec, got.elem) {
-    main.err_at(e.file, e.line, e.col, main.cat("`", main.cat3(ty_name(got.elem), main.cat("` does not implement `", main.cat3(expected.rec.mangled, main.cat("`: missing or mismatched `", main.cat3(expected.rec.methods[g_missing_idx as usize].name, "`", "")), "")), "")));
+    cli.err_at(e.file, e.line, e.col, cli.cat("`", cli.cat3(ty_name(got.elem), cli.cat("` does not implement `", cli.cat3(expected.rec.mangled, cli.cat("`: missing or mismatched `", cli.cat3(expected.rec.methods[g_missing_idx as usize].name, "`", "")), "")), "")));
     e.typed = ty_err();
     return true; // handled (as an error) — don't double-report below
   }
@@ -615,13 +615,13 @@ fn resolve_traits_and_impls(m: *Module) {
         tsym = sm_get(prelude_module.syms, d.name);
       }
       if tsym == null || tsym.kind != SymKind.SyTrait {
-        main.err_at(d.file, d.line, d.col, main.cat("unknown trait `", main.cat3(d.name, "` in impl", "")));
+        cli.err_at(d.file, d.line, d.col, cli.cat("unknown trait `", cli.cat3(d.name, "` in impl", "")));
         i += 1;
         continue;
       }
       let tt: *parse.Type = resolve_type_in_module(m, d.target);
       if !trait_satisfied(tsym.trait_rec, tt) {
-        main.err_at(d.file, d.line, d.col, main.cat("`", main.cat3(ty_name(tt), main.cat("` does not implement `", main.cat3(d.name, main.cat("`: missing or mismatched `", main.cat3(tsym.trait_rec.methods[g_missing_idx as usize].name, "`", "")), "")), "")));
+        cli.err_at(d.file, d.line, d.col, cli.cat("`", cli.cat3(ty_name(tt), cli.cat("` does not implement `", cli.cat3(d.name, cli.cat("`: missing or mismatched `", cli.cat3(tsym.trait_rec.methods[g_missing_idx as usize].name, "`", "")), "")), "")));
       }
     }
     i += 1;
@@ -651,7 +651,7 @@ fn declare_sym(m: *Module, d: *parse.Decl) {
     sym.kind = SymKind.SyFn;
     if d.is_method {
       // methods live under `Recv.name`, mirroring the boot registration
-      sm_put(m.syms, main.cat3(d.recv, ".", d.name), sym);
+      sm_put(m.syms, cli.cat3(d.recv, ".", d.name), sym);
       return;
     }
     sm_put(m.syms, d.name, sym);
@@ -712,7 +712,7 @@ pub fn check_module(m: *Module) {
       let mut rel_path: string = ud.path.items[0];
       let mut si: usize = 1;
       while si < ud.path.n {
-        rel_path = main.cat3(rel_path, "/", ud.path.items[si]);
+        rel_path = cli.cat3(rel_path, "/", ud.path.items[si]);
         si += 1;
       }
       let aux: *Module = load_use_module(m.path, rel_path, ns_name);
@@ -793,8 +793,8 @@ fn ensure_template(d: *parse.Decl, owner: *Module) -> *parse.RecType {
   if d.templ != null {
     return d.templ;
   }
-  let base: string = main.cat3(owner.path, ".", d.name);
-  let rec: *parse.RecType = rec_intern(d, owner, main.cat(base, "[]"));
+  let base: string = cli.cat3(owner.path, ".", d.name);
+  let rec: *parse.RecType = rec_intern(d, owner, cli.cat(base, "[]"));
   rec.is_template = true;
   rec.targs = fresh_type_vec2();
   let env: *parse.TypeMap = template_env_of(d);
@@ -818,17 +818,17 @@ fn rec_type_env(rec: *parse.RecType) -> *parse.TypeMap {
 
 fn inst_from_targs(sym: *Sym, owner: *Module, targs: []*parse.Type) -> *parse.Type {
   let d: *parse.Decl = sym.decl;
-  let base: string = main.cat3(owner.path, ".", d.name);
-  let mut mangled: string = main.cat(base, "[");
+  let base: string = cli.cat3(owner.path, ".", d.name);
+  let mut mangled: string = cli.cat(base, "[");
   let mut i: usize = 0;
   while i < len(targs) {
     if i > 0 {
-      mangled = main.cat(mangled, ",");
+      mangled = cli.cat(mangled, ",");
     }
-    mangled = main.cat(mangled, targs[i].mangled);
+    mangled = cli.cat(mangled, targs[i].mangled);
     i += 1;
   }
-  mangled = main.cat(mangled, "]");
+  mangled = cli.cat(mangled, "]");
   let rec: *parse.RecType = rec_intern(d, owner, mangled);
   if len(rec.targs) == 0 && d.tparams.n > 0 {
     let mut j: usize = 0;
@@ -1002,7 +1002,7 @@ fn type_has_param(t: *parse.Type) -> bool {
 // targs arrive through inst_from_targs via resolve_named)
 fn named_type_simple(sym: *Sym, owner: *Module) -> *parse.Type {
   let d: *parse.Decl = sym.decl;
-  let base: string = main.cat3(owner.path, ".", d.name);
+  let base: string = cli.cat3(owner.path, ".", d.name);
   let rec: *parse.RecType = rec_intern(d, owner, base);
   let t: *parse.Type = new parse.Type {
     kind: TypeKind.TyStruct, elem: null, len: 0, rec: rec,
@@ -1041,7 +1041,7 @@ pub fn resolve_type_in_module(m: *Module, ta: *parse.TypeAst) -> *parse.Type {
       }
     }
     if tsym == null || tsym.kind != SymKind.SyTrait {
-      main.err_at(ta.file, ta.line, ta.col, main.cat("unknown trait `", main.cat3(last, "`", "")));
+      cli.err_at(ta.file, ta.line, ta.col, cli.cat("unknown trait `", cli.cat3(last, "`", "")));
     } else {
       result = dyn_type_for(tsym);
     }
@@ -1066,12 +1066,12 @@ pub fn resolve_type_in_module(m: *Module, ta: *parse.TypeAst) -> *parse.Type {
         }
         if w != null && (w.kind == TypeKind.TyStruct || w.kind == TypeKind.TyEnum) &&
            w.rec != null && w.rec.resolving {
-          main.err_at(ta.file, ta.line, ta.col,
-                      main.cat3("array of `", ty_name(w), "` while it is being defined — the struct would contain itself inline"));
+          cli.err_at(ta.file, ta.line, ta.col,
+                      cli.cat3("array of `", ty_name(w), "` while it is being defined — the struct would contain itself inline"));
           result = ty_err();
         }
       } else {
-        main.err_at(ta.file, ta.line, ta.col, "array size must be a positive constant");
+        cli.err_at(ta.file, ta.line, ta.col, "array size must be a positive constant");
         result = ty_err();
       }
     }
@@ -1094,7 +1094,7 @@ pub fn resolve_type_in_module(m: *Module, ta: *parse.TypeAst) -> *parse.Type {
             return named_type_full(sym, prelude_module, ta);
           }
         }
-        main.err_at(ta.file, ta.line, ta.col, main.cat3("unknown type `", last, "`"));
+        cli.err_at(ta.file, ta.line, ta.col, cli.cat3("unknown type `", last, "`"));
         cur_module = saved;
         return ty_err();
       }
@@ -1104,20 +1104,20 @@ pub fn resolve_type_in_module(m: *Module, ta: *parse.TypeAst) -> *parse.Type {
     // module-qualified type: `mod.Type[T]` — the penultimate segment names
     // the module, the last one the type inside it
     if ta.path.n > 2 {
-      main.err_at(ta.file, ta.line, ta.col, "type paths are `module.Type` at most");
+      cli.err_at(ta.file, ta.line, ta.col, "type paths are `module.Type` at most");
       cur_module = saved;
       return ty_err();
     }
     let qns: string = ta.path.items[0];
     let mod_sym: *Sym = sm_get(m.syms, qns);
     if mod_sym == null || mod_sym.kind != SymKind.SyModule {
-      main.err_at(ta.file, ta.line, ta.col, main.cat3("unknown module `", qns, "`"));
+      cli.err_at(ta.file, ta.line, ta.col, cli.cat3("unknown module `", qns, "`"));
       cur_module = saved;
       return ty_err();
     }
     let tsym: *Sym = sm_get(mod_sym.module.syms, last);
     if tsym == null || (tsym.kind != SymKind.SyStruct && tsym.kind != SymKind.SyEnum) {
-      main.err_at(ta.file, ta.line, ta.col, main.cat5("unknown type `", last, "` in module `", qns, "`"));
+      cli.err_at(ta.file, ta.line, ta.col, cli.cat5("unknown type `", last, "` in module `", qns, "`"));
       cur_module = saved;
       return ty_err();
     }
@@ -1155,7 +1155,7 @@ fn named_type_full(sym: *Sym, owner: *Module, ta: *parse.TypeAst) -> *parse.Type
         tv = parse.tm_get(g_tenv, d.tparams.items[i]);
       }
       if tv == null || tv.kind == TypeKind.TyErr {
-        main.err_at(ta.file, ta.line, ta.col, main.cat3("generic type `", d.name, "` needs type arguments"));
+        cli.err_at(ta.file, ta.line, ta.col, cli.cat3("generic type `", d.name, "` needs type arguments"));
         return ty_err();
       }
       targs = push_type(targs, tv);
@@ -1186,7 +1186,7 @@ fn named_type_full(sym: *Sym, owner: *Module, ta: *parse.TypeAst) -> *parse.Type
     return ty_err();
   }
   if nparams != ntargs {
-    main.err_at(ta.file, ta.line, ta.col, main.cat5("`", d.name, "` takes ", main.itoa(nparams as i64), main.cat3(" type arguments, got ", main.itoa(ntargs as i64), "")));
+    cli.err_at(ta.file, ta.line, ta.col, cli.cat5("`", d.name, "` takes ", cli.itoa(nparams as i64), cli.cat3(" type arguments, got ", cli.itoa(ntargs as i64), "")));
     return ty_err();
   }
   let mut targs: []*parse.Type = fresh_type_vec2();
@@ -1257,7 +1257,7 @@ fn ty_comparable_rec(t: *parse.Type, seen: []string) -> bool {
   if t.kind == TypeKind.TyEnum || t.kind == TypeKind.TyStruct {
     let mut i: usize = 0;
     while i < len(seen) {
-      if main.streq(seen[i], t.mangled) {
+      if cli.streq(seen[i], t.mangled) {
         return true;
       }
       i += 1;
@@ -1315,7 +1315,7 @@ fn require(got_in: *parse.Type, expected: *parse.Type, e: *parse.Expr, what: str
   }
   e.typed = got;
   if !types_compatible(got, expected) {
-    main.err_at(e.file, e.line, e.col, main.cat5(what, ": expected `", ty_name(expected), "`, found `", main.cat3(ty_name(got), "`", "")));
+    cli.err_at(e.file, e.line, e.col, cli.cat5(what, ": expected `", ty_name(expected), "`, found `", cli.cat3(ty_name(got), "`", "")));
   }
 }
 
@@ -1386,7 +1386,7 @@ fn check_expr(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
       sym = sm_get(cur_module.syms, e.sv);
     }
     if sym == null {
-      main.err_at(e.file, e.line, e.col, main.cat3("unknown name `", e.sv, "`"));
+      cli.err_at(e.file, e.line, e.col, cli.cat3("unknown name `", e.sv, "`"));
       e.typed = ty_err();
       return e.typed;
     }
@@ -1402,7 +1402,7 @@ fn check_expr(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
     }
     if sym.kind == SymKind.SyFn && sym.decl != null && sym.decl.params.n > 0 &&
        sym.decl.params.items[sym.decl.params.n - 1].is_variadic {
-      main.err_at(e.file, e.line, e.col,
+      cli.err_at(e.file, e.line, e.col,
              "a variadic function cannot be used as a value (fn types have no `...` spelling)");
       e.typed = ty_err();
       return e.typed;
@@ -1414,7 +1414,7 @@ fn check_expr(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
       let mut dup: bool = false;
       let mut ci: usize = 0;
       while ci < g_cap_list.n {
-        if main.streq(g_cap_list.items[ci].name, sym.name) {
+        if cli.streq(g_cap_list.items[ci].name, sym.name) {
           dup = true;
         }
         ci += 1;
@@ -1430,28 +1430,28 @@ fn check_expr(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
     let a: *parse.Type = check_expr(e.a, null);
     if e.unop == lex.Tok.PBang {
       if a.kind != TypeKind.TyBool {
-        main.err_at(e.file, e.line, e.col, "`!` needs a bool");
+        cli.err_at(e.file, e.line, e.col, "`!` needs a bool");
       }
       e.typed = ty_prim(0);
       return e.typed;
     }
     if e.unop == lex.Tok.PTilde {
       if !ty_is_int(a) {
-        main.err_at(e.file, e.line, e.col, "`~` needs an integer");
+        cli.err_at(e.file, e.line, e.col, "`~` needs an integer");
       }
       e.typed = a;
       return e.typed;
     }
     if e.unop == lex.Tok.PMinus {
       if !ty_is_int(a) && !ty_is_flt(a) {
-        main.err_at(e.file, e.line, e.col, "`-` needs a number");
+        cli.err_at(e.file, e.line, e.col, "`-` needs a number");
       }
       e.typed = a;
       return e.typed;
     }
     if e.unop == lex.Tok.PStar {
       if a.kind != TypeKind.TyPtr {
-        main.err_at(e.file, e.line, e.col, main.cat3("`*` dereference needs a pointer, found `", ty_name(a), "`"));
+        cli.err_at(e.file, e.line, e.col, cli.cat3("`*` dereference needs a pointer, found `", ty_name(a), "`"));
         e.typed = ty_err();
       } else {
         e.typed = a.elem;
@@ -1484,7 +1484,7 @@ fn check_expr(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
       ok = true;
     }
     if !ok {
-      main.err_at(e.file, e.line, e.col, main.cat5("cannot cast `", ty_name(srct), "` to `", ty_name(target), "`"));
+      cli.err_at(e.file, e.line, e.col, cli.cat5("cannot cast `", ty_name(srct), "` to `", ty_name(target), "`"));
     }
     e.typed = target;
     return e.typed;
@@ -1495,7 +1495,7 @@ fn check_expr(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
     let mut r: *parse.Type = null;
     if op == lex.Tok.PAndand || op == lex.Tok.POror {
       if l.kind != TypeKind.TyBool {
-        main.err_at(e.a.file, e.a.line, e.a.col, main.cat3("left of `", fmt.spell_op(op), "` must be bool"));
+        cli.err_at(e.a.file, e.a.line, e.a.col, cli.cat3("left of `", fmt.spell_op(op), "` must be bool"));
       }
       r = check_expr(e.b, ty_prim(0));
       if r.kind == TypeKind.TyIntLit || r.kind == TypeKind.TyFloatLit {
@@ -1503,7 +1503,7 @@ fn check_expr(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
         e.b.typed = r;
       }
       if r.kind != TypeKind.TyBool {
-        main.err_at(e.b.file, e.b.line, e.b.col, main.cat3("right of `", fmt.spell_op(op), "` must be bool"));
+        cli.err_at(e.b.file, e.b.line, e.b.col, cli.cat3("right of `", fmt.spell_op(op), "` must be bool"));
       }
       e.typed = ty_prim(0);
       return e.typed;
@@ -1532,21 +1532,21 @@ fn check_expr(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
           // names a fn/dyn/err must not compare (it would silently
           // compare one raw word of the payload)
           if !ty_comparable(l) {
-            main.err_at(e.file, e.line, e.col, main.cat3("== on `", ty_name(l), "` needs comparable payloads"));
+            cli.err_at(e.file, e.line, e.col, cli.cat3("== on `", ty_name(l), "` needs comparable payloads"));
             return ty_err();
           }
           ok = true;
         } else if l.kind == TypeKind.TyStruct && r.kind == TypeKind.TyStruct && l == r {
           // element-wise (spec 4.2): every field must itself be comparable
           if !ty_comparable(l) {
-            main.err_at(e.file, e.line, e.col, main.cat3("== on `", ty_name(l), "` needs comparable fields"));
+            cli.err_at(e.file, e.line, e.col, cli.cat3("== on `", ty_name(l), "` needs comparable fields"));
             return ty_err();
           }
           ok = true;
         } else if (l.kind == TypeKind.TyArray || l.kind == TypeKind.TySlice) && l == r {
           // element-wise (spec 4.2): same element type, itself comparable
           if !ty_comparable(l.elem) {
-            main.err_at(e.file, e.line, e.col, main.cat5("== on `", ty_name(l), "` needs a comparable element type, found `", ty_name(l.elem), "`"));
+            cli.err_at(e.file, e.line, e.col, cli.cat5("== on `", ty_name(l), "` needs a comparable element type, found `", ty_name(l.elem), "`"));
             return ty_err();
           }
           ok = true;
@@ -1557,7 +1557,7 @@ fn check_expr(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
         ok = (ty_is_int(l) && ty_is_int(r)) || (ty_is_flt(l) && ty_is_flt(r));
       }
       if !ok {
-        main.err_at(e.file, e.line, e.col, main.cat5("cannot compare `", ty_name(l), "` and `", ty_name(r), "`"));
+        cli.err_at(e.file, e.line, e.col, cli.cat5("cannot compare `", ty_name(l), "` and `", ty_name(r), "`"));
         return ty_err();
       }
       e.typed = ty_prim(0);
@@ -1565,16 +1565,16 @@ fn check_expr(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
     }
     if op == lex.Tok.PShl || op == lex.Tok.PShr {
       if !ty_is_int(l) {
-        main.err_at(e.file, e.line, e.col, "shift needs an integer left side");
+        cli.err_at(e.file, e.line, e.col, "shift needs an integer left side");
       }
       if !ty_is_int(r) {
-        main.err_at(e.file, e.line, e.col, "shift needs an integer right side");
+        cli.err_at(e.file, e.line, e.col, "shift needs an integer right side");
       }
       e.typed = l;
       return e.typed;
     }
     if l != r {
-      main.err_at(e.file, e.line, e.col, main.cat3(main.cat3("type mismatch in `", fmt.spell_op(op), "`: `"), main.cat3(ty_name(l), "` vs `", ty_name(r)), "`"));
+      cli.err_at(e.file, e.line, e.col, cli.cat3(cli.cat3("type mismatch in `", fmt.spell_op(op), "`: `"), cli.cat3(ty_name(l), "` vs `", ty_name(r)), "`"));
       e.typed = ty_err();
       return e.typed;
     }
@@ -1583,11 +1583,11 @@ fn check_expr(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
       // implicit to_str — mismatched operands take the mismatch diag
       // above, verbatim; boot check.c carries the same rule)
       if (!ty_is_int(l) && !ty_is_flt(l) && !(op == lex.Tok.PPlus && l.kind == TypeKind.TyStringK)) && l.kind != TypeKind.TyParam {
-        main.err_at(e.file, e.line, e.col, main.cat3("arithmetic needs numbers, found `", ty_name(l), "`"));
+        cli.err_at(e.file, e.line, e.col, cli.cat3("arithmetic needs numbers, found `", ty_name(l), "`"));
       }
     } else if op == lex.Tok.PAmp || op == lex.Tok.PPipe || op == lex.Tok.PCaret {
       if !ty_is_int(l) {
-        main.err_at(e.file, e.line, e.col, main.cat3("bitwise needs integers, found `", ty_name(l), "`"));
+        cli.err_at(e.file, e.line, e.col, cli.cat3("bitwise needs integers, found `", ty_name(l), "`"));
       }
     }
     if l.kind == TypeKind.TyIntLit {
@@ -1619,14 +1619,14 @@ fn check_expr(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
       e.b.typed = idx;
     }
     if !ty_is_int(idx) {
-      main.err_at(e.b.file, e.b.line, e.b.col, main.cat3("index must be an integer, found `", ty_name(idx), "`"));
+      cli.err_at(e.b.file, e.b.line, e.b.col, cli.cat3("index must be an integer, found `", ty_name(idx), "`"));
     }
     if base.kind == TypeKind.TyArray || base.kind == TypeKind.TySlice {
       e.typed = base.elem;
     } else if base.kind == TypeKind.TyStringK {
       e.typed = ty_prim(5);
     } else {
-      main.err_at(e.file, e.line, e.col, main.cat3("cannot index `", ty_name(base), "`"));
+      cli.err_at(e.file, e.line, e.col, cli.cat3("cannot index `", ty_name(base), "`"));
       e.typed = ty_err();
     }
     return e.typed;
@@ -1644,14 +1644,14 @@ fn check_expr(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
       e.c.typed = hi;
     }
     if !ty_is_int(lo) || !ty_is_int(hi) {
-      main.err_at(e.file, e.line, e.col, "slice bounds must be integers");
+      cli.err_at(e.file, e.line, e.col, "slice bounds must be integers");
     }
     if base.kind == TypeKind.TyArray || base.kind == TypeKind.TySlice {
       e.typed = ty_slice(base.elem);
     } else if base.kind == TypeKind.TyStringK {
       e.typed = ty_prim(11);
     } else {
-      main.err_at(e.file, e.line, e.col, main.cat3("cannot slice `", ty_name(base), "`"));
+      cli.err_at(e.file, e.line, e.col, cli.cat3("cannot slice `", ty_name(base), "`"));
       e.typed = ty_err();
     }
     return e.typed;
@@ -1685,7 +1685,7 @@ fn check_expr(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
       if operand.kind == TypeKind.TyIntLit || operand.kind == TypeKind.TyFloatLit {
         what = "an untyped literal";
       }
-      main.err_at(e.file, e.line, e.col, main.cat3("`?` needs a Result or Option, found `", what, "`"));
+      cli.err_at(e.file, e.line, e.col, cli.cat3("`?` needs a Result or Option, found `", what, "`"));
       e.typed = ty_err();
       return e.typed;
     }
@@ -1697,16 +1697,16 @@ fn check_expr(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
     let mut vi: usize = 0;
     while vi < ed.variants.n {
       let vn: string = ed.variants.items[vi].name;
-      if main.streq(vn, "Ok") {
+      if cli.streq(vn, "Ok") {
         ok_i = vi as i32;
       }
-      if main.streq(vn, "Err") {
+      if cli.streq(vn, "Err") {
         err_i = vi as i32;
       }
-      if main.streq(vn, "Some") {
+      if cli.streq(vn, "Some") {
         some_i = vi as i32;
       }
-      if main.streq(vn, "None") {
+      if cli.streq(vn, "None") {
         none_i = vi as i32;
       }
       vi += 1;
@@ -1714,7 +1714,7 @@ fn check_expr(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
     let result_like: bool = ok_i >= 0 && err_i >= 0;
     let option_like: bool = some_i >= 0 && none_i >= 0;
     if !result_like && !option_like {
-      main.err_at(e.file, e.line, e.col, main.cat3("`?` needs a Result or Option, found `", ty_name(operand), "`"));
+      cli.err_at(e.file, e.line, e.col, cli.cat3("`?` needs a Result or Option, found `", ty_name(operand), "`"));
       e.typed = ty_err();
       return e.typed;
     }
@@ -1736,7 +1736,7 @@ fn check_expr(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
       if !result_like {
         fam = "Option";
       }
-      main.err_at(e.file, e.line, e.col, main.cat5("`?` propagates into `", fam, "`, but this function returns `", ty_name(rn), "`"));
+      cli.err_at(e.file, e.line, e.col, cli.cat5("`?` propagates into `", fam, "`, but this function returns `", ty_name(rn), "`"));
       e.typed = ty_err();
       return e.typed;
     }
@@ -1744,7 +1744,7 @@ fn check_expr(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
       let e_op: *parse.Type = variant_field_type(operand, err_i, 0);
       let e_ret: *parse.Type = variant_field_type(cur_ret, err_i, 0);
       if !types_compatible(e_op, e_ret) {
-        main.err_at(e.file, e.line, e.col, main.cat5("error payload mismatch: function propagates `", ty_name(e_ret), "`, operand carries `", ty_name(e_op), "`"));
+        cli.err_at(e.file, e.line, e.col, cli.cat5("error payload mismatch: function propagates `", ty_name(e_ret), "`, operand carries `", ty_name(e_op), "`"));
         e.typed = ty_err();
         return e.typed;
       }
@@ -1754,9 +1754,9 @@ fn check_expr(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
   }
   if e.kind == parse.ExprKind.ExClosure {
     // copy-capture closures: outer locals the body names are snapshotted
-    let saved_caps: *main.Vec[*Sym] = g_cap_list;
+    let saved_caps: *cli.Vec[*Sym] = g_cap_list;
     let saved_boundary: i32 = g_cap_boundary;
-    let caps: *main.Vec[*Sym] = new main.Vec[*Sym] { items: make([]*Sym, 8), n: 0 };
+    let caps: *cli.Vec[*Sym] = new cli.Vec[*Sym] { items: make([]*Sym, 8), n: 0 };
     g_cap_list = caps;
     g_cap_boundary = next_local_id;
     // params: type ASTs resolve now; body checked in a nested scope
@@ -1788,7 +1788,7 @@ fn check_expr(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
     let bt: *parse.Type = check_block_value2(e.items);
     cur_ret = saved_ret;
     if rt.kind != TypeKind.TyVoid && !block_returns(e.items) {
-      main.err_at(e.file, e.line, e.col, main.cat3("missing return: closure body must produce `", ty_name(rt), "`"));
+      cli.err_at(e.file, e.line, e.col, cli.cat3("missing return: closure body must produce `", ty_name(rt), "`"));
     }
     scope_pop();
     g_cap_list = saved_caps;
@@ -1797,7 +1797,7 @@ fn check_expr(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
     while ci < caps.n {
       let cap: *Sym = caps.items[ci];
       if cap.kind == SymKind.SyLocal && cap.mutable {
-        main.err_at(e.file, e.line, e.col, main.cat3("cannot capture mutable `", cap.name, "` (boot-era closures copy; box it in a struct instead)"));
+        cli.err_at(e.file, e.line, e.col, cli.cat3("cannot capture mutable `", cap.name, "` (boot-era closures copy; box it in a struct instead)"));
       }
       ci += 1;
     }
@@ -1817,7 +1817,7 @@ fn check_expr(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
   if e.kind == parse.ExprKind.ExMatch {
     return check_match(e, expected);
   }
-  main.err_at(e.file, e.line, e.col, "internal: unexpected expression form");
+  cli.err_at(e.file, e.line, e.col, "internal: unexpected expression form");
   e.typed = ty_err();
   return e.typed;
 }
@@ -1876,15 +1876,15 @@ fn check_field_access(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
      e.a.sym.kind == SymKind.SyModule && e.a.sym.module != null {
     let item: *Sym = sm_get(e.a.sym.module.syms, e.sv);
     if item == null {
-      let msg: string = main.cat3("module `", main.cat3(e.a.sv, "` has no item `", ""), "");
-      main.err_at("", 0, 0, main.cat3(msg, main.cat3(e.sv, "`", ""), ""));
+      let msg: string = cli.cat3("module `", cli.cat3(e.a.sv, "` has no item `", ""), "");
+      cli.err_at("", 0, 0, cli.cat3(msg, cli.cat3(e.sv, "`", ""), ""));
       e.typed = ty_err();
       return e.typed;
     }
     if item.kind == SymKind.SyStatic || item.kind == SymKind.SyConst {
       if !item.decl.pub_ && !item.owner.is_prelude {
-        let msg: string = main.cat3(e.a.sv, ".", "");
-        main.err_at("", 0, 0, main.cat3(msg, main.cat3(e.sv, "` is not public", ""), ""));
+        let msg: string = cli.cat3(e.a.sv, ".", "");
+        cli.err_at("", 0, 0, cli.cat3(msg, cli.cat3(e.sv, "` is not public", ""), ""));
       }
       e.sym = item;
       e.typed = item.type;
@@ -1900,25 +1900,25 @@ fn check_field_access(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
     // variant access and constructor calls resolve (`lex.Tok.TkA`)
     if item.kind == SymKind.SyEnum || item.kind == SymKind.SyStruct {
       if !item.decl.pub_ && !item.owner.is_prelude {
-        let msg2: string = main.cat3(e.a.sv, ".", "");
-        main.err_at("", 0, 0, main.cat3(msg2, main.cat3(e.sv, "` is not public", ""), ""));
+        let msg2: string = cli.cat3(e.a.sv, ".", "");
+        cli.err_at("", 0, 0, cli.cat3(msg2, cli.cat3(e.sv, "` is not public", ""), ""));
       }
       e.sym = item;
       e.typed = item.type;
       return e.typed;
     }
-    let msg: string = main.cat3(e.a.sv, ".", "");
-    main.err_at("", 0, 0, main.cat3(msg, main.cat3(e.sv, "` is a type; types are not values", ""), ""));
+    let msg: string = cli.cat3(e.a.sv, ".", "");
+    cli.err_at("", 0, 0, cli.cat3(msg, cli.cat3(e.sv, "` is a type; types are not values", ""), ""));
     e.typed = ty_err();
     return e.typed;
   }
   let base: *parse.Type = check_expr(e.a, null);
   if base.kind == TypeKind.TySlice || base.kind == TypeKind.TyStringK {
-    if main.streq(e.sv, "len") {
+    if cli.streq(e.sv, "len") {
       e.typed = ty_prim(12);
       return e.typed;
     }
-    if main.streq(e.sv, "ptr") {
+    if cli.streq(e.sv, "ptr") {
       if base.kind == TypeKind.TyStringK {
         e.typed = ty_ptr(ty_prim(5));
       } else {
@@ -1926,7 +1926,7 @@ fn check_field_access(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
       }
       return e.typed;
     }
-    main.err_at(e.file, e.line, e.col, main.cat3("slices have `len` and `ptr`, not `", e.sv, "`"));
+    cli.err_at(e.file, e.line, e.col, cli.cat3("slices have `len` and `ptr`, not `", e.sv, "`"));
     e.typed = ty_err();
     return e.typed;
   }
@@ -1938,17 +1938,17 @@ fn check_field_access(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
       let mut i: usize = 0;
       while i < d.fields.n {
         let fa: *parse.FieldAst = d.fields.items[i];
-        if main.streq(fa.name, e.sv) {
+        if cli.streq(fa.name, e.sv) {
           e.typed = struct_field_type(rec, i);
           return e.typed;
         }
         i += 1;
       }
-      main.err_at(e.file, e.line, e.col, main.cat5("no field `", e.sv, "` on `", ty_name(deref), "`"));
+      cli.err_at(e.file, e.line, e.col, cli.cat5("no field `", e.sv, "` on `", ty_name(deref), "`"));
       e.typed = ty_err();
       return e.typed;
     }
-    main.err_at(e.file, e.line, e.col, main.cat3("`", ty_name(deref), "` has no fields (auto-deref only works on struct pointers)"));
+    cli.err_at(e.file, e.line, e.col, cli.cat3("`", ty_name(deref), "` has no fields (auto-deref only works on struct pointers)"));
     e.typed = ty_err();
     return e.typed;
   }
@@ -1958,13 +1958,13 @@ fn check_field_access(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
     let mut i: usize = 0;
     while i < d.fields.n {
       let fa: *parse.FieldAst = d.fields.items[i];
-      if main.streq(fa.name, e.sv) {
+      if cli.streq(fa.name, e.sv) {
         e.typed = struct_field_type(rec, i);
         return e.typed;
       }
       i += 1;
     }
-    main.err_at(e.file, e.line, e.col, main.cat5("no field `", e.sv, "` on `", ty_name(base), "`"));
+    cli.err_at(e.file, e.line, e.col, cli.cat5("no field `", e.sv, "` on `", ty_name(base), "`"));
     e.typed = ty_err();
     return e.typed;
   }
@@ -1975,9 +1975,9 @@ fn check_field_access(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
       let mut i: usize = 0;
       while i < d.variants.n {
         let v: *parse.VariantAst = d.variants.items[i];
-        if main.streq(v.name, e.sv) {
+        if cli.streq(v.name, e.sv) {
           if v.vkind != parse.VarKind.VarUnit {
-            main.err_at("", 0, 0, "variant carries a payload; call it to construct");
+            cli.err_at("", 0, 0, "variant carries a payload; call it to construct");
             e.typed = ty_err();
             return e.typed;
           }
@@ -2002,12 +2002,12 @@ fn check_field_access(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
         }
         i += 1;
       }
-      main.err_at("", 0, 0, "enum has no such variant");
+      cli.err_at("", 0, 0, "enum has no such variant");
       e.typed = ty_err();
       return e.typed;
     }
   }
-  main.err_at("", 0, 0, "cannot access field");
+  cli.err_at("", 0, 0, "cannot access field");
   e.typed = ty_err();
   return e.typed;
 }
@@ -2015,7 +2015,7 @@ fn check_field_access(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
 fn check_new(e: *parse.Expr) -> *parse.Type {
   let t: *parse.Type = resolve_type_in_module(cur_module, e.ty);
   if t.kind != TypeKind.TyStruct {
-    main.err_at("", 0, 0, "`new` takes a struct type");
+    cli.err_at("", 0, 0, "`new` takes a struct type");
     e.typed = ty_err();
     return e.typed;
   }
@@ -2023,7 +2023,7 @@ fn check_new(e: *parse.Expr) -> *parse.Type {
   let d: *parse.Decl = rec.decl;
   struct_field_type(rec, if d.fields.n > 0 { d.fields.n - 1 } else { 0 });
   if e.items.n != d.fields.n {
-    main.err_at("", 0, 0, "struct initializer count mismatch");
+    cli.err_at("", 0, 0, "struct initializer count mismatch");
   }
   let mut i: usize = 0;
   while i < e.items.n {
@@ -2034,7 +2034,7 @@ fn check_new(e: *parse.Expr) -> *parse.Type {
     let mut j: usize = 0;
     while j < d.fields.n {
       let df: *parse.FieldAst = d.fields.items[j];
-      if main.streq(df.name, fname) {
+      if cli.streq(df.name, fname) {
         let ft: *parse.Type = struct_field_type(rec, j);
         require(check_expr(argi, ft), ft, argi, "field initializer");
         found = true;
@@ -2043,7 +2043,7 @@ fn check_new(e: *parse.Expr) -> *parse.Type {
       j += 1;
     }
     if !found {
-      main.err_at(argi.file, argi.line, argi.col, main.cat5("no field `", fname, "` on `", d.name, "`"));
+      cli.err_at(argi.file, argi.line, argi.col, cli.cat5("no field `", fname, "` on `", d.name, "`"));
     }
     i += 1;
   }
@@ -2107,7 +2107,7 @@ fn if_expr_returns(ifx: *parse.Expr) -> bool {
   return block_returns(ifx.items.items[1].stmts);
 }
 
-fn loop_has_break(stmts: *main.Vec[*parse.Stmt]) -> bool {
+fn loop_has_break(stmts: *cli.Vec[*parse.Stmt]) -> bool {
   let mut i: usize = 0;
   while i < stmts.n {
     let s: *parse.Stmt = stmts.items[i];
@@ -2203,7 +2203,7 @@ fn stmt_returns(s: *parse.Stmt) -> bool {
   return false;
 }
 
-fn block_returns(stmts: *main.Vec[*parse.Stmt]) -> bool {
+fn block_returns(stmts: *cli.Vec[*parse.Stmt]) -> bool {
   if stmts.n == 0 {
     return false;
   }
@@ -2217,7 +2217,7 @@ fn check_match(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
   if scrut.kind == TypeKind.TyEnum {
     ed = scrut.rec.decl;
   } else if !int_match {
-    main.err_at(e.file, e.line, e.col, main.cat3("match scrutinee must be an enum or integer, found `", ty_name(scrut), "`"));
+    cli.err_at(e.file, e.line, e.col, cli.cat3("match scrutinee must be an enum or integer, found `", ty_name(scrut), "`"));
     e.typed = ty_err();
     return e.typed;
   }
@@ -2236,14 +2236,14 @@ fn check_match(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
         let mut j: usize = 0;
         while j < ed.variants.n {
           let v: *parse.VariantAst = ed.variants.items[j];
-          if !main.streq(v.name, vn) {
+          if !cli.streq(v.name, vn) {
             j += 1;
             continue;
           }
           if arm.pk == parse.PatKind.PatUnit && v.vkind != parse.VarKind.VarUnit {
-            main.err_at(arm.file, arm.line, arm.col, main.cat5("variant `", vn, "` carries a payload; bind it: `", vn, "(..)`"));
+            cli.err_at(arm.file, arm.line, arm.col, cli.cat5("variant `", vn, "` carries a payload; bind it: `", vn, "(..)`"));
           } else if arm.pk != parse.PatKind.PatUnit && v.vkind == parse.VarKind.VarUnit {
-            main.err_at(arm.file, arm.line, arm.col, main.cat3("variant `", vn, "` has no payload to bind"));
+            cli.err_at(arm.file, arm.line, arm.col, cli.cat3("variant `", vn, "` has no payload to bind"));
           }
           covered[j] = true;
           arm.variant_index = j as i32;
@@ -2252,7 +2252,7 @@ fn check_match(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
           break;
         }
         if !found {
-          main.err_at(arm.file, arm.line, arm.col, main.cat5("no variant `", vn, "` on `", ty_name(scrut), "`"));
+          cli.err_at(arm.file, arm.line, arm.col, cli.cat5("no variant `", vn, "` on `", ty_name(scrut), "`"));
         } else {
           let v: *parse.VariantAst = ed.variants.items[arm.variant_index as usize];
           let mut nfields: usize = 0;
@@ -2268,12 +2268,12 @@ fn check_match(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
             nbinds = arm.pat_fields.n;
           }
           if arm.pk != parse.PatKind.PatUnit && nbinds != nfields {
-            main.err_at(arm.file, arm.line, arm.col, main.cat5("pattern `", vn, "` binds ", main.itoa(nbinds as i64), main.cat3(" values, variant has ", main.itoa(nfields as i64), "")));
+            cli.err_at(arm.file, arm.line, arm.col, cli.cat5("pattern `", vn, "` binds ", cli.itoa(nbinds as i64), cli.cat3(" values, variant has ", cli.itoa(nfields as i64), "")));
           } else if arm.pk == parse.PatKind.PatTuple && v.vkind == parse.VarKind.VarTuple {
             let mut b: usize = 0;
             while b < nbinds && b < nfields {
               let nm: string = arm.pat_names.items[b];
-              if !main.streq(nm, "_") {
+              if !cli.streq(nm, "_") {
                 let bs: *Sym = new Sym {
                   kind: SymKind.SyLocal, name: nm,
                   type: variant_field_type(scrut, arm.variant_index, b as i32),
@@ -2302,10 +2302,10 @@ fn check_match(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
               let mut j2: usize = 0;
               while j2 < v.fields.n {
                 let vf: *parse.FieldAst = v.fields.items[j2];
-                if main.streq(vf.name, fa.name) {
+                if cli.streq(vf.name, fa.name) {
                   hit = true;
                   let nm: string = arm.pat_names.items[b];
-                  if !main.streq(nm, "_") {
+                  if !cli.streq(nm, "_") {
                     let bs: *Sym = new Sym {
                       kind: SymKind.SyLocal, name: nm,
                       type: variant_field_type(scrut, arm.variant_index, j2 as i32),
@@ -2327,17 +2327,17 @@ fn check_match(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
                 j2 += 1;
               }
               if !hit {
-                main.err_at(fa.file, fa.line, fa.col, main.cat5("variant `", vn, "` has no field `", fa.name, "`"));
+                cli.err_at(fa.file, fa.line, fa.col, cli.cat5("variant `", vn, "` has no field `", fa.name, "`"));
               }
               b += 1;
             }
             if nbinds != 0 && len(arm.bind_syms) != v.fields.n {
-              main.err_at(arm.file, arm.line, arm.col, main.cat5("pattern `", vn, " { .. }` must bind every field", "", ""));
+              cli.err_at(arm.file, arm.line, arm.col, cli.cat5("pattern `", vn, " { .. }` must bind every field", "", ""));
             }
           }
         }
       } else {
-        main.err_at(arm.file, arm.line, arm.col, "this pattern does not match an enum");
+        cli.err_at(arm.file, arm.line, arm.col, "this pattern does not match an enum");
       }
     } else {
       if arm.pk == parse.PatKind.PatWildcard {
@@ -2345,7 +2345,7 @@ fn check_match(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
       } else if arm.pk == parse.PatKind.PatInt {
         // literal match
       } else {
-        main.err_at(arm.file, arm.line, arm.col, "integer match arms must be literals or `_`");
+        cli.err_at(arm.file, arm.line, arm.col, "integer match arms must be literals or `_`");
       }
     }
     scope_push();
@@ -2354,7 +2354,7 @@ fn check_match(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
       let bs: *Sym = arm.bind_syms[bi];
       if bs != null {
         if scope_lookup(bs.name) != null {
-          main.err_at(arm.file, arm.line, arm.col, main.cat3("`", bs.name, "` shadows an existing binding"));
+          cli.err_at(arm.file, arm.line, arm.col, cli.cat3("`", bs.name, "` shadows an existing binding"));
         }
         scope_decl(bs.name, bs);
       }
@@ -2376,14 +2376,14 @@ fn check_match(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
     let mut j: usize = 0;
     while j < ed.variants.n {
       if !covered[j] {
-        main.err_at(e.file, e.line, e.col, main.cat3("match is not exhaustive: missing `", ed.variants.items[j].name, "`"));
+        cli.err_at(e.file, e.line, e.col, cli.cat3("match is not exhaustive: missing `", ed.variants.items[j].name, "`"));
         break;
       }
       j += 1;
     }
   }
   if int_match && !wildcard && e.arms.n == 0 {
-    main.err_at(e.file, e.line, e.col, "match needs at least one arm");
+    cli.err_at(e.file, e.line, e.col, "match needs at least one arm");
   }
   if result == null {
     result = ty_prim(14);
@@ -2443,7 +2443,7 @@ fn resolve_callee(callee: *parse.Expr) -> *CallTarget {
     if sym == null {
       if cur_fn_sym != null { eprintf("{}", cur_fn_sym.name); }
       eprintf("{}", "\n");
-      main.err_at("", 0, 0, main.cat("unknown function `", main.cat(callee.sv, "`")));
+      cli.err_at("", 0, 0, cli.cat("unknown function `", cli.cat(callee.sv, "`")));
       return ct;
     }
     if sym.kind == SymKind.SyFn || sym.kind == SymKind.SyExtern {
@@ -2463,7 +2463,7 @@ fn resolve_callee(callee: *parse.Expr) -> *CallTarget {
       callee.typed = sym.type;
       return ct;
     }
-    main.err_at("", 0, 0, "this name is not a function");
+    cli.err_at("", 0, 0, "this name is not a function");
     return ct;
   }
   if callee.kind == parse.ExprKind.ExField {
@@ -2473,7 +2473,7 @@ fn resolve_callee(callee: *parse.Expr) -> *CallTarget {
         let item: *Sym = sm_get(base.module.syms, callee.sv);
         if item != null && (item.kind == SymKind.SyFn || item.kind == SymKind.SyExtern) {
           if !item.decl.pub_ && !item.owner.is_prelude {
-            main.err_at("", 0, 0, main.cat3(callee.a.sv, main.cat3(".", callee.sv, ""), " is not public"));
+            cli.err_at("", 0, 0, cli.cat3(callee.a.sv, cli.cat3(".", callee.sv, ""), " is not public"));
           }
           if item.kind == SymKind.SyFn {
             ct.kind = CtKind.CtFn;
@@ -2485,7 +2485,7 @@ fn resolve_callee(callee: *parse.Expr) -> *CallTarget {
           callee.sym = item;
           return ct;
         }
-        main.err_at("", 0, 0, main.cat3("module `", main.cat3(callee.a.sv, main.cat3("` has no function `", main.cat3(callee.sv, "`", ""), ""), ""), ""));
+        cli.err_at("", 0, 0, cli.cat3("module `", cli.cat3(callee.a.sv, cli.cat3("` has no function `", cli.cat3(callee.sv, "`", ""), ""), ""), ""));
         return ct;
       }
       if base != null && base.kind == SymKind.SyEnum {
@@ -2493,7 +2493,7 @@ fn resolve_callee(callee: *parse.Expr) -> *CallTarget {
         let mut i: usize = 0;
         while i < d.variants.n {
           let v: *parse.VariantAst = d.variants.items[i];
-          if main.streq(v.name, callee.sv) {
+          if cli.streq(v.name, callee.sv) {
             ct.kind = CtKind.CtVariant;
             ct.variant = i as i32;
             ct.enum_type = base.type;
@@ -2522,7 +2522,7 @@ fn resolve_callee(callee: *parse.Expr) -> *CallTarget {
           callee.sym = fn_sym;
           return ct;
         }
-        main.err_at("", 0, 0, "type has no such associated function");
+        cli.err_at("", 0, 0, "type has no such associated function");
         return ct;
       }
     }
@@ -2540,7 +2540,7 @@ fn resolve_callee(callee: *parse.Expr) -> *CallTarget {
           let mut qi: usize = 0;
           while qi < qd.variants.n {
             let qv: *parse.VariantAst = qd.variants.items[qi];
-            if main.streq(qv.name, callee.sv) {
+            if cli.streq(qv.name, callee.sv) {
               ct.kind = CtKind.CtVariant;
               ct.variant = qi as i32;
               ct.enum_type = qbase.type;
@@ -2583,7 +2583,7 @@ fn resolve_callee(callee: *parse.Expr) -> *CallTarget {
       let found: bool = false;
       while i4z < len(bt.rec.methods) {
         let m: *Sym = bt.rec.methods[i4z];
-        if main.streq(m.name, callee.sv) {
+        if cli.streq(m.name, callee.sv) {
           ct.kind = CtKind.CtFn;
           ct.sym = m;
           ct.fn_type = m.type;
@@ -2596,7 +2596,7 @@ fn resolve_callee(callee: *parse.Expr) -> *CallTarget {
         i4z += 1;
       }
       if !found {
-        main.err_at(callee.file, callee.line, callee.col, main.cat("trait `", main.cat(bt.rec.mangled, main.cat("` has no method `", main.cat3(callee.sv, "`", "")))));
+        cli.err_at(callee.file, callee.line, callee.col, cli.cat("trait `", cli.cat(bt.rec.mangled, cli.cat("` has no method `", cli.cat3(callee.sv, "`", "")))));
         return ct;
       }
     }
@@ -2606,7 +2606,7 @@ fn resolve_callee(callee: *parse.Expr) -> *CallTarget {
       let mut i: usize = 0;
       while i < len(rec.methods) {
         let m: *Sym = rec.methods[i];
-        if main.streq(m.name, callee.sv) {
+        if cli.streq(m.name, callee.sv) {
           ct.kind = CtKind.CtFn;
           ct.sym = m;
           ct.fn_type = m.type;
@@ -2622,7 +2622,7 @@ fn resolve_callee(callee: *parse.Expr) -> *CallTarget {
         let mut j: usize = 0;
         while j < len(tmpl.methods) {
           let m: *Sym = tmpl.methods[j];
-          if main.streq(m.name, callee.sv) {
+          if cli.streq(m.name, callee.sv) {
             ct.kind = CtKind.CtFn;
             ct.sym = m;
             ct.fn_type = m.type;
@@ -2665,7 +2665,7 @@ fn resolve_callee(callee: *parse.Expr) -> *CallTarget {
     }
     // fall-through (boot check.c: the dotted path always resolves, errors,
     // or returns): no method anywhere on this receiver
-    main.err_at(callee.file, callee.line, callee.col, main.cat("no method `", main.cat3(callee.sv, "` for `", main.cat(ty_name(bt), "`"))));
+    cli.err_at(callee.file, callee.line, callee.col, cli.cat("no method `", cli.cat3(callee.sv, "` for `", cli.cat(ty_name(bt), "`"))));
     return ct;
   }
   let t: *parse.Type = check_expr(callee, null);
@@ -2674,7 +2674,7 @@ fn resolve_callee(callee: *parse.Expr) -> *CallTarget {
     ct.fn_type = t;
     return ct;
   }
-  main.err_at("", 0, 0, "cannot call this expression");
+  cli.err_at("", 0, 0, "cannot call this expression");
   return ct;
 }
 
@@ -2688,7 +2688,7 @@ fn resolve_callee(callee: *parse.Expr) -> *CallTarget {
 static mut g_fmt_holes: i32 = 0;
 static mut g_fmt_bad: i32 = 0; // the stray brace character, 0 when clean
 
-fn split_format(fmt: string, parts: *main.Vec[string]) -> bool {
+fn split_format(fmt: string, parts: *cli.Vec[string]) -> bool {
   g_fmt_holes = 0;
   let mut cur: []u8 = make([]u8, 0);
   let mut i: usize = 0;
@@ -2731,9 +2731,9 @@ fn check_call(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
   // no placeholders, into the raw byte sink; format desugars the same way
   // into `__fmt_build(...) -> string` (no placeholders: the literal
   // itself); then the regular path checks the rewritten call
-  if e.a.kind == parse.ExprKind.ExName && (main.streq(e.a.sv, "printf") || main.streq(e.a.sv, "eprintf") || main.streq(e.a.sv, "format")) {
-    let err_sink: bool = main.streq(e.a.sv, "eprintf");
-    let to_value: bool = main.streq(e.a.sv, "format");
+  if e.a.kind == parse.ExprKind.ExName && (cli.streq(e.a.sv, "printf") || cli.streq(e.a.sv, "eprintf") || cli.streq(e.a.sv, "format")) {
+    let err_sink: bool = cli.streq(e.a.sv, "eprintf");
+    let to_value: bool = cli.streq(e.a.sv, "format");
     let mut verb: string = "printf";
     if err_sink {
       verb = "eprintf";
@@ -2741,31 +2741,31 @@ fn check_call(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
       verb = "format";
     }
     if e.args.n == 0 {
-      main.err_at(e.file, e.line, e.col, main.cat("a call to ", main.cat3(verb, " needs a format string", "")));
+      cli.err_at(e.file, e.line, e.col, cli.cat("a call to ", cli.cat3(verb, " needs a format string", "")));
       e.typed = ty_err();
       return e.typed;
     }
     let fmt: *parse.Expr = e.args.items[0];
     if fmt.kind != parse.ExprKind.ExStr {
-      main.err_at(fmt.file, fmt.line, fmt.col, main.cat("the format string passed to ", main.cat3(verb, " must be a string literal", "")));
+      cli.err_at(fmt.file, fmt.line, fmt.col, cli.cat("the format string passed to ", cli.cat3(verb, " must be a string literal", "")));
       e.typed = ty_err();
       return e.typed;
     }
-    let parts: *main.Vec[string] = new main.Vec[string] { items: make([]string, 8), n: 0 };
+    let parts: *cli.Vec[string] = new cli.Vec[string] { items: make([]string, 8), n: 0 };
     if !split_format(fmt.sv, parts) {
       let b1: []u8 = lower.push_u8(make([]u8, 0), g_fmt_bad as u8);
       let b2: []u8 = lower.push_u8(lower.push_u8(make([]u8, 0), g_fmt_bad as u8), g_fmt_bad as u8);
-      main.err_at(fmt.file, fmt.line, fmt.col,
-             main.cat4("stray `", main.bytes_as_string(b1), "` in the format string (escape it as `", main.cat(main.bytes_as_string(b2), "`)")));
+      cli.err_at(fmt.file, fmt.line, fmt.col,
+             cli.cat4("stray `", cli.bytes_as_string(b1), "` in the format string (escape it as `", cli.cat(cli.bytes_as_string(b2), "`)")));
       e.typed = ty_err();
       return e.typed;
     }
     if g_fmt_holes as usize != e.args.n - 1 {
-      main.err_at(e.file, e.line, e.col, main.cat("the format string has ", main.cat(main.itoa(g_fmt_holes as i64), main.cat(" `{}` but ", main.cat3(main.itoa((e.args.n - 1) as i64), " values were given", "")))));
+      cli.err_at(e.file, e.line, e.col, cli.cat("the format string has ", cli.cat(cli.itoa(g_fmt_holes as i64), cli.cat(" `{}` but ", cli.cat3(cli.itoa((e.args.n - 1) as i64), " values were given", "")))));
       e.typed = ty_err();
       return e.typed;
     }
-    let nargs: *main.Vec[*parse.Expr] = parse.fresh_expr_vec();
+    let nargs: *cli.Vec[*parse.Expr] = parse.fresh_expr_vec();
     if g_fmt_holes == 0 && to_value {
       // format with no placeholders is the literal itself: no call, no copy
       e.kind = parse.ExprKind.ExStr;
@@ -2810,15 +2810,15 @@ fn check_call(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
     // against string; a value without to_str reports its own error there
   }
   // make(T, n)
-  if e.a.kind == parse.ExprKind.ExName && main.streq(e.a.sv, "make") {
+  if e.a.kind == parse.ExprKind.ExName && cli.streq(e.a.sv, "make") {
     if e.args.n != 2 {
-      main.err_at("", 0, 0, "make takes (type, length)");
+      cli.err_at("", 0, 0, "make takes (type, length)");
       e.typed = ty_err();
       return e.typed;
     }
     let tye: *parse.Expr = e.args.items[0];
     if tye.kind != parse.ExprKind.ExType || tye.ty.kind != parse.TypeAstKind.TaArray || tye.ty.size != null {
-      main.err_at("", 0, 0, "make takes a slice type like `[]i32`");
+      cli.err_at("", 0, 0, "make takes a slice type like `[]i32`");
       e.typed = ty_err();
       return e.typed;
     }
@@ -2829,21 +2829,21 @@ fn check_call(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
       e.args.items[1].typed = ln;
     }
     if !ty_is_int(ln) {
-      main.err_at("", 0, 0, "make length must be an integer");
+      cli.err_at("", 0, 0, "make length must be an integer");
     }
     e.typed = ty_slice(elem);
     return e.typed;
   }
   // len(x)
-  if e.a.kind == parse.ExprKind.ExName && main.streq(e.a.sv, "len") {
+  if e.a.kind == parse.ExprKind.ExName && cli.streq(e.a.sv, "len") {
     if e.args.n != 1 {
-      main.err_at("", 0, 0, "len takes one argument");
+      cli.err_at("", 0, 0, "len takes one argument");
       e.typed = ty_err();
       return e.typed;
     }
     let t: *parse.Type = check_expr(e.args.items[0], null);
     if t.kind != TypeKind.TySlice && t.kind != TypeKind.TyStringK && t.kind != TypeKind.TyArray {
-      main.err_at("", 0, 0, "len needs an array, slice or string");
+      cli.err_at("", 0, 0, "len needs an array, slice or string");
       e.typed = ty_err();
       return e.typed;
     }
@@ -2852,16 +2852,16 @@ fn check_call(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
   }
   // weak.from(p)
   if e.a.kind == parse.ExprKind.ExField && e.a.a.kind == parse.ExprKind.ExName &&
-     main.streq(e.a.a.sv, "weak") && main.streq(e.a.sv, "from") {
+     cli.streq(e.a.a.sv, "weak") && cli.streq(e.a.sv, "from") {
     if e.args.n != 1 {
-      main.err_at("", 0, 0, "weak.from takes one argument");
+      cli.err_at("", 0, 0, "weak.from takes one argument");
       e.typed = ty_err();
       return e.typed;
     }
     let t: *parse.Type = check_expr(e.args.items[0], null);
     if t.kind != TypeKind.TyPtr ||
        (t.elem.kind != TypeKind.TyStruct && t.elem.kind != TypeKind.TyEnum) {
-      main.err_at("", 0, 0, "weak.from needs a pointer to a new object");
+      cli.err_at("", 0, 0, "weak.from needs a pointer to a new object");
       e.typed = ty_err();
       return e.typed;
     }
@@ -2869,14 +2869,14 @@ fn check_call(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
     return e.typed;
   }
   // w.get()
-  if e.a.kind == parse.ExprKind.ExField && main.streq(e.a.sv, "get") {
+  if e.a.kind == parse.ExprKind.ExField && cli.streq(e.a.sv, "get") {
     let mut bt: *parse.Type = e.a.a.typed;
     if bt == null {
       bt = check_expr(e.a.a, null);
     }
     if bt != null && bt.kind == TypeKind.TyWeak {
       if e.args.n != 0 {
-        main.err_at("", 0, 0, "get takes no arguments");
+        cli.err_at("", 0, 0, "get takes no arguments");
       }
       e.typed = ty_ptr(bt.elem);
       return e.typed;
@@ -2884,40 +2884,40 @@ fn check_call(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
   }
   // intrinsics.*
   if e.a.kind == parse.ExprKind.ExField && e.a.a.kind == parse.ExprKind.ExName &&
-     main.streq(e.a.a.sv, "intrinsics") {
+     cli.streq(e.a.a.sv, "intrinsics") {
     let name: string = e.a.sv;
-    let is_load: bool = main.streq(name, "load_u8") || main.streq(name, "load_u32") ||
-                        main.streq(name, "load_u64") || main.streq(name, "load_i64");
-    let is_store: bool = main.streq(name, "store_u8") || main.streq(name, "store_u32") ||
-                         main.streq(name, "store_u64") || main.streq(name, "store_i64");
-    let is_memcpy: bool = main.streq(name, "memcpy");
-    let is_slice_str: bool = main.streq(name, "slice_string");
-    let is_bits: bool = main.streq(name, "f64_bits") || main.streq(name, "f32_bits");
-    let is_mem: bool = main.streq(name, "mem_size") || main.streq(name, "mem_grow");
+    let is_load: bool = cli.streq(name, "load_u8") || cli.streq(name, "load_u32") ||
+                        cli.streq(name, "load_u64") || cli.streq(name, "load_i64");
+    let is_store: bool = cli.streq(name, "store_u8") || cli.streq(name, "store_u32") ||
+                         cli.streq(name, "store_u64") || cli.streq(name, "store_i64");
+    let is_memcpy: bool = cli.streq(name, "memcpy");
+    let is_slice_str: bool = cli.streq(name, "slice_string");
+    let is_bits: bool = cli.streq(name, "f64_bits") || cli.streq(name, "f32_bits");
+    let is_mem: bool = cli.streq(name, "mem_size") || cli.streq(name, "mem_grow");
     if !is_load && !is_store && !is_memcpy && !is_slice_str && !is_bits &&
        !is_mem {
-      main.err_at("", 0, 0, main.cat("unknown intrinsic `", main.cat(name, "`")));
+      cli.err_at("", 0, 0, cli.cat("unknown intrinsic `", cli.cat(name, "`")));
       e.typed = ty_err();
       return e.typed;
     }
     if is_mem {
       // linear-memory introspection (spec 10): the wasi prelude's bump
       // allocator grows memory on demand with these — both yield usize
-      if main.streq(name, "mem_grow") {
+      if cli.streq(name, "mem_grow") {
         if e.args.n != 1 {
-          main.err_at("", 0, 0, "intrinsics.mem_grow takes one argument");
+          cli.err_at("", 0, 0, "intrinsics.mem_grow takes one argument");
           e.typed = ty_err();
           return e.typed;
         }
         let gt: *parse.Type = check_expr(e.args.items[0], null);
         if gt.kind != TypeKind.TyUsize {
-          main.err_at("", 0, 0, "intrinsics.mem_grow needs usize pages");
+          cli.err_at("", 0, 0, "intrinsics.mem_grow needs usize pages");
           e.typed = ty_err();
           return e.typed;
         }
       } else {
         if e.args.n != 0 {
-          main.err_at("", 0, 0, "intrinsics.mem_size takes no arguments");
+          cli.err_at("", 0, 0, "intrinsics.mem_size takes no arguments");
           e.typed = ty_err();
           return e.typed;
         }
@@ -2927,19 +2927,19 @@ fn check_call(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
     }
     if is_bits {
       if e.args.n != 1 {
-        main.err_at("", 0, 0, main.cat("unknown intrinsic `", main.cat(name, "`")));
+        cli.err_at("", 0, 0, cli.cat("unknown intrinsic `", cli.cat(name, "`")));
         e.typed = ty_err();
         return e.typed;
       }
       let t: *parse.Type = check_expr(e.args.items[0], null);
-      let wantf64: bool = main.streq(name, "f64_bits");
+      let wantf64: bool = cli.streq(name, "f64_bits");
       if wantf64 && t.kind != TypeKind.TyF64 {
-        main.err_at("", 0, 0, "intrinsics.f64_bits needs f64");
+        cli.err_at("", 0, 0, "intrinsics.f64_bits needs f64");
         e.typed = ty_err();
         return e.typed;
       }
       if !wantf64 && t.kind != TypeKind.TyF32 {
-        main.err_at("", 0, 0, "intrinsics.f32_bits needs f32");
+        cli.err_at("", 0, 0, "intrinsics.f32_bits needs f32");
         e.typed = ty_err();
         return e.typed;
       }
@@ -2952,33 +2952,33 @@ fn check_call(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
     }
     if is_load {
       if e.args.n != 1 {
-        main.err_at("", 0, 0, "intrinsics load takes one pointer");
+        cli.err_at("", 0, 0, "intrinsics load takes one pointer");
         e.typed = ty_err();
         return e.typed;
       }
       let t: *parse.Type = check_expr(e.args.items[0], null);
       if t.kind != TypeKind.TyPtr {
-        main.err_at("", 0, 0, "intrinsics load needs a pointer");
+        cli.err_at("", 0, 0, "intrinsics load needs a pointer");
         e.typed = ty_err();
         return e.typed;
       }
       let mut k: i32 = 8; // u32 default falls out below
-      if main.streq(name, "load_u8") { k = 5; }
-      if main.streq(name, "load_u32") { k = 7; }
-      if main.streq(name, "load_u64") { k = 8; }
-      if main.streq(name, "load_i64") { k = 4; }
+      if cli.streq(name, "load_u8") { k = 5; }
+      if cli.streq(name, "load_u32") { k = 7; }
+      if cli.streq(name, "load_u64") { k = 8; }
+      if cli.streq(name, "load_i64") { k = 4; }
       e.typed = ty_prim(k);
       return e.typed;
     }
     if is_store {
       if e.args.n != 2 {
-        main.err_at("", 0, 0, "intrinsics store takes pointer and value");
+        cli.err_at("", 0, 0, "intrinsics store takes pointer and value");
         e.typed = ty_err();
         return e.typed;
       }
       let t: *parse.Type = check_expr(e.args.items[0], null);
       if t.kind != TypeKind.TyPtr {
-        main.err_at("", 0, 0, "intrinsics store needs a pointer");
+        cli.err_at("", 0, 0, "intrinsics store needs a pointer");
         e.typed = ty_err();
         return e.typed;
       }
@@ -2988,7 +2988,7 @@ fn check_call(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
     }
     if is_memcpy {
       if e.args.n != 3 {
-        main.err_at("", 0, 0, "memcpy takes dst, src and count");
+        cli.err_at("", 0, 0, "memcpy takes dst, src and count");
         e.typed = ty_err();
         return e.typed;
       }
@@ -3000,13 +3000,13 @@ fn check_call(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
     }
     // slice_string
     if e.args.n != 1 {
-      main.err_at("", 0, 0, "slice_string takes one []u8");
+      cli.err_at("", 0, 0, "slice_string takes one []u8");
       e.typed = ty_err();
       return e.typed;
     }
     let t: *parse.Type = check_expr(e.args.items[0], null);
     if t.kind != TypeKind.TySlice {
-      main.err_at("", 0, 0, "slice_string takes a []u8");
+      cli.err_at("", 0, 0, "slice_string takes a []u8");
       e.typed = ty_err();
       return e.typed;
     }
@@ -3045,7 +3045,7 @@ fn check_call(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
           }
           let mut j2: usize = 0;
           while j2 < v.fields.n {
-            if main.streq(v.fields.items[j2].name, nm) {
+            if cli.streq(v.fields.items[j2].name, nm) {
               ft = variant_field_type(ct.enum_type, ct.variant, j2 as i32);
               j2 = v.fields.n;
             } else {
@@ -3078,7 +3078,7 @@ fn check_call(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
   if ct.kind == CtKind.CtFn &&
      (ct.inst_rec != null || (ct.sym.decl.templated && ct.sym.decl.tparams.n > 0)) {
     let env: *parse.TypeMap = parse.tm_new();
-    let names: *main.Vec[string] = make_str_vec();
+    let names: *cli.Vec[string] = make_str_vec();
     if ct.inst_rec != null {
       let rd: *parse.Decl = ct.inst_rec.decl;
       let mut ri: usize = 0;
@@ -3104,7 +3104,7 @@ fn check_call(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
       infer_targs(fn_t.params[0], recv, env);
     }
     if e.args.n + first != nparams0 {
-      main.err_at(e.file, e.line, e.col, main.cat5("function takes ", main.itoa((nparams0 - first) as i64), " arguments, got ", main.itoa(e.args.n as i64), ""));
+      cli.err_at(e.file, e.line, e.col, cli.cat5("function takes ", cli.itoa((nparams0 - first) as i64), " arguments, got ", cli.itoa(e.args.n as i64), ""));
     }
     let mut gi: usize = 0;
     while gi < e.args.n {
@@ -3138,7 +3138,7 @@ fn check_call(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
                        ct.sym.decl.params.items[ct.sym.decl.params.n - 1].is_variadic;
   let spread: bool = e.args.n > 0 && e.args.items[e.args.n - 1].spread;
   if spread && !variadic {
-    main.err_at(e.args.items[e.args.n - 1].file, e.args.items[e.args.n - 1].line,
+    cli.err_at(e.args.items[e.args.n - 1].file, e.args.items[e.args.n - 1].line,
            e.args.items[e.args.n - 1].col, "`...` spread needs a variadic parameter to fill");
   }
   // a dyn call's signature already excludes the receiver — the virtual
@@ -3148,21 +3148,21 @@ fn check_call(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
   if ct.is_method && dyn_call {
     if !variadic || spread {
       if e.args.n != nparams {
-        main.err_at(e.file, e.line, e.col, main.cat3("method takes ", main.cat(main.itoa(nparams as i64), main.cat(" arguments, got ", main.cat3(main.itoa(e.args.n as i64), "", ""))), ""));
+        cli.err_at(e.file, e.line, e.col, cli.cat3("method takes ", cli.cat(cli.itoa(nparams as i64), cli.cat(" arguments, got ", cli.cat3(cli.itoa(e.args.n as i64), "", ""))), ""));
       }
     } else {
       if e.args.n < nparams {
-        main.err_at(e.file, e.line, e.col, main.cat3("method takes at least ", main.cat(main.itoa(nparams as i64), main.cat(" arguments, got ", main.cat3(main.itoa(e.args.n as i64), "", ""))), ""));
+        cli.err_at(e.file, e.line, e.col, cli.cat3("method takes at least ", cli.cat(cli.itoa(nparams as i64), cli.cat(" arguments, got ", cli.cat3(cli.itoa(e.args.n as i64), "", ""))), ""));
       }
     }
   } else if ct.is_method {
     if !variadic || spread {
       if e.args.n + 1 != nparams {
-        main.err_at(e.file, e.line, e.col, main.cat5("method takes ", main.itoa((nparams - 1) as i64), " arguments, got ", main.itoa(e.args.n as i64), ""));
+        cli.err_at(e.file, e.line, e.col, cli.cat5("method takes ", cli.itoa((nparams - 1) as i64), " arguments, got ", cli.itoa(e.args.n as i64), ""));
       }
     } else {
       if e.args.n + 1 < nparams {
-        main.err_at(e.file, e.line, e.col, main.cat5("method takes at least ", main.itoa((nparams - 1) as i64), " arguments, got ", main.itoa(e.args.n as i64), ""));
+        cli.err_at(e.file, e.line, e.col, cli.cat5("method takes at least ", cli.itoa((nparams - 1) as i64), " arguments, got ", cli.itoa(e.args.n as i64), ""));
       }
     }
     let self_param: *parse.Type = ft.params[0];
@@ -3184,7 +3184,7 @@ fn check_call(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
       ok = true; // untyped literal receiver adapts to self (`5.to_str()`)
     }
     if !ok {
-      main.err_at(e.a.file, e.a.line, e.a.col, main.cat5("method `", e.a.sv, "` expects self as `", ty_name(self_param), main.cat3("`, receiver is `", ty_name(recv), "`")));
+      cli.err_at(e.a.file, e.a.line, e.a.col, cli.cat5("method `", e.a.sv, "` expects self as `", ty_name(self_param), cli.cat3("`, receiver is `", ty_name(recv), "`")));
     } else if literal_recv {
       // adapt it so lowering materializes the constant at self's width
       require(recv, self_param, e.a.a, "method receiver");
@@ -3192,14 +3192,14 @@ fn check_call(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
     arg_off = 1;
   } else if variadic && !spread {
     if e.args.n < nparams - 1 {
-      main.err_at(e.file, e.line, e.col, main.cat3("function takes at least ", main.cat(main.itoa((nparams - 1) as i64), main.cat(" arguments, got ", main.cat3(main.itoa(e.args.n as i64), "", ""))), ""));
+      cli.err_at(e.file, e.line, e.col, cli.cat3("function takes at least ", cli.cat(cli.itoa((nparams - 1) as i64), cli.cat(" arguments, got ", cli.cat3(cli.itoa(e.args.n as i64), "", ""))), ""));
     }
   } else if variadic && spread {
     if e.args.n != nparams {
-      main.err_at(e.file, e.line, e.col, main.cat3("function takes exactly ", main.cat(main.itoa((nparams - 1) as i64), main.cat(" arguments before the spread, got ", main.cat3(main.itoa(e.args.n as i64), "", ""))), ""));
+      cli.err_at(e.file, e.line, e.col, cli.cat3("function takes exactly ", cli.cat(cli.itoa((nparams - 1) as i64), cli.cat(" arguments before the spread, got ", cli.cat3(cli.itoa(e.args.n as i64), "", ""))), ""));
     }
   } else if e.args.n != nparams {
-    main.err_at(e.file, e.line, e.col, main.cat5("function takes ", main.itoa(nparams as i64), " arguments, got ", main.itoa(e.args.n as i64), ""));
+    cli.err_at(e.file, e.line, e.col, cli.cat5("function takes ", cli.itoa(nparams as i64), " arguments, got ", cli.itoa(e.args.n as i64), ""));
   }
   let mut i: usize = arg_off;
   while i < nparams {
@@ -3215,8 +3215,8 @@ fn check_call(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
       if spread {
         let at: *parse.Type = check_expr(e.args.items[ai], pt);
         if at.kind != TypeKind.TyErr && at != pt {
-          main.err_at(e.args.items[ai].file, e.args.items[ai].line, e.args.items[ai].col,
-                 main.cat("spread needs `", main.cat(ty_name(pt), main.cat("`, found `", main.cat3(ty_name(at), "`", "")))));
+          cli.err_at(e.args.items[ai].file, e.args.items[ai].line, e.args.items[ai].col,
+                 cli.cat("spread needs `", cli.cat(ty_name(pt), cli.cat("`, found `", cli.cat3(ty_name(at), "`", "")))));
         }
         i += 1;
         continue;
@@ -3242,7 +3242,7 @@ fn check_call(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
   if expected != null && expected.kind != TypeKind.TyErr &&
      expected.kind != TypeKind.TyVoid && ft.ret != null &&
      ft.ret.kind == TypeKind.TyVoid && ct.sym != null && ct.sym.owner != null &&
-     main.streq(ct.sym.name, "panic") &&
+     cli.streq(ct.sym.name, "panic") &&
      (ct.sym.owner == prelude_module || ct.sym.owner.is_prelude) {
     e.typed = expected;
   }
@@ -3336,12 +3336,12 @@ fn check_stmt(s: *parse.Stmt) {
       } else if t.kind == TypeKind.TyFloatLit {
         t = ty_prim(10);
       } else if t.kind == TypeKind.TyNull {
-        main.err_at(s.file, s.line, s.col, "`null` needs a type annotation");
+        cli.err_at(s.file, s.line, s.col, "`null` needs a type annotation");
         t = ty_err();
       } else if t.kind == TypeKind.TyErr {
         t = ty_err();
       } else if t.kind == TypeKind.TyVoid {
-        main.err_at(s.file, s.line, s.col, "cannot bind void");
+        cli.err_at(s.file, s.line, s.col, "cannot bind void");
         t = ty_err();
       }
     }
@@ -3354,7 +3354,7 @@ fn check_stmt(s: *parse.Stmt) {
     };
     next_local_id += 1;
     if scope_lookup(s.name) != null {
-      main.err_at(s.file, s.line, s.col, main.cat("`", main.cat3(s.name, "` shadows an existing binding", "")));
+      cli.err_at(s.file, s.line, s.col, cli.cat("`", cli.cat3(s.name, "` shadows an existing binding", "")));
     }
     scope_decl(s.name, sym);
     s.a.typed = t;
@@ -3370,12 +3370,12 @@ fn check_stmt(s: *parse.Stmt) {
       // target op value must be well-formed and equal target's type
       if s.assign_op == lex.Tok.PShleq || s.assign_op == lex.Tok.PShreq {
         if !ty_is_int(target) || !ty_is_int(value) {
-          main.err_at(s.file, s.line, s.col, "shift assignment needs integers");
+          cli.err_at(s.file, s.line, s.col, "shift assignment needs integers");
         }
       } else {
         if !types_compatible(target, value) && !(ty_is_int(target) && ty_is_int(value)) &&
            !(ty_is_flt(target) && ty_is_flt(value)) {
-          main.err_at(s.file, s.line, s.col, main.cat5("type mismatch in assignment: `", ty_name(target), "` vs `", ty_name(value), "`"));
+          cli.err_at(s.file, s.line, s.col, cli.cat5("type mismatch in assignment: `", ty_name(target), "` vs `", ty_name(value), "`"));
         }
       }
     } else {
@@ -3387,11 +3387,11 @@ fn check_stmt(s: *parse.Stmt) {
       }
       s.b.typed = value;
       if !types_compatible(target, value) {
-        main.err_at(s.file, s.line, s.col, main.cat5("cannot assign `", ty_name(value), "` to `", ty_name(target), "`"));
+        cli.err_at(s.file, s.line, s.col, cli.cat5("cannot assign `", ty_name(value), "` to `", ty_name(target), "`"));
       }
     }
     if !lvalue_mutable(s.a) {
-      main.err_at(s.file, s.line, s.col, "cannot assign to an immutable binding (declare it `let mut`)");
+      cli.err_at(s.file, s.line, s.col, "cannot assign to an immutable binding (declare it `let mut`)");
     }
     return;
   }
@@ -3401,16 +3401,16 @@ fn check_stmt(s: *parse.Stmt) {
   }
   if s.kind == parse.StmtKind.StReturn {
     if in_defer {
-      main.err_at(s.file, s.line, s.col, "`return` is not allowed in defer");
+      cli.err_at(s.file, s.line, s.col, "`return` is not allowed in defer");
       return;
     }
     if cur_ret == null || cur_ret.kind == TypeKind.TyVoid {
       if s.a != null {
-        main.err_at(s.file, s.line, s.col, "this function returns nothing");
+        cli.err_at(s.file, s.line, s.col, "this function returns nothing");
       }
     } else {
       if s.a == null {
-        main.err_at(s.file, s.line, s.col, "missing return value");
+        cli.err_at(s.file, s.line, s.col, "missing return value");
       } else {
         require(check_expr(s.a, cur_ret), cur_ret, s.a, "return value");
       }
@@ -3423,9 +3423,9 @@ fn check_stmt(s: *parse.Stmt) {
       w = "continue";
     }
     if in_defer {
-      main.err_at(s.file, s.line, s.col, main.cat3("`", w, "` is not allowed in defer"));
+      cli.err_at(s.file, s.line, s.col, cli.cat3("`", w, "` is not allowed in defer"));
     } else if loop_depth == 0 {
-      main.err_at(s.file, s.line, s.col, main.cat3("`", w, "` outside of a loop"));
+      cli.err_at(s.file, s.line, s.col, cli.cat3("`", w, "` outside of a loop"));
     }
     return;
   }
@@ -3447,7 +3447,7 @@ fn check_stmt(s: *parse.Stmt) {
     loop_depth += 1;
     let cond: *parse.Type = check_expr(s.cond, null);
     if cond.kind != TypeKind.TyBool {
-      main.err_at("", 0, 0, "while condition must be bool");
+      cli.err_at("", 0, 0, "while condition must be bool");
     }
     scope_push();
     let mut i: usize = 0;
@@ -3532,7 +3532,7 @@ fn check_fn_body(d: *parse.Decl, sym: *Sym, m: *Module) {
     k += 1;
   }
   if cur_ret != null && cur_ret.kind != TypeKind.TyVoid && !block_returns(d.body) {
-    main.err_at(d.file, d.line, d.col, main.cat5("missing return: `", d.name, "` is `", ty_name(cur_ret), "`"));
+    cli.err_at(d.file, d.line, d.col, cli.cat5("missing return: `", d.name, "` is `", ty_name(cur_ret), "`"));
   }
   scope_pop();
   g_tenv = null;
@@ -3586,16 +3586,16 @@ fn wire_method(m: *Module, d: *parse.Decl) -> *parse.Type {
       }
     } else if ty_is_primitive(rec_t) {
       if prim_method_find(rec_t, d.name) != null {
-        main.err_at(d.file, d.line, d.col, main.cat4("duplicate method `", d.name,
-          "` for primitive `", main.cat3(rec_t.mangled, "` (primitive methods are global)", "")));
+        cli.err_at(d.file, d.line, d.col, cli.cat4("duplicate method `", d.name,
+          "` for primitive `", cli.cat3(rec_t.mangled, "` (primitive methods are global)", "")));
       } else {
         if g_prim_methods == null {
-          g_prim_methods = new main.Vec[*PrimMethods] { items: make([]*PrimMethods, 8), n: 0 };
+          g_prim_methods = new cli.Vec[*PrimMethods] { items: make([]*PrimMethods, 8), n: 0 };
         }
         let mut list: *PrimMethods = null;
         let mut li: usize = 0;
         while li < g_prim_methods.n {
-          if main.streq(g_prim_methods.items[li].key, rec_t.mangled) {
+          if cli.streq(g_prim_methods.items[li].key, rec_t.mangled) {
             list = g_prim_methods.items[li];
           }
           li += 1;
@@ -3607,7 +3607,7 @@ fn wire_method(m: *Module, d: *parse.Decl) -> *parse.Type {
         list.syms = push_sym(list.syms, msym);
       }
     } else {
-      main.err_at(d.file, d.line, d.col, "`self` must be a struct, enum, or primitive");
+      cli.err_at(d.file, d.line, d.col, "`self` must be a struct, enum, or primitive");
     }
   }
   g_tenv = saved_env;
@@ -3620,7 +3620,7 @@ fn variadic_param_type(m: *Module, d: *parse.Decl, idx: usize) -> *parse.Type {
   let pt: *parse.Type = resolve_type_in_module(m, d.params.items[idx].ty);
   if d.params.items[idx].is_variadic {
     if type_has_param(pt) {
-      main.err_at(d.params.items[idx].file, d.params.items[idx].line, d.params.items[idx].col,
+      cli.err_at(d.params.items[idx].file, d.params.items[idx].line, d.params.items[idx].col,
              "a variadic parameter needs a concrete element type");
     }
     return ty_slice(pt);
@@ -3672,7 +3672,7 @@ fn resolve_fn_signature(m: *Module, decl: *parse.Decl) {
   let ft: *parse.Type = ty_fn(ps, ret);
   let mut tsym: *Sym = sm_get(m.syms, decl.name);
   if decl.is_method {
-    tsym = sm_get(m.syms, main.cat3(decl.recv, main.cat3(".", decl.name, ""), ""));
+    tsym = sm_get(m.syms, cli.cat3(decl.recv, cli.cat3(".", decl.name, ""), ""));
   }
   if tsym != null {
     tsym.type = ft;
@@ -3699,27 +3699,27 @@ fn load_use_module(user_path: string, rel: string, ns: string) -> *Module {
   if last > 0 {
     dir = user_path[0..last + 1];
   }
-  let mut aux_path: string = main.cat3(dir, rel, ".rho");
-  let mut r: Result[string, string] = main.read_file(aux_path);
-  if r.is_err() && g_use_root != "" && !main.streq(g_use_root, dir) {
-    aux_path = main.cat3(g_use_root, rel, ".rho");
-    r = main.read_file(aux_path);
+  let mut aux_path: string = cli.cat3(dir, rel, ".rho");
+  let mut r: Result[string, string] = cli.read_file(aux_path);
+  if r.is_err() && g_use_root != "" && !cli.streq(g_use_root, dir) {
+    aux_path = cli.cat3(g_use_root, rel, ".rho");
+    r = cli.read_file(aux_path);
   }
   if r.is_err() {
-    main.err_at(user_path, 1, 1, main.cat3("cannot read `", main.cat3(rel, ".rho`", ""), ""));
+    cli.err_at(user_path, 1, 1, cli.cat3("cannot read `", cli.cat3(rel, ".rho`", ""), ""));
     return null;
   }
   if g_aux_modules != null {
     let mut ci: usize = 0;
     while ci < g_aux_modules.n {
-      if main.streq(g_aux_modules.items[ci].path, aux_path) {
+      if cli.streq(g_aux_modules.items[ci].path, aux_path) {
         return g_aux_modules.items[ci];
       }
       ci += 1;
     }
   }
   let aux_root: *parse.Decl = parse.parse_file(aux_path, r.get_ok());
-  if main.diag_count() > 0 {
+  if cli.diag_count() > 0 {
     return null;
   }
   let aux: *Module = new Module {
@@ -3727,7 +3727,7 @@ fn load_use_module(user_path: string, rel: string, ns: string) -> *Module {
     is_prelude: false, checked: false,
   };
   if g_aux_modules == null {
-    g_aux_modules = new main.Vec[*Module] { items: make([]*Module, 8), n: 0 };
+    g_aux_modules = new cli.Vec[*Module] { items: make([]*Module, 8), n: 0 };
   }
   g_aux_modules.push(aux);
   check_module(aux);
@@ -3760,6 +3760,96 @@ fn scope_decl_module(m: *Module) {
   }
 }
 
+// ============== value containment (decl-time) ==============================
+//
+// A struct's VALUE holds its inline parts: fixed arrays and nested
+// structs live inside it; pointers, slices, strings, weak handles, fn
+// values and dyn boxes are indirections. A containment cycle — S holds
+// [2]S, or A holds B holds A — is an infinite value no layout can size.
+// The in-flight `resolving` guard catches the direct cases that resolve
+// inside the field window, but a type resolved outside it (a later decl,
+// a generic substitution) slipped both guards, compiled, and misbehaved
+// at runtime. This walk is the honest decl-time check: every interned
+// struct, every inline chain, a visited set. Enum payload containment
+// rides the same rec interning but walks nothing yet — variant payloads
+// resolve through their own lane and get their pass when a real shape
+// demands it.
+
+fn ct_push(items: []*parse.RecType, r: *parse.RecType) -> []*parse.RecType {
+  let out: []*parse.RecType = make([]*parse.RecType, len(items) + 1);
+  let mut i: usize = 0;
+  while i < len(items) {
+    out[i] = items[i];
+    i += 1;
+  }
+  out[len(items)] = r;
+  return out;
+}
+
+fn ct_in(items: []*parse.RecType, r: *parse.RecType) -> bool {
+  let mut i: usize = 0;
+  while i < len(items) {
+    if items[i] == r {
+      return true;
+    }
+    i += 1;
+  }
+  return false;
+}
+
+// the offending rec, or null when the chain is finite
+fn ct_cycle(t: *parse.Type, stack: []*parse.RecType, depth: i32) -> *parse.RecType {
+  if t == null || depth > 256 {
+    return null;
+  }
+  if t.kind == TypeKind.TyArray {
+    return ct_cycle(t.elem, stack, depth + 1);
+  }
+  if t.kind == TypeKind.TyStruct {
+    if t.rec == null || t.rec.is_template || t.rec.is_trait {
+      return null;
+    }
+    if ct_in(stack, t.rec) {
+      return t.rec;
+    }
+    let d: *parse.Decl = t.rec.decl;
+    if d == null || d.fields.n == 0 {
+      return null;
+    }
+    let deeper: []*parse.RecType = ct_push(stack, t.rec);
+    let mut j: usize = 0;
+    while j < d.fields.n {
+      let ft: *parse.Type = struct_field_type(t.rec, j);
+      if ft != null && ft.kind != TypeKind.TyErr {
+        let hit: *parse.RecType = ct_cycle(ft, deeper, depth + 1);
+        if hit != null {
+          return hit;
+        }
+      }
+      j += 1;
+    }
+  }
+  return null;
+}
+
+fn check_containment() {
+  let rm: *parse.TypeMap = rec_map();
+  let mut i: usize = 0;
+  while i < rm.n {
+    let t: *parse.Type = rm.items[i].val;
+    if t != null && t.kind == TypeKind.TyStruct && t.rec != null &&
+       !t.rec.is_template && !t.rec.is_trait && t.rec.decl != null {
+      let hit: *parse.RecType = ct_cycle(t, make([]*parse.RecType, 0), 0);
+      if hit != null {
+        cli.err_at(hit.decl.file, hit.decl.line, hit.decl.col,
+                   cli.cat3("struct `", hit.mangled,
+                            "` contains itself inline — an inline cycle (through fields or arrays) is an infinite value"));
+      }
+    }
+    i += 1;
+  }
+}
+
 pub fn check_all(m: *Module) -> i32 {
   m.checked = true;
   cur_module = m;
@@ -3777,6 +3867,7 @@ pub fn check_all(m: *Module) -> i32 {
     }
     ai += 1;
   }
+  check_containment();
   check_module_bodies(m);
   ai = 0;
   while g_aux_modules != null && ai < g_aux_modules.n {
@@ -3838,10 +3929,10 @@ pub fn check_all(m: *Module) -> i32 {
             continue;
           }
           if !trait_satisfied(tr, conc) {
-            let m1: string = main.cat("` does not implement `", tr.mangled);
-            let m2: string = main.cat(m1, "` (bound at instantiation): missing or mismatched `");
-            let msg: string = main.cat(main.cat("`", main.cat(ty_name(conc), m2)), main.cat3(tr.methods[g_missing_idx as usize].name, "`", ""));
-            main.err_at(cd.file, cd.line, cd.col, msg);
+            let m1: string = cli.cat("` does not implement `", tr.mangled);
+            let m2: string = cli.cat(m1, "` (bound at instantiation): missing or mismatched `");
+            let msg: string = cli.cat(cli.cat("`", cli.cat(ty_name(conc), m2)), cli.cat3(tr.methods[g_missing_idx as usize].name, "`", ""));
+            cli.err_at(cd.file, cd.line, cd.col, msg);
           }
           bi += 1;
         }
@@ -3850,7 +3941,7 @@ pub fn check_all(m: *Module) -> i32 {
       g_tenv = saved_env;
     }
   }
-  return main.diag_count();
+  return cli.diag_count();
 }
 
 // per-module declaration passes (boot: phase 2) — struct/enum types,
@@ -3971,7 +4062,7 @@ pub fn check_module_decls(m: *Module) {
       let ft0: *parse.Type = ty_fn(ps0, ret0);
       let mut tsym0: *Sym = sm_get(m.syms, decl.name);
       if decl.is_method {
-        tsym0 = sm_get(m.syms, main.cat3(decl.recv, ".", decl.name));
+        tsym0 = sm_get(m.syms, cli.cat3(decl.recv, ".", decl.name));
       }
       if tsym0 != null {
         tsym0.type = ft0;
@@ -4006,7 +4097,7 @@ pub fn check_module_decls(m: *Module) {
       if decl.init != null {
         let v: *lower.CV = lower.const_eval(decl.init, m);
         if !v.ok {
-          main.err_at(decl.file, decl.line, decl.col, main.cat3(decl.name, ": initializer must be a compile-time constant", ""));
+          cli.err_at(decl.file, decl.line, decl.col, cli.cat3(decl.name, ": initializer must be a compile-time constant", ""));
         } else {
           decl.ceval_ok = true;
           decl.ceval_is_int = v.is_int;
@@ -4055,7 +4146,7 @@ pub fn check_module_bodies(m: *Module) {
       }
       let mut tsym: *Sym = sm_get(m.syms, decl.name);
       if decl.is_method {
-        tsym = sm_get(m.syms, main.cat3(decl.recv, ".", decl.name));
+        tsym = sm_get(m.syms, cli.cat3(decl.recv, ".", decl.name));
       }
       let mut ft: *parse.Type = null;
       if tsym != null && tsym.type != null {
@@ -4111,7 +4202,7 @@ pub fn check_module_bodies(m: *Module) {
       if decl.init != null {
         let v: *lower.CV = lower.const_eval(decl.init, m);
         if !v.ok {
-          main.err_at(decl.file, decl.line, decl.col, main.cat3(decl.name, ": initializer must be a compile-time constant", ""));
+          cli.err_at(decl.file, decl.line, decl.col, cli.cat3(decl.name, ": initializer must be a compile-time constant", ""));
         } else {
           decl.ceval_ok = true;
           decl.ceval_is_int = v.is_int;
@@ -4133,7 +4224,7 @@ pub fn check_module_bodies(m: *Module) {
       while ii < decl.decls.n {
         let md: *parse.Decl = decl.decls.items[ii];
         if !md.templated {
-          let msym: *Sym = sm_get(m.syms, main.cat3(md.recv, main.cat3(".", md.name, ""), ""));
+          let msym: *Sym = sm_get(m.syms, cli.cat3(md.recv, cli.cat3(".", md.name, ""), ""));
           if msym != null {
             let fsym: *Sym = new Sym {
               kind: SymKind.SyFn, name: md.name, type: msym.type, decl: md,
@@ -4155,7 +4246,7 @@ pub fn check_module_bodies(m: *Module) {
 
 // ============== if-expressions (check.c port L6f-b) =======================
 
-fn check_block_value2(stmts: *main.Vec[*parse.Stmt]) -> *parse.Type {
+fn check_block_value2(stmts: *cli.Vec[*parse.Stmt]) -> *parse.Type {
   scope_push();
   let mut result: *parse.Type = ty_prim(14);
   let mut i: usize = 0;
@@ -4184,7 +4275,7 @@ fn is_panic_call(e: *parse.Expr) -> bool {
     return false;
   }
   let s: *Sym = e.a.sym;
-  if !main.streq(s.name, "panic") || s.owner == null {
+  if !cli.streq(s.name, "panic") || s.owner == null {
     return false;
   }
   return s.owner == prelude_module || s.owner.is_prelude;
@@ -4225,14 +4316,14 @@ fn unify2(a: *parse.Type, b: *parse.Type, at: *parse.Expr) -> *parse.Type {
   if types_compatible(u, v) {
     return u;
   }
-  main.err_at(at.file, at.line, at.col, main.cat5("branches have different types: `", ty_name(a), "` vs `", ty_name(b), "`"));
+  cli.err_at(at.file, at.line, at.col, cli.cat5("branches have different types: `", ty_name(a), "` vs `", ty_name(b), "`"));
   return ty_err();
 }
 
 fn check_if_expr(e: *parse.Expr, expected: *parse.Type) -> *parse.Type {
   let cond: *parse.Type = check_expr(e.a, null);
   if cond.kind != TypeKind.TyBool {
-    main.err_at(e.a.file, e.a.line, e.a.col, main.cat3("if condition must be bool, found `", ty_name(cond), "`"));
+    cli.err_at(e.a.file, e.a.line, e.a.col, cli.cat3("if condition must be bool, found `", ty_name(cond), "`"));
   }
   let then_blk: *parse.Stmt = e.items.items[0];
   let t: *parse.Type = check_block_value2(then_blk.stmts);
@@ -4263,14 +4354,14 @@ fn clone_typeast(t: *parse.TypeAst) -> *parse.TypeAst {
     file: t.file, line: t.line, col: t.col,
   };
   // deep-copy the recursive fields; path/string payloads are immutable
-  let mut ta: *main.Vec[*parse.TypeAst] = new main.Vec[*parse.TypeAst] { items: make([]*parse.TypeAst, 4), n: 0 };
+  let mut ta: *cli.Vec[*parse.TypeAst] = new cli.Vec[*parse.TypeAst] { items: make([]*parse.TypeAst, 4), n: 0 };
   let mut i: usize = 0;
   while i < t.targs.n {
     ta.push(clone_typeast(t.targs.items[i]));
     i += 1;
   }
   c.targs = ta;
-  let mut tp: *main.Vec[*parse.TypeAst] = new main.Vec[*parse.TypeAst] { items: make([]*parse.TypeAst, 4), n: 0 };
+  let mut tp: *cli.Vec[*parse.TypeAst] = new cli.Vec[*parse.TypeAst] { items: make([]*parse.TypeAst, 4), n: 0 };
   i = 0;
   while i < t.params.n {
     tp.push(clone_typeast(t.params.items[i]));
@@ -4307,7 +4398,7 @@ fn clone_arm(a: *parse.MatchArm) -> *parse.MatchArm {
   if a == null {
     return null;
   }
-  let mut pf: *main.Vec[*parse.FieldAst] = new main.Vec[*parse.FieldAst] { items: make([]*parse.FieldAst, 4), n: 0 };
+  let mut pf: *cli.Vec[*parse.FieldAst] = new cli.Vec[*parse.FieldAst] { items: make([]*parse.FieldAst, 4), n: 0 };
   let mut i: usize = 0;
   while i < a.pat_fields.n {
     pf.push(clone_fieldast(a.pat_fields.items[i]));
@@ -4329,9 +4420,9 @@ fn clone_stmt(s: *parse.Stmt) -> *parse.Stmt {
     kind: s.kind, file: s.file, line: s.line, col: s.col, pre: s.pre,
     mut_: s.mut_, tail: s.tail, name: s.name, ty: clone_typeast(s.ty),
     a: clone_expr(s.a), b: clone_expr(s.b), assign_op: s.assign_op,
-    stmts: new main.Vec[*parse.Stmt] { items: make([]*parse.Stmt, 4), n: 0 },
+    stmts: new cli.Vec[*parse.Stmt] { items: make([]*parse.Stmt, 4), n: 0 },
     cond: clone_expr(s.cond),
-    body: new main.Vec[*parse.Stmt] { items: make([]*parse.Stmt, 4), n: 0 },
+    body: new cli.Vec[*parse.Stmt] { items: make([]*parse.Stmt, 4), n: 0 },
   };
   let mut i: usize = 0;
   while i < s.stmts.n {
@@ -4355,15 +4446,15 @@ fn clone_expr(e: *parse.Expr) -> *parse.Expr {
     iv: e.iv, fv: e.fv, sv: e.sv, bv: e.bv,
     a: clone_expr(e.a), b: clone_expr(e.b), c: clone_expr(e.c),
     binop: e.binop, unop: e.unop,
-    args: new main.Vec[*parse.Expr] { items: make([]*parse.Expr, 4), n: 0 },
+    args: new cli.Vec[*parse.Expr] { items: make([]*parse.Expr, 4), n: 0 },
     arg_names: e.arg_names,
     ty: clone_typeast(e.ty),
-    arms: new main.Vec[*parse.MatchArm] { items: make([]*parse.MatchArm, 4), n: 0 },
-    params: new main.Vec[*parse.Param] { items: make([]*parse.Param, 4), n: 0 },
+    arms: new cli.Vec[*parse.MatchArm] { items: make([]*parse.MatchArm, 4), n: 0 },
+    params: new cli.Vec[*parse.Param] { items: make([]*parse.Param, 4), n: 0 },
     ret: clone_typeast(e.ret),
     q_ok: e.q_ok, q_err: e.q_err, else_if: clone_expr(e.else_if),
     fnval: e.fnval, caps: make([]*Sym, 0),
-    items: new main.Vec[*parse.Stmt] { items: make([]*parse.Stmt, 4), n: 0 },
+    items: new cli.Vec[*parse.Stmt] { items: make([]*parse.Stmt, 4), n: 0 },
     typed: null, sym: null, spread: e.spread,
   };
   let mut i: usize = 0;
@@ -4390,8 +4481,8 @@ fn clone_expr(e: *parse.Expr) -> *parse.Expr {
         kind: parse.StmtKind.StBlock, file: entry.file, line: entry.line, col: entry.col,
         pre: entry.pre, mut_: false, tail: false, name: entry.name, ty: null,
         a: null, b: null, assign_op: entry.assign_op,
-        stmts: new main.Vec[*parse.Stmt] { items: make([]*parse.Stmt, 0), n: 0 },
-        cond: null, body: new main.Vec[*parse.Stmt] { items: make([]*parse.Stmt, 0), n: 0 },
+        stmts: new cli.Vec[*parse.Stmt] { items: make([]*parse.Stmt, 0), n: 0 },
+        cond: null, body: new cli.Vec[*parse.Stmt] { items: make([]*parse.Stmt, 0), n: 0 },
       };
       c.items.push(nc);
       i += 1;
@@ -4411,10 +4502,10 @@ fn clone_fn_decl(d: *parse.Decl) -> *parse.Decl {
     kind: parse.DeclKind.DkFn, file: d.file, line: d.line, col: d.col, pre: d.pre,
     pub_: d.pub_, is_mut: d.is_mut, name: d.name,
     path: d.path,
-    params: new main.Vec[*parse.Param] { items: make([]*parse.Param, 4), n: 0 },
+    params: new cli.Vec[*parse.Param] { items: make([]*parse.Param, 4), n: 0 },
     ret: clone_typeast(d.ret),
     fields: d.fields, variants: d.variants, init: d.init,
-    body: new main.Vec[*parse.Stmt] { items: make([]*parse.Stmt, 8), n: 0 },
+    body: new cli.Vec[*parse.Stmt] { items: make([]*parse.Stmt, 8), n: 0 },
     tparams: make_str_vec(), is_method: d.is_method, recv: d.recv,
     decls: d.decls, target: null, tparam_bounds: d.tparam_bounds, templ: null,
     templated: false, tenv: null, owner: null,
@@ -4435,13 +4526,13 @@ fn clone_fn_decl(d: *parse.Decl) -> *parse.Decl {
 
 // ---- instantiation ---------------------------------------------------------
 
-pub static mut g_instantiations: *main.Vec[*Sym] = 0 as *main.Vec[*Sym]; // pending body checks
-pub static mut g_instantiated_names: *main.Vec[string] = 0 as *main.Vec[string]; // mangled keys
-pub static mut g_instantiated_syms: *main.Vec[*Sym] = 0 as *main.Vec[*Sym];
+pub static mut g_instantiations: *cli.Vec[*Sym] = 0 as *cli.Vec[*Sym]; // pending body checks
+pub static mut g_instantiated_names: *cli.Vec[string] = 0 as *cli.Vec[string]; // mangled keys
+pub static mut g_instantiated_syms: *cli.Vec[*Sym] = 0 as *cli.Vec[*Sym];
 pub static mut g_instantiation_depth: i32 = 0;
 
-fn make_str_vec() -> *main.Vec[string] {
-  return new main.Vec[string] { items: make([]string, 8), n: 0 };
+fn make_str_vec() -> *cli.Vec[string] {
+  return new cli.Vec[string] { items: make([]string, 8), n: 0 };
 }
 
 fn instantiated_get(mangled: string) -> *Sym {
@@ -4450,7 +4541,7 @@ fn instantiated_get(mangled: string) -> *Sym {
   }
   let mut i: usize = 0;
   while i < g_instantiated_names.n {
-    if main.streq(g_instantiated_names.items[i], mangled) {
+    if cli.streq(g_instantiated_names.items[i], mangled) {
       return g_instantiated_syms.items[i];
     }
     i += 1;
@@ -4480,15 +4571,15 @@ fn resolve_inst_signature(sym: *Sym) {
 fn instantiate_fn(gsym: *Sym, names: []string, env: *parse.TypeMap, at: *parse.Expr) -> *Sym {
   let d: *parse.Decl = gsym.decl;
   // mangle in the canonical parameter order so the name is deterministic
-  let mut mangled: string = main.cat3(d.name, "$", "");
+  let mut mangled: string = cli.cat3(d.name, "$", "");
   let mut i: usize = 0;
   while i < len(names) {
     let targ: *parse.Type = parse.tm_get(env, names[i]);
     if i > 0 {
-      mangled = main.cat3(mangled, ",", "");
+      mangled = cli.cat3(mangled, ",", "");
     }
     if targ == null || targ.kind == TypeKind.TyParam {
-      main.err_at(at.file, at.line, at.col, main.cat5("cannot infer `", names[i], "` for `", d.name, "`"));
+      cli.err_at(at.file, at.line, at.col, cli.cat5("cannot infer `", names[i], "` for `", d.name, "`"));
       return gsym;
     }
     let mut targ2: *parse.Type = targ;
@@ -4499,7 +4590,7 @@ fn instantiate_fn(gsym: *Sym, names: []string, env: *parse.TypeMap, at: *parse.E
       targ2 = ty_prim(10); // f64
     }
     parse.tm_put(env, names[i], targ2);
-    mangled = main.cat3(mangled, targ2.mangled, "");
+    mangled = cli.cat3(mangled, targ2.mangled, "");
     i += 1;
   }
   let existing: *Sym = instantiated_get(mangled);
@@ -4508,7 +4599,7 @@ fn instantiate_fn(gsym: *Sym, names: []string, env: *parse.TypeMap, at: *parse.E
   }
   g_instantiation_depth += 1;
   if g_instantiation_depth > 256 {
-    main.err_at("", 0, 0, "generic instantiation nesting too deep (recursive generics?)");
+    cli.err_at("", 0, 0, "generic instantiation nesting too deep (recursive generics?)");
     g_instantiation_depth -= 1;
     return gsym;
   }
@@ -4524,8 +4615,8 @@ fn instantiate_fn(gsym: *Sym, names: []string, env: *parse.TypeMap, at: *parse.E
   trait_rec: null,
   };
   if g_instantiated_names == null {
-    g_instantiated_names = new main.Vec[string] { items: make([]string, 64), n: 0 };
-    g_instantiated_syms = new main.Vec[*Sym] { items: make([]*Sym, 64), n: 0 };
+    g_instantiated_names = new cli.Vec[string] { items: make([]string, 64), n: 0 };
+    g_instantiated_syms = new cli.Vec[*Sym] { items: make([]*Sym, 64), n: 0 };
   }
   g_instantiated_names.push(mangled);
   g_instantiated_syms.push(sym);
@@ -4540,7 +4631,7 @@ fn instantiate_fn(gsym: *Sym, names: []string, env: *parse.TypeMap, at: *parse.E
   // emits it (boot: map_put(&owner->syms, mangled, sym))
   sm_put(gsym.owner.syms, mangled, sym);
   if g_instantiations == null {
-    g_instantiations = new main.Vec[*Sym] { items: make([]*Sym, 64), n: 0 };
+    g_instantiations = new cli.Vec[*Sym] { items: make([]*Sym, 64), n: 0 };
   }
   g_instantiations.push(sym);
   g_instantiation_depth -= 1;

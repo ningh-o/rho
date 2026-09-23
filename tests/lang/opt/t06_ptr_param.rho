@@ -1,0 +1,17 @@
+// exit: 0
+// a *T parameter is the scalar managed lane: rc_inc at the tail site, the
+// slot store after the release tail
+struct Box { v: i64 }
+
+fn touch(b: *Box, n: i64) -> i64 {
+  if n == 0 {
+    return b.v;
+  }
+  return touch(b, n - 1);
+}
+
+fn main() -> i32 {
+  let b: *Box = new Box { v: 41 };
+  printf("{}\n", touch(b, 100000) + 1);
+  return 0;
+}

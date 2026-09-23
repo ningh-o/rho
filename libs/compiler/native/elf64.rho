@@ -1,10 +1,10 @@
 // the ELF 64-bit writer
-use main;
+use cli;
 use asm64;
 use macho64;
 
 
-fn elf_phdr(b: *main.Vec[u8], ptype: u32, flags: u32, off: u64, vaddr: u64, filesz: u64, memsz: u64, align: u64) {
+fn elf_phdr(b: *cli.Vec[u8], ptype: u32, flags: u32, off: u64, vaddr: u64, filesz: u64, memsz: u64, align: u64) {
   macho64.b_put32(b, ptype);
   macho64.b_put32(b, flags);
   macho64.b_put64(b, off);
@@ -32,7 +32,7 @@ pub fn elf64_write(r: *asm64.AResult, machine: u32, text_vaddr: u64, data_vaddr:
     return false;
   }
 
-  let b: *main.Vec[u8] = new main.Vec[u8] { items: make([]u8, 4096), n: 0 };
+  let b: *cli.Vec[u8] = new cli.Vec[u8] { items: make([]u8, 4096), n: 0 };
 
   // ---- Ehdr ----
   let ident: []u8 = make([]u8, 16);
@@ -84,5 +84,5 @@ pub fn elf64_write(r: *asm64.AResult, machine: u32, text_vaddr: u64, data_vaddr:
     b.push(0);
   }
   macho64.b_push_str_bytes(b, r.data);
-  return main.write_file(out_path, main.bytes_as_string(b.items[0..b.n]));
+  return cli.write_file(out_path, cli.bytes_as_string(b.items[0..b.n]));
 }

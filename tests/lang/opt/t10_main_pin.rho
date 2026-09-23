@@ -1,0 +1,12 @@
+// exit: 5
+// main itself, tail-recursive through a static counter — the dump pin
+// proves the self-call left the artifact
+static mut N: i64 = 300000;
+
+fn main() -> i32 {
+  if N == 0 {
+    return 5;
+  }
+  N = N - 1;
+  return main();
+}

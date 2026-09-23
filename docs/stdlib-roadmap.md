@@ -143,7 +143,7 @@ minimal unsafe kernel: raw loads/stores by width, `memcpy`, `mem_set`,
 
 1. No growable collections (`Vec`, `Map`) — every consumer hand-rolls
    them; the self-hosted compiler carries its own private `Vec`
-   (`libs/compiler/main.rho`) as the existence proof.
+   (`libs/compiler/cli.rho`) as the existence proof.
 2. No JSON — the package tool parses a hand-rolled TOML subset instead
    (§2.4); JSON is in flight in a parallel workstream this round (given
    by the task assignment; no rho JSON file exists in-tree yet —
@@ -224,7 +224,7 @@ precision numbers are out; i64/f64 coverage matches the language.
    all four targets. **Dependencies:** none beyond `+`/`__substr`.
 2. **collections: `Vec`** — growable array over `make` + `intrinsics`
    (`memcpy`). **Why now:** every later item wants it; the self-hosted
-   compiler's private `Vec` (`libs/compiler/main.rho`) is a large tested body to
+   compiler's private `Vec` (`libs/compiler/cli.rho`) is a large tested body to
    lift; pure rho. **`Map`** follows once string hashing (pure) is in —
    open addressing, tombstone-free; **why not before Vec**: nothing
    ships without Vec, while Map has no in-tree consumer yet.

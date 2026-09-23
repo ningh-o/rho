@@ -1,0 +1,14 @@
+// exit: 0
+// a void fn whose body ends in the self-call (implicit tail position)
+fn tick(n: i64) {
+  if n == 0 {
+    return;
+  }
+  tick(n - 1);
+}
+
+fn main() -> i32 {
+  tick(3000000);
+  printf("done\n");
+  return 0;
+}

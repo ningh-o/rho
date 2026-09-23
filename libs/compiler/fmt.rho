@@ -1,5 +1,5 @@
 // the formatter: AST to canonical source (the fmt roundtrip law)
-use main;
+use cli;
 use lex;
 use parse;
 use check;
@@ -12,7 +12,7 @@ use check;
 // `fmt` output is idempotent and reparses to the same AST — both pinned by
 // the fmt battery (boot fmt file == stage0 fmt file == stage1 fmt file).
 
-pub static mut g_sb: *main.Vec[u8] = 0 as *main.Vec[u8];
+pub static mut g_sb: *cli.Vec[u8] = 0 as *cli.Vec[u8];
 static mut f_indent: i32 = 0;
 
 pub fn sb_c(c: u8) {
@@ -287,7 +287,7 @@ fn f_type(t: *parse.TypeAst) {
 // get parens (boot relies on the same shape — its parent_bp is dead too)
 fn f_expr(e: *parse.Expr) {
   if e.kind == parse.ExprKind.ExInt {
-    sb_s(main.utoa(e.iv));
+    sb_s(cli.utoa(e.iv));
     return;
   }
   if e.kind == parse.ExprKind.ExFloat {
@@ -504,7 +504,7 @@ fn f_match_full(e: *parse.Expr) {
     if arm.pk == parse.PatKind.PatWildcard {
       sb_s("_");
     } else if arm.pk == parse.PatKind.PatInt {
-      sb_s(main.utoa(arm.pat_int));
+      sb_s(cli.utoa(arm.pat_int));
     } else if arm.pk == parse.PatKind.PatStr {
       f_strlit_fmt(arm.pat_str);
     } else if arm.pk == parse.PatKind.PatTuple {
@@ -656,7 +656,7 @@ fn f_stmt(s: *parse.Stmt) {
   sb_c(125);
 }
 
-fn f_stmts(stmts: *main.Vec[*parse.Stmt]) {
+fn f_stmts(stmts: *cli.Vec[*parse.Stmt]) {
   let mut i: usize = 0;
   while i < stmts.n {
     f_line();
@@ -666,7 +666,7 @@ fn f_stmts(stmts: *main.Vec[*parse.Stmt]) {
 }
 
 // leading line comments, re-emitted at the current indent
-fn f_pre(pre: *main.Vec[string]) {
+fn f_pre(pre: *cli.Vec[string]) {
   if pre == null {
     return;
   }
@@ -679,7 +679,7 @@ fn f_pre(pre: *main.Vec[string]) {
   }
 }
 
-fn f_tparams(tparams: *main.Vec[string]) {
+fn f_tparams(tparams: *cli.Vec[string]) {
   if tparams == null || tparams.n == 0 {
     return;
   }
@@ -695,7 +695,7 @@ fn f_tparams(tparams: *main.Vec[string]) {
   sb_c(93); // ]
 }
 
-fn f_params(params: *main.Vec[*parse.Param]) {
+fn f_params(params: *cli.Vec[*parse.Param]) {
   sb_c(40); // (
   let mut i: usize = 0;
   while i < params.n {
@@ -828,7 +828,7 @@ fn f_decl(d: *parse.Decl) {
       }
       if v.has_disc {
         sb_s(" = ");
-        sb_s(main.utoa(v.disc));
+        sb_s(cli.utoa(v.disc));
       }
       sb_c(44);
       i += 1;
@@ -862,7 +862,7 @@ fn f_decl(d: *parse.Decl) {
 }
 
 pub fn fmt_module(module: *parse.Decl) -> string {
-  g_sb = new main.Vec[u8] { items: make([]u8, 65536), n: 0 };
+  g_sb = new cli.Vec[u8] { items: make([]u8, 65536), n: 0 };
   f_indent = 0;
   let mut first: bool = true;
   let mut i: usize = 0;
@@ -1243,7 +1243,7 @@ pub fn g_digits(x: f64, prec: i64) -> string {
     n += 1;
   }
   let e10: i64 = n - 1;
-  let ds: string = main.utoa(qv);
+  let ds: string = cli.utoa(qv);
   if e10 >= (0 - 4) as i64 && e10 < prec {
     if e10 >= 0 {
       let ip: usize = e10 as usize + 1;
@@ -1251,31 +1251,31 @@ pub fn g_digits(x: f64, prec: i64) -> string {
       if len(frac) == 0 {
         return substr(ds, 0, ip);
       }
-      return main.cat3(substr(ds, 0, ip), main.cat3(".", frac, ""), "");
+      return cli.cat3(substr(ds, 0, ip), cli.cat3(".", frac, ""), "");
     }
-    let all: string = g6_strip(main.cat3(rep0((0 - e10 - 1) as usize), ds, ""));
+    let all: string = g6_strip(cli.cat3(rep0((0 - e10 - 1) as usize), ds, ""));
     if len(all) == 0 {
       return "0";
     }
-    return main.cat3("0.", all, "");
+    return cli.cat3("0.", all, "");
   }
   let mut out: string = substr(ds, 0, 1);
   let frac: string = g6_strip(substr(ds, 1, prec as usize));
   if len(frac) > 0 {
-    out = main.cat3(out, main.cat3(".", frac, ""), "");
+    out = cli.cat3(out, cli.cat3(".", frac, ""), "");
   }
   let mut ae: i64 = e10;
   if ae < 0 {
     ae = 0 - ae;
   }
-  let mut es: string = main.itoa(ae);
+  let mut es: string = cli.itoa(ae);
   if ae < 10 {
-    es = main.cat3("0", es, "");
+    es = cli.cat3("0", es, "");
   }
   if e10 < 0 {
-    return main.cat3(out, main.cat3("e-", es, ""), "");
+    return cli.cat3(out, cli.cat3("e-", es, ""), "");
   }
-  return main.cat3(out, main.cat3("e+", es, ""), "");
+  return cli.cat3(out, cli.cat3("e+", es, ""), "");
 }
 
 fn g6(x: f64) -> string {

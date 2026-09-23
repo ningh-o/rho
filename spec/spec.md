@@ -85,6 +85,24 @@ environment, never passed to a call — may be allocated on the stack with
 its count traffic elided. Semantics are unchanged; this is an optimization
 the compiler may apply at any time after 0.0.5.
 
+### 1.5 Containment and managed allocation
+
+A value type must be finite: a struct (or fixed array of structs) that
+contains itself inline — `struct S { a: [2]S }`, directly or through a
+cycle of field types — is an infinite value no layout can size, and the
+checker rejects it at declaration time (every inline chain is walked;
+pointers, slices, strings, weak handles, fn values and dyn boxes are
+indirections and end a chain). The in-flight resolution window catches
+the direct cases; the full decl-time walk catches everything else.
+
+`make([]T, n)` allocates a refcounted buffer; `T`'s elements are
+whatever the allocator handed back (fresh wasm pages are zero; a reused
+block is not). Managed elements are therefore UNINITIALIZED until
+written — releasing or reading a slice before its elements are assigned
+is undefined. (Zeroing managed elements at the call site was attempted
+on 2026-09-23 and reverted: the inserted call sequence miscompiled in
+the second self-hosting generation — see docs/todo.md.)
+
 ## 2. Toolchain
 
 ```
@@ -175,7 +193,7 @@ Monomorphization order, symbol emission order, and data layout are
 canonically sorted. Compiling the same inputs twice yields byte-identical
 artifacts — a tested invariant (corpus builds are compared twice).
 
-### 3.6 Constant folding and dead instructions
+### 3.6 Constant folding, dead instructions, and tail calls
 
 After the reachability pass (§3.3), the self-hosted compiler folds the IR:
 an integer binop, comparison, width cast, or pointer `+imm` whose operands
@@ -196,9 +214,23 @@ Folding is semantics-preserving by law, not by luck:
   program's observable behavior, and the fold must not erase it.
 - Float arithmetic never folds.
 
+The same pass turns a direct self-call in tail position — the call whose
+result the block's `return` returns, or a void call immediately before
+it — into a loop: the arguments are pinned (managed values retain before
+the call site's release tail), moved into the parameters' frame slots
+after it, and control branches back to a split entry block. The frame is
+then constant: a five-million-deep tail recursion runs in constant stack
+(`tests/lang/opt` t01 pins it; without the pass the same program exhausts
+the shadow stack under boot). The transform declines anything it cannot
+prove — synthesized helpers, a release tail that is not pure rc machinery,
+a ret value that is not the call's own result, an argument count that does
+not match the parameter list, or an entry prologue that does not parse as
+the parameter-setup grammar — and those calls stay calls.
+
 Boot has no optimizer (the seed stays frozen); the gate's differential
 legs grade every corpus program boot-built vs mirror-built for identical
-stdout and exit code, so a misfold is a red gate, not a silent change.
+stdout and exit code, so a misfold — or a mis-turned tail call — is a red
+gate, not a silent change.
 
 ## 4. Version policy
 

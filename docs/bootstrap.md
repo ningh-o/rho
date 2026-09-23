@@ -8,19 +8,23 @@ to the internal `__cat2` primitive) (see below); fmt and the native
 backends (mac/linux, arm64(aarch64)/amd64) live in the self-hosted
 compiler, the standard-library package `libs/compiler/`. Everything
 downstream of it is built by rho itself. This page records the seed
-chain, who produces which artifact, and how to rebuild each one.
+chain, who produces which artifact, the two-layer feature law, and how
+to rebuild each one.
 
 ## The chain
 
 ```
 boot/src (C seed)
   └── build/rho-boot          cc over boot/src/*.c (+ generated prelude_data.c)
-        ├── build/gate/m.wasm       boot compiles libs/compiler/main.rho --target wasm32-wasi
-        │     └── build/gate/child.wasm       m.wasm compiles libs/compiler/main.rho
-        │           └── build/gate/grandchild.wasm   child compiles libs/compiler/main.rho
-        └── site/assets/rho.wasm    boot compiles libs/compiler/main.rho (the site asset;
-              └── build/rho.wasm    a byte-identical copy at the historical
-                                    path, for the tools that read it)
+        ├── build/gate/m.wasm       boot compiles libs/compiler/full.rho --target wasm32-wasi
+        │     └── build/gate/child.wasm       m.wasm compiles libs/compiler/full.rho
+        │           └── build/gate/grandchild.wasm   child compiles libs/compiler/full.rho
+        ├── boot/rho-seed.wasm      THE PINNED SEED — a byte copy of one era's
+        │                           m.wasm (see "The seed" below)
+        └── site/assets/rho.wasm    boot compiles libs/compiler/web.rho --target wasm32-wasi
+              └── build/rho.wasm    (the wasm-only web root — one megabyte lighter;
+                                    a copy at the historical path, for the tools
+                                    that read it)
 ```
 
 - **boot** — `build/rho-boot`, plain C, built by `make build/rho-boot`. The
@@ -28,15 +32,22 @@ boot/src (C seed)
   the only tool allowed to regenerate them. It ships one target:
   `--target wasm32-wasi`; any other target is rejected with a clear error
   (the native backends live in the self-hosted compiler).
-- **the mirror** — `libs/compiler/`, the compiler written in rho. The
-  package root is `libs/compiler/main.rho` (`main` must live in the root
-  file); boot turns it into `build/gate/m.wasm` (the gate's name for it).
-  The same build is the shipped compiler: `make site` produces
-  `site/assets/rho.wasm` with `boot build libs/compiler/main.rho --target
-  wasm32-wasi`, and `build/rho.wasm` is kept as a copy of that artifact
-  for the tools that read the historical path (the site tests, the LSP,
-  the vite plugin). No wasi-sdk anywhere: rho emits its own wasm,
-  in-process.
+- **the mirror** — `libs/compiler/`, the compiler written in rho. It has
+  TWO package roots (`main` must live in the root file, and a root cannot
+  `use` a module named `main`, hence the rename of the shared body to
+  `cli.rho`):
+  - `libs/compiler/full.rho` — every target, wasm and native, through
+    `native/pipe.rho` (the six backend modules, the runtime blobs, and
+    the image writers live behind that pipe). The gate builds THIS root
+    as `build/gate/m.wasm`.
+  - `libs/compiler/web.rho` — the wasm-only root the browser ships. It
+    links no native backend; reachability drops the pipe and the six
+    backends from the artifact entirely (measured: 3.38 MiB vs 4.39 MiB),
+    and a native target is refused with the same clear-error law boot
+    uses (exit 2). `make site` produces `site/assets/rho.wasm` from it;
+    `build/rho.wasm` is kept as a copy for the tools that read the
+    historical path (the site tests, the LSP, the vite plugin). No
+    wasi-sdk anywhere: rho emits its own wasm, in-process.
 - **child** — the mirror compiling itself: `m.wasm` builds
   `build/gate/child.wasm`.
 - **grandchild** — the child compiling itself: `child.wasm` builds
@@ -45,17 +56,59 @@ boot/src (C seed)
   differently); the grandchild is graded on behavior — it must rebuild
   every corpus program to the same stdout + exit code as boot.
 
-## The feature subset law
+## The seed
 
-`libs/compiler/` may only use language features boot already implements.
-This is not a convention — `tools/gate.sh` enforces it: the **build-mirror**
-leg is boot compiling the mirror, so a mirror source that runs ahead of the
-seed simply fails to build and the gate goes red. A new syntax feature
-therefore lands twice, in the same round and with the same semantics: first
-in `boot/src`, then (legally, once boot accepts it) in `libs/compiler/` and
-the mirror's own sources. The differential corpus (e.g. `corpus/031_*` for
-triple-quoted multiline strings) pins the shared semantics both ends must
-agree on.
+`boot/rho-seed.wasm` is a PINNED self-built compiler — the chain head of
+one era (pinned 2026-09-23, SHA-256 `1da6e085…`, built by boot from the
+full root). It exists so the mirror's sources may grow PAST boot's
+frozen feature set:
+
+- **boot defines the eternal floor** — the feature subset a fresh host
+  can always rebuild from C. It never grows again.
+- **the seed defines the current frontier** — `libs/compiler/` may use
+  anything the seed accepts (a strict superset of boot's set: the seed
+  IS a self-built mirror of its era).
+- The gate's **seed-chain** leg enforces the frontier every run: the
+  seed must build the current mirror. While the mirror stays within
+  boot's subset, the seed's build is byte-identical to the chain's
+  child (same compiler, same source); once the mirror grows past the
+  pin, the leg grades behavior instead and says so.
+- The gate's **build-mirror** leg (boot builds the mirror) is the
+  TIGHTER law and stays while it holds.
+
+**The re-pinning ritual** (the day the mirror adopts a feature the seed
+lacks — a post-freeze language feature landing in the mirror's own
+sources):
+
+1. Land the feature in the mirror's front half (parse/check/lower/emit)
+   WITHOUT using it in `libs/compiler/` sources yet — leg 2 stays green
+   (boot can still build the mirror).
+2. Re-pin: the NEW seed is the artifact that builds the current mirror —
+   the old seed builds `full.rho` and that output becomes
+   `boot/rho-seed.wasm` (prefer boot-built while leg 2 holds; the
+   provenance line below records which).
+3. Update the SHA + provenance here. Now `libs/compiler/` may use the
+   feature; when it does, switch the build-mirror leg's builder from
+   boot to the seed (one line in tools/gate.sh) — that leg then enforces
+   the frontier forever after.
+
+Provenance: `1da6e085…` — boot-built from full.rho at the 2026-09-23
+tail-call/roots round (byte-identical to that round's chain child).
+
+## The feature subset law (two layers)
+
+`libs/compiler/` may only use language features the CURRENT FRONTIER
+already implements — boot's set while the mirror stays within it, the
+pinned seed's set thereafter. This is not a convention — `tools/gate.sh`
+enforces it twice: the **build-mirror** leg (boot compiles the mirror —
+tighter, held while it can) and the **seed-chain** leg (the seed compiles
+the mirror — the durable one). A mirror source that runs ahead of the
+frontier simply fails to build and the gate goes red. A new syntax feature
+lands in the mirror's front half first, then (legally, once the frontier
+accepts it) in `libs/compiler/` sources and the mirror's own modules —
+see the re-pinning ritual above. The differential corpus (e.g.
+`corpus/031_*` for triple-quoted multiline strings) pins the shared
+semantics both ends must agree on.
 
 ### The module map
 
@@ -64,7 +117,10 @@ one module, `use` with relative paths:
 
 | module | contents |
 | --- | --- |
-| `main.rho` | package root: host helpers (Vec/Map/string utils), diagnostics, the CLI driver, native image glue (`build_native_image`, the `rt_*` blobs) |
+| `full.rho` | the complete package root: links the native pipe, finishes native builds the driver hands over |
+| `web.rho` | the wasm-only package root: the browser artifact, native targets refused |
+| `cli.rho` | host helpers (Vec/Map/string utils), diagnostics, the CLI driver (`run`) — shared by both roots, `pub static RC_NATIVE` + the request statics are the pipe seam |
+| `native/pipe.rho` | the native image pipeline: the six backend modules, `build_native_image`, the `rt_*` blobs, `pipe_emit` |
 | `lex.rho` | the lexer: `Tok`, `Token`, the scanners |
 | `parse.rho` | the AST types and the recursive-descent parser |
 | `check.rho` | the checker (check.c port): types, symbols, generics, expression/statement checking, generic fn instantiation — flattened to boot's phase model (registration → decl passes for every module → body passes for every module → global instantiation worklist) |
@@ -80,6 +136,7 @@ one module, `use` with relative paths:
 | `native/asm86.rho` | the x86-64 assembler |
 | `native/macho64.rho` | the mach-o writer (Sha256, section buffer) |
 | `native/elf64.rho` | the ELF writer |
+| `native/pipe.rho` | the native pipeline behind the full root (see above) |
 
 ### The multi-module semantics this layout rests on
 
@@ -106,10 +163,12 @@ checked bodies mid-registration and broke on cross-module ordering.
 ## The gate
 
 `tools/gate.sh --wasm` is the acceptance run: boot selftest (AST + diag
-goldens), build-mirror, corpus-diff (boot-built vs mirror-built artifacts
-of every `corpus/*.rho` run under wasmtime, stdout + exit compared;
-temporary `WE` debug lines from the seed are filtered), the self-chain (child,
-grandchild, grandchild-rebuilds-corpus), and diag-parity
+goldens), build-mirror (boot builds the FULL root), corpus-diff (boot-built
+vs mirror-built artifacts of every `corpus/*.rho` run under wasmtime,
+stdout + exit compared; temporary `WE` debug lines from the seed are
+filtered), the self-chain (child, grandchild, grandchild-rebuilds-corpus),
+seed-chain (the pinned seed builds the mirror), web-root (the wasm-only
+root builds, runs hello, refuses native), and diag-parity
 (`tests/diag/*.rho` messages byte-identical between boot and mirror). The
 full run adds the native crossings (build-only image smokes and self-builds
 per target) — those exercise the *mirror's* native backends, never boot's:
@@ -140,12 +199,11 @@ Dead-branch inventory from the slimming (what was removed, what stayed):
   is dead; the lowerer's `wasm ? 4 : 8` pointer-width branches collapsed
   to `4` (wasm32); `boot/prelude/hosted.rho` and `mac.rho` are deleted,
   and boot embeds exactly one prelude (core + wasi). The mirror carries
-  its own embedded prelude copies inside `libs/compiler/prelude_src.rho`,
-  so deleting the
-  boot-side tails does not starve it (note:
-  `tools/embed-prelude.py` regenerates those copies from `boot/prelude/`
-  and now has no hosted/mac source to read — it is a mirror-side tool,
-  retired with this slimming).
+  its own embedded prelude copies inside `libs/compiler/prelude_src.rho`
+  (kept in sync by `tools/embed-prelude.py` — it reads `core.rho` +
+  `wasi.rho`, which still exist; the hosted/mac tails it no longer finds
+  are simply skipped, and a `make` guard would be the honest wiring the
+  day the prelude grows again).
 - Kept: the `#if !defined(__wasm__)` shims in `main.c` (argv/`system`
   stub, tmp+rename atomic write, directory listing, run-temp naming) —
   boot itself still runs in two forms, the native `build/rho-boot`
@@ -163,9 +221,11 @@ needed fmt.
 
 ```sh
 make build/rho-boot                                        # the C seed (~10s)
-./build/rho-boot build libs/compiler/main.rho --target wasm32-wasi \
-  -o build/gate/m.wasm                                     # the mirror (60s cap)
-make site                                                  # the site asset (the self-built chain)
+./build/rho-boot build libs/compiler/full.rho --target wasm32-wasi \
+  -o build/gate/m.wasm                                     # the mirror, full root (60s cap)
+./build/rho-boot build libs/compiler/web.rho --target wasm32-wasi \
+  -o build/gate/web.wasm                                   # the wasm-only root (~23% smaller)
+make site                                                  # the site asset (the web root)
 make test                                                  # boot selftest (goldens + diag)
 ./build/rho-boot test corpus --target wasm32-wasi          # corpus vs goldens
 tools/gate.sh --wasm                                       # the acceptance run

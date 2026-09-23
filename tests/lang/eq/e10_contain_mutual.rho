@@ -1,0 +1,14 @@
+// reject: contains itself inline
+// the cycle crosses two structs — the decl-time walk catches what the
+// single-struct resolving window never sees
+struct A {
+  b: [3]B,
+}
+
+struct B {
+  a: [2]A,
+}
+
+fn main() -> i32 {
+  return 0;
+}

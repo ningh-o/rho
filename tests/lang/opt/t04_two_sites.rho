@@ -1,0 +1,17 @@
+// exit: 0
+// two mutually exclusive tail sites in one function — both become back
+// edges to the same split entry
+fn par(n: i64, up: bool) -> i64 {
+  if n == 0 {
+    return 0;
+  }
+  if up {
+    return par(n - 1, false);
+  }
+  return par(n - 1, true);
+}
+
+fn main() -> i32 {
+  printf("{}\n", par(100001, true));
+  return 0;
+}

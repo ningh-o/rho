@@ -1,6 +1,8 @@
 # boot keeps only: compile rho → wasm32-wasi, and the corpus oracle.
 # Features frozen at 0.4.0 + triple-quote; fmt and the native backends
-# live in the self-hosted compiler package (libs/compiler/main.rho).
+# live in the self-hosted compiler package. Two package roots:
+# libs/compiler/full.rho (every target) and libs/compiler/web.rho
+# (wasm-only — reachability drops the six native backend modules).
 CC ?= cc
 CFLAGS ?= -std=c11 -D_POSIX_C_SOURCE=200809L -O2 -Wall -Wextra -Wno-unused-parameter
 # prelude_data.c is listed explicitly: after `make clean` the wildcard cannot
@@ -22,16 +24,18 @@ CORE := boot/prelude/core.rho
 boot/src/prelude_data.c: $(CORE) boot/prelude/wasi.rho tools/embed.py
 	python3 tools/embed.py PRELUDE_SOURCE boot/src/prelude_data.c $(CORE) boot/prelude/wasi.rho
 
-# the served compiler asset is the self-hosted compiler itself: the C seed
-# turns the compiler package (libs/compiler/main.rho) into a wasm32-wasi
-# module — the same build the
-# bootstrap gate grades as build/gate/m.wasm. wasi-sdk is retired: rho has
-# always emitted wasm (and native images) directly, in-process, and no C
-# compiler takes part in any shipped artifact anymore.
-MIRROR_SRC := libs/compiler/main.rho $(wildcard libs/compiler/*.rho) $(wildcard libs/compiler/native/*.rho)
+# the served compiler asset is the self-hosted compiler's WEB root: the
+# C seed turns the wasm-only package (libs/compiler/web.rho) into a
+# wasm32-wasi module — one megabyte lighter than the full root, because
+# reachability drops the native backends the browser cannot use. The full
+# root (libs/compiler/full.rho) is the toolchain proper; the gate grades
+# it as build/gate/m.wasm. wasi-sdk is retired: rho has always emitted
+# wasm (and native images) directly, in-process, and no C compiler takes
+# part in any shipped artifact anymore.
+MIRROR_SRC := libs/compiler/web.rho libs/compiler/full.rho $(wildcard libs/compiler/*.rho) $(wildcard libs/compiler/native/*.rho)
 site/assets/rho.wasm: build/rho-boot $(MIRROR_SRC)
 	@mkdir -p site/assets
-	./build/rho-boot build libs/compiler/main.rho --target wasm32-wasi -o $@
+	./build/rho-boot build libs/compiler/web.rho --target wasm32-wasi -o $@
 
 # the same artifact at its historical path — the site tests, the LSP and
 # the vite plugin all read build/rho.wasm. A copy of the self-built asset,

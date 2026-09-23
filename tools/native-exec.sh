@@ -55,7 +55,7 @@ fi
 if [ ! -f "$M" ]; then
   echo "native-exec: no mirror at $M — building it"
   perl -e 'alarm shift; exec @ARGV or die "cannot exec $ARGV[0]\n"' 60 \
-    "$B" build libs/compiler/main.rho --target wasm32-wasi -o "$M" || {
+    "$B" build libs/compiler/full.rho --target wasm32-wasi -o "$M" || {
     echo "native-exec: mirror build failed"
     exit 2
   }

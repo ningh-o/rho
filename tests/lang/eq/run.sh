@@ -25,7 +25,7 @@ fi
 if [ ! -f "$M" ]; then
   echo "eq: no mirror at $M — building it"
   perl -e 'alarm shift; exec @ARGV or die "cannot exec $ARGV[0]\n"' 60 \
-    "$B" build libs/compiler/main.rho --target wasm32-wasi -o "$M" || {
+    "$B" build libs/compiler/full.rho --target wasm32-wasi -o "$M" || {
     echo "eq: mirror build failed"
     exit 2
   }
