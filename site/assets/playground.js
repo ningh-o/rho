@@ -198,7 +198,9 @@ function onWorkerMessage(m) {
     runBtn.textContent = "Run";
     if (!m.ok) {
       showOut(m.stderr, "err");
-      setStatus(`<span class="bad">compile error</span> in ${(m.compileMs || 0).toFixed(0)} ms`);
+      setStatus(
+        `<span class="bad">${m.stage === "run" ? "runtime error" : "compile error"}</span> in ${(m.compileMs || 0).toFixed(0)} ms`,
+      );
     } else {
       showOut(m.stdout);
       if (m.stderr) showOut(m.stderr, "err");

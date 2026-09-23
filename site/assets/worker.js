@@ -20,6 +20,8 @@ self.onmessage = async (e) => {
     return;
   }
   const { id, source } = msg;
+  // which half of the pipeline a failure came from — the page labels it
+  let stage = "compile";
   try {
     postMessage({ kind: "phase", id, phase: "boot" });
     await initCompiler(onProgress);
@@ -30,6 +32,7 @@ self.onmessage = async (e) => {
         kind: "done",
         id,
         ok: false,
+        stage,
         stderr: compiled.stderr || "compilation failed",
         compileMs: compiled.ms,
       });
@@ -42,6 +45,7 @@ self.onmessage = async (e) => {
       compileMs: compiled.ms,
       bytes: compiled.program.length,
     });
+    stage = "run";
     const run = await runProgram(compiled.program);
     postMessage({
       kind: "done",
@@ -55,11 +59,20 @@ self.onmessage = async (e) => {
       bytes: compiled.program.length,
     });
   } catch (err) {
+    const raw = String((err && err.message) || err);
+    // a blown host call stack surfaces as a plain JS RangeError — say what
+    // it actually is and how to fix it, instead of leaking engine jargon
+    const stderr = /maximum call stack|call stack exhausted/i.test(raw)
+      ? "stack overflow: recursion exceeded the host's call-stack limit " +
+        "(browsers give wasm about 1 MB). Shrink the recursion, or make it " +
+        "tail-recursive — rho turns tail calls into loops automatically."
+      : "runtime error: " + raw;
     postMessage({
       kind: "done",
       id,
       ok: false,
-      stderr: "runtime error: " + (err.message || err),
+      stage,
+      stderr,
     });
   }
 };
