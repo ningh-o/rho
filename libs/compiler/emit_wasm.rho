@@ -1553,6 +1553,14 @@ fn emit_region(c: *WFnCtx, b_in: *ir.IRBlock, from_in: *ir.IRBlock) -> *ir.IRBlo
     // construct) and the target gets emitted inline after it, dead —
     // every rung but the first compared nothing. Wrap the if in a block
     // labeled by the else target: both arms br to it, its code follows.
+    // No anonymous-if placeholder is pushed (unlike the full diamond
+    // below): from inside an arm the wasm nesting is if(0)/block(1), and
+    // the label stack carries only the block — br_depth lands on 1, the
+    // correct target. The 8-step walk bound: a longer chain reads as
+    // "not a half-diamond" and falls back to the full-diamond path,
+    // which would re-create the historical dead-rung shape — generated
+    // ladders never exceed two blocks, and hand-written IR does not
+    // exist.
     if f2 != null && !f2.emitted && !has_target(c, f2) && !f2.loop_header &&
        arm_falls_into(c, t2, f2) {
       push_label_n(c, 0, f2);

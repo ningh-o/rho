@@ -742,6 +742,11 @@ fn type_align(t: *parse.Type) -> i64 {
     }
     return 8;
   }
+  if t.kind == check.TypeKind.TyArray {
+    // the element's alignment, carried through — a [4]u64 field must
+    // align its successors the way four u64 fields would
+    return type_align(t.elem);
+  }
   return 8;
 }
 
@@ -770,6 +775,19 @@ fn type_size(t: *parse.Type) -> i64 {
   }
   if t.kind == check.TypeKind.TyDyn {
     return 16; // {vtable, obj}
+  }
+  if t.kind == check.TypeKind.TyArray {
+    // inline storage: N elements at the element's size; t.len is u64 —
+    // narrow once at the boundary. A non-positive element size means
+    // the element's layout is still in flight (a struct containing
+    // itself through an array) — diagnose instead of building a
+    // zero-size field and trapping downstream
+    let esz: i64 = type_size(t.elem);
+    if esz <= 0 {
+      main.err_at("", 0, 0, "array element type has no size (self-containing struct?)");
+      return 8;
+    }
+    return esz * (t.len as i64);
   }
   return 8;
 }
@@ -2121,13 +2139,29 @@ fn eq_fn_for(t: *parse.Type) -> string {
     emit_br(c, hdr);
     use_block(c, done);
   } else if t.kind == check.TypeKind.TyArray {
-    // fixed arrays are inline storage: walk the constant element count
+    // fixed arrays are inline storage: a loop over the constant count
+    // (never unrolled — a [huge]T field must not balloon the artifact)
     let esz: i64 = type_size(t.elem);
-    let mut ai: u64 = 0;
-    while ai < t.len {
-      eq_field(c, t.elem, v_addi(c, pa, esz * ai as i64), v_addi(c, pb, esz * ai as i64), rs);
-      ai += 1;
-    }
+    let islot: *ir.IRSlot = new_slot(c, 8, 8, "i");
+    v_store(c, v_slotaddr(c, islot), v_const(c, 0, ir.IRType.ItUsize));
+    let hdr: *ir.IRBlock = new_block(c);
+    let done: *ir.IRBlock = new_block(c);
+    hdr.loop_header = true;
+    hdr.loop_exit = done;
+    emit_br(c, hdr);
+    use_block(c, hdr);
+    let i: *ir.IRVreg = v_load(c, v_slotaddr(c, islot), ir.IRType.ItUsize);
+    let more: *ir.IRVreg = v_cmp(c, ir.IRCC.CcLt, i, v_const(c, t.len as i64, ir.IRType.ItUsize), false);
+    let loopb: *ir.IRBlock = new_block(c);
+    emit_cbr(c, more, loopb, done, done);
+    use_block(c, loopb);
+    let scaled: *ir.IRVreg = v_binop(c, ir.IROp.IrMul, i, v_const(c, esz, ir.IRType.ItUsize), ir.IRType.ItUsize, false);
+    eq_field(c, t.elem, v_binop(c, ir.IROp.IrAdd, pa, scaled, ir.IRType.ItPtr, false),
+             v_binop(c, ir.IROp.IrAdd, pb, scaled, ir.IRType.ItPtr, false), rs);
+    let i2: *ir.IRVreg = v_binop(c, ir.IROp.IrAdd, i, v_const(c, 1, ir.IRType.ItUsize), ir.IRType.ItUsize, true);
+    v_store(c, v_slotaddr(c, islot), i2);
+    emit_br(c, hdr);
+    use_block(c, done);
   } else {
     eq_walk(c, t, pa, pb, rs);
   }

@@ -147,8 +147,9 @@ functions — hosted externs use scalars and pointers only).
 ### 3.3 Emission: unreachable code is dropped
 
 After lowering, a reachability pass over the IR keeps the entry function,
-every function referenced by static initializers, the runtime helpers the
-backend calls by symbol, and everything transitively reachable. Dropped
+the runtime helpers the backend calls by symbol, and everything
+transitively reachable — statics are NOT roots; a static (and every fn it
+references) survives only if some reachable definition uses it. Dropped
 functions never appear in the artifact — prelude formatting machinery a
 program never prints with costs nothing. The same walk now keeps only the
 globals a surviving definition references (an unreferenced static is pure

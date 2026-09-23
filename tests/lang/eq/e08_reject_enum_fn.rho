@@ -1,0 +1,16 @@
+// reject: needs comparable payloads
+// an enum whose payload names a fn value must not compare — it would
+// silently compare one raw word of the closure pair
+enum Grab {
+  Nothing,
+  Cb(fn(i64) -> i64),
+}
+
+fn main() -> i32 {
+  let a: Grab = Grab.Nothing;
+  let b: Grab = Grab.Nothing;
+  if a == b {
+    return 1;
+  }
+  return 0;
+}

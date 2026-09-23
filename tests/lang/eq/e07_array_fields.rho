@@ -1,0 +1,23 @@
+// exit: 0
+struct Has {
+  a: [4]u64,
+  b: u64,
+}
+
+fn main() -> i32 {
+  printf("sizeof-diff={}\n", 1);
+  let hs: []Has = make([]Has, 2);
+  hs[0].a[0] = 1;
+  hs[0].a[3] = 4;
+  hs[0].b = 9;
+  hs[1].a[0] = 1;
+  hs[1].a[3] = 4;
+  hs[1].b = 9;
+  if hs[0] == hs[1] { printf("arr-eq\n"); } else { printf("BAD\n"); }
+  hs[1].b = 8;
+  if hs[0] == hs[1] { printf("BAD\n"); } else { printf("arr-ne\n"); }
+  hs[1].b = 9;
+  hs[1].a[2] = 7;
+  if hs[0] == hs[1] { printf("BAD\n"); } else { printf("elem-ne\n"); }
+  return 0;
+}

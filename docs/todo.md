@@ -140,10 +140,16 @@ pointer). Every participating type must itself be comparable (ints,
 floats, bools, strings, pointers, weak handles, and the aggregate
 kinds recursively; `fn`/`dyn`/`err` are rejected with a diagnostic).
 Recursive containers lower to mutually recursive helpers, terminating
-on acyclic data. `tests/lang/eq/` (6 cases) is the pin — mirror-only,
-like every language feature past the freeze. Fixed arrays have no
-user-visible construction path yet, so their eq support is compiled
-but untested end to end; slices and structs are fully covered.
+on acyclic data. `tests/lang/eq/` (8 cases) is the pin — mirror-only,
+like every language feature past the freeze. Fixed arrays construct as
+struct fields (element writes, pinned by e07); a standalone array
+literal still does not exist.
+
+Known corner, unfixed: `struct S { a: [2]S }` slips past both
+self-containment guards when the field types resolve outside the
+layout window — it compiles and the program misbehaves at runtime.
+A full value-containment check at decl time is the eventual fix; no
+corpus or real code shapes a type like this.
 
 ## Native real-machine exec — arm64-mac measured 2026-09-23
 

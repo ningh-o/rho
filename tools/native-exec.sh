@@ -113,7 +113,7 @@ for src in $PROGS; do
   chmod +x "$nimg"
   # behavioral baseline first, then the native exec
   wr 30 wasmtime run "$wout" 2>/dev/null | strip_dbg > "$G/$name.want"
-  wr 30 "$nimg" > "$G/$name.got" 2>/dev/null
+  wr 30 "$nimg" > "$G/$name.got" 2>"$G/$name.err"
   rc=$?
   wr 10 wasmtime run "$wout" >/dev/null 2>&1
   wrc=$?
@@ -133,10 +133,12 @@ for src in $PROGS; do
   else
     echo "$name: FAIL (rc $rc vs $wrc)"
     diff "$G/$name.want" "$G/$name.got" | head -4
+    [ -s "$G/$name.err" ] && sed -n '1,3p' "$G/$name.err"
     fail=$((fail + 1))
   fi
   # exec'd exactly once; remove while nothing can still hold it mapped
-  rm -f "$nimg" "$wout"
+  # (the .s sidecar rides along with every native build now)
+  rm -f "$nimg" "$nimg.s" "$wout"
 done
 
 echo "native-exec ($TARGET): $pass ok, $known known, $fail fail"
