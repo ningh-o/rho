@@ -57,7 +57,9 @@ fn f(a: i32, rest: i64...) { }        // variadic: last parameter only
 struct Name { field: T, ... }         // struct
 struct Pair[A, B] { a: A, b: B }      // generic struct
 enum Shape { Circle(f64), Rect { w: f64, h: f64 }, Unit }
-use io/file;                          // import; binds the namespace `file`
+use io.file;                          // import; binds the namespace `file`
+use net.http as http;                 // aliased import; binds `http`
+pub use io.file;                      // re-export (the facade pattern)
 pub ...                               // exported item (any declaration)
 static NAME: T = expr;                // mutable module static
 const NAME: T = expr;                 // compile-time constant
@@ -112,7 +114,10 @@ the same type. Assignment is a statement; `a = b` has no value.
 | 11 | unary `!` `~` `-` `*` (deref) `?` |
 | 12 | postfix: call `f(x)`, index `a[i]`, field `a.b`, method `a.m(x)`, slice `a[i..j]`, `as` cast |
 
-All binary operators are left-associative. `&&`/`||` short-circuit.
+All binary operators are left-associative. `&&`/`||` short-circuit. On two
+strings `+` concatenates (type-system.md § operators); there is no implicit
+string conversion anywhere — a non-string operand on either side of `+` is
+a type error, not a silent `to_str`.
 
 ### Postfix forms
 

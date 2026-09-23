@@ -1,0 +1,10 @@
+// exit: 0
+// use resolution: a subdirectory module reaches back to the package root
+// for a sibling module (sub/deep.rho says `use aux;`)
+use aux;
+use sub/deep;
+
+fn main() -> i32 {
+  printf("root={} deep={}\n", aux.ROOT_TAG(), deep.DEEP_TAG());
+  return 0;
+}

@@ -1,0 +1,896 @@
+// the amd64 text emitter: IR to asm86 assembly
+use main;
+use parse;
+use check;
+use ir;
+use lower;
+use emit_wasm;
+use emit_arm64;
+
+
+// ---- amd64 System V --------------------------------------------------------
+// spill-everything: every vreg owns a frame slot, instructions reload
+// operands into scratch registers.
+
+pub struct MCtx {
+  out: *main.Vec[u8],
+  fn_: *ir.IRFn,
+  offs: []i64, // slot id -> negative offset from rbp; vregs at slots.n + id
+  frame: i64,
+  is_mac: bool,
+}
+
+pub static mut g_label_amd: i32 = 0;
+
+fn m_sym(e: *MCtx, s: string) -> string {
+  if e.is_mac {
+    return main.cat3("_", s, "");
+  }
+  return s;
+}
+
+fn m_lit(e: *MCtx, l: string) -> string {
+  if e.is_mac {
+    return main.cat3("L", l, "");
+  }
+  return main.cat3(".", l, "");
+}
+
+fn m_slot_off(e: *MCtx, s: *ir.IRSlot) -> i64 {
+  if s.id < len(e.offs) as i32 {
+    // 0 = not laid out yet (see ac_slot_off)
+    let cached: i64 = e.offs[s.id as usize];
+    if cached != 0 {
+      return cached;
+    }
+  }
+  let mut off: i64 = e.frame;
+  let al: i64 = if s.align > 8 { 8 } else { s.align };
+  off = (off + al - 1) / al * al;
+  off += s.size;
+  e.frame = off;
+  while (len(e.offs) as i32) <= s.id {
+    e.offs = lower.push_i64(e.offs, 0);
+  }
+  e.offs[s.id as usize] = -off;
+  return -off;
+}
+
+fn m_layout(e: *MCtx) {
+  // pre-size: see ac_layout (the lazy push_i64 fill was O(n^2))
+  e.offs = make([]i64, len(e.fn_.slots) + e.fn_.next_vreg as usize);
+  e.frame = 0;
+  let mut i: usize = 0;
+  while i < len(e.fn_.slots) {
+    m_slot_off(e, e.fn_.slots[i]);
+    i += 1;
+  }
+  let mut v: i32 = 0;
+  while v < e.fn_.next_vreg {
+    e.frame += 8;
+    e.offs[len(e.fn_.slots) + v as usize] = -e.frame;
+    v += 1;
+  }
+  e.frame = (e.frame + 15) / 16 * 16 + 16;
+}
+
+fn m_vreg_off(e: *MCtx, v: *ir.IRVreg) -> i64 {
+  let idx: usize = len(e.fn_.slots) + v.id as usize;
+  while len(e.offs) <= idx {
+    e.offs = lower.push_i64(e.offs, 0);
+  }
+  return e.offs[idx];
+}
+
+// load from slot into reg; a float picks its width (movsd/movss) — an
+// 8-byte move on an f32 slot smears the neighboring bytes into the value
+fn m_ld(e: *MCtx, off: i64, size: i64, flt: bool, reg: string) {
+  if flt {
+    if size == 4 {
+      emit_arm64.bs(e.out, main.cat5("  movss ", main.itoa(off), "(%rbp), ", reg, "\n"));
+    } else {
+      emit_arm64.bs(e.out, main.cat5("  movsd ", main.itoa(off), "(%rbp), ", reg, "\n"));
+    }
+  } else if size == 1 {
+    emit_arm64.bs(e.out, main.cat5("  movsbq ", main.itoa(off), "(%rbp), ", reg, "\n"));
+  } else if size == 2 {
+    emit_arm64.bs(e.out, main.cat5("  movswq ", main.itoa(off), "(%rbp), ", reg, "\n"));
+  } else if size == 4 {
+    emit_arm64.bs(e.out, main.cat5("  movslq ", main.itoa(off), "(%rbp), ", reg, "\n"));
+  } else {
+    emit_arm64.bs(e.out, main.cat5("  movq ", main.itoa(off), "(%rbp), ", reg, "\n"));
+  }
+}
+
+// store reg into slot
+fn m_st(e: *MCtx, off: i64, size: i64, flt: bool, reg: string) {
+  if flt {
+    if size == 4 {
+      emit_arm64.bs(e.out, main.cat5("  movss ", reg, ", ", main.itoa(off), "(%rbp)\n"));
+    } else {
+      emit_arm64.bs(e.out, main.cat5("  movsd ", reg, ", ", main.itoa(off), "(%rbp)\n"));
+    }
+  } else if size == 1 {
+    emit_arm64.bs(e.out, main.cat5("  movb ", reg, ", ", main.itoa(off), "(%rbp)\n"));
+  } else if size == 2 {
+    emit_arm64.bs(e.out, main.cat5("  movw ", reg, ", ", main.itoa(off), "(%rbp)\n"));
+  } else if size == 4 {
+    emit_arm64.bs(e.out, main.cat5("  movl ", reg, ", ", main.itoa(off), "(%rbp)\n"));
+  } else {
+    emit_arm64.bs(e.out, main.cat5("  movq ", reg, ", ", main.itoa(off), "(%rbp)\n"));
+  }
+}
+
+fn m_cc(cc: ir.IRCC, is_float: bool, is_unsigned: bool) -> string {
+  if is_float {
+    if cc == ir.IRCC.CcEq { return "eq"; }
+    if cc == ir.IRCC.CcNe { return "ne"; }
+    if cc == ir.IRCC.CcLt { return "b"; }
+    if cc == ir.IRCC.CcLe { return "be"; }
+    if cc == ir.IRCC.CcGt { return "a"; }
+    return "ae";
+  }
+  if cc == ir.IRCC.CcEq { return "e"; }
+  if cc == ir.IRCC.CcNe { return "ne"; }
+  if cc == ir.IRCC.CcLt { return if is_unsigned { "b" } else { "l" }; }
+  if cc == ir.IRCC.CcLe { return if is_unsigned { "be" } else { "le" }; }
+  if cc == ir.IRCC.CcGt { return if is_unsigned { "a" } else { "g" }; }
+  return if is_unsigned { "ae" } else { "ge" };
+}
+
+fn m_cmp(e: *MCtx, i: *ir.IRIns) {
+  let ao: i64 = m_vreg_off(e, i.a);
+  let bo: i64 = m_vreg_off(e, i.b);
+  let dof: i64 = m_vreg_off(e, i.dst);
+  if !i.is_float {
+    let u: bool = !i.signed_ops;
+    m_ld(e, ao, i.size, false, "%rax");
+    m_ld(e, bo, i.size, false, "%rcx");
+    emit_arm64.bs(e.out, "  cmpq %rcx, %rax\n");
+    emit_arm64.bs(e.out, main.cat4("  set", main.cat3(m_cc(i.cc, false, u), " %al\n", ""), "", ""));
+    emit_arm64.bs(e.out, "  movzbq %al, %rax\n");
+    emit_arm64.bs(e.out, main.cat4("  movq %rax, ", main.cat3(main.itoa(dof), "(%rbp)\n", ""), "", ""));
+    return;
+  }
+  // floats: NaN-safe comparisons — the width rides the OPERAND type
+  // (a CMP instruction carries no meaningful i->size)
+  let size64: bool = i.a.ty == ir.IRType.ItF64;
+  let sfx: string = m_sfx(size64);
+  m_ld(e, ao, if size64 { 8 } else { 4 }, true, "%xmm0");
+  m_ld(e, bo, if size64 { 8 } else { 4 }, true, "%xmm1");
+  emit_arm64.bs(e.out, main.cat5("  ucomi", sfx, " %xmm1, %xmm0\n", "", ""));
+  let cc: string = m_cc(i.cc, true, false);
+  if main.streq(cc, "e") {
+    // eq = ZF && !PF
+    emit_arm64.bs(e.out, "  sete %al\n  setnp %cl\n  andb %cl, %al\n");
+  } else if main.streq(cc, "ne") {
+    emit_arm64.bs(e.out, "  setne %al\n  setp %cl\n  orb %cl, %al\n");
+  } else if main.streq(cc, "b") {
+    // lt = CF && !PF
+    emit_arm64.bs(e.out, "  setb %al\n  setnp %cl\n  andb %cl, %al\n");
+  } else if main.streq(cc, "be") {
+    emit_arm64.bs(e.out, "  setbe %al\n  setnp %cl\n  andb %cl, %al\n");
+  } else if main.streq(cc, "a") {
+    emit_arm64.bs(e.out, "  seta %al\n  setnp %cl\n  andb %cl, %al\n");
+  } else {
+    emit_arm64.bs(e.out, "  setae %al\n  setnp %cl\n  andb %cl, %al\n");
+  }
+  emit_arm64.bs(e.out, "  movzbq %al, %rax\n");
+  emit_arm64.bs(e.out, main.cat4("  movq %rax, ", main.cat3(main.itoa(dof), "(%rbp)\n", ""), "", ""));
+}
+
+fn m_divmod(e: *MCtx, i: *ir.IRIns, is_mod: bool) {
+  let ao: i64 = m_vreg_off(e, i.a);
+  let bo: i64 = m_vreg_off(e, i.b);
+  let dof: i64 = m_vreg_off(e, i.dst);
+  let lbl: i32 = g_label_amd;
+  g_label_amd += 1;
+  let l: string = main.itoa(lbl as i64);
+  if i.is_float {
+    let fw: i64 = if i.dst.ty == ir.IRType.ItF32 { 4 } else { 8 };
+    let mut sfx: string = "sd";
+    if fw == 4 {
+      sfx = "ss";
+    }
+    m_ld(e, ao, fw, true, "%xmm0");
+    m_ld(e, bo, fw, true, "%xmm1");
+    emit_arm64.bs(e.out, main.cat5("  div", sfx, " %xmm1, %xmm0\n", "", ""));
+    m_st(e, dof, fw, true, "%xmm0");
+    return;
+  }
+  let ext: string = m_ext(i.signed_ops);
+  emit_arm64.bs(e.out, main.cat4("Ldiv", main.cat3(l, "_guard:\n", ""), "", ""));
+  m_ld(e, bo, i.size, false, "%rcx");
+  emit_arm64.bs(e.out, "  testq %rcx, %rcx\n");
+  emit_arm64.bs(e.out, main.cat4("  jne Ldiv", main.cat3(l, "_nz\n", ""), "", ""));
+  emit_arm64.bs(e.out, main.cat4("  movq ", main.cat3(main.itoa(ao), "(%rbp), %rdi\n", ""), "", ""));
+  emit_arm64.bs(e.out, main.cat4("  jmp Ldiv", main.cat3(l, "_neg\n", ""), "", ""));
+  emit_arm64.bs(e.out, main.cat4("Ldiv", main.cat3(l, "_neg:\n", ""), "", ""));
+  emit_arm64.bs(e.out, main.cat4("  call ", main.cat3(m_sym(e, emit_wasm.prelude_symbol("__panic_div")), "\n", ""), "", ""));
+  emit_arm64.bs(e.out, main.cat4("Ldiv", main.cat3(l, "_nz:\n", ""), "", ""));
+  if i.signed_ops {
+    // MIN / -1 wraps to MIN: special-case divisor == -1
+    emit_arm64.bs(e.out, "  cmpq $-1, %rcx\n");
+    emit_arm64.bs(e.out, main.cat4("  jne Ldiv", main.cat3(l, "_ok\n", ""), "", ""));
+    m_ld(e, ao, i.size, false, "%rax");
+    emit_arm64.bs(e.out, "  negq %rax\n");
+    if is_mod {
+      emit_arm64.bs(e.out, "  xorq %rdx, %rdx\n");
+    }
+    emit_arm64.bs(e.out, main.cat4("  jmp Ldiv", main.cat3(l, "_done\n", ""), "", ""));
+    emit_arm64.bs(e.out, main.cat4("Ldiv", main.cat3(l, "_ok:\n", ""), "", ""));
+  }
+  m_ld(e, ao, i.size, false, "%rax");
+  emit_arm64.bs(e.out, main.cat4("  ", main.cat3(ext, "\n", ""), "", ""));
+  emit_arm64.bs(e.out, main.cat4("  ", main.cat3(m_divmn(i.signed_ops), " %rcx\n", ""), "", ""));
+  emit_arm64.bs(e.out, main.cat4("Ldiv", main.cat3(l, "_done:\n", ""), "", ""));
+  if is_mod {
+    m_st(e, dof, 8, false, "%rdx");
+  } else {
+    m_st(e, dof, 8, false, "%rax");
+  }
+}
+
+// parallel copies for phis on the edge out of the current block
+fn m_edge(e: *MCtx, succ: *ir.IRBlock) {
+  let mut dsts: []i64 = make([]i64, 0);
+  let mut srcs: []i64 = make([]i64, 0);
+  let mut p: usize = 0;
+  while p < len(succ.phis) {
+    let phi: *ir.IRPhi = succ.phis[p];
+    let cur: *ir.IRBlock = e.fn_.cur;
+    let mut k: usize = 0;
+    while k < len(phi.preds) {
+      if phi.preds[k] == cur {
+        let val: *ir.IRVreg = phi.args[k];
+        dsts = lower.push_i64(dsts, m_vreg_off(e, phi.dst));
+        srcs = lower.push_i64(srcs, m_vreg_off(e, val));
+        k = len(phi.preds);
+      }
+      k += 1;
+    }
+    p += 1;
+  }
+  while len(dsts) > 0 {
+    // find a copy whose dst is not any remaining src (a safe copy)
+    let mut done_at: i64 = -1;
+    let mut i: usize = 0;
+    while (i as i64) < len(dsts) as i64 && i < len(dsts) {
+      let d: i64 = dsts[i];
+      let mut is_src: bool = false;
+      let mut j: usize = 0;
+      while j < len(srcs) {
+        if srcs[j] == d {
+          is_src = true;
+        }
+        j += 1;
+      }
+      if !is_src {
+        done_at = i as i64;
+        i = len(dsts);
+      }
+      i += 1;
+    }
+    let pick: usize = if done_at >= 0 { done_at as usize } else { 0 };
+    let d: i64 = dsts[pick];
+    let s: i64 = srcs[pick];
+    if done_at < 0 {
+      // cycle: break it through the temp slot at -frame-8
+      emit_arm64.bs(e.out, main.cat4("  movq ", main.cat3(main.itoa(s), "(%rbp), %rax\n", ""), "", ""));
+      emit_arm64.bs(e.out, main.cat4("  movq %rax, -", main.cat3(main.itoa(e.frame - 8), "(%rbp)\n", ""), "", ""));
+      dsts[pick] = s; // copy temp -> dst next round
+      srcs[pick] = -(e.frame - 8);
+      continue;
+    }
+    emit_arm64.bs(e.out, main.cat4("  movq ", main.cat3(main.itoa(s), "(%rbp), %rax\n", ""), "", ""));
+    emit_arm64.bs(e.out, main.cat4("  movq %rax, ", main.cat3(main.itoa(d), "(%rbp)\n", ""), "", ""));
+    // remove pick from both
+    let mut j: usize = pick;
+    while j + 1 < len(dsts) {
+      dsts[j] = dsts[j + 1];
+      srcs[j] = srcs[j + 1];
+      j += 1;
+    }
+    dsts = dsts[0..len(dsts) - 1];
+    srcs = srcs[0..len(srcs) - 1];
+  }
+}
+
+fn m_call(e: *MCtx, i: *ir.IRIns) {
+  let mut ri: i32 = 0;
+  let mut fi: i32 = 0;
+  if i.callee_vreg != null {
+    // indirect target rides in r10, outside the arg regs
+    emit_arm64.bs(e.out, main.cat4("  movq ", main.cat3(main.itoa(m_vreg_off(e, i.callee_vreg)), "(%rbp), %r10\n", ""), "", ""));
+  }
+  let mut k: usize = 0;
+  while k < len(i.args) {
+    let a: *ir.IRVreg = i.args[k];
+    let is_float_arg: bool = a.ty == ir.IRType.ItF32 || a.ty == ir.IRType.ItF64;
+    let off: i64 = m_vreg_off(e, a);
+    if is_float_arg && fi < 8 {
+      // f32 args ride the low lane: movss, never the 8-byte movsd form
+      if a.ty == ir.IRType.ItF32 {
+        emit_arm64.bs(e.out, main.cat4("  movss ", main.cat3(main.itoa(off), "(%rbp), %xmm", ""), main.cat3(main.itoa(fi as i64), "\n", ""), ""));
+      } else {
+        emit_arm64.bs(e.out, main.cat4("  movsd ", main.cat3(main.itoa(off), "(%rbp), %xmm", ""), main.cat3(main.itoa(fi as i64), "\n", ""), ""));
+      }
+      fi += 1;
+    } else if !is_float_arg && ri < 6 {
+      emit_arm64.bs(e.out, main.cat4("  movq ", main.cat3(main.itoa(off), "(%rbp), ", ""), main.cat3(m_intreg(ri), "\n", ""), ""));
+      ri += 1;
+    } else {
+      // stack arg (rare): push
+      emit_arm64.bs(e.out, main.cat4("  movq ", main.cat3(main.itoa(off), "(%rbp), %rax\n  pushq %rax\n", ""), "", ""));
+    }
+    k += 1;
+  }
+  if i.callee_vreg != null {
+    emit_arm64.bs(e.out, "  call *%r10\n");
+  } else {
+    emit_arm64.bs(e.out, main.cat4("  call ", main.cat3(m_sym(e, i.callee), "\n", ""), "", ""));
+  }
+  if i.dst != null {
+    let f: bool = ir.ir_is_float_t(i.dst.ty);
+    m_st(e, m_vreg_off(e, i.dst), if f { if i.dst.ty == ir.IRType.ItF32 { 4 } else { 8 } } else { 8 }, f,
+         m_retreg(f));
+  }
+}
+
+fn m_intreg(n: i32) -> string {
+  if n == 0 { return "%rdi"; }
+  if n == 1 { return "%rsi"; }
+  if n == 2 { return "%rdx"; }
+  if n == 3 { return "%rcx"; }
+  if n == 4 { return "%r8"; }
+  return "%r9";
+}
+
+struct FConstNote {
+  lbl: i32,
+  v: f64,
+  f32_: bool,
+}
+
+pub static mut g_fconsts: *main.Vec[*FConstNote] = 0 as *main.Vec[*FConstNote];
+
+fn m_ins(e: *MCtx, i: *ir.IRIns) {
+  if i.op == ir.IROp.IrMemsize || i.op == ir.IROp.IrMemgrow {
+    eprintf("{}", "rho: mem_size/mem_grow are wasm-only intrinsics\n");
+    __exit(70);
+  }
+  if i.op == ir.IROp.IrConst {
+    let dof: i64 = m_vreg_off(e, i.dst);
+    if i.imm >= -2147483648 && i.imm <= 2147483647 {
+      emit_arm64.bs(e.out, main.cat5("  movq $", main.itoa(i.imm), ", ", main.itoa(dof), "(%rbp)\n"));
+    } else {
+      emit_arm64.bs(e.out, main.cat5("  movabsq $", main.itoa(i.imm), ", %rax\n  movq %rax, ", main.itoa(dof), "(%rbp)\n"));
+    }
+    return;
+  }
+  if i.op == ir.IROp.IrFconst {
+    // materialize via a rodata literal at the constant's own width: an f32
+    // constant holds the FLOAT bits (the double's low half is not the f32
+    // encoding — 0.5 would become +0.0)
+    let lbl: i32 = g_label_amd;
+    g_label_amd += 1;
+    if i.dst.ty == ir.IRType.ItF32 {
+      emit_arm64.bs(e.out, main.cat4("  movss Lfconst", main.cat3(main.itoa(lbl as i64), "(%rip), %xmm0\n", ""), "", ""));
+      m_st(e, m_vreg_off(e, i.dst), 4, true, "%xmm0");
+    } else {
+      emit_arm64.bs(e.out, main.cat4("  movsd Lfconst", main.cat3(main.itoa(lbl as i64), "(%rip), %xmm0\n", ""), "", ""));
+      m_st(e, m_vreg_off(e, i.dst), 8, true, "%xmm0");
+    }
+    if g_fconsts == null {
+      g_fconsts = new main.Vec[*FConstNote] { items: make([]*FConstNote, 8), n: 0 };
+    }
+    g_fconsts.push(new FConstNote { lbl: lbl, v: i.fimm, f32_: i.dst.ty == ir.IRType.ItF32 });
+    return;
+  }
+  if i.op == ir.IROp.IrAdd || i.op == ir.IROp.IrSub || i.op == ir.IROp.IrMul ||
+     i.op == ir.IROp.IrAnd || i.op == ir.IROp.IrOr || i.op == ir.IROp.IrXor {
+    let ao: i64 = m_vreg_off(e, i.a);
+    let bo: i64 = m_vreg_off(e, i.b);
+    let dof: i64 = m_vreg_off(e, i.dst);
+    if i.is_float {
+      // f32 arithmetic in the ss forms; the sd forms read 8 bytes off the
+      // spill slot and corrupt f32 values
+      let fw: i64 = if i.dst.ty == ir.IRType.ItF32 { 4 } else { 8 };
+      let mut sfx: string = "sd";
+    if fw == 4 {
+      sfx = "ss";
+    }
+      m_ld(e, ao, fw, true, "%xmm0");
+      m_ld(e, bo, fw, true, "%xmm1");
+      let fmn: string = m_fmn(i.op);
+      emit_arm64.bs(e.out, main.cat5("  ", fmn, sfx, " %xmm1, %xmm0\n", ""));
+      m_st(e, dof, fw, true, "%xmm0");
+      return;
+    }
+    let mn: string = m_imn(i.op);
+    m_ld(e, ao, 8, false, "%rax");
+    m_ld(e, bo, 8, false, "%rcx");
+    emit_arm64.bs(e.out, main.cat5("  ", mn, " %rcx, %rax\n", "", ""));
+    emit_arm64.m_canon(e, dof, i.a.ty);
+    m_st(e, dof, 8, false, "%rax");
+    return;
+  }
+  if i.op == ir.IROp.IrDiv || i.op == ir.IROp.IrMod {
+    m_divmod(e, i, i.op == ir.IROp.IrMod);
+    return;
+  }
+  if i.op == ir.IROp.IrShl || i.op == ir.IROp.IrShr {
+    let ao: i64 = m_vreg_off(e, i.a);
+    let bo: i64 = m_vreg_off(e, i.b);
+    let dof: i64 = m_vreg_off(e, i.dst);
+    m_ld(e, ao, 8, false, "%rax");
+    m_ld(e, bo, 8, false, "%rcx");
+    let mn: string = m_shmn(i.op, i.signed_ops);
+    emit_arm64.bs(e.out, main.cat5("  ", mn, " %cl, %rax\n", "", ""));
+    if i.op == ir.IROp.IrShl {
+      emit_arm64.m_canon(e, dof, i.a.ty);
+    }
+    m_st(e, dof, 8, false, "%rax");
+    return;
+  }
+  if i.op == ir.IROp.IrCmp {
+    m_cmp(e, i);
+    return;
+  }
+  if i.op == ir.IROp.IrLoad {
+    let dof: i64 = m_vreg_off(e, i.dst);
+    m_ld(e, m_vreg_off(e, i.addr), 8, false, "%rax");
+    if i.is_float {
+      emit_arm64.bs(e.out, main.cat4("  ", main.cat3(m_ldf(i.size), " (%rax), %xmm0\n", ""), "", ""));
+    } else if i.size == 1 {
+      if lower.ty_is_signed_int(i.dst.ty) { emit_arm64.bs(e.out, "  movsbq (%rax), %rax\n"); } else { emit_arm64.bs(e.out, "  movzbq (%rax), %rax\n"); }
+    } else if i.size == 2 {
+      if lower.ty_is_signed_int(i.dst.ty) { emit_arm64.bs(e.out, "  movswq (%rax), %rax\n"); } else { emit_arm64.bs(e.out, "  movzwq (%rax), %rax\n"); }
+    } else if i.size == 4 {
+      if lower.ty_is_signed_int(i.dst.ty) { emit_arm64.bs(e.out, "  movslq (%rax), %rax\n"); } else { emit_arm64.bs(e.out, "  movl (%rax), %eax\n"); }
+    } else {
+      emit_arm64.bs(e.out, "  movq (%rax), %rax\n");
+    }
+    if i.is_float {
+      m_st(e, dof, i.size, true, "%xmm0");
+    } else {
+      m_st(e, dof, 8, false, "%rax");
+    }
+    return;
+  }
+  if i.op == ir.IROp.IrStore {
+    m_ld(e, m_vreg_off(e, i.addr), 8, false, "%rax");
+    m_ld(e, m_vreg_off(e, i.a), i.size, i.is_float, if i.is_float { "%xmm0" } else { "%rcx" });
+    if i.is_float {
+      emit_arm64.bs(e.out, main.cat4("  ", main.cat3(m_ldf(i.size), " %xmm0, (%rax)\n", ""), "", ""));
+    } else if i.size == 1 {
+      emit_arm64.bs(e.out, "  movb %cl, (%rax)\n");
+    } else if i.size == 2 {
+      emit_arm64.bs(e.out, "  movw %cx, (%rax)\n");
+    } else if i.size == 4 {
+      emit_arm64.bs(e.out, "  movl %ecx, (%rax)\n");
+    } else {
+      emit_arm64.bs(e.out, "  movq %rcx, (%rax)\n");
+    }
+    return;
+  }
+  if i.op == ir.IROp.IrAddrc {
+    let dof: i64 = m_vreg_off(e, i.dst);
+    if i.lit == -1 {
+      // global symbol address
+      emit_arm64.bs(e.out, main.cat5("  leaq ", m_sym(e, i.callee), "(%rip), %rax\n", "", ""));
+    } else {
+      emit_arm64.bs(e.out, main.cat5("  leaq ", main.itoa(m_slot_off(e, i.slot)), "(%rbp), %rax\n", "", ""));
+    }
+    emit_arm64.bs(e.out, main.cat5("  movq %rax, ", main.itoa(dof), "(%rbp)\n", "", ""));
+    return;
+  }
+  if i.op == ir.IROp.IrAddi {
+    let dof: i64 = m_vreg_off(e, i.dst);
+    m_ld(e, m_vreg_off(e, i.a), 8, false, "%rax");
+    emit_arm64.bs(e.out, main.cat5("  addq $", main.itoa(i.imm), ", %rax\n", "", ""));
+    emit_arm64.bs(e.out, main.cat5("  movq %rax, ", main.itoa(dof), "(%rbp)\n", "", ""));
+    return;
+  }
+  if i.op == ir.IROp.IrCast {
+    let sof: i64 = m_vreg_off(e, i.a);
+    let dof: i64 = m_vreg_off(e, i.dst);
+    if i.cast == ir.IRCastKind.CastTrunc {
+      m_ld(e, sof, 8, false, "%rax");
+      m_st(e, dof, 8, false, "%rax");
+    } else if i.cast == ir.IRCastKind.CastSext {
+      m_ld(e, sof, ir.ir_size_of(i.cast_from), false, "%rax");
+      m_st(e, dof, 8, false, "%rax");
+    } else if i.cast == ir.IRCastKind.CastZext {
+      m_ld(e, sof, ir.ir_size_of(i.cast_from), false, "%rax");
+      if ir.ir_size_of(i.cast_from) == 1 {
+        emit_arm64.bs(e.out, "  movzbq %al, %rax\n");
+      } else if ir.ir_size_of(i.cast_from) == 2 {
+        emit_arm64.bs(e.out, "  movzwq %ax, %rax\n");
+      } else if ir.ir_size_of(i.cast_from) == 4 {
+        emit_arm64.bs(e.out, "  movl %eax, %eax\n");
+      }
+      m_st(e, dof, 8, false, "%rax");
+    } else if i.cast == ir.IRCastKind.CastI2f {
+      // narrow ints load sign/zero-extended at their own width; a u64
+      // source needs the unsigned convert sequence (cvtsi2sd reads rax as
+      // i64 and would mangle values >= 2^63)
+      let fw: i64 = ir.ir_size_of(i.cast_from);
+      let sgn: bool = lower.ty_is_signed_int(i.cast_from);
+      let mut ld1: string = "movzbq";
+      let mut ld2: string = "movzwq";
+      let mut ld4: string = "movl";
+      if sgn {
+        ld1 = "movsbq";
+        ld2 = "movswq";
+        ld4 = "movslq";
+      }
+      let tail: string = main.cat3(main.itoa(sof), "(%rbp), %rax\n", "");
+      if fw == 1 {
+        emit_arm64.bs(e.out, main.cat5("  ", ld1, " ", tail, ""));
+      } else if fw == 2 {
+        emit_arm64.bs(e.out, main.cat5("  ", ld2, " ", tail, ""));
+      } else if fw == 4 {
+        emit_arm64.bs(e.out, main.cat5("  ", ld4, " ", tail, ""));
+      } else {
+        emit_arm64.bs(e.out, main.cat5("  movq ", main.itoa(sof), "(%rbp), %rax\n", "", ""));
+      }
+      let cvt: string = m_cvt_i2f(i.cast_to == ir.IRType.ItF32);
+      let lbl: i32 = g_label_amd;
+      g_label_amd += 1;
+      if !sgn && fw == 8 {
+        let l: string = main.itoa(lbl as i64);
+        emit_arm64.bs(e.out, "  testq %rax, %rax\n");
+        emit_arm64.bs(e.out, main.cat3("  js Li2f", l, "_hi\n"));
+        emit_arm64.bs(e.out, main.cat5("  ", cvt, " %rax, %xmm0\n  jmp Li2f", main.cat3(l, "_done\n", ""), ""));
+        emit_arm64.bs(e.out, main.cat3("Li2f", l, "_hi:\n"));
+        emit_arm64.bs(e.out, "  movq %rax, %rcx\n  shrq $1, %rcx\n  andq $1, %rax\n  orq %rcx, %rax\n");
+        emit_arm64.bs(e.out, main.cat5("  ", cvt, " %rax, %xmm0\n", "", ""));
+        emit_arm64.bs(e.out, main.cat5("  add", if i.cast_to == ir.IRType.ItF32 { "ss" } else { "sd" }, " %xmm0, %xmm0\n", "", ""));
+        emit_arm64.bs(e.out, main.cat3("Li2f", l, "_done:\n"));
+      } else {
+        emit_arm64.bs(e.out, main.cat5("  ", cvt, " %rax, %xmm0\n", "", ""));
+      }
+      m_st(e, dof, if i.cast_to == ir.IRType.ItF32 { 4 } else { 8 }, true, "%xmm0");
+    } else if i.cast == ir.IRCastKind.CastF2i {
+      m_ld(e, sof, if i.cast_from == ir.IRType.ItF32 { 4 } else { 8 }, true, "%xmm0");
+      let to32: bool = !(i.cast_to == ir.IRType.ItI64 || i.cast_to == ir.IRType.ItU64);
+      // the 32-bit form saturates at the 32-bit bounds (spec §4.2)
+      if to32 {
+        emit_arm64.bs(e.out, main.cat5("  ", m_cvt_f2i(i.cast_from == ir.IRType.ItF32), "l %xmm0, %eax\n", "", ""));
+        emit_arm64.bs(e.out, "  movslq %eax, %rax\n");
+      } else {
+        emit_arm64.bs(e.out, main.cat5("  ", m_cvt_f2i(i.cast_from == ir.IRType.ItF32), "q %xmm0, %rax\n", "", ""));
+      }
+      m_st(e, dof, 8, false, "%rax");
+    } else if i.cast == ir.IRCastKind.CastF32F64 {
+      m_ld(e, sof, 4, true, "%xmm0");
+      emit_arm64.bs(e.out, "  cvtss2sd %xmm0, %xmm0\n");
+      m_st(e, dof, 8, true, "%xmm0");
+    } else if i.cast == ir.IRCastKind.CastF64F32 {
+      m_ld(e, sof, 8, true, "%xmm0");
+      emit_arm64.bs(e.out, "  cvtsd2ss %xmm0, %xmm0\n");
+      m_st(e, dof, 4, true, "%xmm0");
+    } else if i.cast == ir.IRCastKind.CastReinterp {
+      // exact bit move xmm <- slot, gpr <- xmm (f32_bits/f64_bits)
+      if i.cast_from == ir.IRType.ItF32 {
+        emit_arm64.bs(e.out, main.cat4("  movss ", main.cat3(main.itoa(sof), "(%rbp), %xmm0\n", ""), "", ""));
+        emit_arm64.bs(e.out, "  movd %xmm0, %eax\n");
+        m_st(e, dof, 4, false, "%rax");
+      } else {
+        emit_arm64.bs(e.out, main.cat4("  movsd ", main.cat3(main.itoa(sof), "(%rbp), %xmm0\n", ""), "", ""));
+        emit_arm64.bs(e.out, "  movq %xmm0, %rax\n");
+        m_st(e, dof, 8, false, "%rax");
+      }
+    } else {
+      // CastBitcopy
+      m_ld(e, sof, 8, false, "%rax");
+      m_st(e, dof, 8, false, "%rax");
+    }
+    return;
+  }
+  if i.op == ir.IROp.IrCopymem {
+    m_ld(e, m_vreg_off(e, i.addr), 8, false, "%rdi");
+    m_ld(e, m_vreg_off(e, i.a), 8, false, "%rsi");
+    if i.size < 0 {
+      m_ld(e, m_vreg_off(e, i.b), 8, false, "%rcx"); // runtime count
+    } else {
+      emit_arm64.bs(e.out, main.cat4("  movq $", main.cat3(main.itoa(i.size), ", %rcx\n", ""), "", ""));
+    }
+    emit_arm64.bs(e.out, "  cld\n  rep movsb\n");
+    return;
+  }
+  if i.op == ir.IROp.IrZero {
+    m_ld(e, m_vreg_off(e, i.addr), 8, false, "%rax");
+    emit_arm64.bs(e.out, main.cat4("  movq $", main.cat3(main.itoa(i.size), ", %rcx\n  movq $0, %rdx\n", ""), "", ""));
+    let lbl: i32 = g_label_amd;
+    g_label_amd += 1;
+    let l: string = main.itoa(lbl as i64);
+    emit_arm64.bs(e.out, main.cat4("Lzero", main.cat3(l, ":\n  testq %rcx, %rcx\n  jz Lzero", main.cat3(l, "_end\n", "")), "", ""));
+    emit_arm64.bs(e.out, main.cat4("  movb %dl, (%rax)\n  incq %rax\n  decq %rcx\n  jnz Lzero", main.cat3(l, "\n", ""), "", ""));
+    emit_arm64.bs(e.out, main.cat3("Lzero", main.cat3(l, "_end:\n", ""), ""));
+    return;
+  }
+  if i.op == ir.IROp.IrLitaddr {
+    let dof: i64 = m_vreg_off(e, i.dst);
+    let lit: *ir.IRLit = e.fn_.literals[i.lit as usize];
+    emit_arm64.bs(e.out, main.cat5("  leaq ", m_lit(e, lit.label), "(%rip), %rax\n", "", ""));
+    emit_arm64.bs(e.out, main.cat5("  movq %rax, ", main.itoa(dof), "(%rbp)\n", "", ""));
+    return;
+  }
+  if i.op == ir.IROp.IrCall {
+    m_call(e, i);
+    return;
+  }
+}
+
+fn m_term(e: *MCtx) {
+  let fn_: *ir.IRFn = e.fn_;
+  if fn_.cur.term_op == 100 {
+    let to: *ir.IRBlock = fn_.cur.br_true;
+    m_edge(e, to);
+    emit_arm64.bs(e.out, main.cat5("  jmp L", main.itoa(fn_.uid as i64), "_", main.itoa(to.id as i64), "\n"));
+  } else if fn_.cur.term_op == 101 {
+    let tt: *ir.IRBlock = fn_.cur.br_true;
+    let ff: *ir.IRBlock = fn_.cur.br_false;
+    let cof: i64 = m_vreg_off(e, fn_.cur.cbr_cond);
+    emit_arm64.bs(e.out, main.cat5("  cmpb $0, ", main.itoa(cof), "(%rbp)\n", "", ""));
+    emit_arm64.bs(e.out, main.cat5("  je Lcbf", main.itoa(g_label_amd as i64), "\n", "", ""));
+    m_edge(e, tt);
+    emit_arm64.bs(e.out, main.cat5("  jmp L", main.itoa(fn_.uid as i64), "_", main.itoa(tt.id as i64), "\n"));
+    emit_arm64.bs(e.out, main.cat5("Lcbf", main.itoa(g_label_amd as i64), ":\n", "", ""));
+    m_edge(e, ff);
+    emit_arm64.bs(e.out, main.cat5("  jmp L", main.itoa(fn_.uid as i64), "_", main.itoa(ff.id as i64), "\n"));
+    g_label_amd += 1;
+  } else if fn_.cur.term_op == 102 {
+    if fn_.cur.ret_val != null {
+      let f: bool = ir.ir_is_float_t(fn_.cur.ret_val.ty);
+      // f32 returns ride the low lane at 4 bytes
+      m_ld(e, m_vreg_off(e, fn_.cur.ret_val),
+           if f { if fn_.cur.ret_val.ty == ir.IRType.ItF32 { 4 } else { 8 } } else { 8 },
+           f, m_retreg(f));
+    }
+    emit_arm64.bs(e.out, "  movq %rbp, %rsp\n  popq %rbp\n  ret\n");
+  } else {
+    emit_arm64.bs(e.out, "  movq %rbp, %rsp\n  popq %rbp\n  ret\n");
+  }
+}
+
+pub static mut g_fn_uid: i32 = 0;
+
+fn m_fn(e: *MCtx, fn_: *ir.IRFn) {
+  e.fn_ = fn_;
+  fn_.uid = g_fn_uid;
+  g_fn_uid += 1;
+  m_layout(e);
+  let s: string = m_sym(e, fn_.symbol);
+  emit_arm64.bs(e.out, main.cat5("\n  ", s, ":\n", "", ""));
+  emit_arm64.bs(e.out, "  pushq %rbp\n  movq %rsp, %rbp\n");
+  if e.frame != 0 {
+    emit_arm64.bs(e.out, main.cat5("  subq $", main.itoa(e.frame), ", %rsp\n", "", ""));
+  }
+  // spill register params into their slots
+  let mut ri: i32 = 0;
+  let mut fi: i32 = 0;
+  if fn_.returns_aggregate {
+    ri += 1; // rdi carries the out pointer
+    emit_arm64.bs(e.out, main.cat5("  movq %rdi, ", main.itoa(m_slot_off(e, fn_.out_slot)), "(%rbp)\n", "", ""));
+  }
+  let mut p: usize = 0;
+  while p < len(fn_.params) {
+    let slot: *ir.IRSlot = fn_.params[p];
+    let mut pt: *parse.Type = null;
+    if p < len(fn_.param_types) {
+      pt = fn_.param_types[p];
+    }
+    let isf: bool = pt != null && (pt.kind == check.TypeKind.TyF32 || pt.kind == check.TypeKind.TyF64);
+    if isf && fi < 8 {
+      // f32 params arrive in the low lane (movss); movsd would read 8 bytes
+      if pt.kind == check.TypeKind.TyF32 {
+        emit_arm64.bs(e.out, main.cat5("  movss %xmm", main.itoa(fi as i64), ", ", main.itoa(m_slot_off(e, slot)), "(%rbp)\n"));
+      } else {
+        emit_arm64.bs(e.out, main.cat5("  movsd %xmm", main.itoa(fi as i64), ", ", main.itoa(m_slot_off(e, slot)), "(%rbp)\n"));
+      }
+      fi += 1;
+    } else if !isf && ri < 6 {
+      emit_arm64.bs(e.out, main.cat5("  movq ", m_intreg(ri), ", ", main.itoa(m_slot_off(e, slot)), "(%rbp)\n"));
+      ri += 1;
+    } else {
+      // stack param: above the saved rbp and return address
+      let stack_index: i32 = (if isf { fi } else { ri }) + p as i32;
+      let over: i32 = if stack_index - 6 > 0 { stack_index - 6 } else { 0 };
+      emit_arm64.bs(e.out, main.cat5("  movq ", main.itoa((16 + 8 * over) as i64), "(%rbp), %rax\n", "", ""));
+      emit_arm64.bs(e.out, main.cat5("  movq %rax, ", main.itoa(m_slot_off(e, slot)), "(%rbp)\n", "", ""));
+    }
+    p += 1;
+  }
+  let mut bi: usize = 0;
+  while bi < len(fn_.blocks) {
+    let b: *ir.IRBlock = fn_.blocks[bi];
+    e.fn_.cur = b;
+    emit_arm64.bs(e.out, main.cat5("L", main.itoa(e.fn_.uid as i64), "_", main.itoa(b.id as i64), ":\n"));
+    let mut ii: usize = 0;
+    while ii < len(b.ins) {
+      m_ins(e, b.ins[ii]);
+      ii += 1;
+    }
+    m_term(e);
+    bi += 1;
+  }
+}
+
+pub fn emit_amd64_text(target: i32) -> []u8 {
+  let out: *main.Vec[u8] = new main.Vec[u8] { items: make([]u8, 1024), n: 0 };
+  let e: *MCtx = new MCtx {
+    out: out, fn_: null, offs: make([]i64, 0), frame: 0,
+    is_mac: target == 1 || target == 2,
+  };
+  if e.is_mac {
+    emit_arm64.bs(out, ".section __TEXT,__text,regular,pure_instructions\n");
+    emit_arm64.bs(out, ".build_version macos, 13, 0\n");
+  } else {
+    emit_arm64.bs(out, ".text\n");
+  }
+  let mut i: usize = 0;
+  while i < ir.g_ir_fns.n {
+    m_fn(e, ir.g_ir_fns.items[i]);
+    i += 1;
+  }
+  // string literals + float consts in rodata; every literal carries an
+  // immortal rc header {sentinel, 0, null} so slice traffic no-ops on it
+  if e.is_mac {
+    emit_arm64.bs(out, ".section __TEXT,__rhostr,regular\n");
+  } else {
+    emit_arm64.bs(out, ".section .rodata\n");
+  }
+  i = 0;
+  while i < ir.g_ir_fns.n {
+    let fn_: *ir.IRFn = ir.g_ir_fns.items[i];
+    let mut j: usize = 0;
+    while j < len(fn_.literals) {
+      let l: *ir.IRLit = fn_.literals[j];
+      emit_arm64.bs(out, main.cat5("  .p2align 3\n", m_lit(e, l.label), ":\n  .quad 0x8000000000000000\n  .quad 0\n  .quad 0\n", m_lit(e, main.cat3(l.label, "_b", "")), ":\n  .ascii \""));
+      let mut k: usize = 0;
+      while k < len(l.bytes) {
+        let ch: u8 = l.bytes[k];
+        if ch >= 0x20 && ch < 0x7F && ch != 34 && ch != 92 {
+          emit_wasm.b8(out, ch);
+        } else {
+          emit_arm64.bs(out, main.cat3("\\", emit_arm64.oct3(ch), ""));
+        }
+        k += 1;
+      }
+      emit_arm64.bs(out, "\"\n");
+      j += 1;
+    }
+    i += 1;
+  }
+  // static string initializers: their rodata blocks belong to the global,
+  // not to any fn — without this the reloc labels dangle at assembly
+  i = 0;
+  while i < ir.g_ir_globals.n {
+    let g: *ir.IRGlobal = ir.g_ir_globals.items[i];
+    if g.static_lit != null {
+      let l: *ir.IRLit = g.static_lit;
+      emit_arm64.bs(out, main.cat5("  .p2align 3\n", m_lit(e, l.label), ":\n  .quad 0x8000000000000000\n  .quad 0\n  .quad 0\n", m_lit(e, main.cat3(l.label, "_b", "")), ":\n  .ascii \""));
+      let mut k: usize = 0;
+      while k < len(l.bytes) {
+        let ch: u8 = l.bytes[k];
+        if ch >= 0x20 && ch < 0x7F && ch != 34 && ch != 92 {
+          emit_wasm.b8(out, ch);
+        } else {
+          emit_arm64.bs(out, main.cat3("\\", emit_arm64.oct3(ch), ""));
+        }
+        k += 1;
+      }
+      emit_arm64.bs(out, "\"\n");
+    }
+    i += 1;
+  }
+  if g_fconsts != null {
+    let mut n: usize = 0;
+    while n < g_fconsts.n {
+      let fc: *FConstNote = g_fconsts.items[n];
+      if fc.f32_ {
+        // .long with the FLOAT bits — a .quad of the double's bits would
+        // hand movss 8 wrong bytes
+        let bits32: u32 = intrinsics.f32_bits(fc.v as f32);
+        emit_arm64.bs(out, main.cat5("  .p2align 2\nLfconst", main.itoa(fc.lbl as i64), ":\n  .long ", main.utoa(bits32 as u64), "\n"));
+      } else {
+        let bits: u64 = intrinsics.f64_bits(fc.v);
+        emit_arm64.bs(out, main.cat5("  .p2align 3\nLfconst", main.itoa(fc.lbl as i64), ":\n  .quad ", main.utoa(bits), "\n"));
+      }
+      n += 1;
+    }
+  }
+  i = 0;
+  while i < ir.g_ir_globals.n {
+    let g: *ir.IRGlobal = ir.g_ir_globals.items[i];
+    emit_arm64.bs(out, main.cat5("\n  .globl ", m_sym(e, g.symbol), "\n", "", ""));
+    if e.is_mac {
+      emit_arm64.bs(out, ".section __DATA,__data\n");
+    } else {
+      emit_arm64.bs(out, ".section .data\n");
+    }
+    emit_arm64.bs(out, main.cat5("  .p2align ", main.itoa(emit_arm64.glob_p2align(g.align)), "\n", "", ""));
+    emit_arm64.bs(out, main.cat5(m_sym(e, g.symbol), ":\n", "", "", ""));
+    emit_arm64.emit_glob_data(out, g, m_globpre(e.is_mac));
+    i += 1;
+  }
+  // C entry: call the root module's main
+  if ir.g_main_cell != null && ir.g_main_cell.items[0] != "" {
+    if e.is_mac {
+      emit_arm64.bs(out, ".section __TEXT,__text,regular,pure_instructions\n");
+    } else {
+      emit_arm64.bs(out, ".text\n");
+    }
+    emit_arm64.bs(out, main.cat5("\n  .globl ", m_sym(e, "main"), "\n", "", ""));
+    emit_arm64.bs(out, main.cat5(m_sym(e, "main"), ":\n", "", "", ""));
+    emit_arm64.bs(out, "  pushq %rbp\n  movq %rsp, %rbp\n");
+    emit_arm64.bs(out, main.cat5("  call ", m_sym(e, ir.g_main_cell.items[0]), "\n", "", ""));
+    emit_arm64.bs(out, "  movq %rbp, %rsp\n  popq %rbp\n  ret\n");
+  }
+  return out.items[0..out.n];
+}
+
+fn m_ext(signed: bool) -> string {
+  if signed { return "cqo"; }
+  return "xorl %edx, %edx";
+}
+
+fn m_divmn(signed: bool) -> string {
+  if signed { return "idivq"; }
+  return "divq";
+}
+
+fn m_sfx(size64: bool) -> string {
+  if size64 { return "sd"; }
+  return "ss";
+}
+
+fn m_imn(op: ir.IROp) -> string {
+  if op == ir.IROp.IrAdd { return "add"; }
+  if op == ir.IROp.IrSub { return "sub"; }
+  if op == ir.IROp.IrMul { return "imul"; }
+  if op == ir.IROp.IrAnd { return "and"; }
+  if op == ir.IROp.IrOr { return "or"; }
+  return "xor";
+}
+
+fn m_fmn(op: ir.IROp) -> string {
+  // width suffix appended by the caller (ss for f32, sd for f64)
+  if op == ir.IROp.IrAdd { return "add"; }
+  if op == ir.IROp.IrSub { return "sub"; }
+  return "mul";
+}
+
+fn m_shmn(op: ir.IROp, signed: bool) -> string {
+  if op == ir.IROp.IrShl { return "salq"; }
+  if signed { return "sarq"; }
+  return "shrq";
+}
+
+fn m_ldf(size: i64) -> string {
+  if size == 8 { return "movsd"; }
+  return "movss";
+}
+
+fn m_cvt_i2f(f32: bool) -> string {
+  if f32 { return "cvtsi2ss"; }
+  return "cvtsi2sd";
+}
+
+fn m_cvt_f2i(f32: bool) -> string {
+  if f32 { return "cvttss2si"; }
+  return "cvttsd2si";
+}
+
+fn m_retreg(flt: bool) -> string {
+  if flt { return "%xmm0"; }
+  return "%rax";
+}
+
+fn m_globpre(is_mac: bool) -> string {
+  if is_mac { return "L"; }
+  return ".";
+}

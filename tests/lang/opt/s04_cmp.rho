@@ -1,0 +1,9 @@
+// exit: 0
+// s04 — constant comparisons fold to 0/1 and feed the branch; after the
+// fold main's IR contains no live `cmp` at all (the .no pin)
+fn main() -> i32 {
+  let x: i32 = if 10 > 2 { 1000001 } else { 7 };
+  let y: i64 = if ((1 as i64) << 40) == 0 { 5 } else { 2000003 };
+  printf("{} {}\n", x, y);
+  return 0;
+}

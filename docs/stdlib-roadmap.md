@@ -40,10 +40,11 @@ library are, in order of coupling to the compiler:
 **Placement law.** A capability goes in the first ring that fits:
 
 1. The checker's desugars or builtins call it (`__fmt_print`/
-   `__fmt_eprint`/`__fmt_build` — `spec/type-system.md:139-143`) →
+   `__fmt_eprint`/`__fmt_build` — `spec/type-system.md:139-143` — and
+   the concat glue the string `+` operator lowers to) →
    **prelude tail/core**, non-negotiable.
 2. Teaching-level, target-independent, and small enough that "rho without
-   it" is broken (`Option`, `Result`, `cat`, `panic`, the `to_str`
+   it" is broken (`Option`, `Result`, `panic`, the `to_str`
    family) → **prelude core**.
 3. Everything else → **package first** (Ring 2, available *now*), then
    **promote to `std/`** (Ring 1) once the API has survived a round of
@@ -67,8 +68,10 @@ core the most expensive place in the repo to iterate.
 `Show` (trait, line 21), `Option[T]` / `Result[T, E]` with `is_some`/
 `is_none`/`is_ok`/`is_err` (lines 25-63), `panic`/`assert`/`assert_eq`
 (65-80), the panic hooks `__panic_div`/`__panic_oob`/`__panic_null`
-(82-92), string primitives `__streq`/`cat`/`__cat3`/`__substr`/`__rep0`
-(94-149), the full `to_str` family on every primitive (151-232, plus the
+(82-92), string primitives `__streq`/`__cat2`/`__cat3`/`__substr`/`__rep0`
+(94-149) — the internal glue the string `+` operator lowers to (the old
+public `cat`/`cat3`/`cat4` names are retired), the full `to_str` family
+on every primitive (151-232, plus the
 `__Big` exact-decimal float machinery, 235-583), and the variadic format
 sinks `__fmt_print`/`__fmt_eprint`/`__fmt_build` (585-611).
 
@@ -118,7 +121,7 @@ minimal unsafe kernel: raw loads/stores by width, `memcpy`, `mem_set`,
 
   (argv[0] is the module name under wasmtime, hence 3.) The same call
   against the *tracked* artifact fails — `site/assets/rho.wasm`
-  checking `self/rho.rho` reports `unknown function __program_args`
+  checking the compiler package reports `unknown function __program_args`
   (probe, `big.rho:13:10`): **the shipped artifact lags the working
   tree**, which is the normal state while the mirror gate is open. The
   native `run` arg passthrough has a rough edge —
@@ -140,7 +143,7 @@ minimal unsafe kernel: raw loads/stores by width, `memcpy`, `mem_set`,
 
 1. No growable collections (`Vec`, `Map`) — every consumer hand-rolls
    them; the self-hosted compiler carries its own private `Vec`
-   (`self/rho.rho:74`) as the existence proof.
+   (`libs/compiler/main.rho`) as the existence proof.
 2. No JSON — the package tool parses a hand-rolled TOML subset instead
    (§2.4); JSON is in flight in a parallel workstream this round (given
    by the task assignment; no rho JSON file exists in-tree yet —
@@ -198,7 +201,7 @@ and feed `http` (dates, jitter) but nothing else in-tree.
 
 **Slot and dependencies, not design** (its design lives with its
 implementation): a pure-computation module — parser + writer over
-`string`/`[]u8` using `intrinsics.slice_string`, `cat`, and the
+`string`/`[]u8` using `intrinsics.slice_string`, `+`, and the
 `format`/`to_str` round-trip law for numbers
 (`spec/type-system.md:146-155` is the authority floats must round-trip
 against). Land as a package (Ring 2), promote to `std/` in Stage D.
@@ -218,10 +221,10 @@ precision numbers are out; i64/f64 coverage matches the language.
    downward-only semantics matching the module system's `use` law).
    **Why now:** zero toolchain risk, immediately consumed by fs and
    `rho-pkg` (which currently inlines path logic), corpus-testable on
-   all four targets. **Dependencies:** none beyond `cat`/`__substr`.
+   all four targets. **Dependencies:** none beyond `+`/`__substr`.
 2. **collections: `Vec`** — growable array over `make` + `intrinsics`
    (`memcpy`). **Why now:** every later item wants it; the self-hosted
-   compiler's private `Vec` (`self/rho.rho:74`) is a large tested body to
+   compiler's private `Vec` (`libs/compiler/main.rho`) is a large tested body to
    lift; pure rho. **`Map`** follows once string hashing (pure) is in —
    open addressing, tombstone-free; **why not before Vec**: nothing
    ships without Vec, while Map has no in-tree consumer yet.
@@ -298,8 +301,8 @@ rho *programs*, not for rho's tooling.
 ### 5.4 What is deliberately never stdlib (as of this writing)
 
 - **TLS/crypto primitives** — §5.3.
-- **Regex** — no in-tree consumer; JSON + `cat`/`__substr` cover the
-  current need; a regex engine is a corpus-sized project that should
+- **Regex** — no in-tree consumer; JSON plus `+` and `__substr` cover
+  the current need; a regex engine is a corpus-sized project that should
   wait for demand.
 - **Async/green threads** — contradicts the determinism story; blocking
   hooks are the model (§5.3).
@@ -316,7 +319,7 @@ rho *programs*, not for rho's tooling.
 | **A — pure rho, now** | `path`; `Vec` (then `Map`); JSON (in flight); `args`; `fs-min` | none | corpus pairs for every module on all four targets (`rho test`, `spec/spec.md:99-101`); delivered as vendored packages, promoted later |
 | **B — one batched toolchain round** | import-table extension (`fd_readdir`, `path_create_directory`, `clock_time_get`, `random_get`); native RT-blob mirrors; native `run` args fix; `read_line` implement-or-amend | yes — boot + mirror set (`docs/todo.md`) | twice-compile determinism gate; `boot(corpus) == self(corpus)` progress not regressed; then `fs-full`/`time`/`random` modules land on the new hooks |
 | **C — sockets dual-track** | `__sock_*` hooks both tracks (preview1 `sock_*` / raw syscalls); `http` client package; loopback corpus fixture | yes — same shape as B | client works against loopback on wasm **and** native before any server work; TLS decision explicitly re-visited, default remains "out" |
-| **D — promotion to Ring 1** | `use std/...` resolution rule (module-system extension in the living toolchain); `std/` tree absorbing the Stage A modules | module-system change | stable API after a round of real use; resolution rule specified in `spec/module-system.md` with corpus + pkg-fixture coverage (`tests/pkg-fixture/run.sh` is the model, `docs/package-manager.md:300`) |
+| **D — promotion to Ring 1** | `use std.<module>;` resolution rule (module-system extension in the living toolchain); `std/` tree absorbing the Stage A modules | module-system change | stable API after a round of real use; resolution rule specified in `spec/module-system.md` with corpus + pkg-fixture coverage (`tests/pkg-fixture/run.sh` is the model, `docs/package-manager.md:300`) |
 
 Sequencing logic, in one line each: Stage A is pure value at zero
 mirror cost; Stage B batches everything that touches the emitter;

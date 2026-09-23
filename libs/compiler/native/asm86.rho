@@ -1,0 +1,913 @@
+// the x86-64 assembler
+use main;
+use asm64;
+
+
+// ---- amd64 assembler (asm86.c port) ---------------------------------------
+
+static mut R86_8: i32 = 0;
+static mut R86_16: i32 = 1;
+static mut R86_32: i32 = 2;
+static mut R86_64: i32 = 3;
+static mut R86_XMM: i32 = 4;
+static mut R86_NONE: i32 = 5;
+
+struct MReg { cls: i32, n: i32 }
+
+fn mreg(cls: i32, n: i32) -> *MReg {
+  return new MReg { cls: cls, n: n };
+}
+
+fn m_parse_reg(s_in: string) -> *MReg {
+  let mut s: string = s_in;
+  if len(s) == 0 {
+    return mreg(R86_NONE, 0);
+  }
+  if s[0] == 37 { // '%'
+    s = s[1..len(s)];
+  }
+  if len(s) == 0 {
+    return mreg(R86_NONE, 0);
+  }
+  if s[0] == 114 && len(s) > 1 && s[1] >= 48 && s[1] <= 57 { // 'r'
+    let num: i32 = asm64.asm_atoi(s[1..len(s)]);
+    if num >= 8 && num <= 15 {
+      let mut di: usize = 1;
+      while di < len(s) && s[di] >= 48 && s[di] <= 57 {
+        di += 1;
+      }
+      if di == len(s) {
+        return mreg(R86_64, num);
+      }
+      let sfx: string = s[di..len(s)];
+      if main.streq(sfx, "d") { return mreg(R86_32, num); }
+      if main.streq(sfx, "w") { return mreg(R86_16, num); }
+      if main.streq(sfx, "b") { return mreg(R86_8, num); }
+    }
+    return mreg(R86_NONE, 0);
+  }
+  if main.streq(s, "rax") { return mreg(R86_64, 0); }
+  if main.streq(s, "rcx") { return mreg(R86_64, 1); }
+  if main.streq(s, "rdx") { return mreg(R86_64, 2); }
+  if main.streq(s, "rbx") { return mreg(R86_64, 3); }
+  if main.streq(s, "rsp") { return mreg(R86_64, 4); }
+  if main.streq(s, "rbp") { return mreg(R86_64, 5); }
+  if main.streq(s, "rsi") { return mreg(R86_64, 6); }
+  if main.streq(s, "rdi") { return mreg(R86_64, 7); }
+  if main.streq(s, "eax") { return mreg(R86_32, 0); }
+  if main.streq(s, "ecx") { return mreg(R86_32, 1); }
+  if main.streq(s, "edx") { return mreg(R86_32, 2); }
+  if main.streq(s, "ebx") { return mreg(R86_32, 3); }
+  if main.streq(s, "esp") { return mreg(R86_32, 4); }
+  if main.streq(s, "ebp") { return mreg(R86_32, 5); }
+  if main.streq(s, "esi") { return mreg(R86_32, 6); }
+  if main.streq(s, "edi") { return mreg(R86_32, 7); }
+  if main.streq(s, "ax") { return mreg(R86_16, 0); }
+  if main.streq(s, "cx") { return mreg(R86_16, 1); }
+  if main.streq(s, "dx") { return mreg(R86_16, 2); }
+  if main.streq(s, "bx") { return mreg(R86_16, 3); }
+  if main.streq(s, "sp") { return mreg(R86_16, 4); }
+  if main.streq(s, "bp") { return mreg(R86_16, 5); }
+  if main.streq(s, "si") { return mreg(R86_16, 6); }
+  if main.streq(s, "di") { return mreg(R86_16, 7); }
+  if main.streq(s, "al") { return mreg(R86_8, 0); }
+  if main.streq(s, "cl") { return mreg(R86_8, 1); }
+  if main.streq(s, "dl") { return mreg(R86_8, 2); }
+  if main.streq(s, "bl") { return mreg(R86_8, 3); }
+  if main.streq(s, "spl") { return mreg(R86_8, 4); }
+  if main.streq(s, "bpl") { return mreg(R86_8, 5); }
+  if main.streq(s, "sil") { return mreg(R86_8, 6); }
+  if main.streq(s, "dil") { return mreg(R86_8, 7); }
+  if asm64.str_starts(s, "xmm") && len(s) == 4 && s[3] >= 48 && s[3] <= 55 {
+    return mreg(R86_XMM, (s[3] - 48) as i32);
+  }
+  return mreg(R86_NONE, 0);
+}
+
+// memory operand: `disp(%reg)' / `(%reg)' / `sym(%rip)'
+struct AMem {
+  has: bool,
+  rip: bool,
+  ripsym: string,
+  disp: i64,
+  base: *MReg,
+}
+
+fn mem_none() -> *AMem {
+  return new AMem { has: false, rip: false, ripsym: "", disp: 0, base: mreg(R86_NONE, 0) };
+}
+
+fn m_parse_mem(s: string) -> *AMem {
+  let m: *AMem = mem_none();
+  let lp_i: i64 = asm64.str_index_from(s, "(", 0);
+  if lp_i < 0 {
+    return m;
+  }
+  let lp: usize = lp_i as usize;
+  m.has = true;
+  if asm64.str_starts(s[lp..len(s)], "(%rip)") {
+    m.rip = true;
+    m.ripsym = s[0..lp];
+    return m;
+  }
+  let close_i: i64 = asm64.str_index_from(s[lp + 1..len(s)], ")", 0);
+  if close_i < 0 {
+    return mem_none();
+  }
+  let close: usize = lp + 1 + close_i as usize;
+  let disp_s: string = s[0..lp];
+  let base_s: string = s[lp + 1..close];
+  m.disp = 0;
+  if len(disp_s) > 0 {
+    let d: *asm64.AImm = asm64.asm_parse_imm(disp_s);
+    if !d.ok {
+      return mem_none();
+    }
+    m.disp = d.v;
+  }
+  m.base = m_parse_reg(base_s);
+  if m.base.cls != R86_64 {
+    return mem_none();
+  }
+  return m;
+}
+
+// legacy prefix then REX; REX appears when the operand is 64-bit, any
+// register number needs bit 4, or a byte register needs the spl/bpl/sil/dil
+// escape
+fn m_prefix_rex(a: *asm64.ASMCtx, prefix: i32, w: bool, reg: *MReg, rm: *MReg) {
+  if prefix != 0 {
+    asm64.a_emitb(a, prefix);
+  }
+  let reghi: bool = reg.cls != R86_NONE && reg.n >= 8;
+  let rmhi: bool = (rm.cls == R86_64 || rm.cls == R86_32 || rm.cls == R86_16 || rm.cls == R86_8) && rm.n >= 8;
+  let b8: bool = (reg.cls == R86_8 && reg.n >= 4) || (rm.cls == R86_8 && rm.n >= 4);
+  if w || reghi || rmhi || b8 {
+    asm64.a_emitb(a, 0x40 | (if w { 8 } else { 0 }) | (if reghi { 4 } else { 0 }) | (if rmhi { 1 } else { 0 }));
+  }
+}
+
+// ModRM + displacement for a memory rm operand; regfield is the /digit or
+// source register. Returns the fixup position for rip-relative operands,
+// -1 otherwise.
+fn m_modrm_mem(a: *asm64.ASMCtx, regfield: i32, m: *AMem) -> i64 {
+  if m.rip {
+    asm64.a_emitb(a, 0x05 | (regfield & 7) << 3); // mod=00 rm=101
+    let at: i64 = asm64.a_cur(a).n as i64;
+    asm64.a_emit4(a, 0);
+    return at;
+  }
+  let bn: i32 = m.base.n & 7;
+  if m.disp == 0 && bn != 5 { // mod=00 with base; rbp needs a disp (mod00+5 = rip)
+    asm64.a_emitb(a, (regfield & 7) << 3 | bn);
+    return (0 - 1) as i64;
+  }
+  asm64.a_emitb(a, 0x80 | (regfield & 7) << 3 | bn); // mod=10, disp32
+  asm64.a_emit4(a, (m.disp as i32) as u32);
+  return (0 - 1) as i64;
+}
+
+// reg-reg ModRM (mod=11), AT&T order: `op %src, %dst`
+fn m_modrm_rr(a: *asm64.ASMCtx, src: *MReg, dst: *MReg) {
+  asm64.a_emitb(a, 0xC0 | (src.n & 7) << 3 | (dst.n & 7));
+}
+
+// ALU/mov reg<-reg: opcode with reg field = src, rm = dst
+fn m_op_rr(a: *asm64.ASMCtx, prefix: i32, opc: i32, w: bool, src: *MReg, dst: *MReg) {
+  m_prefix_rex(a, prefix, w, src, dst);
+  asm64.a_emitb(a, opc);
+  m_modrm_rr(a, src, dst);
+}
+
+// ALU/mov reg<-mem or mem<-reg; the reg operand is the reg field
+fn m_op_rm(a: *asm64.ASMCtx, prefix: i32, opc: i32, w: bool, reg: *MReg, m: *AMem, riprel: bool) {
+  m_prefix_rex(a, prefix, w, reg, mreg(R86_NONE, 0));
+  asm64.a_emitb(a, opc);
+  let at: i64 = m_modrm_mem(a, reg.n, m);
+  if riprel && at >= 0 {
+    asm64.a_fixup(a, asm64.FIX_RIPREL, m.ripsym);
+  }
+}
+
+// immediate group ops (add/or/and/sub/xor/cmp): 83 imm8 / 81 imm32, /digit
+fn m_op_imm(a: *asm64.ASMCtx, digit: i32, w: bool, imm: i64, rm: *MReg) {
+  m_prefix_rex(a, 0, w, mreg(R86_NONE, 0), rm);
+  if imm + 128 >= 0 && imm <= 127 {
+    asm64.a_emitb(a, if w { 0x83 } else { 0x80 });
+    asm64.a_emitb(a, 0xC0 | digit << 3 | (rm.n & 7));
+    asm64.a_emitb(a, (imm & 255) as i32);
+  } else {
+    asm64.a_emitb(a, 0x81);
+    asm64.a_emitb(a, 0xC0 | digit << 3 | (rm.n & 7));
+    asm64.a_emit4(a, (imm as i32) as u32);
+  }
+}
+
+// jcc/setcc condition suffix -> low opcode nibble
+fn m_cc_op(s: string) -> i32 {
+  if main.streq(s, "o") { return 0; }
+  if main.streq(s, "no") { return 1; }
+  if main.streq(s, "b") { return 2; }
+  if main.streq(s, "ae") { return 3; }
+  if main.streq(s, "e") { return 4; }
+  if main.streq(s, "ne") { return 5; }
+  if main.streq(s, "be") { return 6; }
+  if main.streq(s, "a") { return 7; }
+  if main.streq(s, "s") { return 8; }
+  if main.streq(s, "ns") { return 9; }
+  if main.streq(s, "p") { return 10; }
+  if main.streq(s, "np") { return 11; }
+  if main.streq(s, "l") { return 12; }
+  if main.streq(s, "ge") { return 13; }
+  if main.streq(s, "le") { return 14; }
+  if main.streq(s, "g") { return 15; }
+  return 0 - 1;
+}
+
+fn m_alu_row(mn: string) -> i32 {
+  // row into the ALU tables, -1 when mn is not an ALU op
+  if asm64.str_starts(mn, "add") { return 0; }
+  if asm64.str_starts(mn, "sub") { return 1; }
+  if asm64.str_starts(mn, "and") { return 2; }
+  if asm64.str_starts(mn, "or") { return 3; }
+  if asm64.str_starts(mn, "xor") { return 4; }
+  if asm64.str_starts(mn, "cmp") { return 5; }
+  return 0 - 1;
+}
+
+fn m_alu_opcm(row: i32) -> i32 {
+  // r/m <- r opcode row (0x01 family)
+  if row == 0 { return 0x01; }
+  if row == 1 { return 0x29; }
+  if row == 2 { return 0x21; }
+  if row == 3 { return 0x09; }
+  if row == 4 { return 0x31; }
+  return 0x39; // cmp
+}
+
+fn m_alu_opmr(row: i32) -> i32 {
+  // r <- r/m opcode row (0x03 family)
+  if row == 0 { return 0x03; }
+  if row == 1 { return 0x2B; }
+  if row == 2 { return 0x23; }
+  if row == 3 { return 0x0B; }
+  if row == 4 { return 0x33; }
+  return 0x3B; // cmp
+}
+
+fn m_alu_digit(row: i32) -> i32 {
+  if row == 0 { return 0; }
+  if row == 1 { return 5; }
+  if row == 2 { return 4; }
+  if row == 3 { return 1; }
+  if row == 4 { return 6; }
+  return 7; // cmp
+}
+
+fn m_alu_mnlen(row: i32) -> usize {
+  if row == 3 { return 2; } // "or"
+  return 3;
+}
+
+fn m86_asm_line(a: *asm64.ASMCtx, mn: string, ops: []string) {
+  let nops: i32 = len(ops) as i32;
+  // ---- ALU (add/sub/and/or/xor/cmp), AT&T order `op src, dst`;
+  // unsuffixed mnemonics only appear for 64-bit pairs ----
+  let row: i32 = m_alu_row(mn);
+  if row >= 0 {
+    let ml: usize = m_alu_mnlen(row);
+    let mut sfx: u8 = 0;
+    if len(mn) > ml {
+      sfx = mn[ml];
+    }
+    let sfx_ok: bool = sfx == 0 || sfx == 98 || sfx == 119 || sfx == 108 || sfx == 113; // 0 b w l q
+    if sfx_ok {
+      let w: bool = sfx == 0 || sfx == 113;
+      let size: i32 = if sfx == 98 { 1 } else { if sfx == 119 { 2 } else { if sfx == 108 { 4 } else { 8 } } };
+      let p66: i32 = if sfx == 119 { 0x66 } else { 0 };
+      if nops == 2 {
+        let o0: string = ops[0];
+        let o1: string = ops[1];
+        if len(o0) > 0 && o0[0] == 36 { // '$': the immediate is the source
+          let imm: *asm64.AImm = asm64.asm_parse_imm(o0);
+          if !imm.ok {
+            asm64.asm_err(a, main.cat("bad ", main.cat3(mn, " immediate", "")));
+            return;
+          }
+          let rm: *MReg = m_parse_reg(o1);
+          if rm.cls != R86_NONE {
+            m_op_imm(a, m_alu_digit(row), w, imm.v, rm);
+            return;
+          }
+          let m: *AMem = m_parse_mem(o1);
+          if !m.has {
+            asm64.asm_err(a, main.cat("bad ", main.cat3(mn, " operand", "")));
+            return;
+          }
+          // imm -> mem: 80/81/83 /digit by width
+          let imm8: bool = imm.v + 128 >= 0 && imm.v <= 127;
+          m_prefix_rex(a, 0, w, mreg(R86_NONE, 0), mreg(R86_NONE, 0));
+          if size != 1 && imm8 {
+            asm64.a_emitb(a, 0x83);
+            m_modrm_mem(a, m_alu_digit(row), m);
+            asm64.a_emitb(a, (imm.v & 255) as i32);
+          } else {
+            asm64.a_emitb(a, if size == 1 { 0x80 } else { 0x81 });
+            m_modrm_mem(a, m_alu_digit(row), m);
+            if size == 1 {
+              asm64.a_emitb(a, (imm.v & 255) as i32);
+            } else {
+              asm64.a_emit4(a, (imm.v as i32) as u32);
+            }
+          }
+          return;
+        }
+        // register source first, memory source second — AT&T `op src, dst`
+        let src: *MReg = m_parse_reg(o0);
+        if src.cls != R86_NONE {
+          let dst: *MReg = m_parse_reg(o1);
+          if dst.cls != R86_NONE {
+            if dst.cls != src.cls {
+              asm64.asm_err(a, main.cat3(mn, " size mismatch", ""));
+              return;
+            }
+            m_op_rr(a, p66, if size == 1 { m_alu_opcm(row) - 1 } else { m_alu_opcm(row) }, size == 8, src, dst);
+            return;
+          }
+          let m: *AMem = m_parse_mem(o1);
+          if !m.has {
+            asm64.asm_err(a, main.cat("bad ", main.cat3(mn, " operand", "")));
+            return;
+          }
+          m_op_rm(a, p66, if size == 1 { m_alu_opcm(row) - 1 } else { m_alu_opcm(row) }, size == 8, src, m, false);
+          return;
+        }
+        let m: *AMem = m_parse_mem(o0);
+        if m.has {
+          let dst: *MReg = m_parse_reg(o1);
+          if dst.cls != R86_NONE {
+            m_op_rm(a, p66, if size == 1 { m_alu_opmr(row) - 1 } else { m_alu_opmr(row) }, size == 8, dst, m, false);
+            return;
+          }
+        }
+      }
+    }
+  }
+
+  // ---- movss / movsd: xmm <-> mem (the rip-relative literal pool rides
+  // the load form) ----
+  if (main.streq(mn, "movss") || main.streq(mn, "movsd")) && nops == 2 {
+    let prefix: i32 = if mn[4] == 115 { 0xF3 } else { 0xF2 }; // movss F3, movsd F2
+    let mut xm: *MReg = mreg(R86_NONE, 0);
+    let mut m: *AMem = mem_none();
+    let mut opc: i32 = 0;
+    if m_parse_reg(ops[0]).cls == R86_XMM { // `movsd %xmm0, mem` — store
+      xm = m_parse_reg(ops[0]);
+      m = m_parse_mem(ops[1]);
+      opc = 0x11;
+    } else { // `movsd mem, %xmm0` — load
+      xm = m_parse_reg(ops[1]);
+      m = m_parse_mem(ops[0]);
+      opc = 0x10;
+    }
+    if xm.cls != R86_XMM || !m.has {
+      asm64.asm_err(a, main.cat("bad ", main.cat3(mn, " operand", "")));
+      return;
+    }
+    m_prefix_rex(a, prefix, false, xm, mreg(R86_NONE, 0));
+    asm64.a_emitb(a, 0x0F);
+    asm64.a_emitb(a, opc);
+    let at: i64 = m_modrm_mem(a, xm.n, m);
+    if at >= 0 {
+      asm64.a_fixup(a, asm64.FIX_RIPREL, m.ripsym);
+    }
+    return;
+  }
+
+  // ---- movd / movq with an xmm source: exact bit move xmm -> gpr ----
+  if (main.streq(mn, "movd") || main.streq(mn, "movq")) && nops == 2 && m_parse_reg(ops[0]).cls == R86_XMM {
+    let xm: *MReg = m_parse_reg(ops[0]);
+    let g: *MReg = m_parse_reg(ops[1]);
+    if g.cls != R86_32 && g.cls != R86_64 {
+      asm64.asm_err(a, main.cat("bad ", main.cat3(mn, "", "")));
+      return;
+    }
+    asm64.a_emitb(a, 0x66);
+    m_prefix_rex(a, 0, g.cls == R86_64, g, xm);
+    asm64.a_emitb(a, 0x0F);
+    asm64.a_emitb(a, 0x7E);
+    m_modrm_rr(a, xm, g); // MOVQ r/m64, xmm: reg = xmm source, rm = gpr
+    return;
+  }
+
+  // ---- mov family ----
+  if asm64.str_starts(mn, "mov") {
+    let sfx_s: string = mn[3..len(mn)];
+    // 0 b, 1 w, 2 l, 3 q, 4 absq, 5 sbq, 6 swq, 7 slq, 8 zbq, 9 zwq
+    let mut sfx: i32 = 0 - 1;
+    if main.streq(sfx_s, "b") { sfx = 0; }
+    else if main.streq(sfx_s, "w") { sfx = 1; }
+    else if main.streq(sfx_s, "l") { sfx = 2; }
+    else if main.streq(sfx_s, "q") { sfx = 3; }
+    else if main.streq(sfx_s, "absq") { sfx = 4; }
+    else if main.streq(sfx_s, "sbq") { sfx = 5; }
+    else if main.streq(sfx_s, "swq") { sfx = 6; }
+    else if main.streq(sfx_s, "slq") { sfx = 7; }
+    else if main.streq(sfx_s, "zbq") { sfx = 8; }
+    else if main.streq(sfx_s, "zwq") { sfx = 9; }
+    if sfx < 0 || nops != 2 {
+      asm64.asm_err(a, main.cat("unhandled `", main.cat3(mn, "' operand forms", "")));
+      return;
+    }
+
+    if sfx == 4 { // movabsq $imm64, reg
+      let imm: *asm64.AImm = asm64.asm_parse_imm(ops[0]);
+      let rd: *MReg = m_parse_reg(ops[1]);
+      if len(ops[0]) == 0 || ops[0][0] != 36 || rd.cls != R86_64 || !imm.ok {
+        asm64.asm_err(a, "bad movabsq");
+        return;
+      }
+      m_prefix_rex(a, 0, true, rd, mreg(R86_NONE, 0));
+      asm64.a_emitb(a, 0xB8 | (rd.n & 7));
+      asm64.a_emit4(a, (imm.v as i32) as u32);
+      asm64.a_emit4(a, ((imm.v >> 32) as i32) as u32);
+      return;
+    }
+    if sfx >= 5 { // movsbq/movswq/movslq/movzbq/movzwq r64 <- r/m
+      // sbq(0F BE) swq(0F BF) slq(63/movsxd) zbq(0F B6) zwq(0F B7)
+      let code: i32 = if sfx == 5 { 0x0FBE } else { if sfx == 6 { 0x0FBF } else { if sfx == 7 { 0x063 } else { if sfx == 8 { 0x0FB6 } else { 0x0FB7 } } } };
+      let rd: *MReg = m_parse_reg(ops[1]);
+      if rd.cls != R86_64 {
+        asm64.asm_err(a, "bad movsx/movzx");
+        return;
+      }
+      let opc0: i32 = (code >> 8) & 0xFF;
+      let opc1: i32 = code & 0xFF;
+      let two: bool = code > 0xFF;
+      let rs: *MReg = m_parse_reg(ops[0]);
+      if rs.cls != R86_NONE { // reg,reg: reg = dst, rm = src
+        m_prefix_rex(a, 0, true, rd, rs);
+        if two {
+          asm64.a_emitb(a, opc0);
+        } else {
+          asm64.a_emitb(a, opc1);
+        }
+        if two {
+          asm64.a_emitb(a, opc1);
+        }
+        m_modrm_rr(a, rd, rs);
+        return;
+      }
+      let m: *AMem = m_parse_mem(ops[0]);
+      if !m.has {
+        asm64.asm_err(a, "bad movsx/movzx operand");
+        return;
+      }
+      m_prefix_rex(a, 0, true, rd, mreg(R86_NONE, 0));
+      if two {
+        asm64.a_emitb(a, opc0);
+      }
+      asm64.a_emitb(a, opc1);
+      m_modrm_mem(a, rd.n, m);
+      return;
+    }
+    // plain moves: b/w/l/q; direction and width from the operand classes
+    let size: i32 = if sfx == 0 { 1 } else { if sfx == 1 { 2 } else { if sfx == 2 { 4 } else { 8 } } };
+    let a0: *MReg = m_parse_reg(ops[0]);
+    let a1: *MReg = m_parse_reg(ops[1]);
+    if len(ops[0]) > 0 && ops[0][0] == 36 { // immediate source
+      let imm: *asm64.AImm = asm64.asm_parse_imm(ops[0]);
+      if a1.cls != R86_NONE { // $imm, reg
+        if size == 8 {
+          m_prefix_rex(a, 0, true, mreg(R86_NONE, 0), a1);
+          asm64.a_emitb(a, 0xC7);
+          asm64.a_emitb(a, 0xC0 | (a1.n & 7));
+          asm64.a_emit4(a, (imm.v as i32) as u32);
+        } else if size == 4 && a1.cls == R86_32 {
+          asm64.a_emitb(a, 0xB8 | (a1.n & 7));
+          asm64.a_emit4(a, (imm.v as i32) as u32);
+        } else {
+          asm64.asm_err(a, "bad mov immediate width");
+          return;
+        }
+        return;
+      }
+      let m: *AMem = m_parse_mem(ops[1]); // $imm, mem — the C7 form is 64-bit only
+      if size != 8 || !m.has {
+        asm64.asm_err(a, "bad mov immediate operand");
+        return;
+      }
+      m_prefix_rex(a, 0, true, mreg(R86_NONE, 0), mreg(R86_NONE, 0));
+      asm64.a_emitb(a, 0xC7);
+      m_modrm_mem(a, 0, m);
+      asm64.a_emit4(a, (imm.v as i32) as u32);
+      return;
+    }
+    if a1.cls != R86_NONE && a0.cls != R86_NONE { // reg,reg
+      if size == 1 {
+        m_op_rr(a, 0, 0x88, false, a0, a1);
+      } else {
+        m_op_rr(a, if size == 2 { 0x66 } else { 0 }, 0x89, size == 8, a0, a1);
+      }
+      return;
+    }
+    // reg <-> mem, AT&T: a register in the SOURCE position means a store
+    let mut m: *AMem = mem_none();
+    let mut to_mem: bool = false;
+    let mut r: *MReg = mreg(R86_NONE, 0);
+    if a0.cls != R86_NONE { // `movq %reg, mem`
+      m = m_parse_mem(ops[1]);
+      to_mem = true;
+      r = a0;
+    } else if a1.cls != R86_NONE { // `movq mem, %reg`
+      m = m_parse_mem(ops[0]);
+      r = a1;
+    }
+    if !m.has || r.cls == R86_NONE {
+      asm64.asm_err(a, "bad mov operand");
+      return;
+    }
+    if to_mem {
+      if size == 1 {
+        m_op_rm(a, 0, 0x88, false, r, m, false);
+      } else {
+        m_op_rm(a, if size == 2 { 0x66 } else { 0 }, 0x89, size == 8, r, m, false);
+      }
+    } else {
+      if size == 1 { // byte loads ride movsbq/movzbq, never plain movb
+        asm64.asm_err(a, "bad movb load");
+        return;
+      }
+      m_op_rm(a, if size == 2 { 0x66 } else { 0 }, 0x8B, size == 8, r, m, false);
+    }
+    return;
+  }
+
+  if main.streq(mn, "leaq") && nops == 2 {
+    let rd: *MReg = m_parse_reg(ops[1]);
+    let m: *AMem = m_parse_mem(ops[0]);
+    if rd.cls != R86_64 || !m.has {
+      asm64.asm_err(a, "bad leaq");
+      return;
+    }
+    m_op_rm(a, 0, 0x8D, true, rd, m, true);
+    return;
+  }
+
+  // ---- multiply / divide ----
+  if main.streq(mn, "imul") && nops == 2 {
+    let dst: *MReg = m_parse_reg(ops[1]);
+    let src: *MReg = m_parse_reg(ops[0]);
+    if dst.cls != R86_64 || src.cls != R86_64 {
+      asm64.asm_err(a, "bad imul");
+      return;
+    }
+    m_prefix_rex(a, 0, true, dst, src);
+    asm64.a_emitb(a, 0x0F);
+    asm64.a_emitb(a, 0xAF);
+    m_modrm_rr(a, dst, src);
+    return;
+  }
+  if (main.streq(mn, "idivq") || main.streq(mn, "divq")) && nops == 1 {
+    let rm: *MReg = m_parse_reg(ops[0]);
+    if rm.cls != R86_64 {
+      asm64.asm_err(a, "bad div");
+      return;
+    }
+    m_prefix_rex(a, 0, true, mreg(R86_NONE, 0), rm);
+    asm64.a_emitb(a, 0xF7);
+    asm64.a_emitb(a, 0xC0 | (if main.streq(mn, "idivq") { 7 } else { 6 }) << 3 | (rm.n & 7));
+    return;
+  }
+  if main.streq(mn, "cqo") && nops == 0 {
+    asm64.a_emitb(a, 0x48);
+    asm64.a_emitb(a, 0x99);
+    return;
+  }
+  if main.streq(mn, "negq") && nops == 1 {
+    let rm: *MReg = m_parse_reg(ops[0]);
+    if rm.cls != R86_64 {
+      asm64.asm_err(a, "bad negq");
+      return;
+    }
+    m_prefix_rex(a, 0, true, mreg(R86_NONE, 0), rm);
+    asm64.a_emitb(a, 0xF7);
+    asm64.a_emitb(a, 0xC0 | 3 << 3 | (rm.n & 7));
+    return;
+  }
+  if (main.streq(mn, "incq") || main.streq(mn, "decq")) && nops == 1 {
+    let rm: *MReg = m_parse_reg(ops[0]);
+    if rm.cls != R86_64 {
+      asm64.asm_err(a, "bad inc/dec");
+      return;
+    }
+    m_prefix_rex(a, 0, true, mreg(R86_NONE, 0), rm);
+    asm64.a_emitb(a, 0xFF);
+    asm64.a_emitb(a, 0xC0 | (if main.streq(mn, "incq") { 0 } else { 1 }) << 3 | (rm.n & 7));
+    return;
+  }
+  if main.streq(mn, "testq") && nops == 2 {
+    let src: *MReg = m_parse_reg(ops[0]);
+    let dst: *MReg = m_parse_reg(ops[1]);
+    if src.cls != R86_64 || dst.cls != R86_64 {
+      asm64.asm_err(a, "bad testq");
+      return;
+    }
+    m_op_rr(a, 0, 0x85, true, src, dst);
+    return;
+  }
+  // ---- shifts ----
+  if (asm64.str_starts(mn, "sal") || asm64.str_starts(mn, "shl") || asm64.str_starts(mn, "shr") || asm64.str_starts(mn, "sar")) && nops == 2 {
+    // sal/shl 'l'->4, sar 'r' with 'a' at [1]->7, shr 'r'->5
+    let digit: i32 = if mn[2] == 108 { 4 } else { if mn[2] == 114 && mn[1] == 97 { 7 } else { 5 } };
+    let rd: *MReg = m_parse_reg(ops[1]);
+    if rd.cls != R86_64 {
+      asm64.asm_err(a, "bad shift");
+      return;
+    }
+    if len(ops[0]) > 0 && ops[0][0] == 36 {
+      let imm: *asm64.AImm = asm64.asm_parse_imm(ops[0]);
+      m_prefix_rex(a, 0, true, mreg(R86_NONE, 0), rd);
+      asm64.a_emitb(a, 0xC1);
+      asm64.a_emitb(a, 0xC0 | digit << 3 | (rd.n & 7));
+      asm64.a_emitb(a, (imm.v & 255) as i32);
+    } else {
+      let cl: *MReg = m_parse_reg(ops[0]);
+      if cl.cls != R86_8 || cl.n != 1 {
+        asm64.asm_err(a, "bad shift count");
+        return;
+      }
+      m_prefix_rex(a, 0, true, mreg(R86_NONE, 0), rd);
+      asm64.a_emitb(a, 0xD3);
+      asm64.a_emitb(a, 0xC0 | digit << 3 | (rd.n & 7));
+    }
+    return;
+  }
+
+  // ---- setcc / byte logic ----
+  if asm64.str_starts(mn, "set") && nops == 1 {
+    let cc: i32 = m_cc_op(mn[3..len(mn)]);
+    let rd: *MReg = m_parse_reg(ops[0]);
+    if cc < 0 || rd.cls != R86_8 {
+      asm64.asm_err(a, "bad setcc");
+      return;
+    }
+    m_prefix_rex(a, 0, false, mreg(R86_NONE, 0), rd);
+    asm64.a_emitb(a, 0x0F);
+    asm64.a_emitb(a, 0x90 | cc);
+    asm64.a_emitb(a, 0xC0 | (rd.n & 7));
+    return;
+  }
+  if (main.streq(mn, "andb") || main.streq(mn, "orb")) && nops == 2 {
+    let src: *MReg = m_parse_reg(ops[0]);
+    let dst: *MReg = m_parse_reg(ops[1]);
+    if src.cls != R86_8 || dst.cls != R86_8 {
+      asm64.asm_err(a, "bad byte logic");
+      return;
+    }
+    m_op_rr(a, 0, if main.streq(mn, "andb") { 0x20 } else { 0x08 }, false, src, dst);
+    return;
+  }
+
+  // ---- branches / calls ----
+  if mn[0] == 106 && nops == 1 { // 'j'
+    let mut cc: i32 = m_cc_op(mn[1..len(mn)]);
+    if cc < 0 && main.streq(mn[1..len(mn)], "z") {
+      cc = 4; // jz/jnz are je/jne
+    }
+    if cc < 0 && main.streq(mn[1..len(mn)], "nz") {
+      cc = 5;
+    }
+    if cc >= 0 {
+      let s: *asm64.ASym = asm64.sym_get(a, ops[0], true);
+      asm64.a_emitb(a, 0x0F);
+      asm64.a_emitb(a, 0x80 | cc);
+      asm64.a_fixup(a, asm64.FIX_REL32, s.name); // the rel32 slot, after the opcode bytes
+      asm64.a_emit4(a, 0);
+      return;
+    }
+  }
+  if main.streq(mn, "jmp") && nops == 1 {
+    let s: *asm64.ASym = asm64.sym_get(a, ops[0], true);
+    asm64.a_emitb(a, 0xE9);
+    asm64.a_fixup(a, asm64.FIX_REL32, s.name);
+    asm64.a_emit4(a, 0);
+    return;
+  }
+  if main.streq(mn, "call") && nops == 1 {
+    if len(ops[0]) > 0 && ops[0][0] == 42 { // '*'
+      let rm: *MReg = m_parse_reg(ops[0][1..len(ops[0])]);
+      if rm.cls != R86_64 {
+        asm64.asm_err(a, "bad indirect call");
+        return;
+      }
+      m_prefix_rex(a, 0, false, mreg(R86_NONE, 0), rm);
+      asm64.a_emitb(a, 0xFF);
+      asm64.a_emitb(a, 0xC0 | 2 << 3 | (rm.n & 7));
+      return;
+    }
+    let s: *asm64.ASym = asm64.sym_get(a, ops[0], true);
+    asm64.a_emitb(a, 0xE8);
+    asm64.a_fixup(a, asm64.FIX_REL32, s.name);
+    asm64.a_emit4(a, 0);
+    return;
+  }
+  if main.streq(mn, "ret") && nops == 0 {
+    asm64.a_emitb(a, 0xC3);
+    return;
+  }
+  if main.streq(mn, "syscall") && nops == 0 {
+    asm64.a_emitb(a, 0x0F);
+    asm64.a_emitb(a, 0x05);
+    return;
+  }
+  if main.streq(mn, "cld") && nops == 0 {
+    asm64.a_emitb(a, 0xFC);
+    return;
+  }
+  if main.streq(mn, "rep") && nops == 1 && main.streq(ops[0], "movsb") {
+    asm64.a_emitb(a, 0xF3);
+    asm64.a_emitb(a, 0xA4);
+    return;
+  }
+  if (main.streq(mn, "pushq") || main.streq(mn, "popq")) && nops == 1 {
+    let r: *MReg = m_parse_reg(ops[0]);
+    if r.cls != R86_64 {
+      asm64.asm_err(a, "bad push/pop");
+      return;
+    }
+    if r.n >= 8 {
+      asm64.a_emitb(a, 0x41);
+    }
+    asm64.a_emitb(a, (if main.streq(mn, "pushq") { 0x50 } else { 0x58 }) | (r.n & 7));
+    return;
+  }
+
+  // ---- SSE ----
+  {
+    let mut sse_pre: i32 = 0;
+    let mut sse_opc: i32 = 0;
+    let mut sse_hit: bool = true;
+    if main.streq(mn, "addss") { sse_pre = 0xF3; sse_opc = 0x58; }
+    else if main.streq(mn, "addsd") { sse_pre = 0xF2; sse_opc = 0x58; }
+    else if main.streq(mn, "subss") { sse_pre = 0xF3; sse_opc = 0x5C; }
+    else if main.streq(mn, "subsd") { sse_pre = 0xF2; sse_opc = 0x5C; }
+    else if main.streq(mn, "mulss") { sse_pre = 0xF3; sse_opc = 0x59; }
+    else if main.streq(mn, "mulsd") { sse_pre = 0xF2; sse_opc = 0x59; }
+    else if main.streq(mn, "divss") { sse_pre = 0xF3; sse_opc = 0x5E; }
+    else if main.streq(mn, "divsd") { sse_pre = 0xF2; sse_opc = 0x5E; }
+    else if main.streq(mn, "ucomiss") { sse_pre = 0x00; sse_opc = 0x2E; }
+    else if main.streq(mn, "ucomisd") { sse_pre = 0x66; sse_opc = 0x2E; }
+    else if main.streq(mn, "cvtss2sd") { sse_pre = 0xF3; sse_opc = 0x5A; }
+    else if main.streq(mn, "cvtsd2ss") { sse_pre = 0xF2; sse_opc = 0x5A; }
+    else { sse_hit = false; }
+    if sse_hit && nops == 2 {
+      let dst: *MReg = m_parse_reg(ops[1]);
+      let src: *MReg = m_parse_reg(ops[0]);
+      if dst.cls != R86_XMM || src.cls != R86_XMM {
+        asm64.asm_err(a, main.cat("bad ", main.cat3(mn, "", "")));
+        return;
+      }
+      m_prefix_rex(a, sse_pre, false, dst, mreg(R86_NONE, 0));
+      asm64.a_emitb(a, 0x0F);
+      asm64.a_emitb(a, sse_opc);
+      m_modrm_rr(a, dst, src);
+      return;
+    }
+  }
+  if (main.streq(mn, "cvtsi2sd") || main.streq(mn, "cvtsi2ss")) && nops == 2 {
+    let dst: *MReg = m_parse_reg(ops[1]);
+    let src: *MReg = m_parse_reg(ops[0]);
+    if dst.cls != R86_XMM || src.cls != R86_64 {
+      asm64.asm_err(a, "bad cvtsi2s*");
+      return;
+    }
+    m_prefix_rex(a, if main.streq(mn, "cvtsi2sd") { 0xF2 } else { 0xF3 }, true, dst, src);
+    asm64.a_emitb(a, 0x0F);
+    asm64.a_emitb(a, 0x2A);
+    m_modrm_rr(a, dst, src);
+    return;
+  }
+  if (asm64.str_starts(mn, "cvttss2si") || asm64.str_starts(mn, "cvttsd2si")) && nops == 2 {
+    let dst: *MReg = m_parse_reg(ops[1]);
+    let src: *MReg = m_parse_reg(ops[0]);
+    let q: bool = mn[9] == 113; // 'q'
+    let want_cls: i32 = if q { R86_64 } else { R86_32 };
+    if src.cls != R86_XMM || dst.cls != want_cls {
+      asm64.asm_err(a, "bad cvtt*2si");
+      return;
+    }
+    // cvttss2si vs cvttsd2si share 's' at [4]; the width letter is [5]
+    m_prefix_rex(a, if mn[5] == 115 { 0xF3 } else { 0xF2 }, q, dst, mreg(R86_NONE, 0));
+    asm64.a_emitb(a, 0x0F);
+    asm64.a_emitb(a, 0x2C);
+    m_modrm_rr(a, dst, src);
+    return;
+  }
+
+  asm64.asm_err(a, main.cat("unknown instruction `", main.cat3(mn, "'", "")));
+}
+
+fn asm86_resolve(a: *asm64.ASMCtx, ly: *asm64.ALayout) {
+  let mut i: usize = 0;
+  while i < a.fixes.n {
+    let f: *asm64.AFix = a.fixes.items[i];
+    let s: *asm64.ASym = asm64.am_get(a.by_name, f.sym);
+    let mut target: u64 = 0;
+    if s != null && s.defined {
+      target = asm64.a_sec_vaddr(a, ly, s.sec, s.off);
+    } else if main.streq(f.sym, "_rho_rt_heap") {
+      target = ly.heap_a;
+    } else {
+      asm64.asm_err(a, main.cat("undefined symbol `", main.cat3(f.sym, "'", "")));
+      i += 1;
+      continue;
+    }
+    if f.kind == asm64.FIX_ABS64 {
+      asm64.wr64le(a.out[f.sec as usize].items, f.at, target);
+      i += 1;
+      continue;
+    }
+    let pc: u64 = asm64.a_sec_vaddr(a, ly, f.sec, f.at);
+    // rel32: branches/calls count from the next instruction, rip-relative
+    // from the next byte — the same pc+4 either way
+    let d: i64 = target as i64 - ((pc + 4) as i64);
+    if d + (1 << 31) < 0 || d >= (1 << 31) {
+      asm64.asm_err(a, main.cat("relocation out of range for `", main.cat3(f.sym, "'", "")));
+      i += 1;
+      continue;
+    }
+    asm64.wr32le(a.out[f.sec as usize].items, f.at, d as u32);
+    i += 1;
+  }
+}
+
+pub fn asm86_assemble(text: string, base: u64, page: u64, heap_override: u64) -> *asm64.AResult {
+  let a: *asm64.ASMCtx = asm64.ac_new(base, false);
+  let lines: *main.Vec[string] = asm64.asm_split_lines(text);
+  let mut li: usize = 0;
+  while li < lines.n {
+    let raw: string = asm64.asm_prepare(lines.items[li]);
+    li += 1;
+    if len(raw) == 0 {
+      continue;
+    }
+    // labels first: the amd64 literal pool uses dot-prefixed names
+    if asm64.str_ends_byte(raw, 58) { // ':'
+      let label: string = raw[0..len(raw) - 1];
+      let s: *asm64.ASym = asm64.sym_get(a, label, true);
+      if s.defined {
+        asm64.asm_err(a, main.cat("duplicate label `", main.cat3(label, "'", "")));
+        continue;
+      }
+      s.defined = true;
+      s.sec = a.sec;
+      s.off = asm64.a_cur(a).n as u64;
+      continue;
+    }
+    if raw[0] == 46 { // '.'
+      let sp_i: i64 = asm64.str_index_from(raw, " ", 0);
+      let mut name: string = raw;
+      let mut rest: string = "";
+      if sp_i >= 0 {
+        name = raw[0..sp_i as usize];
+        let mut r: usize = sp_i as usize + 1;
+        while r < len(raw) && raw[r] == 32 {
+          r += 1;
+        }
+        rest = raw[r..len(raw)];
+      }
+      if main.streq(name, ".text") {
+        a.sec = 0;
+      } else if main.streq(name, ".data") {
+        a.sec = 2;
+      } else if main.streq(name, ".section") {
+        // ".rodata" folds into the text image (one r-x page in the final
+        // ELF); ".data" splits off
+        if asm64.str_starts(rest, ".rodata") || asm64.str_starts(rest, "__rodata") || asm64.str_starts(rest, "__TEXT") {
+          a.sec = 0;
+        } else if asm64.str_starts(rest, ".data") || asm64.str_starts(rest, "__data") || asm64.str_starts(rest, "__DATA") {
+          a.sec = 2;
+        } else {
+          asm64.asm_err(a, main.cat("unknown section `", main.cat3(rest, "'", "")));
+        }
+      } else if main.streq(name, ".globl") {
+        asm64.sym_get(a, rest, true);
+      } else {
+        asm64.a_directive_data(a, rest, name);
+      }
+      continue;
+    }
+    let ops: *main.Vec[string] = asm64.asm_split_ops(raw);
+    if ops.n > 0 {
+      let rest: []string = ops.items[1..ops.n];
+      m86_asm_line(a, ops.items[0], rest);
+    }
+  }
+  let ly: *asm64.ALayout = asm64.a_layout(a, page, heap_override);
+  asm86_resolve(a, ly);
+  if a.errors > 0 {
+    return asm64.a_result_failed();
+  }
+  return new asm64.AResult { ok: true, text: a.out[0], strsec: a.out[1], data: a.out[2], str_va: ly.str_a, data_va: ly.data_a, heap_va: ly.heap_a };
+}

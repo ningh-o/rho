@@ -1,0 +1,9 @@
+// diag
+// d01 — no implicit to_str: string + integer takes the mismatch diag,
+// verbatim (the `(null)` spelling is boot's name for an unpinned
+// integer literal — existing law, now pinned for the mirror to match)
+fn main() -> i32 {
+  let s: string = "a";
+  let x: i32 = s + 1;
+  return x;
+}

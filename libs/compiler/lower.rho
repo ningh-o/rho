@@ -1,0 +1,4433 @@
+// lowering (lower.c port LOW-2..LOW-8): builders, glue synthesis,
+// layout, the rc runtime, closure lifting, and reachability
+use main;
+use lex;
+use parse;
+use check;
+use ir;
+use emit_wasm;
+
+
+
+// ================= lowering context & builders (LOW-2) =====================
+
+struct OwnedBind { slot: *ir.IRSlot, ty: *parse.Type }
+struct BindEnt { name: string, slot: *ir.IRSlot, next: *BindEnt }
+struct LScope {
+  bindings: *BindEnt,
+  owned: []*OwnedBind,
+  defers: []*parse.Stmt,
+  parent: *LScope,
+  break_to: *ir.IRBlock,
+  continue_to: *ir.IRBlock,
+  is_loop: bool,
+}
+struct LCtx {
+  f: *ir.IRFn,
+  scope: *LScope,
+}
+
+fn rc_new_fn(symbol: string) -> *ir.IRFn {
+  let f: *ir.IRFn = new ir.IRFn {
+    uid: 0, symbol: symbol, ret_is_void: true, ret: null,
+    returns_aggregate: false, params: make([]*ir.IRSlot, 0),
+    param_types: check.fresh_type_vec2(),
+    out_slot: null, slots: make([]*ir.IRSlot, 0), blocks: make([]*ir.IRBlock, 0),
+    entry: null, cur: null, literals: make([]*ir.IRLit, 0),
+    next_vreg: 0, next_block: 0, next_slot: 0, vreg_base: 0,
+  };
+  let cc: *LCtx = rc_ctx(f);
+  f.entry = new_block(cc);
+  use_block(cc, f.entry);
+  return f;
+}
+
+fn push_islot(items: []*ir.IRSlot, s: *ir.IRSlot) -> []*ir.IRSlot {
+  let out: []*ir.IRSlot = make([]*ir.IRSlot, len(items) + 1);
+  let mut i: usize = 0;
+  while i < len(items) {
+    out[i] = items[i];
+    i += 1;
+  }
+  out[len(items)] = s;
+  return out;
+}
+
+fn rc_ctx(f: *ir.IRFn) -> *LCtx {
+  let c: *LCtx = new LCtx { f: f, scope: null };
+  return c;
+}
+
+fn new_block(c: *LCtx) -> *ir.IRBlock {
+  let b: *ir.IRBlock = new ir.IRBlock {
+    id: c.f.next_block, phis: make([]*ir.IRPhi, 0), ins: make([]*ir.IRIns, 0),
+    term_op: 0, br_true: null, br_false: null, ret_val: null,
+    cbr_cond: null, join_hint: null, loop_header: false, loop_exit: null,
+    emitted: false,
+  };
+  c.f.next_block += 1;
+  c.f.blocks = push_ptr(c.f.blocks, b);
+  return b;
+}
+
+fn push_ptr(items: []*ir.IRBlock, b: *ir.IRBlock) -> []*ir.IRBlock {
+  let out: []*ir.IRBlock = make([]*ir.IRBlock, len(items) + 1);
+  let mut i: usize = 0;
+  while i < len(items) {
+    out[i] = items[i];
+    i += 1;
+  }
+  out[len(items)] = b;
+  return out;
+}
+
+fn use_block(c: *LCtx, b: *ir.IRBlock) {
+  c.f.cur = b;
+}
+
+fn emit(c: *LCtx, op: ir.IROp) -> *ir.IRIns {
+  let i: *ir.IRIns = new ir.IRIns {
+    op: op, dst: null, a: null, b: null, slot: null, imm: 0, fimm: 0.0,
+    size: 0, is_float: false, signed_ops: true, cc: ir.IRCC.CcEq,
+    cast: ir.IRCastKind.CastBitcopy, cast_from: ir.IRType.ItPtr,
+    cast_to: ir.IRType.ItPtr, callee: "", callee_vreg: null,
+    args: make([]*ir.IRVreg, 0), addr: null, lit: 0, join_hint: null,
+  };
+  c.f.cur.ins = push_ins(c.f.cur.ins, i);
+  return i;
+}
+
+fn push_ins(items: []*ir.IRIns, i: *ir.IRIns) -> []*ir.IRIns {
+  let out: []*ir.IRIns = make([]*ir.IRIns, len(items) + 1);
+  let mut k: usize = 0;
+  while k < len(items) {
+    out[k] = items[k];
+    k += 1;
+  }
+  out[len(items)] = i;
+  return out;
+}
+
+fn new_vreg(c: *LCtx, ty: ir.IRType) -> *ir.IRVreg {
+  let v: *ir.IRVreg = new ir.IRVreg { id: c.f.next_vreg, ty: ty };
+  c.f.next_vreg += 1;
+  return v;
+}
+
+fn new_slot(c: *LCtx, size: i64, align: i64, name: string) -> *ir.IRSlot {
+  // scalars get 8-byte slots: the register spill stores full 64-bit slots
+  // and narrower accesses simply use the low bytes
+  let mut sz: i64 = size;
+  if sz == 0 {
+    sz = 8;
+  }
+  if sz < 8 {
+    sz = 8;
+  }
+  let mut al: i64 = align;
+  if al == 0 {
+    al = 8;
+  }
+  let s: *ir.IRSlot = new ir.IRSlot { id: c.f.next_slot, size: sz, align: al, name: name };
+  c.f.next_slot += 1;
+  c.f.slots = push_slot(c.f.slots, s);
+  return s;
+}
+
+fn push_slot(items: []*ir.IRSlot, s: *ir.IRSlot) -> []*ir.IRSlot {
+  let out: []*ir.IRSlot = make([]*ir.IRSlot, len(items) + 1);
+  let mut k: usize = 0;
+  while k < len(items) {
+    out[k] = items[k];
+    k += 1;
+  }
+  out[len(items)] = s;
+  return out;
+}
+
+fn v_slotaddr(c: *LCtx, s: *ir.IRSlot) -> *ir.IRVreg {
+  let v: *ir.IRVreg = new_vreg(c, ir.IRType.ItPtr);
+  let i: *ir.IRIns = emit(c, ir.IROp.IrAddrc);
+  i.dst = v;
+  i.slot = s;
+  return v;
+}
+
+fn v_const(c: *LCtx, val: i64, ty: ir.IRType) -> *ir.IRVreg {
+  let v: *ir.IRVreg = new_vreg(c, ty);
+  let i: *ir.IRIns = emit(c, ir.IROp.IrConst);
+  i.dst = v;
+  i.imm = val;
+  return v;
+}
+
+fn v_load(c: *LCtx, addr: *ir.IRVreg, ty: ir.IRType) -> *ir.IRVreg {
+  let v: *ir.IRVreg = new_vreg(c, ty);
+  let i: *ir.IRIns = emit(c, ir.IROp.IrLoad);
+  i.dst = v;
+  i.addr = addr;
+  i.size = ir.ir_size_of(ty);
+  i.is_float = ir.ir_is_float_t(ty);
+  return v;
+}
+
+fn v_store(c: *LCtx, addr: *ir.IRVreg, val: *ir.IRVreg) {
+  let i: *ir.IRIns = emit(c, ir.IROp.IrStore);
+  i.addr = addr;
+  i.a = val;
+  i.size = ir.ir_size_of(val.ty);
+  i.is_float = ir.ir_is_float_t(val.ty);
+}
+
+fn v_addi(c: *LCtx, a: *ir.IRVreg, imm: i64) -> *ir.IRVreg {
+  let v: *ir.IRVreg = new_vreg(c, ir.IRType.ItPtr);
+  let i: *ir.IRIns = emit(c, ir.IROp.IrAddi);
+  i.dst = v;
+  i.a = a;
+  i.imm = imm;
+  return v;
+}
+
+fn v_binop(c: *LCtx, op: ir.IROp, a: *ir.IRVreg, b: *ir.IRVreg, ty: ir.IRType, signed_ops: bool) -> *ir.IRVreg {
+  let v: *ir.IRVreg = new_vreg(c, ty);
+  let i: *ir.IRIns = emit(c, op);
+  i.dst = v;
+  i.a = a;
+  i.b = b;
+  i.is_float = ir.ir_is_float_t(ty);
+  i.signed_ops = signed_ops;
+  return v;
+}
+
+fn v_cmp(c: *LCtx, cc: ir.IRCC, a: *ir.IRVreg, b: *ir.IRVreg, is_float: bool) -> *ir.IRVreg {
+  let v: *ir.IRVreg = new_vreg(c, ir.IRType.ItU8);
+  let i: *ir.IRIns = emit(c, ir.IROp.IrCmp);
+  i.dst = v;
+  i.a = a;
+  i.b = b;
+  i.cc = cc;
+  i.is_float = is_float;
+  // signedness follows the operand: usize/u64 counters with the top bit
+  // set must compare unsigned
+  i.signed_ops = ty_is_signed_int(a.ty);
+  return v;
+}
+
+// unsigned >= : rc plausibility guards compare counts, not signs
+fn v_cmp_uge(c: *LCtx, a: *ir.IRVreg, b: *ir.IRVreg) -> *ir.IRVreg {
+  let v: *ir.IRVreg = new_vreg(c, ir.IRType.ItU8);
+  let i: *ir.IRIns = emit(c, ir.IROp.IrCmp);
+  i.dst = v;
+  i.a = a;
+  i.b = b;
+  i.cc = ir.IRCC.CcGe;
+  i.is_float = false;
+  i.signed_ops = false;
+  return v;
+}
+
+fn emit_br(c: *LCtx, to: *ir.IRBlock) {
+  let b: *ir.IRBlock = c.f.cur;
+  b.term_op = 100;
+  b.br_true = to;
+}
+
+fn emit_cbr(c: *LCtx, cond: *ir.IRVreg, tt: *ir.IRBlock, ff: *ir.IRBlock, join: *ir.IRBlock) {
+  let b: *ir.IRBlock = c.f.cur;
+  b.term_op = 101;
+  b.cbr_cond = cond;
+  b.br_true = tt;
+  b.br_false = ff;
+  b.join_hint = join;
+}
+
+fn emit_ret(c: *LCtx, v: *ir.IRVreg) {
+  let b: *ir.IRBlock = c.f.cur;
+  b.term_op = 102;
+  b.ret_val = v;
+}
+
+
+// ================= expression lowering (LOW-3) =============================
+
+fn fconst(c: *LCtx, v: f64, ty: ir.IRType) -> *ir.IRVreg {
+  let d: *ir.IRVreg = new_vreg(c, ty);
+  let i: *ir.IRIns = emit(c, ir.IROp.IrFconst);
+  i.dst = d;
+  i.fimm = v;
+  return d;
+}
+
+fn rc_call1(c: *LCtx, helper: string, arg: *ir.IRVreg) {
+  let i: *ir.IRIns = emit(c, ir.IROp.IrCall);
+  i.callee = helper;
+  let a: *ir.IRVreg = arg;
+  i.args = push_vreg(i.args, a);
+}
+
+fn push_vreg(items: []*ir.IRVreg, v: *ir.IRVreg) -> []*ir.IRVreg {
+  let out: []*ir.IRVreg = make([]*ir.IRVreg, len(items) + 1);
+  let mut k: usize = 0;
+  while k < len(items) {
+    out[k] = items[k];
+    k += 1;
+  }
+  out[len(items)] = v;
+  return out;
+}
+
+fn rc_inc_v(c: *LCtx, p: *ir.IRVreg) { rc_call1(c, "rho__rc_inc", p); }
+fn rc_dec_v(c: *LCtx, p: *ir.IRVreg) { rc_call1(c, "rho__rc_dec", p); }
+
+// bind a name to a slot in the current scope
+fn lbind(c: *LCtx, name: string, slot: *ir.IRSlot) {
+  let b: *BindEnt = new BindEnt { name: name, slot: slot, next: c.scope.bindings };
+  c.scope.bindings = b;
+}
+
+fn lookup_slot(c: *LCtx, name: string) -> *ir.IRSlot {
+  let mut s: *LScope = c.scope;
+  while s != null {
+    let mut b: *BindEnt = s.bindings;
+    while b != null {
+      if main.streq(b.name, name) {
+        return b.slot;
+      }
+      b = b.next;
+    }
+    s = s.parent;
+  }
+  return null;
+}
+
+// address of a name binding (slot address)
+fn addr_of_name(c: *LCtx, name: string) -> *ir.IRVreg {
+  let slot: *ir.IRSlot = lookup_slot(c, name);
+  if slot == null {
+    return null;
+  }
+  return v_slotaddr(c, slot);
+}
+
+
+// ================= scope/ownership (LOW-4) =================================
+
+fn own_slot(c: *LCtx, slot: *ir.IRSlot, t: *parse.Type) {
+  let ob: *OwnedBind = new OwnedBind { slot: slot, ty: t };
+  c.scope.owned = push_owned(c.scope.owned, ob);
+}
+
+fn push_owned(items: []*OwnedBind, ob: *OwnedBind) -> []*OwnedBind {
+  let out: []*OwnedBind = make([]*OwnedBind, len(items) + 1);
+  let mut i: usize = 0;
+  while i < len(items) {
+    out[i] = items[i];
+    i += 1;
+  }
+  out[len(items)] = ob;
+  return out;
+}
+
+fn release_addr(c: *LCtx, t: *parse.Type, addr: *ir.IRVreg) {
+  let fnn: string = value_fn_for(t, false);
+  if fnn != "" {
+    rc_call1(c, fnn, addr);
+  }
+}
+
+fn retain_addr(c: *LCtx, t: *parse.Type, addr: *ir.IRVreg) {
+  let fnn: string = value_fn_for(t, true);
+  if fnn != "" {
+    rc_call1(c, fnn, addr);
+  }
+}
+
+fn release_scope_only(c: *LCtx) {
+  let owned: []*OwnedBind = c.scope.owned;
+  let mut k: usize = len(owned);
+  while k > 0 {
+    let ob: *OwnedBind = owned[k - 1];
+    release_addr(c, ob.ty, v_slotaddr(c, ob.slot));
+    k -= 1;
+  }
+}
+
+fn scope_pop_release(c: *LCtx) {
+  release_scope_only(c);
+  c.scope = c.scope.parent;
+}
+
+fn owned_empty() -> []*OwnedBind {
+  return make([]*OwnedBind, 0);
+}
+
+fn scope_push_l(c: *LCtx) {
+  let s: *LScope = new LScope {
+    bindings: null, owned: owned_empty(), defers: make([]*parse.Stmt, 0),
+    parent: c.scope,
+    break_to: null, continue_to: null, is_loop: false,
+  };
+  c.scope = s;
+}
+
+
+// ================= glue synthesis (LOW-5) ==================================
+
+struct TypeEnt2 { key: string, val: string }
+pub struct TypeMap2 { items: []*TypeEnt2, n: usize }
+
+fn tm2_new() -> *TypeMap2 {
+  return new TypeMap2 { items: make([]*TypeEnt2, 4096), n: 0 };
+}
+
+pub static mut g_rel_fns: *TypeMap2 = 0 as *TypeMap2;
+pub static mut g_ret_fns: *TypeMap2 = 0 as *TypeMap2;
+
+fn ty_is_managed(t: *parse.Type) -> bool {
+  if t == null {
+    return false;
+  }
+  // raw byte pointers carry no rc header; a pointer is reference-counted
+  // exactly when it points at a `new` object
+  if t.kind == check.TypeKind.TyPtr {
+    return t.elem != null &&
+           (t.elem.kind == check.TypeKind.TyStruct || t.elem.kind == check.TypeKind.TyEnum);
+  }
+  if t.kind == check.TypeKind.TyWeak || t.kind == check.TypeKind.TySlice ||
+     t.kind == check.TypeKind.TyStringK || t.kind == check.TypeKind.TyFn ||
+     t.kind == check.TypeKind.TyDyn {
+    return true;
+  }
+  if t.kind == check.TypeKind.TyArray {
+    return ty_is_managed(t.elem);
+  }
+  if t.kind == check.TypeKind.TyStruct {
+    check.struct_field_type(t.rec, 0);
+    let mut i: usize = 0;
+    while i < len(t.rec.field_types) {
+      if ty_is_managed(t.rec.field_types[i]) {
+        return true;
+      }
+      i += 1;
+    }
+    return false;
+  }
+  if t.kind == check.TypeKind.TyEnum {
+    let d: *parse.Decl = t.rec.decl;
+    let mut i: usize = 0;
+    while i < d.variants.n {
+      let v: *parse.VariantAst = d.variants.items[i];
+      if v.vkind != parse.VarKind.VarUnit {
+        return true;
+      }
+      i += 1;
+    }
+    return false;
+  }
+  return false;
+}
+
+fn rho_sanitize(s: string) -> string {
+  let out: []u8 = make([]u8, len(s));
+  let mut i: usize = 0;
+  while i < len(s) {
+    let ch: u8 = s[i];
+    let ok: bool = (ch >= 97 && ch <= 122) || (ch >= 65 && ch <= 90) ||
+                   (ch >= 48 && ch <= 57) || ch == 95;
+    if ok {
+      out[i] = ch;
+    } else {
+      out[i] = 95;
+    }
+    i += 1;
+  }
+  return intrinsics.slice_string(out);
+}
+
+fn tm2_get(m: *TypeMap2, key: string) -> string {
+  let mut i: usize = 0;
+  while i < m.n {
+    if main.streq(m.items[i].key, key) {
+      return m.items[i].val;
+    }
+    i += 1;
+  }
+  return "";
+}
+
+fn tm2_put(m: *TypeMap2, key: string, val: string) {
+  let e: *TypeEnt2 = new TypeEnt2 { key: key, val: val };
+  m.items[m.n] = e;
+  m.n += 1;
+}
+
+// lazily synthesize rho__rel$<t> / rho__ret$<t>: walk the value of type t at
+// the sole pointer parameter. Returns "" for unmanaged types.
+fn value_fn_for(t: *parse.Type, retain: bool) -> string {
+  if t == null || !ty_is_managed(t) {
+    return "";
+  }
+  let mut cache: *TypeMap2 = rel_cache();
+  if retain {
+    cache = ret_cache();
+  }
+  let found: string = tm2_get(cache, t.mangled);
+  if found != "" {
+    return found;
+  }
+  // kind prefix keeps the symbol unique: `[]*T` and `*[]T` would sanitize
+  // to the same name
+  let mut kindp: string = "x_";
+  if t.kind == check.TypeKind.TyPtr { kindp = "p_"; }
+  if t.kind == check.TypeKind.TySlice { kindp = "s_"; }
+  if t.kind == check.TypeKind.TyStringK { kindp = "g_"; }
+  if t.kind == check.TypeKind.TyArray { kindp = "a_"; }
+  if t.kind == check.TypeKind.TyEnum { kindp = "e_"; }
+  if t.kind == check.TypeKind.TyStruct { kindp = "r_"; }
+  if t.kind == check.TypeKind.TyFn { kindp = "f_"; }
+  if t.kind == check.TypeKind.TyWeak { kindp = "w_"; }
+  if t.kind == check.TypeKind.TyDyn { kindp = "y_"; }
+  let sym: string = main.cat3("rho__", main.cat3(retain_which(retain), main.cat3("$", kindp, ""), ""),
+                         rho_sanitize(t.mangled));
+  tm2_put(cache, t.mangled, sym);
+  // synthesize the walker body
+  let lf: *ir.IRFn = rc_new_fn(sym);
+  let c: *LCtx = rc_ctx(lf);
+  let as_: *ir.IRSlot = new_slot(c, 8, 8, "addr");
+  lf.params = push_islot(lf.params, as_);
+  let addr: *ir.IRVreg = v_load(c, v_slotaddr(c, as_), ir.IRType.ItPtr);
+  value_walk(c, t, addr, retain);
+  finish_fn_c(c);
+  return sym;
+}
+
+// close a synthesized fn: seal with a void return when still open, register
+// it in the program's fn list
+fn finish_fn_c(c: *LCtx) {
+  let b: *ir.IRBlock = c.f.cur;
+  if b.term_op == 0 {
+    emit_ret(c, null);
+  }
+  if ir.g_ir_fns == null {
+    ir.g_ir_fns = new main.Vec[*ir.IRFn] { items: make([]*ir.IRFn, 256), n: 0 };
+  }
+  ir.g_ir_fns.push(c.f);
+}
+
+fn value_walk(c: *LCtx, t: *parse.Type, addr: *ir.IRVreg, retain: bool) {
+  if t == null {
+    return;
+  }
+  if t.kind == check.TypeKind.TyPtr {
+    let p: *ir.IRVreg = v_load(c, addr, ir.IRType.ItPtr);
+    if retain {
+      rc_inc_v(c, p);
+    } else {
+      rc_dec_v(c, p);
+    }
+    return;
+  }
+  if t.kind == check.TypeKind.TyWeak {
+    let h: *ir.IRVreg = v_load(c, addr, ir.IRType.ItPtr);
+    if retain {
+      rc_call1(c, "rho__rc_winc", h);
+    } else {
+      rc_call1(c, "rho__rc_wdec", h);
+    }
+    return;
+  }
+  if t.kind == check.TypeKind.TyFn {
+    let e2: *ir.IRVreg = v_load(c, v_addi(c, addr, 8), ir.IRType.ItPtr);
+    if retain {
+      rc_inc_v(c, e2);
+    } else {
+      rc_dec_v(c, e2);
+    }
+    return;
+  }
+  if t.kind == check.TypeKind.TyDyn {
+    // the object's RC header carries its own drop glue — plain count ops
+    let o: *ir.IRVreg = v_load(c, v_addi(c, addr, 8), ir.IRType.ItPtr);
+    if retain {
+      rc_inc_v(c, o);
+    } else {
+      rc_dec_v(c, o);
+    }
+    return;
+  }
+  if t.kind == check.TypeKind.TySlice || t.kind == check.TypeKind.TyStringK {
+    if t.kind == check.TypeKind.TySlice && ty_is_managed(t.elem) {
+      // walk elements: buf at +8, elem stride at +8, count at +16
+      let ptr: *ir.IRVreg = v_load(c, v_addi(c, addr, 8), ir.IRType.ItPtr);
+      let n: *ir.IRVreg = v_load(c, v_addi(c, addr, 16), ir.IRType.ItUsize);
+      let esz: i64 = type_size(t.elem);
+      let islot: *ir.IRSlot = new_slot(c, 8, 8, "i");
+      v_store(c, v_slotaddr(c, islot), v_const(c, 0, ir.IRType.ItUsize));
+      let hdr: *ir.IRBlock = new_block(c);
+      let bodyb: *ir.IRBlock = new_block(c);
+      let done: *ir.IRBlock = new_block(c);
+      emit_br(c, hdr);
+      use_block(c, hdr);
+      let i: *ir.IRVreg = v_load(c, v_slotaddr(c, islot), ir.IRType.ItUsize);
+      let more: *ir.IRVreg = v_cmp(c, ir.IRCC.CcLt, i, n, false);
+      emit_cbr(c, more, bodyb, done, done);
+      use_block(c, bodyb);
+      let scaled: *ir.IRVreg = v_binop(c, ir.IROp.IrMul, i, v_const(c, esz, ir.IRType.ItUsize), ir.IRType.ItUsize, false);
+      let ep: *ir.IRVreg = v_binop(c, ir.IROp.IrAdd, ptr, scaled, ir.IRType.ItPtr, false);
+      let efnn: string = value_fn_for(t.elem, retain);
+      if efnn != "" {
+        rc_call1(c, efnn, ep);
+      }
+      let i2: *ir.IRVreg = v_binop(c, ir.IROp.IrAdd, i, v_const(c, 1, ir.IRType.ItUsize), ir.IRType.ItUsize, true);
+      v_store(c, v_slotaddr(c, islot), i2);
+      emit_br(c, hdr);
+      use_block(c, done);
+    }
+    let buf: *ir.IRVreg = v_load(c, addr, ir.IRType.ItPtr);
+    if retain {
+      rc_call1(c, "rho__rc_inch", buf);
+    } else {
+      rc_call1(c, "rho__rc_dech", buf);
+    }
+    return;
+  }
+  if t.kind == check.TypeKind.TyArray {
+    if !ty_is_managed(t.elem) {
+      return;
+    }
+    let esz: i64 = type_size(t.elem);
+    let mut i: u64 = 0;
+    while i < t.len {
+      let efnn: string = value_fn_for(t.elem, retain);
+      if efnn != "" {
+        rc_call1(c, efnn, v_addi(c, addr, (esz * i as i64)));
+      }
+      i += 1;
+    }
+    return;
+  }
+  if t.kind == check.TypeKind.TyStruct {
+    let rec: *parse.RecType = t.rec;
+    let dcl: *parse.Decl = rec.decl;
+    let mut i: usize = 0;
+    while i < dcl.fields.n {
+      let off: i64 = struct_field_offset(rec, i);
+      let ft: *parse.Type = check.struct_field_type(rec, i);
+      if ty_is_managed(ft) {
+        let efnn: string = value_fn_for(ft, retain);
+        if efnn != "" {
+          rc_call1(c, efnn, v_addi(c, addr, off));
+        }
+      }
+      i += 1;
+    }
+    return;
+  }
+  if t.kind == check.TypeKind.TyEnum {
+    let dcl: *parse.Decl = t.rec.decl;
+    let tag: *ir.IRVreg = v_load(c, addr, ir.IRType.ItI32);
+    let done: *ir.IRBlock = new_block(c);
+    let mut any: bool = false;
+    let mut vi: usize = 0;
+    while vi < dcl.variants.n {
+      let v: *parse.VariantAst = dcl.variants.items[vi];
+      let mut nf: usize = 0;
+      if v.vkind == parse.VarKind.VarTuple {
+        nf = v.types.n;
+      } else if v.vkind == parse.VarKind.VarStruct {
+        nf = v.fields.n;
+      }
+      let mut managed: bool = false;
+      let mut chk: usize = 0;
+      while chk < nf && !managed {
+        managed = ty_is_managed(check.variant_field_type(t, vi as i32, chk as i32));
+        chk += 1;
+      }
+      if !managed {
+        vi += 1;
+        continue;
+      }
+      let body: *ir.IRBlock = new_block(c);
+      let next: *ir.IRBlock = new_block(c);
+      let is: *ir.IRVreg = v_cmp(c, ir.IRCC.CcEq, tag, v_const(c, v.disc as i64, ir.IRType.ItI32), false);
+      emit_cbr(c, is, body, next, done);
+      use_block(c, body);
+      let mut fi: usize = 0;
+      while fi < nf {
+        let ft: *parse.Type = check.variant_field_type(t, vi as i32, fi as i32);
+        if ty_is_managed(ft) {
+          let off: i64 = variant_field_offset(t, vi as i32, fi as i32);
+          let efnn: string = value_fn_for(ft, retain);
+          if efnn != "" {
+            rc_call1(c, efnn, v_addi(c, addr, off));
+          }
+        }
+        fi += 1;
+      }
+      emit_br(c, done);
+      use_block(c, next);
+      any = true;
+      vi += 1;
+    }
+    if any {
+      emit_br(c, done);
+      use_block(c, done);
+    }
+    return;
+  }
+}
+
+fn retain_which(retain: bool) -> string {
+  if retain {
+    return "ret";
+  }
+  return "rel";
+}
+
+
+fn ret_cache() -> *TypeMap2 {
+  if g_ret_fns == null {
+    g_ret_fns = tm2_new();
+  }
+  return g_ret_fns;
+}
+
+fn rel_cache() -> *TypeMap2 {
+  if g_rel_fns == null {
+    g_rel_fns = tm2_new();
+  }
+  return g_rel_fns;
+}
+
+
+fn elem_size(t: *parse.Type) -> i64 {
+  if t == null {
+    return 8;
+  }
+  if t.kind == check.TypeKind.TyI8 || t.kind == check.TypeKind.TyU8 || t.kind == check.TypeKind.TyBool {
+    return 1;
+  }
+  if t.kind == check.TypeKind.TyI16 || t.kind == check.TypeKind.TyU16 {
+    return 2;
+  }
+  if t.kind == check.TypeKind.TyI32 || t.kind == check.TypeKind.TyU32 || t.kind == check.TypeKind.TyF32 {
+    return 4;
+  }
+  return 8;
+}
+
+// ================= layout (LOW-7) ==========================================
+
+pub fn round_up_i64(v: i64, a: i64) -> i64 {
+  return (v + a - 1) / a * a;
+}
+
+fn type_align(t: *parse.Type) -> i64 {
+  if t == null {
+    return 1;
+  }
+  if t.kind == check.TypeKind.TyI8 || t.kind == check.TypeKind.TyU8 || t.kind == check.TypeKind.TyBool {
+    return 1;
+  }
+  if t.kind == check.TypeKind.TyI16 || t.kind == check.TypeKind.TyU16 {
+    return 2;
+  }
+  if t.kind == check.TypeKind.TyI32 || t.kind == check.TypeKind.TyU32 || t.kind == check.TypeKind.TyF32 {
+    return 4;
+  }
+  if t.kind == check.TypeKind.TyStruct || t.kind == check.TypeKind.TyEnum {
+    layout_rec(t.rec);
+    if t.rec.align > 0 {
+      return t.rec.align;
+    }
+    return 8;
+  }
+  return 8;
+}
+
+fn type_size(t: *parse.Type) -> i64 {
+  if t == null {
+    return 0;
+  }
+  if t.kind == check.TypeKind.TyI8 || t.kind == check.TypeKind.TyU8 || t.kind == check.TypeKind.TyBool {
+    return 1;
+  }
+  if t.kind == check.TypeKind.TyI16 || t.kind == check.TypeKind.TyU16 {
+    return 2;
+  }
+  if t.kind == check.TypeKind.TyI32 || t.kind == check.TypeKind.TyU32 || t.kind == check.TypeKind.TyF32 {
+    return 4;
+  }
+  if t.kind == check.TypeKind.TyStringK || t.kind == check.TypeKind.TySlice {
+    return 24;
+  }
+  if t.kind == check.TypeKind.TyFn {
+    return 16; // {code, env}
+  }
+  if t.kind == check.TypeKind.TyStruct || t.kind == check.TypeKind.TyEnum {
+    layout_rec(t.rec);
+    return t.rec.size;
+  }
+  if t.kind == check.TypeKind.TyDyn {
+    return 16; // {vtable, obj}
+  }
+  return 8;
+}
+
+fn layout_rec(rec: *parse.RecType) {
+  if rec.align != 0 {
+    return;
+  }
+  rec.align = (0 - 1) as i64;
+  let d: *parse.Decl = rec.decl;
+  let saved_mod: *check.Module = check.cur_module;
+  if rec.owner_mod != null {
+    check.cur_module = rec.owner_mod;
+  }
+  let mut size: i64 = 0;
+  let mut align: i64 = 1;
+  if d.kind == parse.DeclKind.DkStruct {
+    check.struct_field_type(rec, 0);
+    let mut i: usize = 0;
+    while i < d.fields.n {
+      let ft: *parse.Type = rec.field_types[i];
+      let fa: i64 = type_align(ft);
+      if fa > align {
+        align = fa;
+      }
+      let off: i64 = round_up_i64(size, fa);
+      rec.offsets = push_i64(rec.offsets, off);
+      size = off + type_size(ft);
+      i += 1;
+    }
+  } else {
+    align = 4;
+    size = 4;
+    let saved_env: *parse.TypeMap = check.g_tenv;
+    check.g_tenv = rec.env_tenv;
+    let mut i: usize = 0;
+    while i < d.variants.n {
+      let v: *parse.VariantAst = d.variants.items[i];
+      let foff: *parse.I64Vec = new parse.I64Vec { items: make([]i64, 0) };
+      rec.var_offsets = push_i64vec(rec.var_offsets, foff);
+      if v.vkind == parse.VarKind.VarUnit {
+        rec.var_poff = push_i64(rec.var_poff, 4);
+        i += 1;
+        continue;
+      }
+      let mut nfields: usize = v.types.n;
+      if v.vkind == parse.VarKind.VarStruct {
+        nfields = v.fields.n;
+      }
+      let mut off: i64 = 4;
+      let mut j: usize = 0;
+      while j < nfields {
+        let mut fta: *parse.TypeAst = v.types.items[j];
+        if v.vkind == parse.VarKind.VarStruct {
+          fta = v.fields.items[j].ty;
+        }
+        let vt: *parse.Type = check.resolve_type_in_module(check.cur_module, fta);
+        let va: i64 = type_align(vt);
+        if va > align {
+          align = va;
+        }
+        off = round_up_i64(off, va);
+        foff.items = push_i64(foff.items, off);
+        off = off + type_size(vt);
+        j += 1;
+      }
+      let mut poff: i64 = 4;
+      if len(foff.items) > 0 {
+        poff = foff.items[0];
+      }
+      rec.var_poff = push_i64(rec.var_poff, poff);
+      if off > size {
+        size = off;
+      }
+      i += 1;
+    }
+    check.g_tenv = saved_env;
+  }
+  check.cur_module = saved_mod;
+  rec.align = align;
+  rec.size = round_up_i64(size, align);
+}
+
+fn push_i64vec(items: []*parse.I64Vec, v: *parse.I64Vec) -> []*parse.I64Vec {
+  let out: []*parse.I64Vec = make([]*parse.I64Vec, len(items) + 1);
+  let mut i: usize = 0;
+  while i < len(items) {
+    out[i] = items[i];
+    i += 1;
+  }
+  out[len(items)] = v;
+  return out;
+}
+
+// payload start of one variant of an enum value
+fn variant_payload_offset(enum_t: *parse.Type, variant: i32) -> i64 {
+  layout_rec(enum_t.rec);
+  if variant >= 0 && variant as usize < len(enum_t.rec.var_poff) {
+    return enum_t.rec.var_poff[variant];
+  }
+  return 4;
+}
+
+fn variant_field_offset(enum_t: *parse.Type, variant: i32, field: i32) -> i64 {
+  layout_rec(enum_t.rec);
+  if variant >= 0 && variant as usize < len(enum_t.rec.var_offsets) {
+    let foff: []i64 = enum_t.rec.var_offsets[variant].items;
+    if field >= 0 && field as usize < len(foff) {
+      return foff[field];
+    }
+  }
+  return 4;
+}
+
+pub fn push_i64(items: []i64, v: i64) -> []i64 {
+  let out: []i64 = make([]i64, len(items) + 1);
+  let mut i: usize = 0;
+  while i < len(items) {
+    out[i] = items[i];
+    i += 1;
+  }
+  out[len(items)] = v;
+  return out;
+}
+
+fn struct_field_offset(rec: *parse.RecType, i: usize) -> i64 {
+  layout_rec(rec);
+  if len(rec.offsets) > i {
+    return rec.offsets[i];
+  }
+  return 0;
+}
+// ================= lowering (LOW-8): checks, panic, rc runtime ==============
+
+pub struct CV { ok: bool, is_int: bool, i: u64, f: f64, s: string, b: bool }
+
+// compile-time constant evaluation (statics/consts)
+pub fn const_eval(e: *parse.Expr, m: *check.Module) -> *CV {
+  let r: *CV = new CV { ok: false, is_int: false, i: 0, f: 0.0, s: "", b: false };
+  let saved: *check.Module = check.cur_module;
+  check.cur_module = m;
+  if e.kind == parse.ExprKind.ExInt {
+    r.ok = true;
+    r.is_int = true;
+    r.i = e.iv;
+    check.cur_module = saved;
+    return r;
+  }
+  if e.kind == parse.ExprKind.ExFloat {
+    r.ok = true;
+    r.f = e.fv;
+    check.cur_module = saved;
+    return r;
+  }
+  if e.kind == parse.ExprKind.ExStr {
+    r.ok = true;
+    r.s = e.sv;
+    check.cur_module = saved;
+    return r;
+  }
+  if e.kind == parse.ExprKind.ExBool {
+    r.ok = true;
+    r.b = e.bv;
+    check.cur_module = saved;
+    return r;
+  }
+  if e.kind == parse.ExprKind.ExCast {
+    let a: *CV = const_eval(e.a, m);
+    if !a.ok {
+      check.cur_module = saved;
+      return r;
+    }
+    r.ok = a.is_int;
+    r.is_int = a.is_int;
+    r.i = a.i;
+    check.cur_module = saved;
+    return r;
+  }
+  if e.kind == parse.ExprKind.ExName {
+    let mut sym: *check.Sym = check.sm_get(m.syms, e.sv);
+    if sym == null && check.prelude_module != null && check.prelude_module != m {
+      sym = check.sm_get(check.prelude_module.syms, e.sv);
+    }
+    if sym != null && (sym.kind == check.SymKind.SyConst || sym.kind == check.SymKind.SyStatic) {
+      if sym.decl.ceval_ok {
+        r.ok = true;
+        r.is_int = sym.decl.ceval_is_int;
+        r.i = sym.decl.ceval_i;
+        r.f = sym.decl.ceval_f;
+        check.cur_module = saved;
+        return r;
+      }
+      let v: *CV = const_eval(sym.decl.init, m);
+      sym.decl.ceval_ok = v.ok;
+      sym.decl.ceval_is_int = v.is_int;
+      sym.decl.ceval_i = v.i;
+      sym.decl.ceval_f = v.f;
+      r.ok = v.ok;
+      r.is_int = v.is_int;
+      r.i = v.i;
+      r.f = v.f;
+      check.cur_module = saved;
+      return r;
+    }
+    check.cur_module = saved;
+    return r;
+  }
+  if e.kind == parse.ExprKind.ExUn {
+    let a: *CV = const_eval(e.a, m);
+    if !a.ok {
+      check.cur_module = saved;
+      return r;
+    }
+    r.ok = true;
+    if e.unop == lex.Tok.PMinus {
+      if a.is_int {
+        r.is_int = true;
+        r.i = (0 - (a.i as i64)) as u64;
+      } else {
+        r.f = 0.0 - a.f;
+      }
+    } else if e.unop == lex.Tok.PTilde && a.is_int {
+      r.is_int = true;
+      r.i = ~a.i;
+    } else if e.unop == lex.Tok.PBang {
+      r.b = !a.b;
+    } else {
+      r.ok = false;
+    }
+    check.cur_module = saved;
+    return r;
+  }
+  if e.kind == parse.ExprKind.ExBin {
+    let a: *CV = const_eval(e.a, m);
+    let b: *CV = const_eval(e.b, m);
+    if !a.ok || !b.ok {
+      check.cur_module = saved;
+      return r;
+    }
+    if !a.is_int || !b.is_int {
+      check.cur_module = saved;
+      return r; // no float/str const arithmetic
+    }
+    r.ok = true;
+    r.is_int = true;
+    let x: u64 = a.i;
+    let y: u64 = b.i;
+    let op: lex.Tok = e.binop;
+    if op == lex.Tok.PPlus { r.i = x + y; }
+    else if op == lex.Tok.PMinus { r.i = x - y; }
+    else if op == lex.Tok.PStar { r.i = x * y; }
+    else if op == lex.Tok.PSlash { if y != 0 { r.i = x / y; } }
+    else if op == lex.Tok.PPercent { if y != 0 { r.i = x % y; } }
+    else if op == lex.Tok.PAmp { r.i = x & y; }
+    else if op == lex.Tok.PPipe { r.i = x | y; }
+    else if op == lex.Tok.PCaret { r.i = x ^ y; }
+    else if op == lex.Tok.PShl { r.i = x << (y & 63); }
+    else if op == lex.Tok.PShr { r.i = x >> (y & 63); }
+    else if op == lex.Tok.PEq { r.is_int = false; r.b = x == y; }
+    else if op == lex.Tok.PNe { r.is_int = false; r.b = x != y; }
+    else if op == lex.Tok.PLt { r.is_int = false; r.b = x < y; }
+    else if op == lex.Tok.PGt { r.is_int = false; r.b = x > y; }
+    else if op == lex.Tok.PLe { r.is_int = false; r.b = x <= y; }
+    else if op == lex.Tok.PGe { r.is_int = false; r.b = x >= y; }
+    else if op == lex.Tok.PAndand { r.is_int = false; r.b = x != 0 && y != 0; }
+    else if op == lex.Tok.POror { r.is_int = false; r.b = x != 0 || y != 0; }
+    else { r.ok = false; }
+    check.cur_module = saved;
+    return r;
+  }
+  check.cur_module = saved;
+  return r;
+}
+
+pub fn ty_is_signed_int(t: ir.IRType) -> bool {
+  if t == ir.IRType.ItI8 || t == ir.IRType.ItI16 || t == ir.IRType.ItI32 || t == ir.IRType.ItI64 {
+    return true;
+  }
+  return false;
+}
+
+pub fn ir_type_of(t: *parse.Type) -> ir.IRType {
+  if t.kind == check.TypeKind.TyBool { return ir.IRType.ItU8; }
+  if t.kind == check.TypeKind.TyI8 { return ir.IRType.ItI8; }
+  if t.kind == check.TypeKind.TyI16 { return ir.IRType.ItI16; }
+  if t.kind == check.TypeKind.TyI32 { return ir.IRType.ItI32; }
+  if t.kind == check.TypeKind.TyI64 { return ir.IRType.ItI64; }
+  if t.kind == check.TypeKind.TyU8 { return ir.IRType.ItU8; }
+  if t.kind == check.TypeKind.TyU16 { return ir.IRType.ItU16; }
+  if t.kind == check.TypeKind.TyU32 { return ir.IRType.ItU32; }
+  if t.kind == check.TypeKind.TyU64 { return ir.IRType.ItU64; }
+  if t.kind == check.TypeKind.TyUsize { return ir.IRType.ItUsize; }
+  if t.kind == check.TypeKind.TyIsize { return ir.IRType.ItI64; }
+  if t.kind == check.TypeKind.TyF32 { return ir.IRType.ItF32; }
+  if t.kind == check.TypeKind.TyF64 { return ir.IRType.ItF64; }
+  if t.kind == check.TypeKind.TyIntLit { return ir.IRType.ItI32; }
+  if t.kind == check.TypeKind.TyFloatLit { return ir.IRType.ItF64; }
+  return ir.IRType.ItPtr;
+}
+
+fn ty_is_aggregate(t: *parse.Type) -> bool {
+  if t.kind == check.TypeKind.TyStruct || t.kind == check.TypeKind.TyEnum ||
+     t.kind == check.TypeKind.TyArray || t.kind == check.TypeKind.TySlice ||
+     t.kind == check.TypeKind.TyStringK || t.kind == check.TypeKind.TyFn ||
+     t.kind == check.TypeKind.TyDyn {
+    return true; // TyFn: closure pair {code, env}; TyDyn: {vtable, obj}
+  }
+  return false;
+}
+
+fn push_phi(items: []*ir.IRPhi, p: *ir.IRPhi) -> []*ir.IRPhi {
+  let out: []*ir.IRPhi = make([]*ir.IRPhi, len(items) + 1);
+  let mut i: usize = 0;
+  while i < len(items) {
+    out[i] = items[i];
+    i += 1;
+  }
+  out[len(items)] = p;
+  return out;
+}
+
+// a phi lives in the block whose execution merges: the JOIN block
+fn emit_phi_in(c: *LCtx, block: *ir.IRBlock, ty: ir.IRType) -> *ir.IRPhi {
+  let saved: *ir.IRBlock = c.f.cur;
+  c.f.cur = block;
+  let p: *ir.IRPhi = new ir.IRPhi {
+    dst: new_vreg(c, ty), args: make([]*ir.IRVreg, 0), preds: make([]*ir.IRBlock, 0),
+  };
+  block.phis = push_phi(block.phis, p);
+  c.f.cur = saved;
+  return p;
+}
+
+fn phi_add(p: *ir.IRPhi, pred: *ir.IRBlock, v: *ir.IRVreg) {
+  p.preds = push_ptr(p.preds, pred);
+  p.args = push_vreg(p.args, v);
+}
+
+pub fn push_u8(items: []u8, v: u8) -> []u8 {
+  let out: []u8 = make([]u8, len(items) + 1);
+  let mut i: usize = 0;
+  while i < len(items) {
+    out[i] = items[i];
+    i += 1;
+  }
+  out[len(items)] = v;
+  return out;
+}
+
+fn lit_bytes(c: *LCtx, s: string) -> i32 {
+  let mut bytes: []u8 = make([]u8, 0);
+  let mut i: usize = 0;
+  while i < len(s) {
+    bytes = push_u8(bytes, s[i]);
+    i += 1;
+  }
+  bytes = push_u8(bytes, 0); // NUL pad for C interop debugging
+  let label: string = main.cat3("str", main.itoa(ir.g_lit_counter as i64), "");
+  ir.g_lit_counter += 1;
+  let l: *ir.IRLit = new ir.IRLit { label: label, bytes: bytes };
+  c.f.literals = push_lit(c.f.literals, l);
+  return len(c.f.literals) as i32 - 1;
+}
+
+fn push_lit(items: []*ir.IRLit, l: *ir.IRLit) -> []*ir.IRLit {
+  let out: []*ir.IRLit = make([]*ir.IRLit, len(items) + 1);
+  let mut i: usize = 0;
+  while i < len(items) {
+    out[i] = items[i];
+    i += 1;
+  }
+  out[len(items)] = l;
+  return out;
+}
+
+// the aggregate-return destination: the out slot holds the caller's buffer
+// pointer — load through it, never write into the slot itself
+fn ret_dest(c: *LCtx) -> *ir.IRVreg {
+  return v_load(c, v_slotaddr(c, c.f.out_slot), ir.IRType.ItPtr);
+}
+
+// mangled symbol for a module-level symbol: rho_<path>__<name>
+pub fn sym_symbol(s: *check.Sym) -> string {
+  if s.symbol != "" {
+    return s.symbol;
+  }
+  if s.kind == check.SymKind.SyExtern {
+    return s.name; // C ABI name; emitter adds prefix per target
+  }
+  let mut path: string = "";
+  if s.owner != null {
+    path = rho_sanitize(s.owner.path);
+  }
+  // instantiation markers (`push$u8`) must not fold to the same token as a
+  // plain identifier (`push_u8`), so `$` escapes to `_Q_`
+  let name: string = rho_sanitize_sym(s.name);
+  // methods fold in the receiver name: `to_str` is defined once per type in
+  // a module and the bare name would collide
+  if s.decl != null && s.decl.is_method && len(s.decl.recv) > 0 {
+    s.symbol = main.cat5("rho_", path, "__", rho_sanitize(s.decl.recv), main.cat3("_", name, ""));
+    return s.symbol;
+  }
+  let sym: string = main.cat3("rho_", main.cat3(path, "__", name), "");
+  s.symbol = sym;
+  return sym;
+}
+
+fn rho_sanitize_sym(s: string) -> string {
+  let buf: *main.Vec[u8] = new main.Vec[u8] { items: make([]u8, 32), n: 0 };
+  let mut i: usize = 0;
+  while i < len(s) {
+    let c: u8 = s[i];
+    let ok: bool = (c >= 97 && c <= 122) || (c >= 65 && c <= 90) ||
+                   (c >= 48 && c <= 57) || c == 95;
+    if ok {
+      buf.push(c);
+    } else if c == 36 {
+      buf.push(95);
+      buf.push(81);
+      buf.push(95);
+    } else {
+      buf.push(95);
+    }
+    i += 1;
+  }
+  return intrinsics.slice_string(buf.items[0..buf.n]);
+}
+
+pub fn prelude_fn(name: string) -> *check.Sym {
+  if check.prelude_module == null {
+    return null;
+  }
+  return check.sm_get(check.prelude_module.syms, name);
+}
+
+fn panic_call(c: *LCtx, msg: string) {
+  // stamp the function name + a per-site counter into the message: runtime
+  // panics from generated checks are otherwise indistinguishable
+  let site: i32 = ir.g_panic_site;
+  ir.g_panic_site += 1;
+  let m: string = main.cat3("[", main.cat3(c.f.symbol, "#", main.cat3(main.itoa(site as i64), "] ", msg)), "");
+  let lit: i32 = lit_bytes(c, m);
+  let tmp: *ir.IRSlot = new_slot(c, 24, 8, "panicstr");
+  let addr: *ir.IRVreg = v_slotaddr(c, tmp);
+  let ptrv: *ir.IRVreg = new_vreg(c, ir.IRType.ItPtr);
+  let la: *ir.IRIns = emit(c, ir.IROp.IrLitaddr);
+  la.dst = ptrv;
+  la.lit = lit;
+  let bytes: *ir.IRVreg = v_addi(c, ptrv, 24);
+  let addr8: *ir.IRVreg = v_addi(c, addr, 8);
+  let addr16: *ir.IRVreg = v_addi(c, addr, 16);
+  let lenv: *ir.IRVreg = v_const(c, len(m) as i64, ir.IRType.ItUsize);
+  let st1: *ir.IRIns = emit(c, ir.IROp.IrStore);
+  st1.addr = addr;
+  st1.a = ptrv;
+  st1.size = 8;
+  let st2: *ir.IRIns = emit(c, ir.IROp.IrStore);
+  st2.addr = addr8;
+  st2.a = bytes;
+  st2.size = 8;
+  let st3: *ir.IRIns = emit(c, ir.IROp.IrStore);
+  st3.addr = addr16;
+  st3.a = lenv;
+  st3.size = 8;
+  // call prelude panic(msg)
+  let panic_fn: *check.Sym = prelude_fn("panic");
+  let call: *ir.IRIns = emit(c, ir.IROp.IrCall);
+  call.callee = sym_symbol(panic_fn);
+  call.args = push_vreg(call.args, addr);
+  // panic never returns; keep the block unsealed — a br follows at call site
+}
+
+fn null_check(c: *LCtx, ptr: *ir.IRVreg) -> *ir.IRVreg {
+  let ok: *ir.IRBlock = new_block(c);
+  let bad: *ir.IRBlock = new_block(c);
+  let isnull: *ir.IRVreg = v_cmp(c, ir.IRCC.CcEq, ptr, v_const(c, 0, ir.IRType.ItPtr), false);
+  emit_cbr(c, isnull, bad, ok, ok);
+  use_block(c, bad);
+  panic_call(c, "null dereference");
+  emit_br(c, ok); // unreachable, keeps the CFG well-formed
+  use_block(c, ok);
+  return ptr;
+}
+
+// bounds check: idx < len, unsigned
+fn bounds_check(c: *LCtx, idx: *ir.IRVreg, len_v: *ir.IRVreg) {
+  let ok: *ir.IRBlock = new_block(c);
+  let bad: *ir.IRBlock = new_block(c);
+  let oob: *ir.IRVreg = v_cmp(c, ir.IRCC.CcGe, idx, len_v, false); // unsigned via emitter flag
+  emit_cbr(c, oob, bad, ok, ok);
+  use_block(c, bad);
+  panic_call(c, "index out of bounds");
+  emit_br(c, ok);
+  use_block(c, ok);
+}
+
+// slice upper bound: hi <= len is legal
+fn bounds_check_hi(c: *LCtx, hi: *ir.IRVreg, len_v: *ir.IRVreg) {
+  let ok: *ir.IRBlock = new_block(c);
+  let bad: *ir.IRBlock = new_block(c);
+  let oob: *ir.IRVreg = v_cmp(c, ir.IRCC.CcGt, hi, len_v, false);
+  emit_cbr(c, oob, bad, ok, ok);
+  use_block(c, bad);
+  panic_call(c, "index out of bounds");
+  emit_br(c, ok);
+  use_block(c, ok);
+}
+
+fn call_prelude1(c: *LCtx, name: string, arg0: *ir.IRVreg, ret: ir.IRType) -> *ir.IRVreg {
+  let fn_: *check.Sym = prelude_fn(name);
+  let call: *ir.IRIns = emit(c, ir.IROp.IrCall);
+  call.callee = sym_symbol(fn_);
+  if arg0 != null {
+    call.args = push_vreg(call.args, arg0);
+  }
+  call.dst = new_vreg(c, ret);
+  return call.dst;
+}
+
+// string equality: both operands lowered as slice addresses; calls prelude
+fn call_str_cmp(c: *LCtx, e: *parse.Expr, want_eq: bool) -> *ir.IRVreg {
+  let a: *ir.IRVreg = lv_expr(c, e.a);
+  let b: *ir.IRVreg = lv_expr(c, e.b);
+  let fn_: *check.Sym = prelude_fn("__streq");
+  let call: *ir.IRIns = emit(c, ir.IROp.IrCall);
+  call.callee = sym_symbol(fn_);
+  call.args = push_vreg(call.args, a);
+  call.args = push_vreg(call.args, b);
+  call.dst = new_vreg(c, ir.IRType.ItU8);
+  if !want_eq {
+    let one: *ir.IRVreg = v_const(c, 1, ir.IRType.ItU8);
+    // negate via XOR 1
+    let x: *ir.IRIns = emit(c, ir.IROp.IrXor);
+    x.dst = new_vreg(c, ir.IRType.ItU8);
+    x.a = call.dst;
+    x.b = one;
+    return x.dst;
+  }
+  return call.dst;
+}
+
+// string concatenation: `a + b` on strings calls the prelude's internal
+// two-arg concat primitive (__cat2) — the same runtime plumbing the
+// printf/__fmt_print machine uses, no new language surface. Aggregate-
+// return ABI: the out slot address is the first argument. Owned operands
+// hand their +1 to the callee's param copy, so the fresh result is the
+// only count left behind (the caller of an owned rvalue takes it over;
+// boot lower.c's call_string_concat carries the same contract)
+fn call_string_concat(c: *LCtx, e: *parse.Expr) -> *ir.IRVreg {
+  let t: *parse.Type = e.typed;
+  let a: *ir.IRVreg = lv_expr(c, e.a);
+  let b: *ir.IRVreg = lv_expr(c, e.b);
+  let fn_: *check.Sym = prelude_fn("__cat2");
+  let tmp: *ir.IRSlot = new_slot(c, type_size(t), type_align(t), "catval");
+  let out: *ir.IRVreg = v_slotaddr(c, tmp);
+  let call: *ir.IRIns = emit(c, ir.IROp.IrCall);
+  call.callee = sym_symbol(fn_);
+  call.args = push_vreg(call.args, out);
+  call.args = push_vreg(call.args, a);
+  call.args = push_vreg(call.args, b);
+  if e.a.typed != null && ty_is_managed(e.a.typed) && expr_owned(e.a) {
+    release_addr(c, e.a.typed, a);
+  }
+  if e.b.typed != null && ty_is_managed(e.b.typed) && expr_owned(e.b) {
+    release_addr(c, e.b.typed, b);
+  }
+  return out;
+}
+
+// slice expression a[lo..hi]: materialize {buf, ptr+lo, hi-lo} into a temp
+fn lower_slice(c: *LCtx, e: *parse.Expr) -> *ir.IRVreg {
+  let bt: *parse.Type = e.a.typed;
+  let base: *ir.IRVreg = lv_expr(c, e.a); // aggregate: address of slice/array
+  let mut lo: *ir.IRVreg = lv_expr(c, e.b);
+  let mut hi: *ir.IRVreg = lv_expr(c, e.c);
+  if lo.ty != ir.IRType.ItUsize {
+    lo = v_cast(c, lo, ir.IRType.ItUsize);
+  }
+  if hi.ty != ir.IRType.ItUsize {
+    hi = v_cast(c, hi, ir.IRType.ItUsize);
+  }
+  let mut len_v: *ir.IRVreg = null;
+  if bt.kind == check.TypeKind.TyArray {
+    len_v = v_const(c, bt.len as i64, ir.IRType.ItUsize);
+  } else {
+    len_v = v_load(c, v_addi(c, base, 16), ir.IRType.ItUsize);
+  }
+  bounds_check(c, lo, len_v);
+  bounds_check_hi(c, hi, len_v);
+  let mut buf: *ir.IRVreg = null;
+  let mut ptr: *ir.IRVreg = null;
+  if bt.kind == check.TypeKind.TyArray {
+    buf = compute_addr(c, e.a); // array address as buffer
+    ptr = buf;
+  } else {
+    buf = v_load(c, base, ir.IRType.ItPtr);
+    ptr = v_load(c, v_addi(c, base, 8), ir.IRType.ItPtr);
+  }
+  let mut esize: i64 = type_size(bt.elem);
+  if bt.kind == check.TypeKind.TyStringK {
+    esize = 1;
+  }
+  let esz: *ir.IRVreg = v_const(c, esize, ir.IRType.ItUsize);
+  let mul: *ir.IRIns = emit(c, ir.IROp.IrMul);
+  mul.dst = new_vreg(c, ir.IRType.ItUsize);
+  mul.a = lo;
+  mul.b = esz;
+  let scaled: *ir.IRVreg = mul.dst;
+  let pa: *ir.IRIns = emit(c, ir.IROp.IrAdd);
+  pa.dst = new_vreg(c, ir.IRType.ItPtr);
+  pa.a = ptr;
+  pa.b = scaled;
+  let sub: *ir.IRIns = emit(c, ir.IROp.IrSub);
+  sub.dst = new_vreg(c, ir.IRType.ItUsize);
+  sub.a = hi;
+  sub.b = lo;
+  let nlen: *ir.IRVreg = sub.dst;
+  let tmp: *ir.IRSlot = new_slot(c, 24, 8, "sliceval");
+  let dest: *ir.IRVreg = v_slotaddr(c, tmp);
+  let d8: *ir.IRVreg = v_addi(c, dest, 8);
+  let d16: *ir.IRVreg = v_addi(c, dest, 16);
+  let s1: *ir.IRIns = emit(c, ir.IROp.IrStore);
+  s1.addr = dest;
+  s1.a = buf;
+  s1.size = 8;
+  let s2: *ir.IRIns = emit(c, ir.IROp.IrStore);
+  s2.addr = d8;
+  s2.a = pa.dst;
+  s2.size = 8;
+  let s3: *ir.IRIns = emit(c, ir.IROp.IrStore);
+  s3.addr = d16;
+  s3.a = nlen;
+  s3.size = 8;
+  return dest;
+}
+
+fn scope_pop_l(c: *LCtx) {
+  c.scope = c.scope.parent;
+}
+
+// ---------------------------------------------------- ownership rules ----
+//
+// An owning rvalue carries its +1 (new/make/call/closure, and match/if
+// results which normalize their arms); everything else borrows. Bindings
+// own: a let either takes the +1 or retains a borrowed value; scopes
+// release what they own, innermost first, on every exit path.
+
+fn expr_owned(e: *parse.Expr) -> bool {
+  if e == null || e.typed == null {
+    return false;
+  }
+  if e.kind == parse.ExprKind.ExNew || e.kind == parse.ExprKind.ExClosure ||
+     e.kind == parse.ExprKind.ExDynbox {
+    return true;
+  }
+  if e.kind == parse.ExprKind.ExCall {
+    // weak.get() lends the object without taking a count: it is a borrow
+    if e.a.kind == parse.ExprKind.ExField && main.streq(e.a.sv, "get") && e.a.a != null &&
+       e.a.a.typed != null && e.a.a.typed.kind == check.TypeKind.TyWeak {
+      return false;
+    }
+    return ty_is_managed(e.typed);
+  }
+  if e.kind == parse.ExprKind.ExMake || e.kind == parse.ExprKind.ExMatch || e.kind == parse.ExprKind.ExIf {
+    return ty_is_managed(e.typed);
+  }
+  // string `+` produces a fresh string from the __cat2 primitive: a +1
+  // the consumer takes over, exactly like a call result (boot expr_owned)
+  if e.kind == parse.ExprKind.ExBin {
+    return e.binop == lex.Tok.PPlus && e.typed.kind == check.TypeKind.TyStringK;
+  }
+  return false;
+}
+
+// release every owned binding from the current scope down to (exclusive)
+// `stop` — the rc twin of run_defers
+fn release_scopes_to(c: *LCtx, stop: *LScope) {
+  let mut s: *LScope = c.scope;
+  while s != null && s != stop {
+    if !s.is_loop {
+      // loop bindings release only at the back edge; unwinding an
+      // interrupted iteration would double-release or release junk
+      let owned: []*OwnedBind = s.owned;
+      let mut k: usize = len(owned);
+      while k > 0 {
+        let ob: *OwnedBind = owned[k - 1];
+        release_addr(c, ob.ty, v_slotaddr(c, ob.slot));
+        k -= 1;
+      }
+    }
+    s = s.parent;
+  }
+}
+
+// retain a produced rvalue: aggregates are value addresses, scalars are
+// plain pointer vregs
+fn retain_or_inc(c: *LCtx, t: *parse.Type, v: *ir.IRVreg) {
+  if ty_is_aggregate(t) {
+    retain_addr(c, t, v);
+  } else if t.kind == check.TypeKind.TyPtr {
+    rc_inc_v(c, v);
+  } else if t.kind == check.TypeKind.TyWeak {
+    rc_call1(c, "rho__rc_winc", v);
+  }
+}
+
+// a block arm's value is pre-owned when its trailing expression is an
+// owning producer (or a nested if, which normalizes itself)
+fn arm_value_owned(stmts: *main.Vec[*parse.Stmt]) -> bool {
+  if stmts.n == 0 {
+    return true; // void-ish; nothing to normalize
+  }
+  let last: *parse.Stmt = stmts.items[stmts.n - 1];
+  if last.kind != parse.StmtKind.StExpr || !last.tail || last.a == null {
+    return true;
+  }
+  return last.a.kind == parse.ExprKind.ExIf || expr_owned(last.a);
+}
+
+// ------------------------------------------------------------ closures ----
+//
+// A closure value is {code: *fn, env: *u8}. Calling one always passes env as
+// the final hidden argument, so closure bodies and shims share one ABI.
+// Static fn references materialize as {shim, null}: the shim drops env and
+// forwards. Boot-era captures are copies — immutable snapshots.
+
+pub static mut g_shims: *main.Vec[string] = 0 as *main.Vec[string];
+
+pub fn push_str(items: []string, v: string) -> []string {
+  let out: []string = make([]string, len(items) + 1);
+  let mut i: usize = 0;
+  while i < len(items) {
+    out[i] = items[i];
+    i += 1;
+  }
+  out[len(items)] = v;
+  return out;
+}
+
+fn shim_for(fn_: *check.Sym) -> string {
+  let shim_name: string = main.cat3("rho__shim_", sym_symbol(fn_), "");
+  if g_shims == null {
+    g_shims = new main.Vec[string] { items: make([]string, 64), n: 0 };
+  }
+  let mut i: usize = 0;
+  while i < g_shims.n {
+    if main.streq(g_shims.items[i], shim_name) {
+      return shim_name;
+    }
+    i += 1;
+  }
+  g_shims.push(shim_name);
+  let ft: *parse.Type = fn_.type;
+  let ret: *parse.Type = ft.ret;
+  let agg_ret: bool = ret != null && ty_is_aggregate(ret);
+
+  let lf: *ir.IRFn = rc_new_fn(shim_name);
+  lf.ret = ret;
+  let cc: *LCtx = rc_ctx(lf);
+  // rc_new_fn already created and selected the entry block; creating
+  // another here would leave an empty leading block the emitters emit
+  if agg_ret {
+    lf.returns_aggregate = true;
+    lf.out_slot = new_slot(cc, type_size(ret), type_align(ret), "out");
+  }
+
+  let mut args: []*ir.IRVreg = make([]*ir.IRVreg, 0);
+  if agg_ret {
+    let outp: *ir.IRVreg = v_load(cc, v_slotaddr(cc, lf.out_slot), ir.IRType.ItPtr);
+    args = push_vreg(args, outp);
+  }
+  let mut i2: usize = 0;
+  while i2 < len(ft.params) {
+    let pt: *parse.Type = ft.params[i2];
+    let sl: *ir.IRSlot = new_slot(cc, type_size(pt), type_align(pt), "p");
+    lf.params = push_islot(lf.params, sl);
+    lf.param_types = check.push_type(lf.param_types, pt);
+    let mut it: ir.IRType = ir_type_of(pt);
+    if ty_is_aggregate(pt) {
+      it = ir.IRType.ItPtr;
+    }
+    let pv: *ir.IRVreg = v_load(cc, v_slotaddr(cc, sl), it);
+    args = push_vreg(args, pv);
+    i2 += 1;
+  }
+  // the closure-ABI env parameter arrives last and is dropped here
+  let env: *ir.IRSlot = new_slot(cc, 8, 8, "env");
+  lf.params = push_islot(lf.params, env);
+  lf.param_types = check.push_type(lf.param_types, null);
+
+  let call: *ir.IRIns = emit(cc, ir.IROp.IrCall);
+  call.callee = sym_symbol(fn_);
+  call.args = args;
+  let mut rv: *ir.IRVreg = null;
+  if ret != null && !agg_ret && ret.kind != check.TypeKind.TyVoid {
+    call.dst = new_vreg(cc, ir_type_of(ret));
+    rv = call.dst;
+  }
+  emit_ret(cc, rv);
+  ir.g_ir_fns.push(lf);
+
+
+  return shim_name;
+}
+
+// ------------------------------------------------------------ dyn ------
+//
+// A dyn Trait value is {vtable, obj}. Method calls load the slot and use
+// the closure ABI with the object as the hidden env; the vtable itself is
+// built once per coercion site into an immortal heap block — the same
+// stores `new` uses for its header drop glue (boot: dyn_shim_for).
+
+fn dyn_method_on(t_in: *parse.Type, name: string) -> *check.Sym {
+  let mut t: *parse.Type = t_in;
+  if t.kind == check.TypeKind.TyPtr {
+    t = t.elem;
+  }
+  if t == null || (t.kind != check.TypeKind.TyStruct && t.kind != check.TypeKind.TyEnum) {
+    return null;
+  }
+  let mut i: usize = 0;
+  while i < len(t.rec.methods) {
+    let m: *check.Sym = t.rec.methods[i];
+    if main.streq(m.name, name) {
+      return m;
+    }
+    i += 1;
+  }
+  return null;
+}
+
+static mut g_dyn_shims: *main.Vec[string] = 0 as *main.Vec[string];
+
+// the vtable slot for an impl method: signature (args..., env) where env
+// arrives as self — a sibling of shim_for with the receiver folded into
+// the hidden parameter
+fn dyn_shim_for(fn_: *check.Sym) -> string {
+  let shim_name: string = main.cat3("rho__dshim_", sym_symbol(fn_), "");
+  if g_dyn_shims == null {
+    g_dyn_shims = new main.Vec[string] { items: make([]string, 64), n: 0 };
+  }
+  let mut i: usize = 0;
+  while i < g_dyn_shims.n {
+    if main.streq(g_dyn_shims.items[i], shim_name) {
+      return shim_name;
+    }
+    i += 1;
+  }
+  g_dyn_shims.push(shim_name);
+  let ft: *parse.Type = fn_.type; // fn(self, rest...) -> ret
+  let ret: *parse.Type = ft.ret;
+  let agg_ret: bool = ret != null && ty_is_aggregate(ret);
+
+  let lf: *ir.IRFn = rc_new_fn(shim_name);
+  lf.ret = ret;
+  let cc: *LCtx = rc_ctx(lf);
+  if agg_ret {
+    lf.returns_aggregate = true;
+    lf.out_slot = new_slot(cc, type_size(ret), type_align(ret), "out");
+  }
+
+  let mut args: []*ir.IRVreg = make([]*ir.IRVreg, 0);
+  if agg_ret {
+    let outp: *ir.IRVreg = v_load(cc, v_slotaddr(cc, lf.out_slot), ir.IRType.ItPtr);
+    args = push_vreg(args, outp);
+  }
+  // the receiver slot: env arrives LAST in the ABI and is forwarded FIRST
+  let env: *ir.IRSlot = new_slot(cc, 8, 8, "env");
+  lf.params = push_islot(lf.params, env);
+  lf.param_types = check.push_type(lf.param_types, null);
+  let envv: *ir.IRVreg = v_load(cc, v_slotaddr(cc, env), ir.IRType.ItPtr);
+  let sa: *ir.IRVreg = envv;
+  args = push_vreg(args, sa);
+  let mut i2: usize = 1;
+  while i2 < len(ft.params) {
+    let pt: *parse.Type = ft.params[i2];
+    let sl: *ir.IRSlot = new_slot(cc, type_size(pt), type_align(pt), "p");
+    lf.params = push_islot(lf.params, sl);
+    lf.param_types = check.push_type(lf.param_types, pt);
+    let mut it: ir.IRType = ir_type_of(pt);
+    if ty_is_aggregate(pt) {
+      it = ir.IRType.ItPtr;
+    }
+    let pv: *ir.IRVreg = v_load(cc, v_slotaddr(cc, sl), it);
+    args = push_vreg(args, pv);
+    i2 += 1;
+  }
+  let call: *ir.IRIns = emit(cc, ir.IROp.IrCall);
+  call.callee = sym_symbol(fn_);
+  call.args = args;
+  let mut rv: *ir.IRVreg = null;
+  if ret != null && !agg_ret && ret.kind != check.TypeKind.TyVoid {
+    call.dst = new_vreg(cc, ir_type_of(ret));
+    rv = call.dst;
+  }
+  emit_ret(cc, rv);
+  ir.g_ir_fns.push(lf);
+  return shim_name;
+}
+
+// build the vtable inline, in the current block: an immortal heap block
+// whose words are the dyn shims (the .bss memoization returns when the
+// emitters grow a shape for the null-check diamond)
+fn vtable_ensure(c: *LCtx, conc: *parse.Type, tr: *parse.RecType) -> *ir.IRVreg {
+  let n: usize = len(tr.methods);
+  let sz: *ir.IRVreg = v_const(c, (n * 8 + 24) as i64, ir.IRType.ItUsize);
+  let blk: *ir.IRVreg = call_prelude1(c, "__alloc", sz, ir.IRType.ItPtr);
+  // operands first, stores second: a value computed inside an assignment
+  // to i->a after emit() lands BELOW its use and reads a stale local
+  let immortal: *ir.IRVreg = v_const(c, 0 - 9223372036854775807 as i64 - 1, ir.IRType.ItUsize);
+  let rc: *ir.IRIns = emit(c, ir.IROp.IrStore);
+  rc.addr = blk;
+  rc.a = immortal;
+  rc.size = 8;
+  let h8: *ir.IRVreg = v_addi(c, blk, 8);
+  let zero: *ir.IRVreg = v_const(c, 0, ir.IRType.ItUsize);
+  let wrc: *ir.IRIns = emit(c, ir.IROp.IrStore);
+  wrc.addr = h8;
+  wrc.a = zero;
+  wrc.size = 8;
+  let h16: *ir.IRVreg = v_addi(c, blk, 16);
+  let nullp: *ir.IRVreg = v_const(c, 0, ir.IRType.ItPtr);
+  let dz: *ir.IRIns = emit(c, ir.IROp.IrStore);
+  dz.addr = h16;
+  dz.a = nullp;
+  if main.g_target_wasm {
+    dz.size = 4;
+  } else {
+    dz.size = 8;
+  }
+  let mut i: usize = 0;
+  while i < n {
+    let req: *check.Sym = tr.methods[i];
+    let impl_: *check.Sym = dyn_method_on(conc, req.name);
+    if impl_ == null {
+      panic_call(c, "internal: trait method has no impl at vtable build");
+    }
+    let la: *ir.IRIns = emit(c, ir.IROp.IrAddrc);
+    la.dst = new_vreg(c, ir.IRType.ItPtr);
+    la.callee = dyn_shim_for(impl_);
+    la.lit = 0 - 1;
+    let slot_addr: *ir.IRVreg = v_addi(c, blk, 24 + (i as i64) * 8);
+    let st: *ir.IRIns = emit(c, ir.IROp.IrStore);
+    st.addr = slot_addr;
+    st.a = la.dst;
+    st.size = 8;
+    i += 1;
+  }
+  return v_addi(c, blk, 24);
+}
+
+// load {vtable, obj}, fetch the slot, call through the closure ABI with
+// the object as the hidden env (i.e. self). `out` (when given) receives
+// an aggregate return directly.
+fn is_dyn_virtual_call(e: *parse.Expr) -> bool {
+  return e.kind == parse.ExprKind.ExCall && e.a != null && e.a.kind == parse.ExprKind.ExField &&
+         e.a.a != null && e.a.a.typed != null &&
+         e.a.a.typed.kind == check.TypeKind.TyDyn &&
+         e.a.sym != null && e.a.sym.kind == check.SymKind.SyTraitMethod;
+}
+
+fn dyn_virtual_call(c: *LCtx, e: *parse.Expr, out_given: *ir.IRVreg) -> *ir.IRVreg {
+  let recv_t: *parse.Type = e.a.a.typed;
+  let csym: *check.Sym = e.a.sym;
+  let fat: *ir.IRVreg = lv_expr(c, e.a.a); // the RECEIVER, not the field node
+  let vt: *ir.IRVreg = v_load(c, fat, ir.IRType.ItPtr);
+  let obj: *ir.IRVreg = v_load(c, v_addi(c, fat, 8), ir.IRType.ItPtr);
+  let mut slot: i32 = 0;
+  let mut i: usize = 0;
+  while i < len(recv_t.rec.methods) {
+    if recv_t.rec.methods[i] == csym {
+      slot = i as i32;
+      break;
+    }
+    i += 1;
+  }
+  let code: *ir.IRVreg = v_load(c, v_addi(c, vt, slot as i64 * 8), ir.IRType.ItPtr);
+  let ft: *parse.Type = csym.type; // fn(args...) -> ret — no receiver
+  let ret: *parse.Type = ft.ret;
+  let agg: bool = ret != null && ty_is_aggregate(ret);
+  let mut args: []*ir.IRVreg = make([]*ir.IRVreg, 0);
+  let mut out: *ir.IRVreg = out_given;
+  if agg {
+    if out == null {
+      let tmp: *ir.IRSlot = new_slot(c, type_size(ret), type_align(ret), "out");
+      out = v_slotaddr(c, tmp);
+    }
+    args = push_vreg(args, out);
+  }
+  let mut owned_args: []*parse.Expr = make([]*parse.Expr, 0);
+  let mut owned_slots: []usize = make([]usize, 0);
+  let mut k: usize = 0;
+  while k < e.args.n && k < len(ft.params) {
+    let arg: *parse.Expr = e.args.items[k];
+    let pt: *parse.Type = ft.params[k];
+    args = push_vreg(args, lv_expr(c, arg));
+    if pt != null && ty_is_managed(pt) && expr_owned(arg) {
+      owned_args = push_expr(owned_args, arg);
+      owned_slots = push_usize(owned_slots, len(args) - 1);
+    }
+    k += 1;
+  }
+  args = push_vreg(args, obj); // the object rides as env, i.e. self
+  let call: *ir.IRIns = emit(c, ir.IROp.IrCall);
+  call.callee_vreg = code;
+  call.args = args;
+  let mut oi: usize = 0;
+  while oi < len(owned_args) {
+    let arg: *parse.Expr = owned_args[oi];
+    let at: *parse.Type = arg.typed;
+    let pv: *ir.IRVreg = args[owned_slots[oi]];
+    if ty_is_aggregate(at) {
+      release_addr(c, at, pv);
+    } else {
+      rc_dec_v(c, pv);
+    }
+    oi += 1;
+  }
+  if agg {
+    return out;
+  }
+  if ret != null && ret.kind != check.TypeKind.TyVoid {
+    call.dst = new_vreg(c, ir_type_of(ret));
+    return call.dst;
+  }
+  return v_const(c, 0, ir.IRType.ItPtr);
+}
+
+// a fn value for a named function: {shim, null env}
+fn closure_value_for_sym(c: *LCtx, fn_: *check.Sym) -> *ir.IRVreg {
+  let shim: string = shim_for(fn_);
+  let la: *ir.IRIns = emit(c, ir.IROp.IrAddrc);
+  la.dst = new_vreg(c, ir.IRType.ItPtr);
+  la.callee = shim;
+  la.lit = -1; // global/fn address form
+  let zero: *ir.IRVreg = v_const(c, 0, ir.IRType.ItPtr);
+  let tmp: *ir.IRSlot = new_slot(c, 16, 8, "fnval");
+  let addr: *ir.IRVreg = v_slotaddr(c, tmp);
+  let a8: *ir.IRVreg = v_addi(c, addr, 8);
+  let s1: *ir.IRIns = emit(c, ir.IROp.IrStore);
+  s1.addr = addr;
+  s1.a = la.dst;
+  s1.size = 8;
+  let s2: *ir.IRIns = emit(c, ir.IROp.IrStore);
+  s2.addr = a8;
+  s2.a = zero;
+  s2.size = 8;
+  return addr;
+}
+
+// ------------------------------------------------------ rc runtime -------
+//
+// Every heap object carries {rc: usize, wrc: usize, drop: fn} 24 bytes
+// before its data; references point at the data. rc with the top bit set
+// marks immortal static data.
+
+fn rc_runtime_build() {
+  // count helpers come in two conventions: __rc_inc/__rc_dec take the DATA
+  // pointer (header at p-24 — *T values, closure envs), __rc_inch/__rc_dech
+  // take the HEADER directly (slice buf fields, which sub-slices share while
+  // ptr moves). Both null-check their argument.
+  let mut variant: i32 = 0;
+  while variant < 4 {
+    let retain: bool = (variant & 1) == 0;
+    let from_data: bool = (variant & 2) == 0;
+    let mut nm: string = "rho__rc_dec";
+    if retain {
+      nm = "rho__rc_inc";
+    }
+    if !from_data {
+      nm = main.cat3(nm, "h", "");
+    }
+    let lf: *ir.IRFn = rc_new_fn(nm);
+    let c: *LCtx = rc_ctx(lf);
+    let ps: *ir.IRSlot = new_slot(c, 8, 8, "p");
+    lf.params = push_islot(lf.params, ps);
+    lf.param_types = check.push_type(lf.param_types, null);
+    let p: *ir.IRVreg = v_load(c, v_slotaddr(c, ps), ir.IRType.ItPtr);
+    let isnull: *ir.IRVreg = v_cmp(c, ir.IRCC.CcEq, p, v_const(c, 0, ir.IRType.ItPtr), false);
+    let cont: *ir.IRBlock = new_block(c);
+    let done: *ir.IRBlock = new_block(c);
+    emit_cbr(c, isnull, done, cont, done);
+    use_block(c, cont);
+    let mut h: *ir.IRVreg = p;
+    if !from_data {
+      h = p;
+    } else {
+      h = v_addi(c, p, -24);
+    }
+    let rc: *ir.IRVreg = v_load(c, h, ir.IRType.ItUsize);
+    let top: *ir.IRVreg = v_binop(c, ir.IROp.IrShr, rc, v_const(c, 63, ir.IRType.ItUsize), ir.IRType.ItUsize, false);
+    let immortal: *ir.IRVreg = v_cmp(c, ir.IRCC.CcNe, top, v_const(c, 0, ir.IRType.ItUsize), false);
+    if retain {
+      let bump: *ir.IRBlock = new_block(c);
+      emit_cbr(c, immortal, done, bump, done);
+      use_block(c, bump);
+      // same plausibility bound as the release path below: never write a
+      // count through a header that does not look like one
+      let implausible: *ir.IRVreg = v_cmp_uge(c, rc, v_const(c, 65536, ir.IRType.ItUsize));
+      let sane: *ir.IRBlock = new_block(c);
+      emit_cbr(c, implausible, done, sane, done);
+      use_block(c, sane);
+      let rc2: *ir.IRVreg = v_binop(c, ir.IROp.IrAdd, rc, v_const(c, 1, ir.IRType.ItUsize), ir.IRType.ItUsize, true);
+      v_store(c, h, rc2);
+      emit_br(c, done);
+      use_block(c, done);
+      finish_fn_c(c);
+      variant += 1;
+      continue;
+    }
+    // release: on zero, run header.drop (with the data pointer) and free
+    // unless weak refs hold it
+    let live: *ir.IRBlock = new_block(c);
+    emit_cbr(c, immortal, done, live, done);
+    use_block(c, live);
+    // a plausible live count is small; a pointer-sized value here means h
+    // is not a real header — trap instead of writing the count through it
+    let implausible2: *ir.IRVreg = v_cmp_uge(c, rc, v_const(c, 65536, ir.IRType.ItUsize));
+    let countsane: *ir.IRBlock = new_block(c);
+    emit_cbr(c, implausible2, done, countsane, done);
+    use_block(c, countsane);
+    let rc3: *ir.IRVreg = v_binop(c, ir.IROp.IrSub, rc, v_const(c, 1, ir.IRType.ItUsize), ir.IRType.ItUsize, true);
+    v_store(c, h, rc3);
+    let dead: *ir.IRVreg = v_cmp(c, ir.IRCC.CcEq, rc3, v_const(c, 0, ir.IRType.ItUsize), false);
+    let maybe_drop: *ir.IRBlock = new_block(c);
+    emit_cbr(c, dead, maybe_drop, done, done);
+    use_block(c, maybe_drop);
+    let dropf: *ir.IRVreg = v_load(c, v_addi(c, h, 16), ir.IRType.ItPtr);
+    let nod: *ir.IRVreg = v_cmp(c, ir.IRCC.CcEq, dropf, v_const(c, 0, ir.IRType.ItPtr), false);
+    let run_drop: *ir.IRBlock = new_block(c);
+    let maybe_free: *ir.IRBlock = new_block(c);
+    emit_cbr(c, nod, maybe_free, run_drop, done);
+    use_block(c, run_drop);
+    let mut darg: *ir.IRVreg = p;
+    if !from_data {
+      darg = v_addi(c, h, 24);
+    }
+    let dc: *ir.IRIns = emit(c, ir.IROp.IrCall);
+    dc.callee_vreg = dropf;
+    dc.args = push_vreg(dc.args, darg);
+    emit_br(c, maybe_free);
+    use_block(c, maybe_free);
+    let wrc: *ir.IRVreg = v_load(c, v_addi(c, h, 8), ir.IRType.ItUsize);
+    let noweak: *ir.IRVreg = v_cmp(c, ir.IRCC.CcEq, wrc, v_const(c, 0, ir.IRType.ItUsize), false);
+    let freeh: *ir.IRBlock = new_block(c);
+    emit_cbr(c, noweak, freeh, done, done);
+    use_block(c, freeh);
+    let fr: *check.Sym = prelude_fn("__free");
+    let fc: *ir.IRIns = emit(c, ir.IROp.IrCall);
+    fc.callee = sym_symbol(fr);
+    fc.args = push_vreg(fc.args, h);
+    emit_br(c, done);
+    use_block(c, done);
+    finish_fn_c(c);
+    variant += 1;
+  }
+  // __rc_winc(h) / __rc_wdec(h): weak count up/down; last weak of a dead
+  // object frees the storage
+  {
+    let lf: *ir.IRFn = rc_new_fn("rho__rc_winc");
+    let c: *LCtx = rc_ctx(lf);
+    let hs: *ir.IRSlot = new_slot(c, 8, 8, "h");
+    lf.params = push_islot(lf.params, hs);
+    lf.param_types = check.push_type(lf.param_types, null);
+    let h: *ir.IRVreg = v_load(c, v_slotaddr(c, hs), ir.IRType.ItPtr);
+    let isnull: *ir.IRVreg = v_cmp(c, ir.IRCC.CcEq, h, v_const(c, 0, ir.IRType.ItPtr), false);
+    let cont: *ir.IRBlock = new_block(c);
+    let done: *ir.IRBlock = new_block(c);
+    emit_cbr(c, isnull, done, cont, done);
+    use_block(c, cont);
+    let w: *ir.IRVreg = v_load(c, v_addi(c, h, 8), ir.IRType.ItUsize);
+    let w2: *ir.IRVreg = v_binop(c, ir.IROp.IrAdd, w, v_const(c, 1, ir.IRType.ItUsize), ir.IRType.ItUsize, true);
+    v_store(c, v_addi(c, h, 8), w2);
+    emit_br(c, done);
+    use_block(c, done);
+    finish_fn_c(c);
+  }
+  {
+    let lf: *ir.IRFn = rc_new_fn("rho__rc_wdec");
+    let c: *LCtx = rc_ctx(lf);
+    let hs: *ir.IRSlot = new_slot(c, 8, 8, "h");
+    lf.params = push_islot(lf.params, hs);
+    lf.param_types = check.push_type(lf.param_types, null);
+    let h: *ir.IRVreg = v_load(c, v_slotaddr(c, hs), ir.IRType.ItPtr);
+    let isnull: *ir.IRVreg = v_cmp(c, ir.IRCC.CcEq, h, v_const(c, 0, ir.IRType.ItPtr), false);
+    let cont: *ir.IRBlock = new_block(c);
+    let done: *ir.IRBlock = new_block(c);
+    emit_cbr(c, isnull, done, cont, done);
+    use_block(c, cont);
+    let w: *ir.IRVreg = v_load(c, v_addi(c, h, 8), ir.IRType.ItUsize);
+    let w2: *ir.IRVreg = v_binop(c, ir.IROp.IrSub, w, v_const(c, 1, ir.IRType.ItUsize), ir.IRType.ItUsize, true);
+    v_store(c, v_addi(c, h, 8), w2);
+    let last: *ir.IRVreg = v_cmp(c, ir.IRCC.CcEq, w2, v_const(c, 0, ir.IRType.ItUsize), false);
+    let chk: *ir.IRBlock = new_block(c);
+    emit_cbr(c, last, chk, done, done);
+    use_block(c, chk);
+    let rc: *ir.IRVreg = v_load(c, h, ir.IRType.ItUsize);
+    let deadc: *ir.IRVreg = v_cmp(c, ir.IRCC.CcEq, rc, v_const(c, 0, ir.IRType.ItUsize), false);
+    let freeh: *ir.IRBlock = new_block(c);
+    emit_cbr(c, deadc, freeh, done, done);
+    use_block(c, freeh);
+    let fr: *check.Sym = prelude_fn("__free");
+    let fc: *ir.IRIns = emit(c, ir.IROp.IrCall);
+    fc.callee = sym_symbol(fr);
+    fc.args = push_vreg(fc.args, h);
+    emit_br(c, done);
+    use_block(c, done);
+    finish_fn_c(c);
+  }
+  // __rc_wref(p) -> header: weak.from on a data pointer
+  {
+    let lf: *ir.IRFn = rc_new_fn("rho__rc_wref");
+    let c: *LCtx = rc_ctx(lf);
+    lf.ret = null;
+    let ps: *ir.IRSlot = new_slot(c, 8, 8, "p");
+    lf.params = push_islot(lf.params, ps);
+    lf.param_types = check.push_type(lf.param_types, null);
+    let p: *ir.IRVreg = v_load(c, v_slotaddr(c, ps), ir.IRType.ItPtr);
+    let nullv: *ir.IRVreg = v_const(c, 0, ir.IRType.ItPtr); // before the branch: phi edges read it
+    let isnull: *ir.IRVreg = v_cmp(c, ir.IRCC.CcEq, p, nullv, false);
+    let cont: *ir.IRBlock = new_block(c);
+    let done: *ir.IRBlock = new_block(c);
+    emit_cbr(c, isnull, done, cont, done);
+    use_block(c, cont);
+    let h: *ir.IRVreg = v_addi(c, p, -24);
+    let w: *ir.IRVreg = v_load(c, v_addi(c, h, 8), ir.IRType.ItUsize);
+    let w2: *ir.IRVreg = v_binop(c, ir.IROp.IrAdd, w, v_const(c, 1, ir.IRType.ItUsize), ir.IRType.ItUsize, true);
+    v_store(c, v_addi(c, h, 8), w2);
+    emit_br(c, done);
+    use_block(c, done);
+    // phi: null path -> 0, cont path -> h
+    let phi: *ir.IRPhi = emit_phi_in(c, done, ir.IRType.ItPtr);
+    phi_add(phi, lf.entry, nullv);
+    phi_add(phi, cont, h);
+    emit_ret(c, phi.dst);
+    ir.g_ir_fns.push(lf);
+  }
+  // __rc_wget(h) -> data pointer or null when dead
+  {
+    let lf: *ir.IRFn = rc_new_fn("rho__rc_wget");
+    let c: *LCtx = rc_ctx(lf);
+    let hs: *ir.IRSlot = new_slot(c, 8, 8, "h");
+    lf.params = push_islot(lf.params, hs);
+    lf.param_types = check.push_type(lf.param_types, null);
+    let h: *ir.IRVreg = v_load(c, v_slotaddr(c, hs), ir.IRType.ItPtr);
+    let nullv: *ir.IRVreg = v_const(c, 0, ir.IRType.ItPtr); // before the branch: phi edges read it
+    let isnull: *ir.IRVreg = v_cmp(c, ir.IRCC.CcEq, h, nullv, false);
+    let live: *ir.IRBlock = new_block(c);
+    let done: *ir.IRBlock = new_block(c);
+    emit_cbr(c, isnull, done, live, done);
+    use_block(c, live);
+    let rc: *ir.IRVreg = v_load(c, h, ir.IRType.ItUsize);
+    let top: *ir.IRVreg = v_binop(c, ir.IROp.IrShr, rc, v_const(c, 63, ir.IRType.ItUsize), ir.IRType.ItUsize, false);
+    let immortal: *ir.IRVreg = v_cmp(c, ir.IRCC.CcNe, top, v_const(c, 0, ir.IRType.ItUsize), false);
+    let alive2: *ir.IRVreg = v_cmp(c, ir.IRCC.CcNe, rc, v_const(c, 0, ir.IRType.ItUsize), false);
+    let alive: *ir.IRVreg = v_binop(c, ir.IROp.IrOr, immortal, alive2, ir.IRType.ItU8, false);
+    let yes: *ir.IRBlock = new_block(c);
+    emit_cbr(c, alive, yes, done, done);
+    use_block(c, yes);
+    let data: *ir.IRVreg = v_addi(c, h, 24);
+    emit_br(c, done);
+    use_block(c, done);
+    let phi: *ir.IRPhi = emit_phi_in(c, done, ir.IRType.ItPtr);
+    phi_add(phi, lf.entry, nullv);
+    phi_add(phi, live, nullv);
+    phi_add(phi, yes, data);
+    emit_ret(c, phi.dst);
+    ir.g_ir_fns.push(lf);
+  }
+}
+
+// ---- structural equality glue ---------------------------------------------
+// rho__eq$<t>(a, b) compares two enum/struct values field by field through a
+// result slot (no phis): tags first for enums, then payload/field pairs.
+
+fn eq_fn_for(t: *parse.Type) -> string {
+  if t == null || (t.kind != check.TypeKind.TyEnum && t.kind != check.TypeKind.TyStruct) {
+    return "";
+  }
+  if ir.g_eq_fns == null {
+    ir.g_eq_fns = tm2_new();
+  }
+  let found: string = tm2_get(ir.g_eq_fns, t.mangled);
+  if found != "" {
+    return found;
+  }
+  let sym: string = main.cat3("rho__eq$", rho_sanitize(t.mangled), "");
+  tm2_put(ir.g_eq_fns, t.mangled, sym);
+  let lf: *ir.IRFn = rc_new_fn(sym);
+  let c: *LCtx = rc_ctx(lf);
+  let as_: *ir.IRSlot = new_slot(c, 8, 8, "a");
+  let bs: *ir.IRSlot = new_slot(c, 8, 8, "b");
+  lf.params = push_islot(lf.params, as_);
+  lf.param_types = check.push_type(lf.param_types, null);
+  lf.params = push_islot(lf.params, bs);
+  lf.param_types = check.push_type(lf.param_types, null);
+  let pa: *ir.IRVreg = v_load(c, v_slotaddr(c, as_), ir.IRType.ItPtr);
+  let pb: *ir.IRVreg = v_load(c, v_slotaddr(c, bs), ir.IRType.ItPtr);
+  let rs: *ir.IRSlot = new_slot(c, 8, 8, "eq");
+  v_store(c, v_slotaddr(c, rs), v_const(c, 1, ir.IRType.ItU8));
+  eq_walk(c, t, pa, pb, rs);
+  emit_ret(c, v_load(c, v_slotaddr(c, rs), ir.IRType.ItU8));
+  finish_fn_c(c);
+  return sym;
+}
+
+// AND one field/variant comparison into the result slot
+fn eq_and(c: *LCtx, rs: *ir.IRSlot, v: *ir.IRVreg) {
+  let cur: *ir.IRVreg = v_load(c, v_slotaddr(c, rs), ir.IRType.ItU8);
+  let both: *ir.IRVreg = v_binop(c, ir.IROp.IrAnd, cur, v, ir.IRType.ItU8, false);
+  v_store(c, v_slotaddr(c, rs), both);
+}
+
+// compare a single non-aggregate field at pa/pb (same offset)
+fn eq_field(c: *LCtx, ft: *parse.Type, fa: *ir.IRVreg, fb: *ir.IRVreg, rs: *ir.IRSlot) {
+  if ft.kind == check.TypeKind.TyEnum || ft.kind == check.TypeKind.TyStruct {
+    let fnn: string = eq_fn_for(ft);
+    let call: *ir.IRIns = emit(c, ir.IROp.IrCall);
+    call.callee = fnn;
+    call.args = push_vreg(call.args, fa);
+    call.args = push_vreg(call.args, fb);
+    call.dst = new_vreg(c, ir.IRType.ItU8);
+    eq_and(c, rs, call.dst);
+    return;
+  }
+  let irt: ir.IRType = ir_type_of(ft);
+  let va: *ir.IRVreg = v_load(c, fa, irt);
+  let vb: *ir.IRVreg = v_load(c, fb, irt);
+  let same: *ir.IRVreg = v_cmp(c, ir.IRCC.CcEq, va, vb, ir.ir_is_float_t(irt));
+  eq_and(c, rs, same);
+}
+
+fn eq_walk(c: *LCtx, t: *parse.Type, pa: *ir.IRVreg, pb: *ir.IRVreg, rs: *ir.IRSlot) {
+  if t.kind == check.TypeKind.TyEnum {
+    let d: *parse.Decl = t.rec.decl;
+    let tag_a: *ir.IRVreg = v_load(c, pa, ir.IRType.ItI32);
+    // tags differ -> false
+    let tag_b: *ir.IRVreg = v_load(c, pb, ir.IRType.ItI32);
+    let same_tag: *ir.IRVreg = v_cmp(c, ir.IRCC.CcEq, tag_a, tag_b, false);
+    let body: *ir.IRBlock = new_block(c);
+    let no: *ir.IRBlock = new_block(c);
+    let done: *ir.IRBlock = new_block(c);
+    emit_cbr(c, same_tag, body, no, done);
+    use_block(c, no);
+    v_store(c, v_slotaddr(c, rs), v_const(c, 0, ir.IRType.ItU8));
+    emit_br(c, done);
+    use_block(c, body);
+    // per variant: only its own fields, gated on the tag
+    let mut vi: usize = 0;
+    while vi < d.variants.n {
+      let v: *parse.VariantAst = d.variants.items[vi];
+      let mut nf: usize = 0;
+      if v.vkind == parse.VarKind.VarTuple {
+        nf = v.types.n;
+      } else if v.vkind == parse.VarKind.VarStruct {
+        nf = v.fields.n;
+      }
+      if nf > 0 {
+        let mine: *ir.IRBlock = new_block(c);
+        let next: *ir.IRBlock = new_block(c);
+        let is: *ir.IRVreg = v_cmp(c, ir.IRCC.CcEq, tag_a, v_const(c, v.disc as i64, ir.IRType.ItI32), false);
+        emit_cbr(c, is, mine, next, done);
+        use_block(c, mine);
+        let mut fi: usize = 0;
+        while fi < nf {
+          let ft: *parse.Type = check.variant_field_type(t, vi as i32, fi as i32);
+          let off: i64 = variant_field_offset(t, vi as i32, fi as i32);
+          eq_field(c, ft, v_addi(c, pa, off), v_addi(c, pb, off), rs);
+          fi += 1;
+        }
+        emit_br(c, next);
+        use_block(c, next);
+      }
+      vi += 1;
+    }
+    emit_br(c, done);
+    use_block(c, done);
+    return;
+  }
+  // struct: straight field walk
+  let rec: *parse.RecType = t.rec;
+  let sd: *parse.Decl = rec.decl;
+  let mut i: usize = 0;
+  while i < sd.fields.n {
+    let ft: *parse.Type = check.struct_field_type(rec, i);
+    let off: i64 = struct_field_offset(rec, i);
+    eq_field(c, ft, v_addi(c, pa, off), v_addi(c, pb, off), rs);
+    i += 1;
+  }
+}
+
+// lift a closure literal into a standalone fn + env snapshot layout;
+// returns the code symbol, with the env drop glue name in envdrop_out
+fn lift_closure(c: *LCtx, e: *parse.Expr, envdrop_out: *main.Vec[string]) -> string {
+  let ft: *parse.Type = e.typed;
+  let ret: *parse.Type = ft.ret;
+  let agg_ret: bool = ret != null && ty_is_aggregate(ret);
+  let clo_id: i32 = ir.g_closure_counter;
+  ir.g_closure_counter += 1;
+  let sym_name: string = main.cat3(c.f.symbol, "__clo", main.cat3(main.itoa(clo_id as i64), "", ""));
+  let lf: *ir.IRFn = rc_new_fn(sym_name);
+  lf.ret = ret;
+  let cc: *LCtx = rc_ctx(lf);
+  if agg_ret {
+    lf.returns_aggregate = true;
+    lf.out_slot = new_slot(cc, type_size(ret), type_align(ret), "out");
+  }
+  // rc_new_fn already created the entry block; use it directly (a second
+  // block here left an empty B0 first, so lifted closures returned at once)
+  scope_push_l(cc);
+
+  let mut i: usize = 0;
+  while i < e.params.n {
+    let pa: *parse.Param = e.params.items[i];
+    let pt: *parse.Type = ft.params[i];
+    let slot: *ir.IRSlot = new_slot(cc, type_size(pt), type_align(pt), pa.name);
+    lf.params = push_islot(lf.params, slot);
+    lf.param_types = check.push_type(lf.param_types, pt);
+    if ty_is_aggregate(pt) {
+      let local: *ir.IRSlot = new_slot(cc, type_size(pt), type_align(pt), pa.name);
+      let src_addr: *ir.IRVreg = v_slotaddr(cc, slot);
+      let src: *ir.IRVreg = v_load(cc, src_addr, ir.IRType.ItPtr);
+      let dst: *ir.IRVreg = v_slotaddr(cc, local);
+      let cp: *ir.IRIns = emit(cc, ir.IROp.IrCopymem);
+      cp.addr = dst;
+      cp.a = src;
+      cp.size = type_size(pt);
+      lbind(cc, pa.name, local);
+    } else {
+      lbind(cc, pa.name, slot);
+    }
+    i += 1;
+  }
+  let env: *ir.IRSlot = new_slot(cc, 8, 8, "env");
+  lf.params = push_islot(lf.params, env);
+  lf.param_types = check.push_type(lf.param_types, null);
+
+  // captures materialize into plain slots from the env data pointer
+  let mut off: i64 = 0;
+  let mut ci: usize = 0;
+  while ci < len(e.caps) {
+    let cap: *check.Sym = e.caps[ci];
+    let ct: *parse.Type = cap.type;
+    let al: i64 = type_align(ct);
+    off = round_up_i64(off, al);
+    let envp: *ir.IRVreg = v_load(cc, v_slotaddr(cc, env), ir.IRType.ItPtr);
+    let srcaddr: *ir.IRVreg = v_addi(cc, envp, off);
+    let slot: *ir.IRSlot = new_slot(cc, type_size(ct), type_align(ct), cap.name);
+    let dst: *ir.IRVreg = v_slotaddr(cc, slot);
+    if ty_is_aggregate(ct) {
+      let cp: *ir.IRIns = emit(cc, ir.IROp.IrCopymem);
+      cp.addr = dst;
+      cp.a = srcaddr;
+      cp.size = type_size(ct);
+    } else {
+      let v: *ir.IRVreg = v_load(cc, srcaddr, ir_type_of(ct));
+      v_store(cc, dst, v);
+    }
+    lbind(cc, cap.name, slot);
+    off += type_size(ct);
+    ci += 1;
+  }
+
+  let mut si: usize = 0;
+  while si < e.items.n {
+    lv_stmt(cc, e.items.items[si]);
+    si += 1;
+  }
+  if lf.cur.term_op == 0 {
+    run_defers(cc, null);
+    emit_ret(cc, null);
+  }
+  scope_pop_l(cc);
+  ir.g_ir_fns.push(lf);
+
+  // env drop glue: releases every captured value when the env object dies
+  let envdrop: string = main.cat3("rho__envdrop$", main.itoa(clo_id as i64), "");
+  let df: *ir.IRFn = rc_new_fn(envdrop);
+  let dc: *LCtx = rc_ctx(df);
+  let das: *ir.IRSlot = new_slot(dc, 8, 8, "addr");
+  df.params = push_islot(df.params, das);
+  df.param_types = check.push_type(df.param_types, null);
+  let daddr: *ir.IRVreg = v_load(dc, v_slotaddr(dc, das), ir.IRType.ItPtr);
+  let mut doff: i64 = 0;
+  let mut di: usize = 0;
+  while di < len(e.caps) {
+    let cap: *check.Sym = e.caps[di];
+    let ct: *parse.Type = cap.type;
+    let al: i64 = type_align(ct);
+    doff = round_up_i64(doff, al);
+    let cap_addr: *ir.IRVreg = v_addi(dc, daddr, doff); // always: keeps vreg numbering
+    let fnn: string = value_fn_for(ct, false);
+    if fnn != "" {
+      rc_call1(dc, fnn, cap_addr);
+    }
+    doff += type_size(ct);
+    di += 1;
+  }
+  finish_fn_c(dc);
+  envdrop_out.items[0] = envdrop;
+  return sym_name;
+}
+
+// ------------------------------------------------------------- lvalues ----
+
+fn compute_addr(c: *LCtx, e: *parse.Expr) -> *ir.IRVreg {
+  if e.kind == parse.ExprKind.ExStr {
+    // string literal used in address context: materialize its slice temp
+    return lv_expr(c, e);
+  }
+  if e.kind == parse.ExprKind.ExName {
+    let sym: *check.Sym = e.sym;
+    let slot: *ir.IRSlot = lookup_slot(c, e.sv);
+    if slot != null {
+      return v_slotaddr(c, slot);
+    }
+    if sym != null && sym.kind == check.SymKind.SyStatic {
+      let i: *ir.IRIns = emit(c, ir.IROp.IrAddrc);
+      i.dst = new_vreg(c, ir.IRType.ItPtr);
+      i.callee = sym_symbol(sym); // on demand: lower order is map order
+      i.lit = -1;                 // marks global-address form
+      return i.dst;
+    }
+    if sym != null && sym.kind == check.SymKind.SyConst {
+      // constants have no storage; caller only hits this for aggregates
+      panic_call(c, "internal: constant has no address");
+      return v_const(c, 0, ir.IRType.ItPtr);
+    }
+    panic_call(c, "internal: unbound name");
+    return v_const(c, 0, ir.IRType.ItPtr);
+  }
+  if e.kind == parse.ExprKind.ExField {
+    // module-qualified static storage: `mod.STATIC` as an assignment target
+    let gsym: *check.Sym = e.sym;
+    if gsym != null && gsym.kind == check.SymKind.SyStatic {
+      let i: *ir.IRIns = emit(c, ir.IROp.IrAddrc);
+      i.dst = new_vreg(c, ir.IRType.ItPtr);
+      i.callee = sym_symbol(gsym);
+      i.lit = -1; // global-address form
+      return i.dst;
+    }
+    let bt: *parse.Type = e.a.typed;
+    // slice/string built-in fields: {buf, ptr, len}
+    let mut value_t: *parse.Type = bt;
+    let mut through_ptr: bool = false;
+    if value_t != null && value_t.kind == check.TypeKind.TyPtr {
+      value_t = value_t.elem;
+      through_ptr = true;
+    }
+    if value_t != null && (value_t.kind == check.TypeKind.TySlice || value_t.kind == check.TypeKind.TyStringK) {
+      let mut off: i64 = 0;
+      if main.streq(e.sv, "len") {
+        off = 16;
+      } else if main.streq(e.sv, "ptr") {
+        off = 8;
+      } else {
+        panic_call(c, "internal: bad slice field");
+        return v_const(c, 0, ir.IRType.ItPtr);
+      }
+      if through_ptr {
+        return v_addi(c, null_check(c, lv_expr(c, e.a)), off);
+      }
+      return v_addi(c, lv_expr(c, e.a), off);
+    }
+    if bt != null && bt.kind == check.TypeKind.TyPtr {
+      let base: *ir.IRVreg = null_check(c, lv_expr(c, e.a));
+      return v_addi(c, base, struct_field_offset(bt.elem.rec, field_index_of(e, bt.elem.rec) as usize));
+    }
+    let base2: *ir.IRVreg = compute_addr(c, e.a);
+    return v_addi(c, base2, struct_field_offset(bt.rec, field_index_of(e, bt.rec) as usize));
+  }
+  if e.kind == parse.ExprKind.ExIndex {
+    let bt: *parse.Type = e.a.typed;
+    let idx: *ir.IRVreg = lv_expr(c, e.b);
+    let mut baseaddr: *ir.IRVreg = null;
+    let mut esize: i64 = type_size(bt.elem);
+    if bt.kind == check.TypeKind.TyStringK {
+      esize = 1;
+    }
+    if bt.kind == check.TypeKind.TyArray {
+      baseaddr = compute_addr(c, e.a);
+      bounds_check(c, idx, v_const(c, bt.len as i64, ir.IRType.ItUsize));
+    } else {
+      // slice: {buf, ptr, len}
+      let sliceaddr: *ir.IRVreg = compute_addr(c, e.a);
+      let len_v: *ir.IRVreg = v_load(c, v_addi(c, sliceaddr, 16), ir.IRType.ItUsize);
+      bounds_check(c, idx, len_v);
+      baseaddr = v_load(c, v_addi(c, sliceaddr, 8), ir.IRType.ItPtr);
+    }
+    let esz: *ir.IRVreg = v_const(c, esize, ir.IRType.ItUsize);
+    let mul: *ir.IRIns = emit(c, ir.IROp.IrMul);
+    mul.dst = new_vreg(c, ir.IRType.ItUsize);
+    mul.a = idx;
+    mul.b = esz;
+    let add: *ir.IRIns = emit(c, ir.IROp.IrAdd);
+    add.dst = new_vreg(c, ir.IRType.ItPtr);
+    add.a = baseaddr;
+    add.b = mul.dst;
+    return add.dst;
+  }
+  if e.kind == parse.ExprKind.ExUn {
+    // *ptr
+    return null_check(c, lv_expr(c, e.a));
+  }
+  panic_call(c, "internal: not an lvalue");
+  return v_const(c, 0, ir.IRType.ItPtr);
+}
+
+fn field_index_of(e: *parse.Expr, rec: *parse.RecType) -> i32 {
+  let d: *parse.Decl = rec.decl;
+  let mut i: usize = 0;
+  while i < d.fields.n {
+    let fa: *parse.FieldAst = d.fields.items[i];
+    if main.streq(fa.name, e.sv) {
+      return i as i32;
+    }
+    i += 1;
+  }
+  return 0;
+}
+fn v_cast(c: *LCtx, src: *ir.IRVreg, to: ir.IRType) -> *ir.IRVreg {
+  let v: *ir.IRVreg = new_vreg(c, to);
+  let i: *ir.IRIns = emit(c, ir.IROp.IrCast);
+  i.dst = v;
+  i.a = src;
+  i.cast_from = src.ty;
+  i.cast_to = to;
+  // classify
+  if ir.ir_is_float_t(src.ty) && ir.ir_is_float_t(to) {
+    if src.ty == ir.IRType.ItF32 && to == ir.IRType.ItF64 {
+      i.cast = ir.IRCastKind.CastF32F64;
+    } else {
+      i.cast = ir.IRCastKind.CastF64F32;
+    }
+  } else if ir.ir_size_of(src.ty) == ir.ir_size_of(to) &&
+             ir.ir_is_float_t(src.ty) && !ir.ir_is_float_t(to) &&
+             (to == ir.IRType.ItU32 || to == ir.IRType.ItU64) {
+    i.cast = ir.IRCastKind.CastReinterp; // exact bit move (f32_bits/f64_bits)
+  } else if ir.ir_is_float_t(src.ty) {
+    i.cast = ir.IRCastKind.CastF2i;
+  } else if ir.ir_is_float_t(to) {
+    i.cast = ir.IRCastKind.CastI2f;
+  } else if ir.ir_size_of(src.ty) > ir.ir_size_of(to) {
+    i.cast = ir.IRCastKind.CastTrunc;
+  } else if ir.ir_size_of(src.ty) < ir.ir_size_of(to) {
+    if ty_is_signed_int(src.ty) {
+      i.cast = ir.IRCastKind.CastSext;
+    } else {
+      i.cast = ir.IRCastKind.CastZext;
+    }
+  } else {
+    i.cast = ir.IRCastKind.CastBitcopy;
+  }
+  return v;
+}
+
+// ------------------------------------------------------------ expressions --
+
+fn lv_expr(c: *LCtx, e: *parse.Expr) -> *ir.IRVreg {
+  let t: *parse.Type = e.typed;
+  if e.kind == parse.ExprKind.ExInt {
+    return v_const(c, e.iv as i64, ir_type_of(t));
+  }
+  if e.kind == parse.ExprKind.ExFloat {
+    return fconst(c, e.fv, ir_type_of(t));
+  }
+  if e.kind == parse.ExprKind.ExBool {
+    let mut b: i64 = 0;
+    if e.bv {
+      b = 1;
+    }
+    return v_const(c, b, ir.IRType.ItU8);
+  }
+  if e.kind == parse.ExprKind.ExNull {
+    return v_const(c, 0, ir.IRType.ItPtr);
+  }
+  if e.kind == parse.ExprKind.ExName {
+    let sym: *check.Sym = e.sym;
+    if sym != null && sym.kind == check.SymKind.SyConst {
+      if sym.decl.ceval_ok && sym.decl.ceval_is_int {
+        return v_const(c, sym.decl.ceval_i as i64, ir_type_of(t));
+      }
+      if sym.decl.ceval_ok && !sym.decl.ceval_is_int && t != null &&
+         (t.kind == check.TypeKind.TyF32 || t.kind == check.TypeKind.TyF64) {
+        return fconst(c, sym.decl.ceval_f, ir_type_of(t));
+      }
+      if t != null && ty_is_aggregate(t) {
+        return compute_addr(c, e);
+      }
+      return v_const(c, 0, ir_type_of(t));
+    }
+    if e.fnval && sym != null &&
+       (sym.kind == check.SymKind.SyFn || sym.kind == check.SymKind.SyExtern) {
+      return closure_value_for_sym(c, sym);
+    }
+    if t != null && ty_is_aggregate(t) {
+      return compute_addr(c, e);
+    }
+    let slot: *ir.IRSlot = lookup_slot(c, e.sv);
+    if slot == null {
+      if sym != null && sym.kind == check.SymKind.SyStatic {
+        let i: *ir.IRIns = emit(c, ir.IROp.IrAddrc);
+        i.dst = new_vreg(c, ir.IRType.ItPtr);
+        i.callee = sym_symbol(sym);
+        i.lit = -1;
+        return v_load(c, i.dst, ir_type_of(t));
+      }
+      return v_const(c, 0, ir_type_of(t));
+    }
+    return v_load(c, v_slotaddr(c, slot), ir_type_of(t));
+  }
+  if e.kind == parse.ExprKind.ExStr {
+    // slice value: {lit(header), lit+24(bytes), len} — the literal carries
+    // an immortal 24-byte rc header, so count traffic on it is a no-op
+    let tmp: *ir.IRSlot = new_slot(c, 24, 8, "strlit");
+    let addr: *ir.IRVreg = v_slotaddr(c, tmp);
+    let lit: i32 = lit_bytes(c, e.sv);
+    let ptrv: *ir.IRVreg = new_vreg(c, ir.IRType.ItPtr);
+    let la: *ir.IRIns = emit(c, ir.IROp.IrLitaddr);
+    la.dst = ptrv;
+    la.lit = lit;
+    let bytes: *ir.IRVreg = v_addi(c, ptrv, 24);
+    let a8: *ir.IRVreg = v_addi(c, addr, 8);
+    let a16: *ir.IRVreg = v_addi(c, addr, 16);
+    let lenv: *ir.IRVreg = v_const(c, len(e.sv) as i64, ir.IRType.ItUsize);
+    let s1: *ir.IRIns = emit(c, ir.IROp.IrStore);
+    s1.addr = addr;
+    s1.a = ptrv;
+    s1.size = 8;
+    let s2: *ir.IRIns = emit(c, ir.IROp.IrStore);
+    s2.addr = a8;
+    s2.a = bytes;
+    s2.size = 8;
+    let s3: *ir.IRIns = emit(c, ir.IROp.IrStore);
+    s3.addr = a16;
+    s3.a = lenv;
+    s3.size = 8;
+    return addr;
+  }
+  if e.kind == parse.ExprKind.ExUn {
+    if e.unop == lex.Tok.PStar {
+      let p: *ir.IRVreg = null_check(c, lv_expr(c, e.a));
+      let pointee: *parse.Type = e.typed;
+      if pointee != null && ty_is_aggregate(pointee) {
+        return p;
+      }
+      return v_load(c, p, ir_type_of(pointee));
+    }
+    let ty: ir.IRType = ir_type_of(t);
+    // forward the context-adapted node type to a literal operand: the
+    // child of `-2.75` in an f32 position must materialize as f32, not as
+    // the unadapted FLOAT_LIT default
+    if e.unop == lex.Tok.PMinus && (e.a.kind == parse.ExprKind.ExFloat || e.a.kind == parse.ExprKind.ExInt) {
+      e.a.typed = t;
+    }
+    let a: *ir.IRVreg = lv_expr(c, e.a);
+    if e.unop == lex.Tok.PBang {
+      return v_cmp(c, ir.IRCC.CcEq, a, v_const(c, 0, a.ty), false);
+    }
+    if e.unop == lex.Tok.PTilde {
+      return v_binop(c, ir.IROp.IrXor, a, v_const(c, -1, a.ty), a.ty, false);
+    }
+    if e.unop == lex.Tok.PMinus {
+      if ir.ir_is_float_t(ty) {
+        // negate via a float zero (0.0 - x), at the expression's width
+        let zero: *ir.IRVreg = fconst(c, 0.0, ty);
+        let i: *ir.IRIns = emit(c, ir.IROp.IrSub);
+        i.dst = new_vreg(c, ty);
+        i.a = zero;
+        i.b = a;
+        i.is_float = true;
+        i.signed_ops = true;
+        return i.dst;
+      }
+      let zero2: *ir.IRVreg = v_const(c, 0, a.ty);
+      return v_binop(c, ir.IROp.IrSub, zero2, a, a.ty, true);
+    }
+    return v_const(c, 0, ty);
+  }
+  if e.kind == parse.ExprKind.ExCast {
+    let src_t: *parse.Type = e.a.typed;
+    if src_t.kind == check.TypeKind.TyEnum {
+      let addr: *ir.IRVreg = lv_expr(c, e.a); // aggregate: address
+      let tag: *ir.IRVreg = v_load(c, addr, ir.IRType.ItI32);
+      return v_cast(c, tag, ir_type_of(t));
+    }
+    let a: *ir.IRVreg = lv_expr(c, e.a);
+    return v_cast(c, a, ir_type_of(t));
+  }
+  if e.kind == parse.ExprKind.ExBin {
+    let op: lex.Tok = e.binop;
+    // string `+`: call the concat primitive; a chain (a+b+c) stays nested
+    // calls — folding into one allocation is allowed but never required
+    if op == lex.Tok.PPlus && t != null && t.kind == check.TypeKind.TyStringK {
+      return call_string_concat(c, e);
+    }
+    if op == lex.Tok.PAndand || op == lex.Tok.POror {
+      let rhs: *ir.IRBlock = new_block(c);
+      let join: *ir.IRBlock = new_block(c);
+      let phi: *ir.IRPhi = emit_phi_in(c, join, ir.IRType.ItU8);
+      let l: *ir.IRVreg = lv_expr(c, e.a);
+      let l_as_u8: *ir.IRVreg = v_cast(c, l, ir.IRType.ItU8); // dead but keeps vreg numbering
+      // short-circuit consts must precede the branch: phi edges read them
+      let sc_zero: *ir.IRVreg = v_const(c, 0, ir.IRType.ItU8);
+      let sc_one: *ir.IRVreg = v_const(c, 1, ir.IRType.ItU8);
+      // the phi's lhs edge is the block the cbr actually branches from; a
+      // nested `||`/`&&` lhs ends in its own join block, not where we started
+      let lhs_block: *ir.IRBlock = c.f.cur;
+      if op == lex.Tok.PAndand {
+        emit_cbr(c, l, rhs, join, join);
+      } else {
+        emit_cbr(c, l, join, rhs, join);
+      }
+      use_block(c, rhs);
+      let r: *ir.IRVreg = lv_expr(c, e.b);
+      let r_as_u8: *ir.IRVreg = v_cast(c, r, ir.IRType.ItU8);
+      let rhs_block: *ir.IRBlock = c.f.cur;
+      emit_br(c, join);
+      use_block(c, join);
+      if op == lex.Tok.PAndand {
+        phi_add(phi, lhs_block, sc_zero);
+      } else {
+        phi_add(phi, lhs_block, sc_one);
+      }
+      phi_add(phi, rhs_block, r_as_u8);
+      return phi.dst;
+    }
+    let mut a: *ir.IRVreg = lv_expr(c, e.a);
+    let mut b: *ir.IRVreg = lv_expr(c, e.b);
+    let ty: ir.IRType = ir_type_of(t);
+    // int arithmetic computes at the consumer-pinned width: TyIntLit
+    // operands default to i32, and `let cap: usize = 1 << 16` would
+    // otherwise store only 32 bits into the 8-byte slot, leaving the
+    // high half as stack garbage (boot's lower.c carries the same fix)
+    if check.ty_is_int(t) && t.kind != check.TypeKind.TyIntLit {
+      if a.ty != ty {
+        a = v_cast(c, a, ty);
+      }
+      if b.ty != ty {
+        b = v_cast(c, b, ty);
+      }
+    }
+    let flt: bool = ir.ir_is_float_t(a.ty);
+    if op == lex.Tok.PPlus { return v_binop(c, ir.IROp.IrAdd, a, b, a.ty, true); }
+    if op == lex.Tok.PMinus { return v_binop(c, ir.IROp.IrSub, a, b, a.ty, true); }
+    if op == lex.Tok.PStar { return v_binop(c, ir.IROp.IrMul, a, b, a.ty, flt); }
+    if op == lex.Tok.PSlash {
+      let mut sgn: bool = flt;
+      if ty_is_signed_int(a.ty) {
+        sgn = true;
+      }
+      return v_binop(c, ir.IROp.IrDiv, a, b, a.ty, sgn);
+    }
+    if op == lex.Tok.PPercent { return v_binop(c, ir.IROp.IrMod, a, b, a.ty, ty_is_signed_int(a.ty)); }
+    if op == lex.Tok.PAmp { return v_binop(c, ir.IROp.IrAnd, a, b, a.ty, false); }
+    if op == lex.Tok.PPipe { return v_binop(c, ir.IROp.IrOr, a, b, a.ty, false); }
+    if op == lex.Tok.PCaret { return v_binop(c, ir.IROp.IrXor, a, b, a.ty, false); }
+    if op == lex.Tok.PShl { return v_binop(c, ir.IROp.IrShl, a, b, a.ty, false); }
+    if op == lex.Tok.PShr { return v_binop(c, ir.IROp.IrShr, a, b, a.ty, ty_is_signed_int(a.ty)); }
+    if op == lex.Tok.PEq || op == lex.Tok.PNe {
+      let mut want_eq: bool = false;
+      if op == lex.Tok.PEq {
+        want_eq = true;
+      }
+      let lt: *parse.Type = e.a.typed;
+      if lt != null && lt.kind == check.TypeKind.TyStringK {
+        return call_str_cmp(c, e, want_eq);
+      }
+      if lt != null && lt.kind == check.TypeKind.TyEnum {
+        // a and b are aggregate addresses: compare through tags/glue
+        let mut payloadful: bool = false;
+        let d: *parse.Decl = lt.rec.decl;
+        let mut vi: usize = 0;
+        while vi < d.variants.n {
+          let v: *parse.VariantAst = d.variants.items[vi];
+          if v.vkind != parse.VarKind.VarUnit {
+            payloadful = true;
+          }
+          vi += 1;
+        }
+        if !payloadful {
+          let ta: *ir.IRVreg = v_load(c, a, ir.IRType.ItI32);
+          let tb: *ir.IRVreg = v_load(c, b, ir.IRType.ItI32);
+          let mut cc: ir.IRCC = ir.IRCC.CcNe;
+          if want_eq {
+            cc = ir.IRCC.CcEq;
+          }
+          return v_cmp(c, cc, ta, tb, false);
+        }
+        let fnn: string = eq_fn_for(lt);
+        let call: *ir.IRIns = emit(c, ir.IROp.IrCall);
+        call.callee = fnn;
+        call.args = push_vreg(call.args, a);
+        call.args = push_vreg(call.args, b);
+        call.dst = new_vreg(c, ir.IRType.ItU8);
+        if want_eq {
+          return call.dst;
+        }
+        return v_cmp(c, ir.IRCC.CcEq, call.dst, v_const(c, 0, ir.IRType.ItU8), false);
+      }
+      if want_eq {
+        return v_cmp(c, ir.IRCC.CcEq, a, b, flt);
+      }
+      return v_cmp(c, ir.IRCC.CcNe, a, b, flt);
+    }
+    if op == lex.Tok.PLt { return v_cmp(c, ir.IRCC.CcLt, a, b, flt); }
+    if op == lex.Tok.PLe { return v_cmp(c, ir.IRCC.CcLe, a, b, flt); }
+    if op == lex.Tok.PGt { return v_cmp(c, ir.IRCC.CcGt, a, b, flt); }
+    if op == lex.Tok.PGe { return v_cmp(c, ir.IRCC.CcGe, a, b, flt); }
+    return v_const(c, 0, ty);
+  }
+  if e.kind == parse.ExprKind.ExSlice {
+    return lower_slice(c, e);
+  }
+  if e.kind == parse.ExprKind.ExIndex {
+    let t2: *parse.Type = e.typed;
+    if t2 != null && ty_is_aggregate(t2) {
+      return compute_addr(c, e);
+    }
+    return v_load(c, compute_addr(c, e), ir_type_of(t2));
+  }
+  if e.kind == parse.ExprKind.ExField {
+    let t2: *parse.Type = e.typed;
+    let fsym: *check.Sym = e.sym;
+    if e.fnval && fsym != null &&
+       (fsym.kind == check.SymKind.SyFn || fsym.kind == check.SymKind.SyExtern) {
+      return closure_value_for_sym(c, fsym);
+    }
+    // unit enum variant used as a value: materialize {tag, zeros}
+    if e.sym != null && e.sym.kind == check.SymKind.SyVariant {
+      let vs: *check.Sym = e.sym;
+      let ed: *parse.Decl = vs.decl;
+      let disc: u64 = ed.variants.items[vs.variant_index].disc;
+      let tmp: *ir.IRSlot = new_slot(c, type_size(t2), type_align(t2), "enumval");
+      let dest: *ir.IRVreg = v_slotaddr(c, tmp);
+      let tagv: *ir.IRVreg = v_const(c, disc as i64, ir.IRType.ItI32);
+      let a4: *ir.IRVreg = v_addi(c, dest, 4);
+      let mut rest: i64 = type_size(t2) - 4;
+      if rest < 0 {
+        rest = 0;
+      }
+      let tag: *ir.IRIns = emit(c, ir.IROp.IrStore);
+      tag.addr = dest;
+      tag.a = tagv;
+      tag.size = 4;
+      if rest > 0 {
+        let z: *ir.IRIns = emit(c, ir.IROp.IrZero);
+        z.addr = a4;
+        z.size = rest;
+      }
+      return dest;
+    }
+    // module-qualified statics and consts: `mod.ITEM`
+    if fsym != null && (fsym.kind == check.SymKind.SyStatic || fsym.kind == check.SymKind.SyConst) {
+      if fsym.kind == check.SymKind.SyConst {
+        if fsym.decl.ceval_ok && fsym.decl.ceval_is_int {
+          return v_const(c, fsym.decl.ceval_i as i64, ir_type_of(t2));
+        }
+        if fsym.decl.ceval_ok && !fsym.decl.ceval_is_int && t2 != null &&
+           (t2.kind == check.TypeKind.TyF32 || t2.kind == check.TypeKind.TyF64) {
+          return fconst(c, fsym.decl.ceval_f, ir_type_of(t2));
+        }
+        if t2 != null && ty_is_aggregate(t2) {
+          panic_call(c, "internal: constant has no address");
+        }
+        return v_const(c, 0, ir_type_of(t2));
+      }
+      let gi: *ir.IRIns = emit(c, ir.IROp.IrAddrc);
+      gi.dst = new_vreg(c, ir.IRType.ItPtr);
+      gi.callee = sym_symbol(fsym);
+      gi.lit = 0 - 1; // global-address form
+      if t2 != null && ty_is_aggregate(t2) {
+        return gi.dst;
+      }
+      return v_load(c, gi.dst, ir_type_of(t2));
+    }
+    if t2 != null && ty_is_aggregate(t2) {
+      return compute_addr(c, e);
+    }
+    return v_load(c, compute_addr(c, e), ir_type_of(t2));
+  }
+  if e.kind == parse.ExprKind.ExCall {
+    if is_make_call(e) {
+      return lower_make(c, e, null);
+    }
+    return compute_call_value(c, e);
+  }
+  if e.kind == parse.ExprKind.ExDynbox {
+    // {vtable, obj} box: obj = the *T value; owned producers hand over
+    // their count, borrowed operands get a +1 (boot lv EX_DYNBOX)
+    let obj: *ir.IRVreg = lv_expr(c, e.a);
+    let owned: bool = expr_owned(e.a);
+    let boxed: *parse.Type = e.a.typed; // *T
+    let vt: *ir.IRVreg = vtable_ensure(c, boxed.elem, e.typed.rec);
+    let tmp: *ir.IRSlot = new_slot(c, 16, 8, "dynval");
+    let addr: *ir.IRVreg = v_slotaddr(c, tmp);
+    let obj_addr: *ir.IRVreg = v_addi(c, addr, 8); // operands before their stores
+    let s1: *ir.IRIns = emit(c, ir.IROp.IrStore);
+    s1.addr = addr;
+    s1.a = vt;
+    s1.size = 8;
+    let s2: *ir.IRIns = emit(c, ir.IROp.IrStore);
+    s2.addr = obj_addr;
+    s2.a = obj;
+    s2.size = 8;
+    if !owned {
+      rc_inc_v(c, obj);
+    }
+    return addr;
+  }
+  if e.kind == parse.ExprKind.ExNew {
+    return lower_new(c, e);
+  }
+  if e.kind == parse.ExprKind.ExClosure {
+    let envdrop_box: *main.Vec[string] = new main.Vec[string] { items: make([]string, 1), n: 1 };
+    let sym_name: string = lift_closure(c, e, envdrop_box);
+    // env object: header + snapshot of every capture
+    let mut esz: i64 = 0;
+    let mut ci: usize = 0;
+    while ci < len(e.caps) {
+      let ct: *parse.Type = e.caps[ci].type;
+      let al: i64 = type_align(ct);
+      esz = round_up_i64(esz, al) + type_size(ct);
+      ci += 1;
+    }
+    let sz: *ir.IRVreg = v_const(c, esz + 24, ir.IRType.ItUsize);
+    let obj: *ir.IRVreg = call_prelude1(c, "__alloc", sz, ir.IRType.ItPtr);
+    let obj8: *ir.IRVreg = v_addi(c, obj, 8);
+    let obj16: *ir.IRVreg = v_addi(c, obj, 16);
+    let rc1: *ir.IRVreg = v_const(c, 1, ir.IRType.ItUsize);
+    let rc: *ir.IRIns = emit(c, ir.IROp.IrStore);
+    rc.addr = obj;
+    rc.a = rc1;
+    rc.size = 8;
+    let zero: *ir.IRVreg = v_const(c, 0, ir.IRType.ItUsize);
+    let wrc: *ir.IRIns = emit(c, ir.IROp.IrStore);
+    wrc.addr = obj8;
+    wrc.a = zero;
+    wrc.size = 8;
+    let mut dropv: *ir.IRVreg = v_const(c, 0, ir.IRType.ItPtr);
+    if len(e.caps) > 0 {
+      let ga: *ir.IRIns = emit(c, ir.IROp.IrAddrc);
+      ga.dst = new_vreg(c, ir.IRType.ItPtr);
+      ga.callee = envdrop_box.items[0];
+      ga.lit = -1;
+      dropv = ga.dst;
+    }
+    let dr: *ir.IRIns = emit(c, ir.IROp.IrStore);
+    dr.addr = obj16;
+    dr.a = dropv;
+    if main.g_target_wasm {
+      dr.size = 4;
+    } else {
+      dr.size = 8;
+    }
+    let mut off: i64 = 0;
+    let mut si: usize = 0;
+    while si < len(e.caps) {
+      let cap: *check.Sym = e.caps[si];
+      let ct: *parse.Type = cap.type;
+      let al: i64 = type_align(ct);
+      off = round_up_i64(off, al);
+      let daddr: *ir.IRVreg = v_addi(c, obj, 24 + off);
+      let srcaddr: *ir.IRVreg = v_slotaddr(c, lookup_slot(c, cap.name));
+      if ty_is_aggregate(ct) {
+        let cp: *ir.IRIns = emit(c, ir.IROp.IrCopymem);
+        cp.addr = daddr;
+        cp.a = srcaddr;
+        cp.size = type_size(ct);
+      } else {
+        let v: *ir.IRVreg = v_load(c, srcaddr, ir_type_of(ct));
+        v_store(c, daddr, v);
+      }
+      if ty_is_managed(ct) {
+        retain_addr(c, ct, daddr); // the env owns its snapshot
+      }
+      off += type_size(ct);
+      si += 1;
+    }
+    // the value: {code, env=data pointer}
+    let la: *ir.IRIns = emit(c, ir.IROp.IrAddrc);
+    la.dst = new_vreg(c, ir.IRType.ItPtr);
+    la.callee = sym_name;
+    la.lit = -1;
+    let envp: *ir.IRVreg = v_addi(c, obj, 24);
+    let tmp: *ir.IRSlot = new_slot(c, 16, 8, "cloval");
+    let addr: *ir.IRVreg = v_slotaddr(c, tmp);
+    let a8: *ir.IRVreg = v_addi(c, addr, 8);
+    let s1: *ir.IRIns = emit(c, ir.IROp.IrStore);
+    s1.addr = addr;
+    s1.a = la.dst;
+    s1.size = 8;
+    let s2: *ir.IRIns = emit(c, ir.IROp.IrStore);
+    s2.addr = a8;
+    s2.a = envp;
+    s2.size = 8;
+    return addr;
+  }
+  if e.kind == parse.ExprKind.ExMake {
+    if t != null && ty_is_aggregate(t) {
+      return compute_addr(c, e);
+    }
+    return compute_call_value(c, e);
+  }
+  if e.kind == parse.ExprKind.ExIf {
+    if t == null || t.kind == check.TypeKind.TyVoid {
+      // statement context: no value to merge
+      let then_b: *ir.IRBlock = new_block(c);
+      let join: *ir.IRBlock = new_block(c);
+      let mut has_else: bool = false;
+      if e.items.n > 1 || e.else_if != null {
+        has_else = true;
+      }
+      let mut false_b: *ir.IRBlock = join;
+      if has_else {
+        false_b = new_block(c);
+      }
+      let cond: *ir.IRVreg = lv_expr(c, e.a);
+      emit_cbr(c, cond, then_b, false_b, join);
+      use_block(c, then_b);
+      // each arm gets its own scope: a `let` inside an arm must release at
+      // the arm's end, not at the enclosing loop's back edge
+      scope_push_l(c);
+      lv_stmts(c, e.items.items[0].stmts);
+      run_defers(c, c.scope.parent);
+      scope_pop_release(c);
+      emit_br(c, join);
+      if has_else {
+        use_block(c, false_b);
+        if e.else_if != null {
+          lv_expr(c, e.else_if);
+        } else {
+          let els: *parse.Stmt = e.items.items[1];
+          scope_push_l(c);
+          lv_stmts(c, els.stmts);
+          run_defers(c, c.scope.parent);
+          scope_pop_release(c);
+        }
+        emit_br(c, join);
+      }
+      use_block(c, join);
+      return v_const(c, 0, ir.IRType.ItU8);
+    }
+    let then_b2: *ir.IRBlock = new_block(c);
+    let join2: *ir.IRBlock = new_block(c);
+    let mut false_b2: *ir.IRBlock = join2;
+    if e.items.n > 1 || e.else_if != null {
+      false_b2 = new_block(c);
+    }
+    let phi: *ir.IRPhi = emit_phi_in(c, join2, ir_type_of(t));
+    let cond2: *ir.IRVreg = lv_expr(c, e.a);
+    emit_cbr(c, cond2, then_b2, false_b2, join2);
+    use_block(c, then_b2);
+    let then_stmts: *main.Vec[*parse.Stmt] = e.items.items[0].stmts;
+    let tv: *ir.IRVreg = block_value(c, then_stmts, t);
+    if ty_is_managed(t) && !arm_value_owned(then_stmts) {
+      retain_or_inc(c, t, tv);
+    }
+    let then_end: *ir.IRBlock = c.f.cur;
+    emit_br(c, join2);
+    let mut ev: *ir.IRVreg = null;
+    let mut else_end: *ir.IRBlock = null;
+    if e.items.n > 1 {
+      use_block(c, false_b2);
+      if e.else_if != null {
+        ev = lv_expr(c, e.else_if); // nested ifs normalize their own arms
+      } else {
+        let els2: *parse.Stmt = e.items.items[1];
+        let es: *main.Vec[*parse.Stmt] = els2.stmts;
+        ev = block_value(c, es, t);
+        if ty_is_managed(t) && !arm_value_owned(es) {
+          retain_or_inc(c, t, ev);
+        }
+      }
+      else_end = c.f.cur;
+      emit_br(c, join2);
+      use_block(c, join2);
+    } else {
+      use_block(c, join2);
+    }
+    phi_add(phi, then_end, tv);
+    if e.items.n > 1 {
+      phi_add(phi, else_end, ev);
+    }
+    return phi.dst;
+  }
+  if e.kind == parse.ExprKind.ExMatch {
+    // chain of comparisons; arm values merge at a phi
+    let join: *ir.IRBlock = new_block(c);
+    let phi: *ir.IRPhi = emit_phi_in(c, join, ir_type_of(t));
+    let scrut_t: *parse.Type = e.a.typed;
+    let scrut: *ir.IRVreg = lv_expr(c, e.a);
+    let mut disc: *ir.IRVreg = null;
+    if scrut_t.kind == check.TypeKind.TyEnum {
+      disc = v_load(c, scrut, ir.IRType.ItI32); // scrutinee addr (aggregate)
+    }
+    let n: usize = e.arms.n;
+    let mut i: usize = 0;
+    while i < n {
+      let arm: *parse.MatchArm = e.arms.items[i];
+      let body: *ir.IRBlock = new_block(c);
+      let mut next: *ir.IRBlock = join;
+      if i + 1 < n {
+        next = new_block(c);
+      }
+      if arm.pk == parse.PatKind.PatWildcard {
+        emit_br(c, body);
+      } else if scrut_t.kind == check.TypeKind.TyEnum {
+        let is: *ir.IRVreg = v_cmp(c, ir.IRCC.CcEq, disc, v_const(c, arm.disc as i64, ir.IRType.ItI32), false);
+        emit_cbr(c, is, body, next, join);
+      } else {
+        let is2: *ir.IRVreg = v_cmp(c, ir.IRCC.CcEq, scrut, v_const(c, arm.pat_int as i64, scrut.ty), false);
+        emit_cbr(c, is2, body, next, join);
+      }
+      use_block(c, body);
+      let bind_scope: bool = len(arm.bind_syms) > 0;
+      if bind_scope {
+        // payload bindings: slots copied out of the scrutinee's payload area
+        scope_push_l(c);
+        let mut bi: usize = 0;
+        while bi < len(arm.bind_syms) {
+          let bs: *check.Sym = arm.bind_syms[bi];
+          if bs != null {
+            let ft: *parse.Type = bs.type;
+            let mut fidx: i32 = bi as i32;
+            if bi < len(arm.bind_fidx) {
+              fidx = arm.bind_fidx[bi] as i32;
+            }
+            let off: i64 = variant_field_offset(scrut_t, arm.variant_index, fidx);
+            let faddr: *ir.IRVreg = v_addi(c, scrut, off);
+            let slot: *ir.IRSlot = new_slot(c, type_size(ft), type_align(ft), bs.name);
+            lbind(c, bs.name, slot);
+            let saddr: *ir.IRVreg = v_slotaddr(c, slot);
+            if ty_is_aggregate(ft) {
+              let cp: *ir.IRIns = emit(c, ir.IROp.IrCopymem);
+              cp.addr = saddr;
+              cp.a = faddr;
+              cp.size = type_size(ft);
+            } else {
+              v_store(c, saddr, v_load(c, faddr, ir_type_of(ft)));
+            }
+            if ty_is_managed(ft) {
+              retain_addr(c, ft, saddr);
+              own_slot(c, slot, ft);
+            }
+          }
+          bi += 1;
+        }
+      }
+      let mut val: *ir.IRVreg = null;
+      if arm.body.kind == parse.ExprKind.ExBlock {
+        scope_push_l(c);
+        val = block_value(c, arm.body.items, t);
+        run_defers(c, c.scope.parent);
+        scope_pop_release(c);
+      } else {
+        val = lv_expr(c, arm.body);
+      }
+      if val == null {
+        // a never-returning arm (panic call): the phi still needs an arg,
+        // but control never reaches the join from here
+        val = v_const(c, 0, ir_type_of(t));
+      }
+      if t != null && ty_is_managed(t) && !expr_owned(arm.body) {
+        retain_or_inc(c, t, val);
+      }
+      if bind_scope {
+        scope_pop_release(c);
+      }
+      emit_br(c, join);
+      phi_add(phi, c.f.cur, val);
+      if i + 1 < n {
+        use_block(c, next);
+      }
+      i += 1;
+    }
+    use_block(c, join);
+    return phi.dst;
+  }
+  if e.kind == parse.ExprKind.ExQmark {
+    // `expr?` — on failure, return the whole value unchanged (it already
+    // carries the failing tag and payload); on success, yield the payload
+    let et: *parse.Type = e.a.typed;
+    let val: *ir.IRVreg = lv_expr(c, e.a);
+    let tag: *ir.IRVreg = v_load(c, val, ir.IRType.ItI32);
+    let okv: *parse.VariantAst = et.rec.decl.variants.items[e.q_ok];
+    let is_ok: *ir.IRVreg = v_cmp(c, ir.IRCC.CcEq, tag, v_const(c, okv.disc as i64, ir.IRType.ItI32), false);
+    let cont: *ir.IRBlock = new_block(c);
+    let prop: *ir.IRBlock = new_block(c);
+    emit_cbr(c, is_ok, cont, prop, cont);
+    use_block(c, prop);
+    run_defers(c, null);
+    let dst: *ir.IRVreg = ret_dest(c);
+    let cp: *ir.IRIns = emit(c, ir.IROp.IrCopymem);
+    cp.addr = dst;
+    cp.a = val;
+    cp.size = type_size(et);
+    if ty_is_managed(et) && !expr_owned(e.a) {
+      retain_addr(c, et, dst);
+    }
+    release_scopes_to(c, null);
+    emit_ret(c, null);
+    let dead: *ir.IRBlock = new_block(c);
+    use_block(c, dead);
+    emit_br(c, cont); // unreachable; keeps the CFG well-formed
+    use_block(c, cont);
+    if ty_is_managed(et) && expr_owned(e.a) {
+      release_addr(c, et, val);
+    }
+    let pt: *parse.Type = e.typed;
+    let off: i64 = variant_field_offset(et, e.q_ok, 0);
+    if pt != null && ty_is_aggregate(pt) {
+      return v_addi(c, val, off);
+    }
+    return v_load(c, v_addi(c, val, off), ir_type_of(pt));
+  }
+  if t != null && ty_is_aggregate(t) {
+    return compute_addr(c, e);
+  }
+  panic_call(c, "internal: unlowerable expression");
+  return v_const(c, 0, ir.IRType.ItPtr);
+}
+
+// ------------------------------------------------------------ calls --------
+
+fn is_make_call(e: *parse.Expr) -> bool {
+  return e.kind == parse.ExprKind.ExCall && e.a.kind == parse.ExprKind.ExName &&
+         main.streq(e.a.sv, "make") && e.typed != null &&
+         e.typed.kind == check.TypeKind.TySlice;
+}
+
+fn method_receiver(callee: *parse.Expr) -> *parse.Expr {
+  if callee.kind != parse.ExprKind.ExField {
+    return null;
+  }
+  let bt: *parse.Type = callee.a.typed;
+  let csym: *check.Sym = callee.sym;
+  if bt == null || bt.kind == check.TypeKind.TyModule || csym == null || csym.decl == null {
+    return null;
+  }
+  if csym.decl.is_method {
+    return callee.a;
+  }
+  return null;
+}
+
+fn is_variant_ctor(e: *parse.Expr) -> bool {
+  return e.kind == parse.ExprKind.ExCall && e.a.kind == parse.ExprKind.ExField &&
+         e.a.sym != null && e.a.sym.kind == check.SymKind.SyVariant;
+}
+
+// make([]T, n): allocate len*esize + header, init slice {buf, ptr, len}
+fn lower_make(c: *LCtx, e: *parse.Expr, dest_in: *ir.IRVreg) -> *ir.IRVreg {
+  let slice_t: *parse.Type = e.typed;
+  let esize: i64 = type_size(slice_t.elem);
+  let n: *ir.IRVreg = lv_expr(c, e.args.items[1]);
+  let esz: *ir.IRVreg = v_const(c, esize, ir.IRType.ItUsize);
+  let hdr: *ir.IRVreg = v_const(c, 24, ir.IRType.ItUsize);
+  let mul: *ir.IRIns = emit(c, ir.IROp.IrMul);
+  mul.dst = new_vreg(c, ir.IRType.ItUsize);
+  mul.a = n;
+  mul.b = esz;
+  let add: *ir.IRIns = emit(c, ir.IROp.IrAdd);
+  add.dst = new_vreg(c, ir.IRType.ItUsize);
+  add.a = mul.dst;
+  add.b = hdr;
+  let obj: *ir.IRVreg = call_prelude1(c, "__alloc", add.dst, ir.IRType.ItPtr);
+  // header: {rc=1, wrc=0, drop=null}
+  let obj8: *ir.IRVreg = v_addi(c, obj, 8);
+  let obj16: *ir.IRVreg = v_addi(c, obj, 16);
+  let obj24: *ir.IRVreg = v_addi(c, obj, 24);
+  let rc1: *ir.IRVreg = v_const(c, 1, ir.IRType.ItUsize);
+  let zero: *ir.IRVreg = v_const(c, 0, ir.IRType.ItUsize);
+  let rc: *ir.IRIns = emit(c, ir.IROp.IrStore);
+  rc.addr = obj;
+  rc.a = rc1;
+  rc.size = 8;
+  let wrc: *ir.IRIns = emit(c, ir.IROp.IrStore);
+  wrc.addr = obj8;
+  wrc.a = zero;
+  wrc.size = 8;
+  let drop0: *ir.IRVreg = v_const(c, 0, ir.IRType.ItPtr); // operands before emit: see landmine #1
+  let dr: *ir.IRIns = emit(c, ir.IROp.IrStore);
+  dr.addr = obj16;
+  dr.a = drop0;
+  if main.g_target_wasm {
+    dr.size = 4;
+  } else {
+    dr.size = 8;
+  }
+  // slice {buf=obj, ptr=obj+24, len=n}
+  let mut dest: *ir.IRVreg = dest_in;
+  if dest == null {
+    let tmp: *ir.IRSlot = new_slot(c, 24, 8, "slice");
+    dest = v_slotaddr(c, tmp);
+  }
+  let d8: *ir.IRVreg = v_addi(c, dest, 8);
+  let d16: *ir.IRVreg = v_addi(c, dest, 16);
+  let s1: *ir.IRIns = emit(c, ir.IROp.IrStore);
+  s1.addr = dest;
+  s1.a = obj;
+  s1.size = 8;
+  let s2: *ir.IRIns = emit(c, ir.IROp.IrStore);
+  s2.addr = d8;
+  s2.a = obj24;
+  s2.size = 8;
+  let s3: *ir.IRIns = emit(c, ir.IROp.IrStore);
+  s3.addr = d16;
+  s3.a = n;
+  s3.size = 8;
+  return dest;
+}
+
+// new T { fields }: allocate, header, init fields, return the pointer
+fn lower_new(c: *LCtx, e: *parse.Expr) -> *ir.IRVreg {
+  let ptr_t: *parse.Type = e.typed;
+  let struct_t: *parse.Type = ptr_t.elem;
+  let size: i64 = type_size(struct_t);
+  let obj: *ir.IRVreg = call_prelude1(c, "__alloc", v_const(c, size + 24, ir.IRType.ItUsize), ir.IRType.ItPtr);
+  let obj8: *ir.IRVreg = v_addi(c, obj, 8);
+  let obj16: *ir.IRVreg = v_addi(c, obj, 16);
+  let rc1: *ir.IRVreg = v_const(c, 1, ir.IRType.ItUsize);
+  let rc: *ir.IRIns = emit(c, ir.IROp.IrStore);
+  rc.addr = obj;
+  rc.a = rc1;
+  rc.size = 8;
+  let zero: *ir.IRVreg = v_const(c, 0, ir.IRType.ItUsize);
+  let wrc: *ir.IRIns = emit(c, ir.IROp.IrStore);
+  wrc.addr = obj8;
+  wrc.a = zero;
+  wrc.size = 8;
+  let mut dropv: *ir.IRVreg = v_const(c, 0, ir.IRType.ItPtr);
+  let glue: string = value_fn_for(struct_t, false);
+  if glue != "" {
+    let ga: *ir.IRIns = emit(c, ir.IROp.IrAddrc);
+    ga.dst = new_vreg(c, ir.IRType.ItPtr);
+    ga.callee = glue;
+    ga.lit = -1;
+    dropv = ga.dst;
+  }
+  let dr: *ir.IRIns = emit(c, ir.IROp.IrStore);
+  dr.addr = obj16;
+  dr.a = dropv;
+  if main.g_target_wasm {
+    dr.size = 4;
+  } else {
+    dr.size = 8;
+  }
+  // the returned reference points at the DATA, 24 bytes past the header
+  let data: *ir.IRVreg = v_addi(c, obj, 24);
+  let rec: *parse.RecType = struct_t.rec;
+  let sd: *parse.Decl = rec.decl;
+  let mut i: usize = 0;
+  while i < e.items.n {
+    let fa: *parse.FieldAst = new parse.FieldAst { name: e.items.items[i].name, ty: null, file: "", line: 0, col: 0 };
+    let init: *parse.Expr = e.args.items[i];
+    let mut j: usize = 0;
+    while j < sd.fields.n {
+      if main.streq(sd.fields.items[j].name, fa.name) {
+        let off: i64 = struct_field_offset(rec, j);
+        let ft: *parse.Type = check.struct_field_type(rec, j);
+        let faddr: *ir.IRVreg = v_addi(c, data, off);
+        if ty_is_aggregate(ft) {
+          lv_agg(c, init, faddr);
+          if !expr_owned(init) {
+            retain_addr(c, ft, faddr);
+          }
+        } else {
+          let v: *ir.IRVreg = lv_expr(c, init);
+          v_store(c, faddr, v);
+          // the field owns a reference: borrowed inits hand it a +1; owned
+          // producers transfer their single count
+          if ty_is_managed(ft) && !expr_owned(init) {
+            rc_inc_v(c, v);
+          }
+        }
+        j = sd.fields.n; // break
+      } else {
+        j += 1;
+      }
+    }
+    i += 1;
+  }
+  return data;
+}
+
+// enum variant construction: write {tag, payload fields} into dest (fresh
+// temp when dest is NULL); returns the value's address
+fn lower_enum_ctor(c: *LCtx, e: *parse.Expr, dest_in: *ir.IRVreg) -> *ir.IRVreg {
+  let vs: *check.Sym = e.a.sym;
+  let et: *parse.Type = e.typed;
+  let v: *parse.VariantAst = vs.decl.variants.items[vs.variant_index];
+  let mut dest: *ir.IRVreg = dest_in;
+  if dest == null {
+    let tmp: *ir.IRSlot = new_slot(c, type_size(et), type_align(et), "enumval");
+    dest = v_slotaddr(c, tmp);
+  }
+  let tagv: *ir.IRVreg = v_const(c, v.disc as i64, ir.IRType.ItI32);
+  let tag: *ir.IRIns = emit(c, ir.IROp.IrStore);
+  tag.addr = dest;
+  tag.a = tagv;
+  tag.size = 4;
+  let size: i64 = type_size(et);
+  if size > 4 {
+    let rest: *ir.IRVreg = v_addi(c, dest, 4);
+    let z: *ir.IRIns = emit(c, ir.IROp.IrZero);
+    z.addr = rest;
+    z.size = size - 4;
+  }
+  let mut nfields: usize = 0;
+  if v.vkind == parse.VarKind.VarTuple {
+    nfields = v.types.n;
+  } else if v.vkind == parse.VarKind.VarStruct {
+    nfields = v.fields.n;
+  }
+  let mut i: usize = 0;
+  while i < e.args.n && i < nfields {
+    let arg: *parse.Expr = e.args.items[i];
+    let mut fidx: i32 = i as i32;
+    if v.vkind == parse.VarKind.VarStruct {
+      let mut nm: string = "";
+      if i < e.arg_names.n {
+        nm = e.arg_names.items[i];
+      }
+      fidx = -1;
+      let mut j: usize = 0;
+      while j < v.fields.n {
+        if nm != "" && main.streq(v.fields.items[j].name, nm) {
+          fidx = j as i32;
+          j = v.fields.n; // break
+        } else {
+          j += 1;
+        }
+      }
+      if fidx < 0 {
+        i += 1;
+        continue;
+      }
+    }
+    let off: i64 = variant_field_offset(et, vs.variant_index, fidx);
+    let ft: *parse.Type = arg.typed;
+    let faddr: *ir.IRVreg = v_addi(c, dest, off);
+    if ft != null && ty_is_aggregate(ft) {
+      lv_agg(c, arg, faddr);
+      if !expr_owned(arg) {
+        retain_addr(c, ft, faddr);
+      }
+    } else {
+      let pv: *ir.IRVreg = lv_expr(c, arg);
+      v_store(c, faddr, pv);
+      if ft != null && ty_is_managed(ft) && !expr_owned(arg) {
+        rc_inc_v(c, pv);
+      }
+    }
+    i += 1;
+  }
+  return dest;
+}
+
+// build a fresh managed slice {buf, ptr, len} of n elements into dest
+fn make_slice(c: *LCtx, slice_t: *parse.Type, n: *ir.IRVreg, dest_in: *ir.IRVreg) -> *ir.IRVreg {
+  let esize: i64 = type_size(slice_t.elem);
+  let esz: *ir.IRVreg = v_const(c, esize, ir.IRType.ItUsize);
+  let hdr: *ir.IRVreg = v_const(c, 24, ir.IRType.ItUsize);
+  let mul: *ir.IRIns = emit(c, ir.IROp.IrMul);
+  mul.dst = new_vreg(c, ir.IRType.ItUsize);
+  mul.a = n;
+  mul.b = esz;
+  let add: *ir.IRIns = emit(c, ir.IROp.IrAdd);
+  add.dst = new_vreg(c, ir.IRType.ItUsize);
+  add.a = mul.dst;
+  add.b = hdr;
+  let obj: *ir.IRVreg = call_prelude1(c, "__alloc", add.dst, ir.IRType.ItPtr);
+  // header: {rc=1, wrc=0, drop=null}
+  let obj8: *ir.IRVreg = v_addi(c, obj, 8);
+  let obj16: *ir.IRVreg = v_addi(c, obj, 16);
+  let obj24: *ir.IRVreg = v_addi(c, obj, 24);
+  let rc1: *ir.IRVreg = v_const(c, 1, ir.IRType.ItUsize);
+  let zero: *ir.IRVreg = v_const(c, 0, ir.IRType.ItUsize);
+  let rc: *ir.IRIns = emit(c, ir.IROp.IrStore);
+  rc.addr = obj;
+  rc.a = rc1;
+  rc.size = 8;
+  let wrc: *ir.IRIns = emit(c, ir.IROp.IrStore);
+  wrc.addr = obj8;
+  wrc.a = zero;
+  wrc.size = 8;
+  let drop0: *ir.IRVreg = v_const(c, 0, ir.IRType.ItPtr);
+  let dr: *ir.IRIns = emit(c, ir.IROp.IrStore);
+  dr.addr = obj16;
+  dr.a = drop0;
+  if main.g_target_wasm {
+    dr.size = 4;
+  } else {
+    dr.size = 8;
+  }
+  // slice {buf=obj, ptr=obj+24, len=n}
+  let mut dest: *ir.IRVreg = dest_in;
+  if dest == null {
+    let tmp: *ir.IRSlot = new_slot(c, 24, 8, "slice");
+    dest = v_slotaddr(c, tmp);
+  }
+  let d8: *ir.IRVreg = v_addi(c, dest, 8);
+  let d16: *ir.IRVreg = v_addi(c, dest, 16);
+  let s1: *ir.IRIns = emit(c, ir.IROp.IrStore);
+  s1.addr = dest;
+  s1.a = obj;
+  s1.size = 8;
+  let s2: *ir.IRIns = emit(c, ir.IROp.IrStore);
+  s2.addr = d8;
+  s2.a = obj24;
+  s2.size = 8;
+  let s3: *ir.IRIns = emit(c, ir.IROp.IrStore);
+  s3.addr = d16;
+  s3.a = n;
+  s3.size = 8;
+  return dest;
+}
+
+fn build_call(c: *LCtx, fn_: *check.Sym, receiver: *parse.Expr, args_exprs: *main.Vec[*parse.Expr], out: *ir.IRVreg, scalar_dst: *main.Vec[*ir.IRVreg]) {
+  // args: vregs for scalars, addresses for aggregates; the method receiver,
+  // when present, is argument 0
+  let mut call_args: []*ir.IRVreg = make([]*ir.IRVreg, 0);
+  let mut owned_args: []*parse.Expr = make([]*parse.Expr, 0);  // owned rvalues needing a post-call release
+  let mut owned_slots: []usize = make([]usize, 0); // index of each owned value inside call_args
+  let ret: *parse.Type = fn_.type.ret;
+  let agg_ret: bool = ret != null && ty_is_aggregate(ret);
+  if agg_ret {
+    call_args = push_vreg(call_args, out);
+  }
+  // variadic callee: the trailing `rest: T...` parameter is a []T the call
+  // site builds from the extra arguments (or takes whole from `xs...`)
+  let variadic: bool = fn_.kind == check.SymKind.SyFn && fn_.decl != null &&
+                       fn_.decl.kind == parse.DeclKind.DkFn &&
+                       fn_.decl.params.n > 0 &&
+                       fn_.decl.params.items[fn_.decl.params.n - 1].is_variadic;
+  let recv_n: usize = if receiver != null { 1 } else { 0 };
+  let nfixed: usize = if variadic {
+    len(fn_.type.params) - recv_n - 1
+  } else {
+    args_exprs.n
+  };
+  let mut vararg_slice: *ir.IRVreg = null;
+  let mut vararg_t: *parse.Type = null;
+  let mut param_index: usize = 0;
+  if receiver != null {
+    let self_t: *parse.Type = fn_.type.params[0];
+    call_args = push_vreg(call_args, lv_expr(c, receiver));
+    if ty_is_managed(self_t) && expr_owned(receiver) {
+      owned_args = push_expr(owned_args, receiver);
+      owned_slots = push_usize(owned_slots, len(call_args) - 1);
+    }
+    param_index = 1;
+  }
+  let mut i: usize = 0;
+  while i < nfixed {
+    let arg: *parse.Expr = args_exprs.items[i];
+    let mut pt: *parse.Type = arg.typed;
+    if param_index + i < len(fn_.type.params) {
+      pt = fn_.type.params[param_index + i];
+    }
+    call_args = push_vreg(call_args, lv_expr(c, arg)); // aggregate rvalue = address of temp
+    if pt != null && ty_is_managed(pt) && expr_owned(arg) {
+      owned_args = push_expr(owned_args, arg);
+      owned_slots = push_usize(owned_slots, len(call_args) - 1);
+    }
+    i += 1;
+  }
+  if variadic {
+    let slice_t: *parse.Type = fn_.type.params[len(fn_.type.params) - 1];
+    let elem_t: *parse.Type = slice_t.elem;
+    let n: usize = args_exprs.n - nfixed;
+    let last: *parse.Expr = if args_exprs.n > 0 { args_exprs.items[args_exprs.n - 1] } else { null };
+    if last != null && last.spread {
+      // `xs...`: the slice value passes whole, with normal arg semantics
+      call_args = push_vreg(call_args, lv_expr(c, last));
+      if ty_is_managed(slice_t) && expr_owned(last) {
+        owned_args = push_expr(owned_args, last);
+        owned_slots = push_usize(owned_slots, len(call_args) - 1);
+      }
+    } else {
+      let tmp: *ir.IRSlot = new_slot(c, 24, 8, "varargs");
+      let slice_addr: *ir.IRVreg = v_slotaddr(c, tmp);
+      make_slice(c, slice_t, v_const(c, n as i64, ir.IRType.ItUsize), slice_addr);
+      let data: *ir.IRVreg = v_load(c, v_addi(c, slice_addr, 8), ir.IRType.ItPtr);
+      let mut j: usize = 0;
+      while j < n {
+        let arg: *parse.Expr = args_exprs.items[nfixed + j];
+        let ea: *ir.IRVreg = v_addi(c, data, j as i64 * type_size(elem_t));
+        if ty_is_aggregate(elem_t) {
+          lv_agg(c, arg, ea);
+          if ty_is_managed(elem_t) && !expr_owned(arg) {
+            retain_addr(c, elem_t, ea);
+          }
+        } else {
+          let v: *ir.IRVreg = lv_expr(c, arg);
+          let st: *ir.IRIns = emit(c, ir.IROp.IrStore);
+          st.addr = ea;
+          st.a = v;
+          st.size = type_size(elem_t);
+          if ty_is_managed(elem_t) && !expr_owned(arg) {
+            rc_inc_v(c, v);
+          }
+        }
+        j += 1;
+      }
+      call_args = push_vreg(call_args, slice_addr);
+      vararg_slice = slice_addr;
+      vararg_t = slice_t;
+    }
+  }
+  let call: *ir.IRIns = emit(c, ir.IROp.IrCall);
+  call.callee = sym_symbol(fn_);
+  call.args = call_args;
+  if ret != null && !agg_ret && ret.kind != check.TypeKind.TyVoid {
+    call.dst = new_vreg(c, ir_type_of(ret));
+  }
+  // owned arguments handed their +1 to the callee's param copies
+  let mut oi: usize = 0;
+  while oi < len(owned_args) {
+    let arg: *parse.Expr = owned_args[oi];
+    let at: *parse.Type = arg.typed;
+    let pv: *ir.IRVreg = call_args[owned_slots[oi]];
+    if ty_is_aggregate(at) {
+      release_addr(c, at, pv);
+    } else {
+      rc_dec_v(c, pv);
+    }
+    oi += 1;
+  }
+  // the constructed varargs slice was a fresh +1; hand it to the callee's
+  // param copy (which retained it on entry and releases it at exit)
+  if vararg_slice != null {
+    release_addr(c, vararg_t, vararg_slice);
+  }
+  scalar_dst.items[0] = call.dst;
+}
+
+fn push_expr(items: []*parse.Expr, v: *parse.Expr) -> []*parse.Expr {
+  let out: []*parse.Expr = make([]*parse.Expr, len(items) + 1);
+  let mut i: usize = 0;
+  while i < len(items) {
+    out[i] = items[i];
+    i += 1;
+  }
+  out[len(items)] = v;
+  return out;
+}
+
+fn push_usize(items: []usize, v: usize) -> []usize {
+  let out: []usize = make([]usize, len(items) + 1);
+  let mut i: usize = 0;
+  while i < len(items) {
+    out[i] = items[i];
+    i += 1;
+  }
+  out[len(items)] = v;
+  return out;
+}
+
+fn compute_call_value(c: *LCtx, e: *parse.Expr) -> *ir.IRVreg {
+  // builtins
+  if e.a.kind == parse.ExprKind.ExName && main.streq(e.a.sv, "len") {
+    let arg: *parse.Expr = e.args.items[0];
+    let at: *parse.Type = arg.typed;
+    if at.kind == check.TypeKind.TyArray {
+      return v_const(c, at.len as i64, ir.IRType.ItUsize);
+    }
+    let addr: *ir.IRVreg = lv_expr(c, arg); // slice/string aggregate address
+    return v_load(c, v_addi(c, addr, 16), ir.IRType.ItUsize);
+  }
+  // weak.from(p) -> __rc_wref(p): bumps wrc, returns the header handle
+  if e.a.kind == parse.ExprKind.ExField && e.a.a.kind == parse.ExprKind.ExName &&
+     main.streq(e.a.a.sv, "weak") && main.streq(e.a.sv, "from") {
+    let p: *ir.IRVreg = lv_expr(c, e.args.items[0]);
+    let call: *ir.IRIns = emit(c, ir.IROp.IrCall);
+    call.callee = "rho__rc_wref";
+    call.args = push_vreg(call.args, p);
+    call.dst = new_vreg(c, ir.IRType.ItPtr);
+    return call.dst;
+  }
+  // w.get() -> __rc_wget(w): data pointer or null when the object died
+  if e.a.kind == parse.ExprKind.ExField && main.streq(e.a.sv, "get") &&
+     e.a.a.typed != null && e.a.a.typed.kind == check.TypeKind.TyWeak {
+    let w: *ir.IRVreg = lv_expr(c, e.a.a);
+    let call: *ir.IRIns = emit(c, ir.IROp.IrCall);
+    call.callee = "rho__rc_wget";
+    call.args = push_vreg(call.args, w);
+    call.dst = new_vreg(c, ir.IRType.ItPtr);
+    return call.dst;
+  }
+  // intrinsics.* — raw-memory kernel (spec §10)
+  if e.a.kind == parse.ExprKind.ExField && e.a.a.kind == parse.ExprKind.ExName &&
+     main.streq(e.a.a.sv, "intrinsics") {
+    let name: string = e.a.sv;
+    if main.streq(name, "load_u8") || main.streq(name, "load_u32") ||
+       main.streq(name, "load_u64") || main.streq(name, "load_i64") {
+      let mut it: ir.IRType = ir.IRType.ItI64;
+      if main.streq(name, "load_u8") {
+        it = ir.IRType.ItU8;
+      } else if main.streq(name, "load_u32") {
+        it = ir.IRType.ItU32;
+      } else if main.streq(name, "load_u64") {
+        it = ir.IRType.ItU64;
+      }
+      let p: *ir.IRVreg = lv_expr(c, e.args.items[0]);
+      return v_load(c, p, it);
+    }
+    if main.streq(name, "store_u8") || main.streq(name, "store_u32") ||
+       main.streq(name, "store_u64") || main.streq(name, "store_i64") {
+      let p: *ir.IRVreg = lv_expr(c, e.args.items[0]);
+      let v: *ir.IRVreg = lv_expr(c, e.args.items[1]);
+      v_store(c, p, v);
+      return v_const(c, 0, ir.IRType.ItU8);
+    }
+    if main.streq(name, "f64_bits") || main.streq(name, "f32_bits") {
+      let v: *ir.IRVreg = lv_expr(c, e.args.items[0]);
+      if main.streq(name, "f64_bits") {
+        return v_cast(c, v, ir.IRType.ItU64);
+      }
+      return v_cast(c, v, ir.IRType.ItU32);
+    }
+    if main.streq(name, "mem_size") {
+      let ms: *ir.IRIns = emit(c, ir.IROp.IrMemsize);
+      ms.dst = new_vreg(c, ir.IRType.ItUsize);
+      return ms.dst;
+    }
+    if main.streq(name, "mem_grow") {
+      // evaluate the argument BEFORE emitting the intrinsic: emitting
+      // first appends the argument's load after the grow in the block,
+      // and the grow then reads an uninitialized slot (boot's 0.4.1
+      // memgrow trap — grow(0) succeeds silently and the heap runs past
+      // the memory end)
+      let pages: *ir.IRVreg = lv_expr(c, e.args.items[0]);
+      let mg: *ir.IRIns = emit(c, ir.IROp.IrMemgrow);
+      mg.a = pages;
+      mg.dst = new_vreg(c, ir.IRType.ItUsize);
+      return mg.dst;
+    }
+    if main.streq(name, "memcpy") {
+      let dst: *ir.IRVreg = lv_expr(c, e.args.items[0]);
+      let src: *ir.IRVreg = lv_expr(c, e.args.items[1]);
+      let cp: *ir.IRIns = emit(c, ir.IROp.IrCopymem);
+      cp.addr = dst;
+      cp.a = src;
+      cp.b = lv_expr(c, e.args.items[2]); // runtime size
+      cp.size = -1;
+      return v_const(c, 0, ir.IRType.ItU8);
+    }
+    if main.streq(name, "slice_string") {
+      let base: *ir.IRVreg = lv_expr(c, e.args.items[0]); // []u8 aggregate address
+      let len_v: *ir.IRVreg = v_load(c, v_addi(c, base, 16), ir.IRType.ItUsize);
+      let ptr: *ir.IRVreg = v_load(c, v_addi(c, base, 8), ir.IRType.ItPtr);
+      // obj = __alloc(len + 24): header at obj, data at obj+24 — the same
+      // layout make() produces; buf fields hold the header
+      let total: *ir.IRVreg = v_binop(c, ir.IROp.IrAdd, len_v, v_const(c, 24, ir.IRType.ItUsize), ir.IRType.ItUsize, false);
+      let obj: *ir.IRVreg = call_prelude1(c, "__alloc", total, ir.IRType.ItPtr);
+      // header: {rc=1, wrc=0, drop=null}
+      let obj8: *ir.IRVreg = v_addi(c, obj, 8);
+      let obj16: *ir.IRVreg = v_addi(c, obj, 16);
+      let obj24: *ir.IRVreg = v_addi(c, obj, 24);
+      let rc1: *ir.IRVreg = v_const(c, 1, ir.IRType.ItUsize);
+      let zero: *ir.IRVreg = v_const(c, 0, ir.IRType.ItUsize);
+      let rc: *ir.IRIns = emit(c, ir.IROp.IrStore);
+      rc.addr = obj;
+      rc.a = rc1;
+      rc.size = 8;
+      let wrc: *ir.IRIns = emit(c, ir.IROp.IrStore);
+      wrc.addr = obj8;
+      wrc.a = zero;
+      wrc.size = 8;
+      let drop0: *ir.IRVreg = v_const(c, 0, ir.IRType.ItPtr); // operands before emit: landmine #1
+      let dr: *ir.IRIns = emit(c, ir.IROp.IrStore);
+      dr.addr = obj16;
+      dr.a = drop0;
+      if main.g_target_wasm {
+        dr.size = 4;
+      } else {
+        dr.size = 8;
+      }
+      let cp: *ir.IRIns = emit(c, ir.IROp.IrCopymem);
+      cp.addr = obj24;
+      cp.a = ptr;
+      cp.b = len_v; // runtime byte count
+      cp.size = -1;
+      // build {buf=obj (header), ptr=obj+24 (data), len}
+      let tmp: *ir.IRSlot = new_slot(c, 24, 8, "strval");
+      let dest: *ir.IRVreg = v_slotaddr(c, tmp);
+      let d8: *ir.IRVreg = v_addi(c, dest, 8);
+      let d16: *ir.IRVreg = v_addi(c, dest, 16);
+      let s1: *ir.IRIns = emit(c, ir.IROp.IrStore);
+      s1.addr = dest;
+      s1.a = obj;
+      s1.size = 8;
+      let s2: *ir.IRIns = emit(c, ir.IROp.IrStore);
+      s2.addr = d8;
+      s2.a = obj24;
+      s2.size = 8;
+      let s3: *ir.IRIns = emit(c, ir.IROp.IrStore);
+      s3.addr = d16;
+      s3.a = len_v;
+      s3.size = 8;
+      return dest;
+    }
+  }
+  if is_variant_ctor(e) {
+    let et: *parse.Type = e.typed;
+    let tmp: *ir.IRSlot = new_slot(c, type_size(et), type_align(et), "enumval");
+    return lower_enum_ctor(c, e, v_slotaddr(c, tmp));
+  }
+  // dyn virtual call: detected by the RECEIVER's type + the requirement
+  // sym — the callee field itself carries no type
+  if is_dyn_virtual_call(e) {
+    return dyn_virtual_call(c, e, null);
+  }
+  // closure-value call: load {code, env} and call code(args..., env)
+  let callee_t: *parse.Type = e.a.typed;
+  let csym: *check.Sym = e.a.sym;
+  let mut direct: bool = false;
+  if csym != null {
+    if csym.kind == check.SymKind.SyFn || csym.kind == check.SymKind.SyExtern ||
+       csym.kind == check.SymKind.SyVariant {
+      direct = true;
+    }
+  }
+  if callee_t != null && callee_t.kind == check.TypeKind.TyFn && !direct {
+    let val: *ir.IRVreg = lv_expr(c, e.a); // 16-byte value address
+    let code: *ir.IRVreg = v_load(c, val, ir.IRType.ItPtr);
+    let env: *ir.IRVreg = v_load(c, v_addi(c, val, 8), ir.IRType.ItPtr);
+    let ft: *parse.Type = callee_t;
+    let ret: *parse.Type = ft.ret;
+    let agg: bool = ret != null && ty_is_aggregate(ret);
+    let mut args: []*ir.IRVreg = make([]*ir.IRVreg, 0);
+    let mut owned_args: []*parse.Expr = make([]*parse.Expr, 0);
+    let mut owned_slots: []usize = make([]usize, 0);
+    let mut out: *ir.IRVreg = null;
+    if agg {
+      let tmp: *ir.IRSlot = new_slot(c, type_size(ret), type_align(ret), "out");
+      out = v_slotaddr(c, tmp);
+      args = push_vreg(args, out);
+    }
+    let mut i: usize = 0;
+    while i < e.args.n && i < len(ft.params) {
+      let arg: *parse.Expr = e.args.items[i];
+      let pt: *parse.Type = ft.params[i];
+      args = push_vreg(args, lv_expr(c, arg));
+      if pt != null && ty_is_managed(pt) && expr_owned(arg) {
+        owned_args = push_expr(owned_args, arg);
+        owned_slots = push_usize(owned_slots, len(args) - 1);
+      }
+      i += 1;
+    }
+    args = push_vreg(args, env);
+    let call: *ir.IRIns = emit(c, ir.IROp.IrCall);
+    call.callee_vreg = code;
+    call.args = args;
+    // owned arguments handed their +1 to the callee's param copies
+    let mut oi: usize = 0;
+    while oi < len(owned_args) {
+      let arg: *parse.Expr = owned_args[oi];
+      let at: *parse.Type = arg.typed;
+      let pv: *ir.IRVreg = args[owned_slots[oi]];
+      if ty_is_aggregate(at) {
+        release_addr(c, at, pv);
+      } else {
+        rc_dec_v(c, pv);
+      }
+      oi += 1;
+    }
+    if agg {
+      return out;
+    }
+    if ret != null && ret.kind != check.TypeKind.TyVoid {
+      call.dst = new_vreg(c, ir_type_of(ret));
+      return call.dst;
+    }
+    return v_const(c, 0, ir.IRType.ItPtr);
+  }
+  // normal call: callee sym stashed by the checker
+  let fn_: *check.Sym = e.a.sym;
+  if fn_ == null {
+    panic_call(c, "internal: unresolved callee");
+    return v_const(c, 0, ir.IRType.ItPtr);
+  }
+  let ret: *parse.Type = fn_.type.ret;
+  if ret != null && ty_is_aggregate(ret) {
+    let tmp: *ir.IRSlot = new_slot(c, type_size(ret), type_align(ret), "ret");
+    let out: *ir.IRVreg = v_slotaddr(c, tmp);
+    let dst_box: *main.Vec[*ir.IRVreg] = new main.Vec[*ir.IRVreg] { items: make([]*ir.IRVreg, 1), n: 1 };
+    build_call(c, fn_, method_receiver(e.a), e.args, out, dst_box);
+    return out; // value address
+  }
+  let dst_box2: *main.Vec[*ir.IRVreg] = new main.Vec[*ir.IRVreg] { items: make([]*ir.IRVreg, 1), n: 1 };
+  build_call(c, fn_, method_receiver(e.a), e.args, null, dst_box2);
+  return dst_box2.items[0];
+}
+
+// ------------------------------------------------------------ aggregates ---
+
+// write aggregate value `e` into dest (address vreg)
+fn lv_agg(c: *LCtx, e: *parse.Expr, dest: *ir.IRVreg) {
+  let t: *parse.Type = e.typed;
+  if e.kind == parse.ExprKind.ExMake {
+    lower_make(c, e, dest);
+    return;
+  }
+  if e.kind == parse.ExprKind.ExStr {
+    let addr: *ir.IRVreg = lv_expr(c, e); // lv_expr materializes into a temp
+    let cp: *ir.IRIns = emit(c, ir.IROp.IrCopymem);
+    cp.addr = dest;
+    cp.a = addr;
+    cp.size = 24;
+    return;
+  }
+  if e.kind == parse.ExprKind.ExCall {
+    if is_make_call(e) {
+      lower_make(c, e, dest);
+      return;
+    }
+    if is_variant_ctor(e) {
+      lower_enum_ctor(c, e, dest);
+      return;
+    }
+    if is_dyn_virtual_call(e) {
+      dyn_virtual_call(c, e, dest); // the string lands directly in dest
+      return;
+    }
+    let fn_: *check.Sym = e.a.sym;
+    if fn_ != null && fn_.type.ret != null && ty_is_aggregate(fn_.type.ret) {
+      // call straight into dest — one path for every call (variadic
+      // construction and owned-arg releases included)
+      let dst_box: *main.Vec[*ir.IRVreg] = new main.Vec[*ir.IRVreg] { items: make([]*ir.IRVreg, 1), n: 1 };
+      build_call(c, fn_, method_receiver(e.a), e.args, dest, dst_box);
+      return;
+    }
+    let src: *ir.IRVreg = lv_expr(c, e);
+    let cp: *ir.IRIns = emit(c, ir.IROp.IrCopymem);
+    cp.addr = dest;
+    cp.a = src;
+    cp.size = type_size(t);
+    return;
+  }
+  if e.kind == parse.ExprKind.ExIf || e.kind == parse.ExprKind.ExMatch {
+    panic_call(c, "internal: aggregate-valued if/match arrives in 0.0.5");
+    return;
+  }
+  // default: aggregates evaluate to addresses
+  let src2: *ir.IRVreg = lv_expr(c, e);
+  let cp2: *ir.IRIns = emit(c, ir.IROp.IrCopymem);
+  cp2.addr = dest;
+  cp2.a = src2;
+  cp2.size = type_size(t);
+}
+
+// block statements with a trailing value; returns value vreg (scalars) or
+// address (aggregates); NULL when the block produces nothing
+fn block_value(c: *LCtx, stmts: *main.Vec[*parse.Stmt], t: *parse.Type) -> *ir.IRVreg {
+  scope_push_l(c);
+  let mut tail: *ir.IRVreg = null;
+  let mut i: usize = 0;
+  while i < stmts.n {
+    let s: *parse.Stmt = stmts.items[i];
+    lv_stmt(c, s);
+    if i + 1 == stmts.n && s.kind == parse.StmtKind.StExpr && s.tail {
+      tail = lv_expr(c, s.a);
+    }
+    i += 1;
+  }
+  scope_pop_release(c);
+  return tail;
+}
+
+// ------------------------------------------------------------ statements ---
+
+fn lv_expr_discard(c: *LCtx, e: *parse.Expr) {
+  let t: *parse.Type = e.typed;
+  if t != null && ty_is_managed(t) && expr_owned(e) {
+    let v: *ir.IRVreg = lv_expr(c, e);
+    if ty_is_aggregate(t) {
+      release_addr(c, t, v);
+    } else {
+      rc_dec_v(c, v);
+    }
+    return;
+  }
+  lv_expr(c, e);
+}
+
+fn lv_stmt(c: *LCtx, s: *parse.Stmt) {
+  if s.kind == parse.StmtKind.StLet {
+    let t: *parse.Type = s.a.typed;
+    let slot: *ir.IRSlot = new_slot(c, type_size(t), type_align(t), s.name);
+    lbind(c, s.name, slot);
+    let addr: *ir.IRVreg = v_slotaddr(c, slot);
+    if ty_is_aggregate(t) {
+      lv_agg(c, s.a, addr);
+    } else {
+      let v: *ir.IRVreg = lv_expr(c, s.a);
+      v_store(c, addr, v);
+    }
+    if ty_is_managed(t) {
+      if !expr_owned(s.a) {
+        retain_addr(c, t, addr);
+      }
+      own_slot(c, slot, t);
+    }
+    return;
+  }
+  if s.kind == parse.StmtKind.StAssign {
+    let t: *parse.Type = s.a.typed;
+    let addr: *ir.IRVreg = compute_addr(c, s.a);
+    if s.assign_op == lex.Tok.PAssign {
+      if ty_is_managed(t) {
+        // save the old value before the store overwrites it
+        let old: *ir.IRSlot = new_slot(c, type_size(t), type_align(t), "oldval");
+        let olda: *ir.IRVreg = v_slotaddr(c, old);
+        if ty_is_aggregate(t) {
+          let cp: *ir.IRIns = emit(c, ir.IROp.IrCopymem);
+          cp.addr = olda;
+          cp.a = addr;
+          cp.size = type_size(t);
+        } else {
+          v_store(c, olda, v_load(c, addr, ir_type_of(t)));
+        }
+        if ty_is_aggregate(t) {
+          lv_agg(c, s.b, addr);
+          if !expr_owned(s.b) {
+            retain_addr(c, t, addr);
+          }
+        } else {
+          let v: *ir.IRVreg = lv_expr(c, s.b);
+          v_store(c, addr, v);
+          if !expr_owned(s.b) {
+            rc_inc_v(c, v);
+          }
+        }
+        release_addr(c, t, olda);
+        return;
+      }
+      if ty_is_aggregate(t) {
+        lv_agg(c, s.b, addr);
+      } else {
+        let v2: *ir.IRVreg = lv_expr(c, s.b);
+        v_store(c, addr, v2);
+      }
+      return;
+    }
+    let vt: ir.IRType = ir_type_of(t);
+    let cur: *ir.IRVreg = v_load(c, addr, vt);
+    let rhs: *ir.IRVreg = lv_expr(c, s.b);
+    let mut res: *ir.IRVreg = cur;
+    let flt: bool = ir.ir_is_float_t(vt);
+    let op: lex.Tok = s.assign_op;
+    if op == lex.Tok.PPluseq { res = v_binop(c, ir.IROp.IrAdd, cur, rhs, vt, true); }
+    else if op == lex.Tok.PMinuseq { res = v_binop(c, ir.IROp.IrSub, cur, rhs, vt, true); }
+    else if op == lex.Tok.PStareq { res = v_binop(c, ir.IROp.IrMul, cur, rhs, vt, flt); }
+    else if op == lex.Tok.PSlasheq {
+      let mut sgn: bool = flt;
+      if ty_is_signed_int(vt) {
+        sgn = true;
+      }
+      res = v_binop(c, ir.IROp.IrDiv, cur, rhs, vt, sgn);
+    }
+    else if op == lex.Tok.PPercenteq { res = v_binop(c, ir.IROp.IrMod, cur, rhs, vt, ty_is_signed_int(vt)); }
+    else if op == lex.Tok.PAmpeq { res = v_binop(c, ir.IROp.IrAnd, cur, rhs, vt, false); }
+    else if op == lex.Tok.PPipeeq { res = v_binop(c, ir.IROp.IrOr, cur, rhs, vt, false); }
+    else if op == lex.Tok.PCareteq { res = v_binop(c, ir.IROp.IrXor, cur, rhs, vt, false); }
+    else if op == lex.Tok.PShleq { res = v_binop(c, ir.IROp.IrShl, cur, rhs, vt, false); }
+    else if op == lex.Tok.PShreq { res = v_binop(c, ir.IROp.IrShr, cur, rhs, vt, ty_is_signed_int(vt)); }
+    v_store(c, addr, res);
+    return;
+  }
+  if s.kind == parse.StmtKind.StExpr {
+    lv_expr_discard(c, s.a);
+    return;
+  }
+  if s.kind == parse.StmtKind.StReturn {
+    let mut t: *parse.Type = null;
+    if s.a != null {
+      t = s.a.typed;
+    }
+    if s.a != null && ty_is_aggregate(t) {
+      let src: *ir.IRVreg = lv_expr(c, s.a);
+      let dst: *ir.IRVreg = ret_dest(c);
+      let cp: *ir.IRIns = emit(c, ir.IROp.IrCopymem);
+      cp.addr = dst;
+      cp.a = src;
+      cp.size = type_size(t);
+      if ty_is_managed(t) && !expr_owned(s.a) {
+        retain_addr(c, t, dst);
+      }
+      run_defers(c, null);
+      release_scopes_to(c, null);
+      emit_ret(c, null);
+    } else if s.a != null && ty_is_managed(t) {
+      let v: *ir.IRVreg = lv_expr(c, s.a);
+      if !expr_owned(s.a) {
+        rc_inc_v(c, v);
+      }
+      run_defers(c, null);
+      release_scopes_to(c, null);
+      emit_ret(c, v);
+    } else {
+      // evaluate before defers/release: the value may read scope-owned data
+      let mut v: *ir.IRVreg = null;
+      if s.a != null {
+        v = lv_expr(c, s.a);
+      }
+      run_defers(c, null);
+      release_scopes_to(c, null);
+      emit_ret(c, v);
+    }
+    // continuation block for unreachable code after return
+    let dead: *ir.IRBlock = new_block(c);
+    use_block(c, dead);
+    return;
+  }
+  if s.kind == parse.StmtKind.StBreak || s.kind == parse.StmtKind.StContinue {
+    let mut loop_scope: *LScope = null;
+    let mut s2: *LScope = c.scope;
+    while s2 != null {
+      if (s.kind == parse.StmtKind.StBreak && s2.break_to != null) ||
+         (s.kind == parse.StmtKind.StContinue && s2.continue_to != null) {
+        loop_scope = s2;
+        s2 = null;
+      } else {
+        s2 = s2.parent;
+      }
+    }
+    run_defers(c, loop_scope); // defers inside the loop body, not the loop scope's own
+    release_scopes_to(c, loop_scope);
+    if s.kind == parse.StmtKind.StBreak {
+      emit_br(c, loop_scope.break_to);
+    } else {
+      emit_br(c, loop_scope.continue_to);
+    }
+    let dead: *ir.IRBlock = new_block(c);
+    use_block(c, dead);
+    return;
+  }
+  if s.kind == parse.StmtKind.StDefer {
+    c.scope.defers = push_stmt(c.scope.defers, s);
+    return;
+  }
+  if s.kind == parse.StmtKind.StWhile {
+    let header: *ir.IRBlock = new_block(c);
+    let body: *ir.IRBlock = new_block(c);
+    let done: *ir.IRBlock = new_block(c);
+    header.loop_header = true;
+    header.loop_exit = done;
+    emit_br(c, header);
+    use_block(c, header);
+    let cond: *ir.IRVreg = lv_expr(c, s.cond);
+    emit_cbr(c, cond, body, done, done);
+    use_block(c, body);
+    scope_push_l(c);
+    c.scope.is_loop = true;
+    c.scope.break_to = done;
+    c.scope.continue_to = header;
+    let mut i: usize = 0;
+    while i < s.body.n {
+      lv_stmt(c, s.body.items[i]);
+      i += 1;
+    }
+    run_defers(c, c.scope.parent);
+    scope_pop_release(c);
+    emit_br(c, header);
+    use_block(c, done);
+    return;
+  }
+  if s.kind == parse.StmtKind.StLoop {
+    let body: *ir.IRBlock = new_block(c);
+    let done: *ir.IRBlock = new_block(c);
+    body.loop_header = true;
+    body.loop_exit = done;
+    emit_br(c, body);
+    use_block(c, body);
+    scope_push_l(c);
+    c.scope.is_loop = true;
+    c.scope.break_to = done;
+    c.scope.continue_to = body;
+    let mut i: usize = 0;
+    while i < s.body.n {
+      lv_stmt(c, s.body.items[i]);
+      i += 1;
+    }
+    run_defers(c, c.scope.parent);
+    scope_pop_release(c);
+    emit_br(c, body);
+    use_block(c, done);
+    return;
+  }
+  if s.kind == parse.StmtKind.StBlock {
+    scope_push_l(c);
+    let mut i: usize = 0;
+    while i < s.stmts.n {
+      lv_stmt(c, s.stmts.items[i]);
+      i += 1;
+    }
+    run_defers(c, c.scope.parent);
+    scope_pop_release(c);
+    return;
+  }
+}
+
+fn push_stmt(items: []*parse.Stmt, s: *parse.Stmt) -> []*parse.Stmt {
+  let out: []*parse.Stmt = make([]*parse.Stmt, len(items) + 1);
+  let mut i: usize = 0;
+  while i < len(items) {
+    out[i] = items[i];
+    i += 1;
+  }
+  out[len(items)] = s;
+  return out;
+}
+
+fn lv_stmts(c: *LCtx, stmts: *main.Vec[*parse.Stmt]) {
+  let mut i: usize = 0;
+  while i < stmts.n {
+    lv_stmt(c, stmts.items[i]);
+    i += 1;
+  }
+}
+
+// run defers innermost-first until (exclusive) scope `stop` (NULL = all)
+fn run_defers(c: *LCtx, stop: *LScope) {
+  let mut s: *LScope = c.scope;
+  while s != null && s != stop {
+    let mut i: usize = len(s.defers);
+    while i > 0 {
+      let d: *parse.Stmt = s.defers[i - 1];
+      let mut j: usize = 0;
+      while j < d.stmts.n {
+        lv_stmt(c, d.stmts.items[j]);
+        j += 1;
+      }
+      i -= 1;
+    }
+    s = s.parent;
+  }
+}
+
+// ------------------------------------------------------------ driver -------
+
+fn lower_fn(fn_sym: *check.Sym) -> *ir.IRFn {
+  let d: *parse.Decl = fn_sym.decl;
+  let fn_: *ir.IRFn = rc_new_fn(sym_symbol(fn_sym));
+  fn_.ret = fn_sym.type.ret;
+  if fn_.ret != null && ty_is_aggregate(fn_.ret) {
+    fn_.returns_aggregate = true;
+    let cc0: *LCtx = rc_ctx(fn_);
+    fn_.out_slot = new_slot(cc0, type_size(fn_.ret), type_align(fn_.ret), "out");
+  }
+  let ctx: *LCtx = rc_ctx(fn_);
+  scope_push_l(ctx);
+  // rc_new_fn already created the entry block; lower_fn uses it directly
+  // (boot's lower_fn arena-allocs the IRFn and creates its own entry —
+  // same final shape: exactly one entry block, cur == entry)
+
+  let mut i: usize = 0;
+  while i < d.params.n {
+    let pa: *parse.Param = d.params.items[i];
+    let pt: *parse.Type = fn_sym.type.params[i];
+    let slot: *ir.IRSlot = new_slot(ctx, type_size(pt), type_align(pt), pa.name);
+    fn_.params = push_islot(fn_.params, slot);
+    fn_.param_types = check.push_type(fn_.param_types, pt);
+    if ty_is_aggregate(pt) {
+      // the register holds a POINTER to the caller's copy; give the parameter
+      // a proper local slot and copy the value through after the spill
+      let local: *ir.IRSlot = new_slot(ctx, type_size(pt), type_align(pt), pa.name);
+      lbind(ctx, pa.name, local);
+      let src_addr: *ir.IRVreg = v_slotaddr(ctx, slot);
+      let src: *ir.IRVreg = v_load(ctx, src_addr, ir.IRType.ItPtr);
+      let dst: *ir.IRVreg = v_slotaddr(ctx, local);
+      let cp: *ir.IRIns = emit(ctx, ir.IROp.IrCopymem);
+      cp.addr = dst;
+      cp.a = src;
+      cp.size = type_size(pt);
+      if ty_is_managed(pt) {
+        retain_addr(ctx, pt, dst);
+        own_slot(ctx, local, pt);
+      }
+    } else {
+      lbind(ctx, pa.name, slot);
+      if ty_is_managed(pt) {
+        retain_addr(ctx, pt, v_slotaddr(ctx, slot));
+        own_slot(ctx, slot, pt);
+      }
+    }
+    i += 1;
+  }
+  if fn_sym.owner == ir.g_root_module && main.streq(fn_sym.name, "main") {
+    if ir.g_main_cell == null {
+      ir.g_main_cell = new main.Vec[string] { items: make([]string, 1), n: 1 };
+    }
+    ir.g_main_cell.items[0] = fn_.symbol;
+  }
+
+  let mut bi: usize = 0;
+  while bi < d.body.n {
+    lv_stmt(ctx, d.body.items[bi]);
+    bi += 1;
+  }
+
+  if fn_.cur.term_op == 0 {
+    run_defers(ctx, null);
+    release_scopes_to(ctx, null);
+    emit_ret(ctx, null);
+  }
+  scope_pop_l(ctx);
+  return fn_;
+}
+
+fn lower_static(fn_sym: *check.Sym) {
+  let d: *parse.Decl = fn_sym.decl;
+  let t: *parse.Type = fn_sym.type;
+  let g: *ir.IRGlobal = new ir.IRGlobal {
+    symbol: sym_symbol(fn_sym), size: type_size(t), align: type_align(t),
+    init: make([]u8, 0), relocs: make([]string, 0), static_lit: null,
+    is_extern: false,
+  };
+  if d.kind == parse.DeclKind.DkStatic && d.init != null && d.init.kind == parse.ExprKind.ExStr {
+    // {buf, ptr, len} with relocations into rodata
+    let sv: string = d.init.sv;
+    let label: string = main.cat3(g.symbol, "_str", "");
+    let mut bytes: []u8 = make([]u8, 0);
+    let mut si: usize = 0;
+    while si < len(sv) {
+      bytes = push_u8(bytes, sv[si]);
+      si += 1;
+    }
+    bytes = push_u8(bytes, 0);
+    let lit: *ir.IRLit = new ir.IRLit { label: label, bytes: bytes };
+    // the emitter emits this literal block next to the global's data
+    g.relocs = push_str(g.relocs, label);
+    g.relocs = push_str(g.relocs, main.cat3(label, "_b", ""));
+    g.relocs = push_str(g.relocs, "");
+    let len_v: i64 = len(sv) as i64;
+    let mut w: i32 = 0;
+    while w < 3 {
+      let mut word: i64 = 0;
+      if w == 2 {
+        word = len_v;
+      }
+      let mut b: i32 = 0;
+      while b < 8 {
+        g.init = push_u8(g.init, ((word >> (8 * b)) & 255) as u8);
+        b += 1;
+      }
+      w += 1;
+    }
+    g.static_lit = lit;
+  } else if d.init != null && d.init.typed != null && !ty_is_aggregate(d.init.typed) {
+    let mut v: u64 = 0;
+    if d.ceval_ok && d.ceval_is_int {
+      v = d.ceval_i;
+    }
+    if d.ceval_ok && !d.ceval_is_int {
+      // float initializers take their IEEE-754 bit pattern via the bits
+      // intrinsics (boot memcpy's the double). f32 narrows first — an f32
+      // static init only exists in principle (no corpus/prelude use)
+      if t != null && t.kind == check.TypeKind.TyF32 {
+        v = intrinsics.f32_bits(d.ceval_f as f32) as u64;
+      } else {
+        v = intrinsics.f64_bits(d.ceval_f);
+      }
+    }
+    let size: i64 = type_size(t);
+    let mut b: i64 = 0;
+    while b < size {
+      g.init = push_u8(g.init, ((v >> (8 * b)) & 255) as u8);
+      b += 1;
+    }
+  }
+  ir.g_ir_globals.push(g);
+}
+
+pub fn lower_program() {
+  ir.g_ir_fns = new main.Vec[*ir.IRFn] { items: make([]*ir.IRFn, 1024), n: 0 };
+  ir.g_ir_globals = new main.Vec[*ir.IRGlobal] { items: make([]*ir.IRGlobal, 64), n: 0 };
+  if ir.g_main_cell == null {
+    ir.g_main_cell = new main.Vec[string] { items: make([]string, 1), n: 1 };
+  }
+  ir.g_main_cell.items[0] = "";
+  // per-compile caches: stale symbols would point at previous compiles'
+  // glue fns (which no longer exist in this module's emission)
+  g_ret_fns = tm2_new();
+  g_rel_fns = tm2_new();
+  ir.g_eq_fns = tm2_new();
+  ir.g_panic_site = 0;
+  ir.g_lit_counter = 0;
+  ir.g_closure_counter = 0;
+  g_shims = null;
+  rc_runtime_build(); // __rc_inc/dec/w* helpers every managed program needs
+  // module order: prelude first, then the user module (C's g_module_order)
+  let mut mi: i32 = 0;
+  let naux: i32 = if check.g_aux_modules != null { check.g_aux_modules.n as i32 } else { 0 };
+  while mi < 2 + naux {
+    let mut m: *check.Module = ir.g_root_module;
+    if mi == 0 {
+      m = check.prelude_module;
+    } else if mi >= 2 {
+      m = check.g_aux_modules.items[mi - 2];
+      // a `use main` from a sibling registers the ROOT file as an aux
+      // module (a separate Module object at the same path) — lowering it
+      // again would emit the root's statics twice (duplicate labels in
+      // the native assemblers, dead duplicate globals on wasm)
+      if ir.g_root_module != null && main.streq(m.path, ir.g_root_module.path) {
+        m = null;
+      }
+    }
+    if m != null {
+      let mut k: usize = 0;
+      while k < m.syms.n {
+        let sym: *check.Sym = m.syms.items[k].val;
+        // lower real definitions only; externs declare without a body and
+        // an empty-bodied fn is still callable
+        if sym.kind == check.SymKind.SyFn && sym.decl != null &&
+           sym.decl.kind == parse.DeclKind.DkFn && !sym.decl.templated {
+          ir.g_ir_fns.push(lower_fn(sym));
+        } else if sym.kind == check.SymKind.SyStatic {
+          lower_static(sym);
+        }
+        k += 1;
+      }
+    }
+    mi += 1;
+  }
+  lower_drop_unreachable();
+}
+
+// ------------------------------------------------------ reachability -----
+//
+// Post-lowering dead-function elimination (spec §11.3): the prelude carries
+// formatting machinery most programs never touch, and lowering emits every
+// checked fn. Every cross-function reference in the IR is a `callee` string
+// — direct calls, address-taken fn values and globals, shims — so a symbol
+// walk over instructions is the whole reference graph. Two classes are kept
+// beyond the graph: the entry fn, and the fns backends call by symbol from
+// emitted code (__panic_div).
+// Emission order is preserved — determinism is untouched.
+
+struct ReachEnt {
+  key: string,
+  val: *ir.IRFn,
+}
+
+struct ReachMap {
+  slots: []*ReachEnt,
+  cap: usize,
+  n: usize,
+}
+
+fn rm_put(m: *ReachMap, key: string, val: *ir.IRFn) {
+  if m.n * 10 >= m.cap * 7 {
+    let ncap: usize = if m.cap == 0 { 64 } else { m.cap * 2 };
+    let slots: []*ReachEnt = make([]*ReachEnt, ncap);
+    let old: []*ReachEnt = m.slots;
+    let oldn: usize = m.cap;
+    m.slots = slots;
+    m.cap = ncap;
+    m.n = 0;
+    let mut i: usize = 0;
+    while i < oldn {
+      if old[i] != null {
+        rm_put(m, old[i].key, old[i].val);
+      }
+      i += 1;
+    }
+  }
+  let mut i: usize = main.map_hash(key) & (m.cap - 1);
+  while m.slots[i] != null {
+    if main.streq(m.slots[i].key, key) {
+      m.slots[i].val = val;
+      return;
+    }
+    i = (i + 1) & (m.cap - 1);
+  }
+  m.slots[i] = new ReachEnt { key: key, val: val };
+  m.n += 1;
+}
+
+fn rm_get(m: *ReachMap, key: string) -> *ir.IRFn {
+  if m.cap == 0 {
+    return null;
+  }
+  let mut i: usize = main.map_hash(key) & (m.cap - 1);
+  while m.slots[i] != null {
+    if main.streq(m.slots[i].key, key) {
+      return m.slots[i].val;
+    }
+    i = (i + 1) & (m.cap - 1);
+  }
+  return null;
+}
+
+pub static mut g_reach_all: *ReachMap = 0 as *ReachMap;
+pub static mut g_reach_keep: *ReachMap = 0 as *ReachMap;
+pub static mut g_reach_work: *main.Vec[string] = 0 as *main.Vec[string];
+
+fn reach_visit(sym: string) {
+  let fn_: *ir.IRFn = rm_get(g_reach_all, sym);
+  if fn_ != null && rm_get(g_reach_keep, fn_.symbol) == null {
+    rm_put(g_reach_keep, fn_.symbol, fn_);
+    g_reach_work.push(sym);
+  }
+}
+
+fn lower_drop_unreachable() {
+  if ir.g_ir_fns.n == 0 {
+    return;
+  }
+  g_reach_all = new ReachMap { slots: make([]*ReachEnt, 0), cap: 0, n: 0 };
+  let mut i: usize = 0;
+  while i < ir.g_ir_fns.n {
+    rm_put(g_reach_all, ir.g_ir_fns.items[i].symbol, ir.g_ir_fns.items[i]);
+    i += 1;
+  }
+  // entry point; without a resolvable one (defensive — every real build has
+  // main) keep everything rather than guess
+  if ir.g_main_cell == null || ir.g_main_cell.items[0] == "" ||
+     rm_get(g_reach_all, ir.g_main_cell.items[0]) == null {
+    return;
+  }
+  g_reach_keep = new ReachMap { slots: make([]*ReachEnt, 0), cap: 0, n: 0 };
+  g_reach_work = new main.Vec[string] { items: make([]string, 64), n: 0 };
+  reach_visit(ir.g_main_cell.items[0]);
+  // the divide-by-zero check every backend emits references by symbol
+  reach_visit(emit_wasm.prelude_symbol("__panic_div"));
+  while g_reach_work.n > 0 {
+    let sym: string = g_reach_work.pop();
+    let fn_: *ir.IRFn = rm_get(g_reach_all, sym);
+    if fn_ == null {
+      continue;
+    }
+    let mut bi: usize = 0;
+    while bi < len(fn_.blocks) {
+      let b: *ir.IRBlock = fn_.blocks[bi];
+      let mut ii: usize = 0;
+      while ii < len(b.ins) {
+        if b.ins[ii].callee != "" {
+          reach_visit(b.ins[ii].callee);
+        }
+        ii += 1;
+      }
+      bi += 1;
+    }
+  }
+  // filter in place, preserving emission order
+  let mut w: usize = 0;
+  i = 0;
+  while i < ir.g_ir_fns.n {
+    let fn_: *ir.IRFn = ir.g_ir_fns.items[i];
+    if rm_get(g_reach_keep, fn_.symbol) != null {
+      ir.g_ir_fns.items[w] = fn_;
+      w += 1;
+    }
+    i += 1;
+  }
+  ir.g_ir_fns.n = w;
+}

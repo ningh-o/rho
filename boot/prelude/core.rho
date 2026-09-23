@@ -75,7 +75,7 @@ fn assert(cond: bool) {
 
 fn assert_eq[T: Show](a: T, b: T) {
   if !(a == b) {
-    panic(cat(cat("assert_eq failed: ", a.to_str()), cat(" != ", b.to_str())));
+    panic(__cat2(__cat2("assert_eq failed: ", a.to_str()), __cat2(" != ", b.to_str())));
   }
 }
 
@@ -106,8 +106,13 @@ fn __streq(a: string, b: string) -> bool {
 }
 
 // --------------------------------------------------------- strings --
+//
+// String concatenation is `+` in the language surface; these double-
+// underscore helpers are the runtime primitives underneath it (and the
+// printf/__fmt_print formatting machine's own plumbing). No public
+// `cat` — user code spells concatenation `a + b`.
 
-fn cat(a: string, b: string) -> string {
+fn __cat2(a: string, b: string) -> string {
   let buf: []u8 = make([]u8, len(a) + len(b));
   let mut i: usize = 0;
   while i < len(a) {
@@ -123,7 +128,7 @@ fn cat(a: string, b: string) -> string {
 }
 
 fn __cat3(a: string, b: string, c: string) -> string {
-  return cat(a, cat(b, c));
+  return __cat2(a, __cat2(b, c));
 }
 
 fn __substr(s: string, a: usize, b: usize) -> string {
@@ -561,7 +566,7 @@ fn __with_frac(s: string) -> string {
     }
     i += 1;
   }
-  return cat(s, ".0");
+  return __cat2(s, ".0");
 }
 
 fn f64.to_str(self: f64) -> string {

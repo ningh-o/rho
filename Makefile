@@ -1,6 +1,6 @@
 # boot keeps only: compile rho → wasm32-wasi, and the corpus oracle.
 # Features frozen at 0.4.0 + triple-quote; fmt and the native backends
-# live in the self-hosted compiler (self/rho.rho).
+# live in the self-hosted compiler package (libs/compiler/main.rho).
 CC ?= cc
 CFLAGS ?= -std=c11 -D_POSIX_C_SOURCE=200809L -O2 -Wall -Wextra -Wno-unused-parameter
 # prelude_data.c is listed explicitly: after `make clean` the wildcard cannot
@@ -23,13 +23,15 @@ boot/src/prelude_data.c: $(CORE) boot/prelude/wasi.rho tools/embed.py
 	python3 tools/embed.py PRELUDE_SOURCE boot/src/prelude_data.c $(CORE) boot/prelude/wasi.rho
 
 # the served compiler asset is the self-hosted compiler itself: the C seed
-# turns self/rho.rho into a wasm32-wasi module — the same build the
+# turns the compiler package (libs/compiler/main.rho) into a wasm32-wasi
+# module — the same build the
 # bootstrap gate grades as build/gate/m.wasm. wasi-sdk is retired: rho has
 # always emitted wasm (and native images) directly, in-process, and no C
 # compiler takes part in any shipped artifact anymore.
-site/assets/rho.wasm: build/rho-boot self/rho.rho
+MIRROR_SRC := libs/compiler/main.rho $(wildcard libs/compiler/*.rho) $(wildcard libs/compiler/native/*.rho)
+site/assets/rho.wasm: build/rho-boot $(MIRROR_SRC)
 	@mkdir -p site/assets
-	./build/rho-boot build self/rho.rho --target wasm32-wasi -o $@
+	./build/rho-boot build libs/compiler/main.rho --target wasm32-wasi -o $@
 
 # the same artifact at its historical path — the site tests, the LSP and
 # the vite plugin all read build/rho.wasm. A copy of the self-built asset,
@@ -42,9 +44,18 @@ site: build/rho.wasm
 	mkdir -p site/spec
 	cp spec/spec.md site/spec/spec.md
 
-.PHONY: test test-site site goldens clean
+.PHONY: test test-lang test-site site goldens clean
 test: build/rho-boot
 	./build/rho-boot selftest
+
+# the language suites (boot features: strops/multiline/modsys;
+# mirror-only: opt). Each runner is self-sufficient and prints its own
+# verdict.
+test-lang: build/rho-boot
+	sh tests/lang/strops/run.sh
+	sh tests/lang/multiline/run.sh
+	sh tests/lang/modsys/run.sh
+	sh tests/lang/opt/run.sh
 
 test-site: build/rho-boot build/rho.wasm
 	./build/rho-boot test corpus --target wasm32-wasi

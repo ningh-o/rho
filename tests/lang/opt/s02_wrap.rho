@@ -1,0 +1,10 @@
+// exit: 0
+// s02 — wrap edges fold exactly as the runtime wraps: i32 max+1 -> min,
+// min-1 -> max (two's complement; corpus 040/041 pin the runtime, this
+// pins the FOLD producing the same bits)
+fn main() -> i32 {
+  let a: i32 = 2147483647 + 1;
+  let b: i32 = ((0 - 2147483647) - 1) - 1;
+  printf("{} {}\n", a, b);
+  return 0;
+}

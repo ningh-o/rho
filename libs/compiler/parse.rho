@@ -1,0 +1,1337 @@
+// the parser: the AST types and the recursive-descent walkers
+use main;
+use lex;
+use check;
+
+
+
+// ---------------------------------------------------------------- ast -----
+
+pub enum ExprKind {
+  ExInt, ExFloat, ExStr, ExBool, ExNull, ExName, ExType,
+  ExBin, ExUn, ExCall, ExIndex, ExSlice, ExField, ExMethod, ExDynbox,
+  ExCast, ExNew, ExMake, ExClosure, ExMatch, ExQmark, ExEnumCtor,
+  ExIf, ExBlock,
+}
+
+pub enum PatKind {
+  PatWildcard, PatInt, PatStr, PatUnit, PatTuple, PatStruct,
+}
+
+pub enum VarKind {
+  VarUnit, VarTuple, VarStruct,
+}
+
+pub enum StmtKind {
+  StLet, StAssign, StExpr, StReturn, StBreak, StContinue, StDefer,
+  StWhile, StLoop, StBlock,
+}
+
+pub enum DeclKind {
+  DkFn, DkStruct, DkEnum, DkStatic, DkConst, DkUse, DkExtern,
+  DkTrait, DkImpl,
+}
+
+pub enum TypeAstKind {
+  TaPrim, TaNamed, TaPtr, TaWeak, TaArray, TaFn,
+  TaDyn,
+}
+
+pub struct TypeAst {
+  kind: TypeAstKind,
+  prim: i32,           // TaPrim: index into the primitive name table
+  path: *main.Vec[string],   // TaNamed: segments
+  targs: *main.Vec[*TypeAst],// TaNamed: type arguments
+  elem: *TypeAst,      // Ptr/Weak/Array
+  params: *main.Vec[*TypeAst], // Fn
+  ret: *TypeAst,       // Fn
+  size: *Expr,         // Array: constant length expression
+  file: string,
+  line: i32,
+  col: i32,
+}
+
+pub struct Param {
+  name: string,
+  ty: *TypeAst,
+  is_self: bool,
+  is_variadic: bool, // `rest: T...` — the body sees a []T, last parameter only
+  file: string,
+  line: i32,
+  col: i32,
+}
+
+pub struct FieldAst {
+  name: string,
+  ty: *TypeAst,
+  file: string,
+  line: i32,
+  col: i32,
+}
+
+pub struct VariantAst {
+  name: string,
+  vkind: VarKind,
+  types: *main.Vec[*TypeAst],  // VarTuple
+  fields: *main.Vec[*FieldAst],// VarStruct
+  has_disc: bool,
+  disc: u64,
+  file: string,
+  line: i32,
+  col: i32,
+}
+
+pub struct MatchArm {
+  pk: PatKind,
+  pat_path: *main.Vec[string],
+  pat_int: u64,
+  variant_index: i32,
+  disc: u64,
+  pat_str: string,
+  pat_names: *main.Vec[string],
+  pat_fields: *main.Vec[*FieldAst],
+  body: *Expr,
+  file: string,
+  line: i32,
+  col: i32,
+  bind_syms: []*check.Sym,   // pattern bindings (check)
+  bind_fidx: []i64,    // variant field index per binding (check)
+}
+
+pub struct Expr {
+  kind: ExprKind,
+  file: string,
+  line: i32,
+  col: i32,
+  iv: u64,
+  fv: f64,
+  sv: string,
+  bv: bool,
+  a: *Expr,
+  b: *Expr,
+  c: *Expr,
+  binop: lex.Tok,
+  unop: lex.Tok,
+  args: *main.Vec[*Expr],
+  arg_names: *main.Vec[string], // "" = positional
+  items: *main.Vec[*Stmt],      // Block stmts / If arms / New field names unused
+  ty: *TypeAst,
+  arms: *main.Vec[*MatchArm],
+  params: *main.Vec[*Param],    // Closure
+  ret: *TypeAst,          // Closure
+  q_ok: i32,
+  q_err: i32,
+  else_if: *Expr, // ExIf: the else-if chain (null = else is items[1] or none)
+  fnval: bool,
+  caps: []*check.Sym, // CLOSURE: copy-captured outer locals (check)
+  typed: *Type, // semantic type (check)
+  sym: *check.Sym, // resolved name (check)
+  spread: bool, // CALL: this argument is `xs...` — passes a slice whole
+}
+
+pub struct Stmt {
+  kind: StmtKind,
+  file: string,
+  line: i32,
+  col: i32,
+  pre: *main.Vec[string],
+  mut_: bool,
+  tail: bool,
+  name: string,
+  ty: *TypeAst,
+  a: *Expr,
+  b: *Expr,
+  assign_op: lex.Tok,
+  stmts: *main.Vec[*Stmt],
+  cond: *Expr,
+  body: *main.Vec[*Stmt],
+}
+
+struct TypeEnt { key: string, val: *Type }
+pub struct TypeMap { items: []*TypeEnt, n: usize }
+
+pub fn tm_new() -> *TypeMap {
+  return new TypeMap { items: make([]*TypeEnt, 65536), n: 0 };
+}
+
+// interning: same mangled key always yields the identical *Type
+pub fn tm_intern(m: *TypeMap, key: string, val: *Type) -> *Type {
+  let mut i: usize = 0;
+  while i < m.n {
+    if main.streq(m.items[i].key, key) {
+      return m.items[i].val;
+    }
+    i += 1;
+  }
+  let e: *TypeEnt = new TypeEnt { key: key, val: val };
+  m.items[m.n] = e;
+  m.n += 1;
+  return val;
+}
+
+pub fn tm_lookup(m: *TypeMap, key: string) -> *Type {
+  let mut i: usize = 0;
+  while i < m.n {
+    if main.streq(m.items[i].key, key) {
+      return m.items[i].val;
+    }
+    i += 1;
+  }
+  return null;
+}
+
+pub fn tm_put(m: *TypeMap, key: string, val: *Type) {
+  let mut i: usize = 0;
+  while i < m.n {
+    if main.streq(m.items[i].key, key) {
+      m.items[i].val = val;
+      return;
+    }
+    i += 1;
+  }
+  let e: *TypeEnt = new TypeEnt { key: key, val: val };
+  m.items[m.n] = e;
+  m.n += 1;
+}
+
+pub fn tm_get(m: *TypeMap, key: string) -> *Type {
+  return tm_lookup(m, key);
+}
+
+pub struct RecType {
+  decl: *Decl,
+  is_prelude: bool,
+  targs: []*Type,
+  mangled: string,
+  field_types: []*Type,
+  fields_done: bool,
+  resolving: bool,
+  is_template: bool,
+  offsets: []i64,
+  var_offsets: []*I64Vec, // per variant: field offsets
+  var_poff: []i64,        // per variant: payload start
+  size: i64,
+  align: i64,
+  env_tenv: *TypeMap,
+  owner_mod: *check.Module,
+  methods: []*check.Sym,
+  is_trait: bool, // trait requirement carrier (the order IS the vtable layout)
+}
+
+pub struct I64Vec { items: []i64 }
+
+pub struct Type {
+  kind: check.TypeKind,
+  elem: *Type,
+  len: u64,
+  rec: *RecType,
+  params: []*Type,
+  ret: *Type,
+  mangled: string,
+}
+
+pub struct Decl {
+  kind: DeclKind,
+  file: string,
+  line: i32,
+  col: i32,
+  pre: *main.Vec[string],
+  pub_: bool,
+  is_mut: bool,
+  name: string,
+  path: *main.Vec[string],      // Use
+  params: *main.Vec[*Param],    // Fn/Extern
+  ret: *TypeAst,
+  fields: *main.Vec[*FieldAst], // Struct
+  variants: *main.Vec[*VariantAst], // Enum
+  init: *Expr,            // Static/Const
+  body: *main.Vec[*Stmt],       // Fn
+  tparams: *main.Vec[string],
+  is_method: bool,
+  recv: string,
+  target: *TypeAst,         // Impl: the type after `for`
+  decls: *main.Vec[*Decl],       // module root
+  tparam_bounds: *main.Vec[*TypeAst], // [T: Bound] — parallel to tparams (check)
+  templ: *RecType,         // generic definition's RecType (check)
+  templated: bool,         // generic template: never lowered directly
+  tenv: *TypeMap,          // instantiation env (clones)
+  owner: *check.Module,          // owning module (decl registration)
+  ceval_ok: bool,
+  ceval_is_int: bool,
+  ceval_i: u64,
+  ceval_f: f64,
+}
+
+// ------------------------------------------------------------- parser -----
+
+struct Parser {
+  toks: []*lex.Token,
+  i: usize,
+  bare_self_ok: bool, // inside a trait: requirement receivers have no type
+}
+
+fn pk(p: *Parser) -> *lex.Token {
+  return p.toks[p.i];
+}
+
+fn peek2(p: *Parser) -> *lex.Token {
+  if p.i + 1 < len(p.toks) {
+    return p.toks[p.i + 1];
+  }
+  return p.toks[p.i];
+}
+
+fn at(p: *Parser, k: lex.Tok) -> bool {
+  return pk(p).kind == k;
+}
+
+fn at_eof(p: *Parser) -> bool {
+  return pk(p).kind == lex.Tok.TkEof;
+}
+
+fn advance(p: *Parser) -> *lex.Token {
+  let t: *lex.Token = pk(p);
+  if p.i + 1 < len(p.toks) {
+    p.i += 1;
+  }
+  return t;
+}
+
+fn accept(p: *Parser, k: lex.Tok) -> bool {
+  if at(p, k) {
+    advance(p);
+    return true;
+  }
+  return false;
+}
+
+fn expect_tok(p: *Parser, k: lex.Tok, what: string) -> *lex.Token {
+  if at(p, k) {
+    return advance(p);
+  }
+  let t: *lex.Token = pk(p);
+  main.err_at(t.file, t.line, t.col, main.cat5("expected ", what, main.cat(" (", lex.tok_name(k)), "), found ", lex.tok_name(t.kind)));
+  return t;
+}
+
+fn at_ident(p: *Parser, s: string) -> bool {
+  return at(p, lex.Tok.TkIdent) && main.streq(pk(p).text, s);
+}
+
+fn expect_ident(p: *Parser, what: string) -> *lex.Token {
+  if at(p, lex.Tok.TkIdent) {
+    return advance(p);
+  }
+  let t: *lex.Token = pk(p);
+  main.err_at(t.file, t.line, t.col, main.cat3("expected ", what, main.cat3(", found ", lex.tok_name(t.kind), "")));
+  return t;
+}
+
+fn prim_from_name(s: string) -> i32 {
+  if main.streq(s, "bool") { return 0; }
+  if main.streq(s, "i8") { return 1; }
+  if main.streq(s, "i16") { return 2; }
+  if main.streq(s, "i32") { return 3; }
+  if main.streq(s, "i64") { return 4; }
+  if main.streq(s, "u8") { return 5; }
+  if main.streq(s, "u16") { return 6; }
+  if main.streq(s, "u32") { return 7; }
+  if main.streq(s, "u64") { return 8; }
+  if main.streq(s, "f32") { return 9; }
+  if main.streq(s, "f64") { return 10; }
+  if main.streq(s, "string") { return 11; }
+  if main.streq(s, "usize") { return 12; }
+  if main.streq(s, "isize") { return 13; }
+  if main.streq(s, "void") { return 14; }
+  return 0 - 1;
+}
+
+// ---- type grammar
+
+fn parse_type(p: *Parser) -> *TypeAst {
+  let start: *lex.Token = pk(p);
+  let mut t: *TypeAst = null;
+  if accept(p, lex.Tok.PLbracket) {
+    // []T slice or [N]T array — `[*` can only start the element type
+    t = new TypeAst { kind: TypeAstKind.TaArray, prim: 0, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null, file: start.file, line: start.line, col: start.col };
+    if at(p, lex.Tok.PStar) {
+      // [*T] — slice of pointer: the `*` starts the element type
+      t.elem = parse_type(p);
+      expect_tok(p, lex.Tok.PRbracket, "`]`");
+      return t;
+    }
+    if !at(p, lex.Tok.PRbracket) {
+      t.size = parse_expr(p);
+    }
+    expect_tok(p, lex.Tok.PRbracket, "`]`");
+    t.elem = parse_type(p);
+    return t;
+  }
+  if accept(p, lex.Tok.PStar) {
+    t = new TypeAst { kind: TypeAstKind.TaPtr, prim: 0, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null, file: start.file, line: start.line, col: start.col };
+    t.elem = parse_type(p);
+    return t;
+  }
+  if at(p, lex.Tok.KwWeak) {
+    advance(p);
+    t = new TypeAst { kind: TypeAstKind.TaWeak, prim: 0, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null, file: start.file, line: start.line, col: start.col };
+    expect_tok(p, lex.Tok.PLbracket, "`[`");
+    t.elem = parse_type(p);
+    expect_tok(p, lex.Tok.PRbracket, "`]`");
+    return t;
+  }
+  if at(p, lex.Tok.KwDyn) {
+    advance(p);
+    t = new TypeAst { kind: TypeAstKind.TaDyn, prim: 0, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null, file: start.file, line: start.line, col: start.col };
+    let id: *lex.Token = expect_ident(p, "trait name");
+    t.path.push(id.text);
+    while accept(p, lex.Tok.PDot) {
+      let seg: *lex.Token = expect_ident(p, "trait name");
+      t.path.push(seg.text);
+    }
+    return t;
+  }
+  if at(p, lex.Tok.KwFn) {
+    advance(p);
+    t = new TypeAst { kind: TypeAstKind.TaFn, prim: 0, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null, file: start.file, line: start.line, col: start.col };
+    expect_tok(p, lex.Tok.PLparen, "`(`");
+    if !at(p, lex.Tok.PRparen) {
+      loop {
+        t.params.push(parse_type(p));
+        if !accept(p, lex.Tok.PComma) {
+          break;
+        }
+      }
+    }
+    expect_tok(p, lex.Tok.PRparen, "`)`");
+    if accept(p, lex.Tok.PArrow) {
+      t.ret = parse_type(p);
+    }
+    return t;
+  }
+  if at(p, lex.Tok.TkIdent) {
+    let id: *lex.Token = advance(p);
+    let prim: i32 = prim_from_name(id.text);
+    if prim >= 0 {
+      t = new TypeAst { kind: TypeAstKind.TaPrim, prim: prim, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null, file: start.file, line: start.line, col: start.col };
+      return t;
+    }
+    t = new TypeAst { kind: TypeAstKind.TaNamed, prim: 0, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null, file: start.file, line: start.line, col: start.col };
+    t.path.push(id.text);
+    while accept(p, lex.Tok.PDot) {
+      let seg: *lex.Token = expect_ident(p, "type name");
+      t.path.push(seg.text);
+    }
+    if accept(p, lex.Tok.PLbracket) {
+      if !at(p, lex.Tok.PRbracket) {
+        loop {
+          t.targs.push(parse_type(p));
+          if !accept(p, lex.Tok.PComma) {
+            break;
+          }
+        }
+      }
+      expect_tok(p, lex.Tok.PRbracket, "`]`");
+    }
+    return t;
+  }
+  main.err_at(start.file, start.line, start.col, main.cat3("expected a type, found ", lex.tok_name(start.kind), ""));
+  t = new TypeAst { kind: TypeAstKind.TaPrim, prim: 0, path: fresh_str_vec(), targs: fresh_type_vec(), elem: null, params: fresh_type_vec(), ret: null, size: null, file: start.file, line: start.line, col: start.col };
+  return t;
+}
+
+fn type_as_expr(p: *Parser) -> *Expr {
+  let start: *lex.Token = pk(p);
+  let e: *Expr = new Expr {
+    kind: ExprKind.ExType, file: start.file, line: start.line, col: start.col,
+    iv: 0, fv: 0.0, sv: "", bv: false, a: null, b: null, c: null,
+    binop: lex.Tok.TkEof, unop: lex.Tok.TkEof,
+    args: fresh_expr_vec(), arg_names: fresh_str_vec(), items: fresh_stmt_vec(),
+    ty: parse_type(p), arms: fresh_arm_vec(), params: fresh_param_vec(), ret: null,
+    q_ok: 0, q_err: 0, else_if: null, fnval: false, caps: make([]*check.Sym, 0), typed: null, sym: null, spread: false,
+  };
+  return e;
+}
+
+// fresh empty containers (no zero values in rho)
+pub fn fresh_str_vec() -> *main.Vec[string] {
+  return new main.Vec[string] { items: make([]string, 4), n: 0 };
+}
+pub fn fresh_expr_vec() -> *main.Vec[*Expr] {
+  return new main.Vec[*Expr] { items: make([*Expr], 4), n: 0 };
+}
+fn fresh_stmt_vec() -> *main.Vec[*Stmt] {
+  return new main.Vec[*Stmt] { items: make([*Stmt], 4), n: 0 };
+}
+fn fresh_type_vec() -> *main.Vec[*TypeAst] {
+  return new main.Vec[*TypeAst] { items: make([*TypeAst], 4), n: 0 };
+}
+fn fresh_param_vec() -> *main.Vec[*Param] {
+  return new main.Vec[*Param] { items: make([*Param], 4), n: 0 };
+}
+fn fresh_arm_vec() -> *main.Vec[*MatchArm] {
+  return new main.Vec[*MatchArm] { items: make([*MatchArm], 4), n: 0 };
+}
+fn fresh_field_vec() -> *main.Vec[*FieldAst] {
+  return new main.Vec[*FieldAst] { items: make([*FieldAst], 4), n: 0 };
+}
+fn fresh_variant_vec() -> *main.Vec[*VariantAst] {
+  return new main.Vec[*VariantAst] { items: make([*VariantAst], 4), n: 0 };
+}
+fn fresh_decl_vec() -> *main.Vec[*Decl] {
+  return new main.Vec[*Decl] { items: make([*Decl], 16), n: 0 };
+}
+fn fresh_token_vec() -> *main.Vec[*lex.Token] {
+  return new main.Vec[*lex.Token] { items: make([*lex.Token], 256), n: 0 };
+}
+
+
+
+pub fn mkexpr(kind: ExprKind, file: string, line: i32, col: i32) -> *Expr {
+  return new Expr {
+    kind: kind, file: file, line: line, col: col,
+    iv: 0, fv: 0.0, sv: "", bv: false, a: null, b: null, c: null,
+    binop: lex.Tok.TkEof, unop: lex.Tok.TkEof,
+    args: fresh_expr_vec(), arg_names: fresh_str_vec(), items: fresh_stmt_vec(),
+    ty: null, arms: fresh_arm_vec(), params: fresh_param_vec(), ret: null,
+    q_ok: 0, q_err: 0, else_if: null, fnval: false, caps: make([]*check.Sym, 0), typed: null, sym: null, spread: false,
+  };
+}
+
+fn parse_param(p: *Parser) -> *Param {
+  let start: *lex.Token = pk(p);
+  let pa: *Param = new Param { name: "", ty: null, is_self: false, is_variadic: false, file: start.file, line: start.line, col: start.col };
+  if at(p, lex.Tok.KwSelf) {
+    advance(p);
+    pa.is_self = true;
+    pa.name = "self";
+    // inside a trait, the receiver has no type yet — the impl decides it
+    if p.bare_self_ok && !at(p, lex.Tok.PColon) {
+      return pa;
+    }
+  } else {
+    let id: *lex.Token = expect_ident(p, "parameter name");
+    pa.name = id.text;
+  }
+  expect_tok(p, lex.Tok.PColon, "`:`");
+  pa.ty = parse_type(p);
+  if accept(p, lex.Tok.PEllipsis3) {
+    pa.is_variadic = true;
+  }
+  return pa;
+}
+
+// a full `(params)` list for externs and closures: no variadic parameter
+fn parse_param_list_raw(p: *Parser, out: *main.Vec[*Param], allow_variadic: bool) {
+  expect_tok(p, lex.Tok.PLparen, "`(`");
+  if !at(p, lex.Tok.PRparen) {
+    loop {
+      let pa: *Param = parse_param(p);
+      if out.n > 0 && out.items[out.n - 1].is_variadic {
+        main.err_at(pa.file, pa.line, pa.col, "only the last parameter can be variadic");
+      }
+      if pa.is_variadic && !allow_variadic {
+        main.err_at(pa.file, pa.line, pa.col, "variadic parameters are only for named `fn` declarations");
+      }
+      out.push(pa);
+      if !accept(p, lex.Tok.PComma) {
+        break;
+      }
+    }
+  }
+  expect_tok(p, lex.Tok.PRparen, "`)`");
+}
+
+// one call argument; `xs...` (spread) is only legal as the final argument
+fn parse_arg_expr(p: *Parser) -> *Expr {
+  let arg: *Expr = parse_expr(p);
+  if accept(p, lex.Tok.PEllipsis3) {
+    arg.spread = true;
+    if !at(p, lex.Tok.PRparen) {
+      let t: *lex.Token = pk(p);
+      main.err_at(t.file, t.line, t.col, "`...` spread must be the last argument");
+    }
+  }
+  return arg;
+}
+
+fn parse_tparams(p: *Parser, out: *main.Vec[string], bounds: *main.Vec[*TypeAst]) {
+  if !accept(p, lex.Tok.PLbracket) {
+    return;
+  }
+  if !at(p, lex.Tok.PRbracket) {
+    loop {
+      let id: *lex.Token = expect_ident(p, "type parameter name");
+      out.push(id.text);
+      bounds.push(null);
+      if accept(p, lex.Tok.PColon) {
+        bounds.items[bounds.n - 1] = parse_type(p);
+      }
+      if !accept(p, lex.Tok.PComma) {
+        break;
+      }
+    }
+  }
+  expect_tok(p, lex.Tok.PRbracket, "`]`");
+}
+
+fn parse_block_stmts(p: *Parser, end: lex.Tok) -> *Stmt {
+  let start: *lex.Token = pk(p);
+  let s: *Stmt = mkstmt(StmtKind.StBlock, start.file, start.line, start.col);
+  while !at(p, end) && !at_eof(p) {
+    let before: usize = p.i;
+    let inner: *Stmt = parse_stmt(p);
+    if inner != null {
+      s.stmts.push(inner);
+    }
+    if p.i == before {
+      advance(p);
+    }
+  }
+  return s;
+}
+
+fn parse_block(p: *Parser) -> *main.Vec[*Stmt] {
+  expect_tok(p, lex.Tok.PLbrace, "`{`");
+  let s: *Stmt = parse_block_stmts(p, lex.Tok.PRbrace);
+  expect_tok(p, lex.Tok.PRbrace, "`}`");
+  return s.stmts;
+}
+
+fn level_of(k: lex.Tok) -> i32 {
+  if k == lex.Tok.POror { return 2; }
+  if k == lex.Tok.PAndand { return 3; }
+  if k == lex.Tok.PEq { return 4; }
+  if k == lex.Tok.PNe { return 4; }
+  if k == lex.Tok.PLt { return 5; }
+  if k == lex.Tok.PGt { return 5; }
+  if k == lex.Tok.PLe { return 5; }
+  if k == lex.Tok.PGe { return 5; }
+  if k == lex.Tok.PPipe { return 6; }
+  if k == lex.Tok.PCaret { return 7; }
+  if k == lex.Tok.PAmp { return 8; }
+  if k == lex.Tok.PShl { return 9; }
+  if k == lex.Tok.PShr { return 9; }
+  if k == lex.Tok.PPlus { return 10; }
+  if k == lex.Tok.PMinus { return 10; }
+  if k == lex.Tok.PStar { return 11; }
+  if k == lex.Tok.PSlash { return 11; }
+  if k == lex.Tok.PPercent { return 11; }
+  return 0 - 1;
+}
+
+fn parse_if_body(p: *Parser) -> *Expr {
+  let start: *lex.Token = pk(p);
+  let e: *Expr = mkexpr(ExprKind.ExIf, start.file, start.line, start.col);
+  e.a = parse_expr_bp(p, 0);
+  expect_tok(p, lex.Tok.PLbrace, "`{`");
+  let then: *Stmt = parse_block_stmts(p, lex.Tok.PRbrace);
+  expect_tok(p, lex.Tok.PRbrace, "`}`");
+  e.items.push(then);
+  if accept(p, lex.Tok.KwElse) {
+    if at(p, lex.Tok.KwIf) {
+      advance(p);
+      e.else_if = parse_if_body(p);
+    } else {
+      expect_tok(p, lex.Tok.PLbrace, "`{`");
+      let els: *Stmt = parse_block_stmts(p, lex.Tok.PRbrace);
+      expect_tok(p, lex.Tok.PRbrace, "`}`");
+      e.items.push(els);
+    }
+  }
+  return e;
+}
+
+fn parse_primary(p: *Parser) -> *Expr {
+  let start: *lex.Token = pk(p);
+  let k: lex.Tok = start.kind;
+  if k == lex.Tok.TkInt {
+    advance(p);
+    let e: *Expr = mkexpr(ExprKind.ExInt, start.file, start.line, start.col);
+    e.iv = start.iv;
+    return e;
+  }
+  if k == lex.Tok.TkFloat {
+    advance(p);
+    let e: *Expr = mkexpr(ExprKind.ExFloat, start.file, start.line, start.col);
+    e.fv = start.fv;
+    return e;
+  }
+  if k == lex.Tok.TkStr {
+    advance(p);
+    let e: *Expr = mkexpr(ExprKind.ExStr, start.file, start.line, start.col);
+    e.sv = start.text;
+    return e;
+  }
+  if k == lex.Tok.KwTrue || k == lex.Tok.KwFalse {
+    advance(p);
+    let e: *Expr = mkexpr(ExprKind.ExBool, start.file, start.line, start.col);
+    e.bv = k == lex.Tok.KwTrue;
+    return e;
+  }
+  if k == lex.Tok.KwNull {
+    advance(p);
+    return mkexpr(ExprKind.ExNull, start.file, start.line, start.col);
+  }
+  if k == lex.Tok.KwSelf {
+    advance(p);
+    let e: *Expr = mkexpr(ExprKind.ExName, start.file, start.line, start.col);
+    e.sv = start.text;
+    return e;
+  }
+  if k == lex.Tok.KwWeak {
+    advance(p);
+    let e: *Expr = mkexpr(ExprKind.ExName, start.file, start.line, start.col);
+    e.sv = "weak";
+    return e;
+  }
+  if k == lex.Tok.TkIdent {
+    advance(p);
+    let e: *Expr = mkexpr(ExprKind.ExName, start.file, start.line, start.col);
+    e.sv = start.text;
+    return e;
+  }
+  if k == lex.Tok.PLparen {
+    advance(p);
+    let e: *Expr = parse_expr(p);
+    expect_tok(p, lex.Tok.PRparen, "`)`");
+    return e;
+  }
+  if k == lex.Tok.KwIf {
+    advance(p);
+    return parse_if_body(p);
+  }
+  if k == lex.Tok.KwMatch {
+    advance(p);
+    let e: *Expr = mkexpr(ExprKind.ExMatch, start.file, start.line, start.col);
+    e.a = parse_expr_bp(p, 0);
+    expect_tok(p, lex.Tok.PLbrace, "`{`");
+    while !at(p, lex.Tok.PRbrace) && !at_eof(p) {
+      let pt: *lex.Token = pk(p);
+      let arm: *MatchArm = new MatchArm {
+        pk: PatKind.PatWildcard, pat_path: fresh_str_vec(), pat_int: 0,
+        variant_index: 0, disc: 0, pat_str: "", pat_names: fresh_str_vec(),
+        pat_fields: fresh_field_vec(), body: null,
+        file: pt.file, line: pt.line, col: pt.col,
+       bind_syms: make([]*check.Sym, 0), bind_fidx: make([]i64, 0),
+  };
+      if at(p, lex.Tok.TkInt) {
+        advance(p);
+        arm.pk = PatKind.PatInt;
+        arm.pat_int = pt.iv;
+      } else if at(p, lex.Tok.TkStr) {
+        advance(p);
+        arm.pk = PatKind.PatStr;
+        arm.pat_str = pt.text;
+      } else if at_ident(p, "_") {
+        advance(p);
+        arm.pk = PatKind.PatWildcard;
+      } else if at(p, lex.Tok.TkIdent) {
+        advance(p);
+        arm.pat_path.push(pt.text);
+        while accept(p, lex.Tok.PDot) {
+          let seg: *lex.Token = expect_ident(p, "variant name");
+          arm.pat_path.push(seg.text);
+        }
+        if accept(p, lex.Tok.PLparen) {
+          arm.pk = PatKind.PatTuple;
+          if !at(p, lex.Tok.PRparen) {
+            loop {
+              let b: *lex.Token = pk(p);
+              if at(p, lex.Tok.TkIdent) {
+                advance(p);
+                arm.pat_names.push(b.text);
+              } else {
+                main.err_at(b.file, b.line, b.col, "expected binding name");
+                advance(p);
+                arm.pat_names.push("_");
+              }
+              if !accept(p, lex.Tok.PComma) {
+                break;
+              }
+            }
+          }
+          expect_tok(p, lex.Tok.PRparen, "`)`");
+        } else if accept(p, lex.Tok.PLbrace) {
+          arm.pk = PatKind.PatStruct;
+          while !at(p, lex.Tok.PRbrace) && !at_eof(p) {
+            let fn_tok: *lex.Token = expect_ident(p, "field name");
+            let fa: *FieldAst = new FieldAst { name: fn_tok.text, ty: null, file: fn_tok.file, line: fn_tok.line, col: fn_tok.col };
+            if accept(p, lex.Tok.PColon) {
+              let b: *lex.Token = expect_ident(p, "binding name");
+              arm.pat_names.push(b.text);
+            } else {
+              arm.pat_names.push(fn_tok.text);
+            }
+            arm.pat_fields.push(fa);
+            if !accept(p, lex.Tok.PComma) {
+              break;
+            }
+          }
+          expect_tok(p, lex.Tok.PRbrace, "`}`");
+        } else {
+          arm.pk = PatKind.PatUnit;
+        }
+      } else {
+        main.err_at(pt.file, pt.line, pt.col, main.cat3("expected a pattern, found ", lex.tok_name(pt.kind), ""));
+        advance(p);
+        continue;
+      }
+      expect_tok(p, lex.Tok.PFatarrow, "`=>`");
+      if at(p, lex.Tok.PLbrace) {
+        advance(p);
+        let blk: *Expr = mkexpr(ExprKind.ExBlock, pt.file, pt.line, pt.col);
+        let body: *Stmt = parse_block_stmts(p, lex.Tok.PRbrace);
+        expect_tok(p, lex.Tok.PRbrace, "`}`");
+        blk.items = body.stmts;
+        arm.body = blk;
+      } else {
+        arm.body = parse_expr(p);
+      }
+      e.arms.push(arm);
+      if !accept(p, lex.Tok.PComma) {
+        break;
+      }
+    }
+    expect_tok(p, lex.Tok.PRbrace, "`}`");
+    return e;
+  }
+  if k == lex.Tok.KwNew {
+    advance(p);
+    let e: *Expr = mkexpr(ExprKind.ExNew, start.file, start.line, start.col);
+    e.ty = parse_type(p);
+    expect_tok(p, lex.Tok.PLbrace, "`{`");
+    while !at(p, lex.Tok.PRbrace) && !at_eof(p) {
+      let fn_tok: *lex.Token = expect_ident(p, "field name");
+      expect_tok(p, lex.Tok.PColon, "`:`");
+      let fa: *FieldAst = new FieldAst { name: fn_tok.text, ty: null, file: fn_tok.file, line: fn_tok.line, col: fn_tok.col };
+      e.args.push(parse_expr(p));
+      let name_entry: *Stmt = mkstmt(StmtKind.StBlock, fa.file, fa.line, fa.col);
+      name_entry.name = fa.name;
+      e.items.push(name_entry);
+      if !accept(p, lex.Tok.PComma) {
+        break;
+      }
+    }
+    expect_tok(p, lex.Tok.PRbrace, "`}`");
+    return e;
+  }
+  if k == lex.Tok.KwFn {
+    advance(p);
+    let e: *Expr = mkexpr(ExprKind.ExClosure, start.file, start.line, start.col);
+    expect_tok(p, lex.Tok.PLparen, "`(`");
+    if !at(p, lex.Tok.PRparen) {
+      loop {
+        e.params.push(parse_param(p));
+        if !accept(p, lex.Tok.PComma) {
+          break;
+        }
+      }
+    }
+    expect_tok(p, lex.Tok.PRparen, "`)`");
+    if accept(p, lex.Tok.PArrow) {
+      e.ret = parse_type(p);
+    }
+    e.items = parse_block(p);
+    return e;
+  }
+  main.err_at(start.file, start.line, start.col, main.cat3("expected an expression, found ", lex.tok_name(start.kind), ""));
+  advance(p);
+  return mkexpr(ExprKind.ExInt, start.file, start.line, start.col);
+}
+
+fn parse_postfix(p: *Parser) -> *Expr {
+  let mut e: *Expr = parse_primary(p);
+  loop {
+    let start: *lex.Token = pk(p);
+    if accept(p, lex.Tok.PLparen) {
+      let call: *Expr = mkexpr(ExprKind.ExCall, start.file, start.line, start.col);
+      call.a = e;
+      if !at(p, lex.Tok.PRparen) {
+        if at(p, lex.Tok.TkIdent) && peek2(p).kind == lex.Tok.PColon {
+          let nm: *lex.Token = advance(p);
+          advance(p);
+          call.arg_names.push(nm.text);
+          call.args.push(parse_arg_expr(p));
+        } else if e.kind == ExprKind.ExName && main.streq(e.sv, "make") && at(p, lex.Tok.PLbracket) {
+          call.arg_names.push("");
+          call.args.push(type_as_expr(p));
+        } else {
+          call.arg_names.push("");
+          call.args.push(parse_arg_expr(p));
+        }
+        while accept(p, lex.Tok.PComma) {
+          if at(p, lex.Tok.TkIdent) && peek2(p).kind == lex.Tok.PColon {
+            let nm: *lex.Token = advance(p);
+            advance(p);
+            call.arg_names.push(nm.text);
+            call.args.push(parse_arg_expr(p));
+          } else if e.kind == ExprKind.ExName && main.streq(e.sv, "make") && at(p, lex.Tok.PLbracket) {
+            call.arg_names.push("");
+            call.args.push(type_as_expr(p));
+          } else {
+            call.arg_names.push("");
+            call.args.push(parse_arg_expr(p));
+          }
+        }
+      }
+      expect_tok(p, lex.Tok.PRparen, "`)`");
+      e = call;
+      continue;
+    }
+    if accept(p, lex.Tok.PLbracket) {
+      if at(p, lex.Tok.PEllipsis2) {
+        main.err_at(start.file, start.line, start.col, "slice needs a start");
+        advance(p);
+        parse_expr(p);
+        expect_tok(p, lex.Tok.PRbracket, "`]`");
+        continue;
+      }
+      let idx: *Expr = parse_expr(p);
+      if accept(p, lex.Tok.PEllipsis2) {
+        let sl: *Expr = mkexpr(ExprKind.ExSlice, start.file, start.line, start.col);
+        sl.a = e;
+        sl.b = idx;
+        sl.c = parse_expr(p);
+        expect_tok(p, lex.Tok.PRbracket, "`]`");
+        e = sl;
+        continue;
+      }
+      expect_tok(p, lex.Tok.PRbracket, "`]`");
+      let ix: *Expr = mkexpr(ExprKind.ExIndex, start.file, start.line, start.col);
+      ix.a = e;
+      ix.b = idx;
+      e = ix;
+      continue;
+    }
+    if accept(p, lex.Tok.PDot) {
+      let name: *lex.Token = expect_ident(p, "field or method name");
+      let f: *Expr = mkexpr(ExprKind.ExField, start.file, start.line, start.col);
+      f.a = e;
+      f.sv = name.text;
+      e = f;
+      continue;
+    }
+    if accept(p, lex.Tok.PQmark) {
+      let q: *Expr = mkexpr(ExprKind.ExQmark, start.file, start.line, start.col);
+      q.a = e;
+      e = q;
+      continue;
+    }
+    if at(p, lex.Tok.KwAs) {
+      advance(p);
+      let c: *Expr = mkexpr(ExprKind.ExCast, start.file, start.line, start.col);
+      c.a = e;
+      c.ty = parse_type(p);
+      e = c;
+      continue;
+    }
+    break;
+  }
+  return e;
+}
+
+fn parse_expr_bp(p: *Parser, min_bp: i32) -> *Expr {
+  let start: *lex.Token = pk(p);
+  let mut left: *Expr = null;
+  let unary_bp: i32 = 12;
+  if min_bp <= unary_bp && (at(p, lex.Tok.PBang) || at(p, lex.Tok.PMinus) || at(p, lex.Tok.PTilde) || at(p, lex.Tok.PStar)) {
+    let op: *lex.Token = advance(p);
+    let operand: *Expr = parse_expr_bp(p, unary_bp);
+    let u: *Expr = mkexpr(ExprKind.ExUn, start.file, start.line, start.col);
+    u.unop = op.kind;
+    u.a = operand;
+    left = u;
+  } else {
+    left = parse_postfix(p);
+  }
+  loop {
+    let bp: i32 = level_of(pk(p).kind);
+    if bp < 0 || bp < min_bp {
+      break;
+    }
+    let op: *lex.Token = advance(p);
+    let right: *Expr = parse_expr_bp(p, bp + 1);
+    let bin: *Expr = mkexpr(ExprKind.ExBin, start.file, start.line, start.col);
+    bin.binop = op.kind;
+    bin.a = left;
+    bin.b = right;
+    left = bin;
+  }
+  return left;
+}
+
+fn parse_expr(p: *Parser) -> *Expr {
+  return parse_expr_bp(p, 0);
+}
+
+fn at_assign_start(p: *Parser) -> bool {
+  let k: lex.Tok = pk(p).kind;
+  return k == lex.Tok.PAssign || k == lex.Tok.PPluseq || k == lex.Tok.PMinuseq || k == lex.Tok.PStareq
+      || k == lex.Tok.PSlasheq || k == lex.Tok.PPercenteq || k == lex.Tok.PAmpeq
+      || k == lex.Tok.PPipeeq || k == lex.Tok.PCareteq || k == lex.Tok.PShleq || k == lex.Tok.PShreq;
+}
+
+fn mkstmt(kind: StmtKind, file: string, line: i32, col: i32) -> *Stmt {
+  return new Stmt {
+    kind: kind, file: file, line: line, col: col,
+    pre: fresh_str_vec(), mut_: false, tail: false, name: "", ty: null,
+    a: null, b: null, assign_op: lex.Tok.TkEof, stmts: fresh_stmt_vec(),
+    cond: null, body: fresh_stmt_vec(),
+  };
+}
+
+fn parse_stmt(p: *Parser) -> *Stmt {
+  let start: *lex.Token = pk(p);
+  let s: *Stmt = parse_stmt_raw(p);
+  if s != null {
+    s.pre = start.pre;
+  }
+  return s;
+}
+
+fn parse_stmt_raw(p: *Parser) -> *Stmt {
+  let start: *lex.Token = pk(p);
+  let k: lex.Tok = start.kind;
+  if k == lex.Tok.KwLet {
+    advance(p);
+    let s: *Stmt = mkstmt(StmtKind.StLet, start.file, start.line, start.col);
+    s.mut_ = accept(p, lex.Tok.KwMut);
+    let id: *lex.Token = expect_ident(p, "binding name");
+    s.name = id.text;
+    if accept(p, lex.Tok.PColon) {
+      s.ty = parse_type(p);
+    }
+    expect_tok(p, lex.Tok.PAssign, "`=` (bindings need an initializer)");
+    s.a = parse_expr(p);
+    expect_tok(p, lex.Tok.PSemi, "`;`");
+    return s;
+  }
+  if k == lex.Tok.KwReturn {
+    advance(p);
+    let s: *Stmt = mkstmt(StmtKind.StReturn, start.file, start.line, start.col);
+    if !at(p, lex.Tok.PSemi) {
+      s.a = parse_expr(p);
+    }
+    expect_tok(p, lex.Tok.PSemi, "`;`");
+    return s;
+  }
+  if k == lex.Tok.KwBreak {
+    advance(p);
+    let s: *Stmt = mkstmt(StmtKind.StBreak, start.file, start.line, start.col);
+    expect_tok(p, lex.Tok.PSemi, "`;`");
+    return s;
+  }
+  if k == lex.Tok.KwContinue {
+    advance(p);
+    let s: *Stmt = mkstmt(StmtKind.StContinue, start.file, start.line, start.col);
+    expect_tok(p, lex.Tok.PSemi, "`;`");
+    return s;
+  }
+  if k == lex.Tok.KwDefer {
+    advance(p);
+    let s: *Stmt = mkstmt(StmtKind.StDefer, start.file, start.line, start.col);
+    if at(p, lex.Tok.PLbrace) {
+      let blk: *Stmt = mkstmt(StmtKind.StBlock, start.file, start.line, start.col);
+      blk.stmts = parse_block(p);
+      s.stmts.push(blk);
+    } else {
+      let one: *Stmt = parse_stmt(p);
+      s.stmts.push(one);
+    }
+    return s;
+  }
+  if k == lex.Tok.KwWhile {
+    advance(p);
+    let s: *Stmt = mkstmt(StmtKind.StWhile, start.file, start.line, start.col);
+    s.cond = parse_expr(p);
+    s.body = parse_block(p);
+    return s;
+  }
+  if k == lex.Tok.KwLoop {
+    advance(p);
+    let s: *Stmt = mkstmt(StmtKind.StLoop, start.file, start.line, start.col);
+    s.body = parse_block(p);
+    return s;
+  }
+  if k == lex.Tok.PLbrace {
+    advance(p);
+    let s: *Stmt = mkstmt(StmtKind.StBlock, start.file, start.line, start.col);
+    s.stmts = parse_block_stmts(p, lex.Tok.PRbrace).stmts;
+    expect_tok(p, lex.Tok.PRbrace, "`}`");
+    return s;
+  }
+  let e: *Expr = parse_expr(p);
+  if at_assign_start(p) {
+    let op: *lex.Token = advance(p);
+    let s: *Stmt = mkstmt(StmtKind.StAssign, start.file, start.line, start.col);
+    s.assign_op = op.kind;
+    s.a = e;
+    s.b = parse_expr(p);
+    expect_tok(p, lex.Tok.PSemi, "`;`");
+    return s;
+  }
+  let s: *Stmt = mkstmt(StmtKind.StExpr, start.file, start.line, start.col);
+  s.a = e;
+  let blocky: bool = e.kind == ExprKind.ExIf || e.kind == ExprKind.ExMatch || e.kind == ExprKind.ExBlock;
+  if accept(p, lex.Tok.PSemi) {
+    s.tail = false;
+  } else if at(p, lex.Tok.PRbrace) {
+    s.tail = true;
+  } else if blocky {
+    s.tail = false;
+  } else {
+    s.tail = false;
+    let t: *lex.Token = pk(p);
+    main.err_at(t.file, t.line, t.col, main.cat3("expected `;`, found ", lex.tok_name(t.kind), ""));
+  }
+  return s;
+}
+
+pub fn parse_file(path: string, src: string) -> *Decl {
+  let toks: *main.Vec[*lex.Token] = fresh_token_vec();
+  lex.lex_file(path, src, toks);
+  let p: *Parser = new Parser { toks: toks.items, i: 0, bare_self_ok: false };
+  let module: *Decl = new Decl {
+    kind: DeclKind.DkFn, file: path, line: 0, col: 0, pre: fresh_str_vec(),
+    pub_: false, is_mut: false, name: "", path: fresh_str_vec(),
+    params: fresh_param_vec(), ret: null, fields: fresh_field_vec(),
+    variants: fresh_variant_vec(), init: null, body: fresh_stmt_vec(),
+    tparams: fresh_str_vec(), is_method: false, recv: "", decls: fresh_decl_vec(),
+    target: null, tparam_bounds: fresh_type_vec(),
+    templ: null,
+    templated: false, tenv: null, owner: null, ceval_ok: false, ceval_is_int: false, ceval_i: 0, ceval_f: 0.0,
+  };
+  while !at_eof(p) {
+    let start: *lex.Token = pk(p);
+    let is_pub: bool = accept(p, lex.Tok.KwPub);
+    let d: *Decl = new Decl {
+      kind: DeclKind.DkFn, file: start.file, line: start.line, col: start.col,
+      pre: start.pre, pub_: is_pub, is_mut: false, name: "",
+      path: fresh_str_vec(), params: fresh_param_vec(), ret: null,
+      fields: fresh_field_vec(), variants: fresh_variant_vec(), init: null,
+      body: fresh_stmt_vec(), tparams: fresh_str_vec(), is_method: false,
+      recv: "", decls: fresh_decl_vec(), target: null,
+      tparam_bounds: fresh_type_vec(), templ: null,
+    templated: false, tenv: null, owner: null, ceval_ok: false, ceval_is_int: false, ceval_i: 0, ceval_f: 0.0,
+    };
+    if accept(p, lex.Tok.KwUse) {
+      d.kind = DeclKind.DkUse;
+      loop {
+        let seg: *lex.Token = expect_ident(p, "module path segment");
+        d.path.push(seg.text);
+        if !accept(p, lex.Tok.PSlash) {
+          break;
+        }
+      }
+      expect_tok(p, lex.Tok.PSemi, "`;`");
+    } else if accept(p, lex.Tok.KwExtern) {
+      d.kind = DeclKind.DkExtern;
+      if at(p, lex.Tok.TkStr) {
+        advance(p);
+      }
+      expect_tok(p, lex.Tok.KwFn, "`fn`");
+      let id: *lex.Token = expect_ident(p, "function name");
+      d.name = id.text;
+      parse_param_list_raw(p, d.params, false);
+      if accept(p, lex.Tok.PArrow) {
+        d.ret = parse_type(p);
+      }
+      expect_tok(p, lex.Tok.PSemi, "`;`");
+    } else if accept(p, lex.Tok.KwFn) {
+      d.kind = DeclKind.DkFn;
+      let id: *lex.Token = expect_ident(p, "function name");
+      d.name = id.text;
+      if accept(p, lex.Tok.PDot) {
+        d.recv = id.text;
+        let m: *lex.Token = expect_ident(p, "method name");
+        d.name = m.text;
+      }
+      parse_tparams(p, d.tparams, d.tparam_bounds);
+      expect_tok(p, lex.Tok.PLparen, "`(`");
+      if !at(p, lex.Tok.PRparen) {
+        loop {
+          let pa: *Param = parse_param(p);
+          if d.params.n > 0 && d.params.items[d.params.n - 1].is_variadic {
+            main.err_at(pa.file, pa.line, pa.col, "only the last parameter can be variadic");
+          }
+          d.params.push(pa);
+          if !accept(p, lex.Tok.PComma) {
+            break;
+          }
+        }
+      }
+      expect_tok(p, lex.Tok.PRparen, "`)`");
+      if accept(p, lex.Tok.PArrow) {
+        d.ret = parse_type(p);
+      }
+      if d.params.n > 0 {
+        if d.params.items[0].is_self {
+          d.is_method = true;
+        }
+      }
+      d.body = parse_block(p);
+    } else if accept(p, lex.Tok.KwTrait) {
+      d.kind = DeclKind.DkTrait;
+      let id: *lex.Token = expect_ident(p, "trait name");
+      d.name = id.text;
+      expect_tok(p, lex.Tok.PLbrace, "`{`");
+      p.bare_self_ok = true;
+      while at(p, lex.Tok.KwFn) {
+        let m: *Decl = new Decl {
+          kind: DeclKind.DkFn, file: pk(p).file, line: pk(p).line, col: pk(p).col,
+          pre: fresh_str_vec(), pub_: false, is_mut: false, name: "",
+          path: fresh_str_vec(), params: fresh_param_vec(), ret: null,
+          fields: fresh_field_vec(), variants: fresh_variant_vec(), init: null,
+          body: fresh_stmt_vec(), tparams: fresh_str_vec(), is_method: false,
+          recv: "", target: null, tparam_bounds: fresh_type_vec(), decls: fresh_decl_vec(),
+          templ: null, templated: false, tenv: null, owner: null,
+          ceval_ok: false, ceval_is_int: false, ceval_i: 0, ceval_f: 0.0,
+        };
+        expect_tok(p, lex.Tok.KwFn, "`fn`");
+        let mn: *lex.Token = expect_ident(p, "trait method name");
+        m.name = mn.text;
+        parse_param_list_raw(p, m.params, true);
+        if accept(p, lex.Tok.PArrow) {
+          m.ret = parse_type(p);
+        }
+        if m.params.n > 0 && m.params.items[0].is_self {
+          m.is_method = true;
+        }
+        d.decls.push(m);
+        // requirements separate by `,` or `;` (either reads well)
+        if accept(p, lex.Tok.PComma) || accept(p, lex.Tok.PSemi) {
+          continue;
+        }
+        break;
+      }
+      p.bare_self_ok = false;
+      expect_tok(p, lex.Tok.PRbrace, "`}`");
+    } else if accept(p, lex.Tok.KwImpl) {
+      d.kind = DeclKind.DkImpl;
+      let id: *lex.Token = expect_ident(p, "trait name");
+      d.name = id.text;
+      expect_tok(p, lex.Tok.KwFor, "`for`");
+      d.target = parse_type(p);
+      expect_tok(p, lex.Tok.PLbrace, "`{`");
+      while at(p, lex.Tok.KwFn) {
+        let m: *Decl = new Decl {
+          kind: DeclKind.DkFn, file: pk(p).file, line: pk(p).line, col: pk(p).col,
+          pre: fresh_str_vec(), pub_: false, is_mut: false, name: "",
+          path: fresh_str_vec(), params: fresh_param_vec(), ret: null,
+          fields: fresh_field_vec(), variants: fresh_variant_vec(), init: null,
+          body: fresh_stmt_vec(), tparams: fresh_str_vec(), is_method: false,
+          recv: "", target: null, tparam_bounds: fresh_type_vec(), decls: fresh_decl_vec(),
+          templ: null, templated: false, tenv: null, owner: null,
+          ceval_ok: false, ceval_is_int: false, ceval_i: 0, ceval_f: 0.0,
+        };
+        expect_tok(p, lex.Tok.KwFn, "`fn`");
+        let mn: *lex.Token = expect_ident(p, "method name");
+        m.name = mn.text;
+        parse_param_list_raw(p, m.params, true);
+        if accept(p, lex.Tok.PArrow) {
+          m.ret = parse_type(p);
+        }
+        if m.params.n > 0 && m.params.items[0].is_self {
+          m.is_method = true;
+        }
+        m.body = parse_block(p);
+        d.decls.push(m);
+      }
+      expect_tok(p, lex.Tok.PRbrace, "`}`");
+    } else if accept(p, lex.Tok.KwStruct) {
+      d.kind = DeclKind.DkStruct;
+      let id: *lex.Token = expect_ident(p, "struct name");
+      d.name = id.text;
+      parse_tparams(p, d.tparams, d.tparam_bounds);
+      expect_tok(p, lex.Tok.PLbrace, "`{`");
+      while !at(p, lex.Tok.PRbrace) && !at_eof(p) {
+        let fn_tok: *lex.Token = expect_ident(p, "field name");
+        expect_tok(p, lex.Tok.PColon, "`:`");
+        let fa: *FieldAst = new FieldAst { name: fn_tok.text, ty: parse_type(p), file: fn_tok.file, line: fn_tok.line, col: fn_tok.col };
+        d.fields.push(fa);
+        if !accept(p, lex.Tok.PComma) {
+          break;
+        }
+      }
+      expect_tok(p, lex.Tok.PRbrace, "`}`");
+    } else if accept(p, lex.Tok.KwEnum) {
+      d.kind = DeclKind.DkEnum;
+      let id: *lex.Token = expect_ident(p, "enum name");
+      d.name = id.text;
+      parse_tparams(p, d.tparams, d.tparam_bounds);
+      expect_tok(p, lex.Tok.PLbrace, "`{`");
+      let mut next_disc: u64 = 0;
+      while !at(p, lex.Tok.PRbrace) && !at_eof(p) {
+        let vn: *lex.Token = expect_ident(p, "variant name");
+        let v: *VariantAst = new VariantAst { name: vn.text, vkind: VarKind.VarUnit, types: fresh_type_vec(), fields: fresh_field_vec(), has_disc: false, disc: 0, file: vn.file, line: vn.line, col: vn.col };
+        if accept(p, lex.Tok.PLparen) {
+          v.vkind = VarKind.VarTuple;
+          if !at(p, lex.Tok.PRparen) {
+            loop {
+              v.types.push(parse_type(p));
+              if !accept(p, lex.Tok.PComma) {
+                break;
+              }
+            }
+          }
+          expect_tok(p, lex.Tok.PRparen, "`)`");
+        } else if accept(p, lex.Tok.PLbrace) {
+          v.vkind = VarKind.VarStruct;
+          while !at(p, lex.Tok.PRbrace) && !at_eof(p) {
+            let fn_tok: *lex.Token = expect_ident(p, "field name");
+            expect_tok(p, lex.Tok.PColon, "`:`");
+            let fa: *FieldAst = new FieldAst { name: fn_tok.text, ty: parse_type(p), file: fn_tok.file, line: fn_tok.line, col: fn_tok.col };
+            v.fields.push(fa);
+            if !accept(p, lex.Tok.PComma) {
+              break;
+            }
+          }
+          expect_tok(p, lex.Tok.PRbrace, "`}`");
+        } else {
+          v.vkind = VarKind.VarUnit;
+        }
+        if accept(p, lex.Tok.PAssign) {
+          if v.vkind != VarKind.VarUnit {
+            main.err_at(vn.file, vn.line, vn.col, "only unit variants take explicit discriminants");
+          }
+          let iv: *lex.Token = expect_tok(p, lex.Tok.TkInt, "discriminant");
+          v.has_disc = true;
+          v.disc = iv.iv;
+          next_disc = iv.iv + 1;
+        } else {
+          v.disc = next_disc;
+          next_disc += 1;
+        }
+        d.variants.push(v);
+        if !accept(p, lex.Tok.PComma) {
+          break;
+        }
+      }
+      expect_tok(p, lex.Tok.PRbrace, "`}`");
+    } else if at(p, lex.Tok.KwStatic) || at(p, lex.Tok.KwConst) {
+      let is_static: bool = at(p, lex.Tok.KwStatic);
+      advance(p);
+      if is_static {
+        d.kind = DeclKind.DkStatic;
+      } else {
+        d.kind = DeclKind.DkConst;
+      }
+      d.is_mut = is_static && accept(p, lex.Tok.KwMut);
+      let id: *lex.Token = expect_ident(p, "name");
+      d.name = id.text;
+      expect_tok(p, lex.Tok.PColon, "`:`");
+      d.ret = parse_type(p);
+      expect_tok(p, lex.Tok.PAssign, "`=`");
+      d.init = parse_expr(p);
+      expect_tok(p, lex.Tok.PSemi, "`;`");
+    } else {
+      main.err_at(start.file, start.line, start.col, main.cat3("expected a declaration (fn/struct/enum/static/const/use), found ", lex.tok_name(start.kind), ""));
+      advance(p);
+      continue;
+    }
+      module.decls.push(d);
+  }
+  module.pre = p.toks[toks.n - 1].pre;
+  return module;
+}

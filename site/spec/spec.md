@@ -168,6 +168,31 @@ Monomorphization order, symbol emission order, and data layout are
 canonically sorted. Compiling the same inputs twice yields byte-identical
 artifacts — a tested invariant (corpus builds are compared twice).
 
+### 3.6 Constant folding and dead instructions
+
+After the reachability pass (§3.3), the self-hosted compiler folds the IR:
+an integer binop, comparison, width cast, or pointer `+imm` whose operands
+are all compile-time constants is rewritten in place into a `const` with
+the same destination (uses never change); instructions whose result no
+remaining read references are dropped. Both passes run to a bounded
+fixpoint in emission order — the output stays deterministic, and `--no-opt`
+disables them.
+
+Folding is semantics-preserving by law, not by luck:
+
+- Wrap arithmetic folds exactly as the runtime wraps (`tests/lang/opt`
+  pins both directions at the i32 edges).
+- Shift counts mask by the lane width minus one, as the hardware does.
+- Signed division and remainder with divisor −1 fold to `0 − a` — the
+  wrap law the backends already emit (corpus `042_divrem_signed`).
+- **Division by a constant zero never folds**: the runtime panic is the
+  program's observable behavior, and the fold must not erase it.
+- Float arithmetic never folds.
+
+Boot has no optimizer (the seed stays frozen); the gate's differential
+legs grade every corpus program boot-built vs mirror-built for identical
+stdout and exit code, so a misfold is a red gate, not a silent change.
+
 ## 4. Version policy
 
 - 0.0.x — boot compiler era (C). The language surface **only grows**.

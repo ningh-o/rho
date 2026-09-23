@@ -1,0 +1,866 @@
+// the lexer: Tok, Token, the Lexer and its scanners
+use main;
+use fmt;
+
+
+// ---------------------------------------------------------------- lexer ---
+
+pub enum Tok {
+  TkEof,
+  TkIdent,
+  TkInt,
+  TkFloat,
+  TkStr,
+  KwFn, KwLet, KwMut, KwIf, KwElse, KwWhile, KwLoop, KwBreak,
+  KwContinue, KwReturn, KwDefer, KwStruct, KwEnum, KwUse, KwPub,
+  KwStatic, KwConst, KwMatch, KwAs, KwNew, KwNull, KwTrue, KwFalse,
+  KwWeak, KwSelf, KwExtern, KwTrait, KwImpl, KwFor, KwDyn,
+  PLparen, PRparen, PLbrace, PRbrace, PLbracket, PRbracket,
+  PComma, PColon, PSemi, PDot, PArrow, PFatarrow, PEllipsis2, PEllipsis3,
+  PPlus, PMinus, PStar, PSlash, PPercent, PBang, PTilde, PAmp,
+  PPipe, PCaret, PShl, PShr, PAndand, POror, PEq, PNe, PLt, PGt,
+  PLe, PGe, PAssign, PPluseq, PMinuseq, PStareq, PSlasheq,
+  PPercenteq, PAmpeq, PPipeeq, PCareteq, PShleq, PShreq, PQmark,
+}
+
+pub struct Token {
+  kind: Tok,
+  text: string,
+  file: string,
+  line: i32,
+  col: i32,
+  iv: u64,
+  fv: f64,
+  pre: *main.Vec[string], // line comments riding on the next token (for fmt)
+  pending: *main.Vec[string], // lexer-local scratch while scanning
+  pos: usize, // next read position (scratch)
+  line2: i32, // lexer line (scratch)
+  col2: i32, // lexer col (scratch)
+}
+
+struct Lexer {
+  file: string,
+  src: string,
+  t: Token, // scratch: carries pos/line/col/pending between helpers
+  out: *main.Vec[*Token],
+}
+
+pub fn tok_name(k: Tok) -> string {
+  return match k {
+    Tok.TkEof => "end of file",
+    Tok.TkIdent => "identifier",
+    Tok.TkInt => "integer",
+    Tok.TkFloat => "float",
+    Tok.TkStr => "string",
+    Tok.KwFn => "`fn`",
+    Tok.KwLet => "`let`",
+    Tok.KwMut => "`mut`",
+    Tok.KwIf => "`if`",
+    Tok.KwElse => "`else`",
+    Tok.KwWhile => "`while`",
+    Tok.KwLoop => "`loop`",
+    Tok.KwBreak => "`break`",
+    Tok.KwContinue => "`continue`",
+    Tok.KwReturn => "`return`",
+    Tok.KwDefer => "`defer`",
+    Tok.KwStruct => "`struct`",
+    Tok.KwEnum => "`enum`",
+    Tok.KwUse => "`use`",
+    Tok.KwPub => "`pub`",
+    Tok.KwStatic => "`static`",
+    Tok.KwConst => "`const`",
+    Tok.KwMatch => "`match`",
+    Tok.KwAs => "`as`",
+    Tok.KwNew => "`new`",
+    Tok.KwNull => "`null`",
+    Tok.KwTrue => "`true`",
+    Tok.KwFalse => "`false`",
+    Tok.KwWeak => "`weak`",
+    Tok.KwSelf => "`self`",
+    Tok.KwExtern => "`extern`",
+    Tok.KwTrait => "`trait`",
+    Tok.KwImpl => "`impl`",
+    Tok.KwFor => "`for`",
+    Tok.KwDyn => "`dyn`",
+    Tok.PLparen => "`(`",
+    Tok.PRparen => "`)`",
+    Tok.PLbrace => "`{`",
+    Tok.PRbrace => "`}`",
+    Tok.PLbracket => "`[`",
+    Tok.PRbracket => "`]`",
+    Tok.PComma => "`,`",
+    Tok.PColon => "`:`",
+    Tok.PSemi => "`;`",
+    Tok.PDot => "`.`",
+    Tok.PArrow => "`->`",
+    Tok.PFatarrow => "`=>`",
+    Tok.PEllipsis2 => "`..`",
+    Tok.PEllipsis3 => "`...`",
+    Tok.PPlus => "`+`",
+    Tok.PMinus => "`-`",
+    Tok.PStar => "`*`",
+    Tok.PSlash => "`/`",
+    Tok.PPercent => "`%`",
+    Tok.PBang => "`!`",
+    Tok.PTilde => "`~`",
+    Tok.PAmp => "`&`",
+    Tok.PPipe => "`|`",
+    Tok.PCaret => "`^`",
+    Tok.PShl => "`<<`",
+    Tok.PShr => "`>>`",
+    Tok.PAndand => "`&&`",
+    Tok.POror => "`||`",
+    Tok.PEq => "`==`",
+    Tok.PNe => "`!=`",
+    Tok.PLt => "`<`",
+    Tok.PGt => "`>`",
+    Tok.PLe => "`<=`",
+    Tok.PGe => "`>=`",
+    Tok.PAssign => "`=`",
+    Tok.PPluseq => "`+=`",
+    Tok.PMinuseq => "`-=`",
+    Tok.PStareq => "`*=`",
+    Tok.PSlasheq => "`/=`",
+    Tok.PPercenteq => "`%=`",
+    Tok.PAmpeq => "`&=`",
+    Tok.PPipeeq => "`|=`",
+    Tok.PCareteq => "`^=`",
+    Tok.PShleq => "`<<=`",
+    Tok.PShreq => "`>>=`",
+    Tok.PQmark => "`?`",
+  };
+}
+
+fn spell2(k: Tok) -> string {
+  return match k {
+    Tok.PPlus => "+",
+    Tok.PPluseq => "+=",
+    Tok.PMinus => "-",
+    Tok.PMinuseq => "-=",
+    Tok.PStar => "*",
+    Tok.PStareq => "*=",
+    Tok.PSlash => "/",
+    Tok.PSlasheq => "/=",
+    Tok.PPercent => "%",
+    Tok.PPercenteq => "%=",
+    Tok.PBang => "!",
+    Tok.PTilde => "~",
+    Tok.PAmp => "&",
+    Tok.PAmpeq => "&=",
+    Tok.PPipe => "|",
+    Tok.PPipeeq => "|=",
+    Tok.PCaret => "^",
+    Tok.PCareteq => "^=",
+    Tok.PShl => "<<",
+    Tok.PShleq => "<<=",
+    Tok.PShr => ">>",
+    Tok.PShreq => ">>=",
+    Tok.PAndand => "&&",
+    Tok.POror => "||",
+    Tok.PEq => "==",
+    Tok.PNe => "!=",
+    Tok.PLt => "<",
+    Tok.PGt => ">",
+    Tok.PLe => "<=",
+    Tok.PGe => ">=",
+    Tok.PAssign => "=",
+    Tok.PEllipsis2 => "..",
+    Tok.PEllipsis3 => "...",
+    Tok.PArrow => "->",
+    Tok.PFatarrow => "=>",
+    Tok.PColon => ":",
+    Tok.PSemi => ";",
+    Tok.PComma => ",",
+    Tok.PDot => ".",
+    Tok.PLparen => "(",
+    Tok.PRparen => ")",
+    Tok.PLbrace => "{",
+    Tok.PRbrace => "}",
+    Tok.PLbracket => "[",
+    Tok.PRbracket => "]",
+    Tok.PQmark => "?",
+    _ => tok_name(k),
+  };
+}
+
+fn ident_or_keyword(s: string) -> Tok {
+  if main.streq(s, "fn") { return Tok.KwFn; }
+  if main.streq(s, "let") { return Tok.KwLet; }
+  if main.streq(s, "mut") { return Tok.KwMut; }
+  if main.streq(s, "if") { return Tok.KwIf; }
+  if main.streq(s, "else") { return Tok.KwElse; }
+  if main.streq(s, "while") { return Tok.KwWhile; }
+  if main.streq(s, "loop") { return Tok.KwLoop; }
+  if main.streq(s, "break") { return Tok.KwBreak; }
+  if main.streq(s, "continue") { return Tok.KwContinue; }
+  if main.streq(s, "return") { return Tok.KwReturn; }
+  if main.streq(s, "defer") { return Tok.KwDefer; }
+  if main.streq(s, "struct") { return Tok.KwStruct; }
+  if main.streq(s, "enum") { return Tok.KwEnum; }
+  if main.streq(s, "use") { return Tok.KwUse; }
+  if main.streq(s, "pub") { return Tok.KwPub; }
+  if main.streq(s, "static") { return Tok.KwStatic; }
+  if main.streq(s, "const") { return Tok.KwConst; }
+  if main.streq(s, "match") { return Tok.KwMatch; }
+  if main.streq(s, "as") { return Tok.KwAs; }
+  if main.streq(s, "new") { return Tok.KwNew; }
+  if main.streq(s, "null") { return Tok.KwNull; }
+  if main.streq(s, "true") { return Tok.KwTrue; }
+  if main.streq(s, "false") { return Tok.KwFalse; }
+  if main.streq(s, "weak") { return Tok.KwWeak; }
+  if main.streq(s, "self") { return Tok.KwSelf; }
+  if main.streq(s, "extern") { return Tok.KwExtern; }
+  if main.streq(s, "trait") { return Tok.KwTrait; }
+  if main.streq(s, "impl") { return Tok.KwImpl; }
+  if main.streq(s, "for") { return Tok.KwFor; }
+  if main.streq(s, "dyn") { return Tok.KwDyn; }
+  return Tok.TkIdent;
+}
+
+
+fn is_ws(c: u8) -> bool {
+  return c == 32 || c == 9 || c == 13;
+}
+fn is_ident_start(c: u8) -> bool {
+  if c >= 97 && c <= 122 {
+    return true;
+  }
+  if c >= 65 && c <= 90 {
+    return true;
+  }
+  return c == 95;
+}
+
+fn is_ident_char(c: u8) -> bool {
+  return is_ident_start(c) || (c >= 48 && c <= 57);
+}
+
+fn is_digit(c: u8) -> bool {
+  return c >= 48 && c <= 57;
+}
+
+fn is_hex(c: u8) -> bool {
+  if is_digit(c) {
+    return true;
+  }
+  if c >= 97 && c <= 102 {
+    return true;
+  }
+  return c >= 65 && c <= 70;
+}
+
+fn hex_val(c: u8) -> i32 {
+  if c >= 48 && c <= 57 {
+    return c as i32 - 48;
+  }
+  if c >= 97 && c <= 102 {
+    return c as i32 - 97 + 10;
+  }
+  if c >= 65 && c <= 70 {
+    return c as i32 - 65 + 10;
+  }
+  return 0 - 1;
+}
+
+// digit value in the given base, or -1
+fn digit_val(c: u8, base: u64) -> i32 {
+  if c >= 48 && c <= 57 {
+    return if (c as i32 - 48) as u64 >= base { 0 - 1 } else { c as i32 - 48 };
+  }
+  if c >= 97 && c <= 102 {
+    return if (c as i32 - 87) as u64 >= base { 0 - 1 } else { c as i32 - 87 };
+  }
+  if c >= 65 && c <= 70 {
+    return if (c as i32 - 55) as u64 >= base { 0 - 1 } else { c as i32 - 55 };
+  }
+  return 0 - 1;
+}
+
+fn ch_at(lx: *Lexer, off: usize) -> u8 {
+  let i: usize = lx.t.pos + off;
+  if i >= len(lx.src) {
+    return 0;
+  }
+  return lx.src[i];
+}
+
+fn emit_tok(lx: *Lexer, kind: Tok, start: usize) {
+  let t: *Token = new Token {
+    kind: kind,
+    text: lx.src[start..lx.t.pos],
+    file: lx.file,
+    line: lx.t.line2,
+    col: lx.t.col2,
+    iv: 0,
+    fv: 0.0,
+    pre: lx.t.pending,
+    pending: new main.Vec[string] { items: make([]string, 8), n: 0 },
+    pos: 0,
+    line2: 1,
+    col2: 1,
+  };
+  t.pre = lx.t.pending;
+  lx.t.pending = new main.Vec[string] { items: make([]string, 8), n: 0 };
+  lx.out.push(t);
+}
+
+fn lex_error(lx: *Lexer, msg: string) {
+  main.err_at(lx.file, lx.t.line2, lx.t.col2, msg);
+}
+
+// exact decimal float parse (strtod semantics, no libc here):
+// digits[.digits][e[+-]exp]. The digit string becomes a big-int N and the
+// scale a power of ten M; binary long division extracts the mantissa bits
+// and rounds half-even on the exact remainder — correctly rounded for every
+// literal, including subnormals, where naive `v *= 10^e` loops overflow or
+// drift. Digits past the 40th are dropped: that shifts the value by less
+// than 1e-40 relative, far below any rounding decision a double can make.
+fn parse_float(s: string) -> f64 {
+  let d: *fmt.Big = fmt.big_new(); // significant digits
+  let mut sig: usize = 0;
+  let mut e10: i64 = 0;
+  let mut i: usize = 0;
+  let mut seen: bool = false;
+  while i < len(s) && s[i] >= 48 && s[i] <= 57 {
+    seen = true;
+    if sig < 40 {
+      fmt.big_mul_u32(d, 10);
+      fmt.big_add_u32(d, (s[i] - 48) as u32);
+      sig += 1;
+    } else {
+      // integer digits beyond the cap: pure magnitude, keep the exponent
+      e10 += 1;
+    }
+    i += 1;
+  }
+  if i < len(s) && s[i] == 46 {
+    i += 1;
+    while i < len(s) && s[i] >= 48 && s[i] <= 57 {
+      seen = true;
+      if sig < 40 {
+        fmt.big_mul_u32(d, 10);
+        fmt.big_add_u32(d, (s[i] - 48) as u32);
+        sig += 1;
+        e10 -= 1;
+      }
+      i += 1;
+    }
+  }
+  if i < len(s) && (s[i] == 101 || s[i] == 69) {
+    i += 1;
+    let mut eneg: bool = false;
+    if i < len(s) && (s[i] == 43 || s[i] == 45) {
+      eneg = s[i] == 45;
+      i += 1;
+    }
+    let mut ev: i64 = 0;
+    while i < len(s) && s[i] >= 48 && s[i] <= 57 {
+      ev = ev * 10 + (s[i] - 48) as i64;
+      i += 1;
+    }
+    if eneg {
+      e10 -= ev;
+    } else {
+      e10 += ev;
+    }
+  }
+  if !seen || (d.n == 1 && d.w[0] == 0) {
+    return 0.0;
+  }
+  let dl: i64 = (d.n as i64 - 1) * 9 + fmt.u32_digits(d.w[d.n - 1]);
+  let approx: i64 = dl - 1 + e10;
+  if approx > 309 {
+    // beyond the max double; x10 overflows to inf without a literal trap
+    let mut big: f64 = 1e308;
+    big = big * 10.0;
+    return big;
+  }
+  if approx + 331 < 0 {
+    return 0.0;
+  }
+  // value = N / M, both exact big-ints (big_new is the zero value; seed
+  // M with 1 so the 10^k scaling below has something to scale)
+  let n2: *fmt.Big = fmt.big_clone(d);
+  let m2: *fmt.Big = fmt.big_new();
+  fmt.big_add_u32(m2, 1);
+  if e10 >= 0 {
+    let mut k: i64 = e10;
+    while k >= 9 {
+      fmt.big_mul_u32(n2, 1000000000);
+      k -= 9;
+    }
+    if k > 0 {
+      fmt.big_mul_u32(n2, fmt.p10_u64(k as usize) as u32);
+    }
+  } else {
+    let mut k: i64 = 0 - e10;
+    while k >= 9 {
+      fmt.big_mul_u32(m2, 1000000000);
+      k -= 9;
+    }
+    if k > 0 {
+      fmt.big_mul_u32(m2, fmt.p10_u64(k as usize) as u32);
+    }
+  }
+  // normalize the fraction n2/m2 into (1/2, 1): scale N up until N >= M,
+  // then M up until M > N — sN and cc track the exact power-of-two drift
+  let mut sN: i64 = 0;
+  while fmt.big_cmp(n2, m2) < 0 {
+    fmt.big_mul_u32(n2, 2);
+    sN += 1;
+  }
+  let mut cc: i64 = 0;
+  while fmt.big_cmp(n2, m2) >= 0 {
+    fmt.big_mul_u32(m2, 2);
+    cc += 1;
+  }
+  // value = fraction * 2^e2v with fraction in (1/2, 1)
+  let mut e2v: i64 = cc - sN;
+  let mut q: u64 = 0;
+  if e2v + 1021 >= 0 {
+    // normal: extract 53 mantissa bits, round half-even on the remainder
+    q = fmt.big_div_bits(n2, m2, 53);
+    if q >= 9007199254740992 {
+      // carry re-normalizes: 2^53 -> 2^52 one exponent step higher
+      q = 4503599627370496;
+      e2v += 1;
+    }
+    let mut result: f64 = q as i64 as f64;
+    // value = fraction * 2^e2v and q = fraction * 2^53
+    let mut t: i64 = e2v - 53;
+    while t > 0 {
+      result = result * 2.0;
+      t -= 1;
+    }
+    while t < 0 {
+      result = result / 2.0;
+      t += 1;
+    }
+    return result;
+  }
+  // subnormal: m = round(value * 2^1074), one exact power-of-two scale.
+  // e2v <= -1022 keeps k <= 52, so the quotient cannot overflow.
+  let mut k: i64 = e2v + 1074;
+  if k < 1 {
+    k = 1;
+  }
+  q = fmt.big_div_bits(n2, m2, k);
+  let mut result: f64 = q as i64 as f64;
+  let mut t: i64 = 1074;
+  while t > 0 {
+    result = result / 2.0;
+    t -= 1;
+  }
+  return result;
+}
+
+// scan a string literal (the opening quote is at lx.t.pos)
+fn lex_string(lx: *Lexer, start: usize) {
+  lx.t.pos += 1;
+  let sb: *main.Vec[u8] = new main.Vec[u8] { items: make([]u8, 32), n: 0 };
+  loop {
+    if lx.t.pos >= len(lx.src) || lx.src[lx.t.pos] == 10 {
+      lex_error(lx, "unterminated string literal");
+      break;
+    }
+    let d: u8 = lx.src[lx.t.pos];
+    if d == 34 {
+      lx.t.pos += 1;
+      break;
+    }
+    if d == 92 {
+      lx.t.pos += 1;
+      if lx.t.pos >= len(lx.src) {
+        lex_error(lx, "unterminated escape");
+        break;
+      }
+      let e: u8 = lx.src[lx.t.pos];
+      lx.t.pos += 1;
+      if e == 110 {
+        sb.push(10);
+      } else if e == 116 {
+        sb.push(9);
+      } else if e == 114 {
+        sb.push(13);
+      } else if e == 92 {
+        sb.push(92);
+      } else if e == 34 {
+        sb.push(34);
+      } else if e == 48 {
+        sb.push(0);
+      } else if e == 120 {
+        if is_hex(ch_at(lx, 0)) && is_hex(ch_at(lx, 1)) {
+          sb.push((hex_val(ch_at(lx, 0)) * 16 + hex_val(ch_at(lx, 1))) as u8);
+          lx.t.pos += 2;
+        } else {
+          lex_error(lx, "malformed \\x escape");
+        }
+      } else {
+        lex_error(lx, "unknown escape");
+        sb.push(e);
+      }
+      continue;
+    }
+    sb.push(d);
+    lx.t.pos += 1;
+  }
+  emit_tok(lx, Tok.TkStr, start);
+  lx.out.last().text = intrinsics.slice_string(sb.items[0..sb.n]);
+  lx.t.col2 += (lx.t.pos - start) as i32;
+}
+
+// scan a triple-quoted multiline string literal (the opening """ is at
+// lx.t.pos). The literal is fully literal: every byte between the
+// opening """ and the closing """ enters the value unchanged — the
+// newline right after the opening """ is content like any byte, and
+// indentation is content too. Escapes decode exactly like single-line
+// strings (so \" embeds a quote and \"""" three of them); an unescaped
+// """ run closes the literal, mid-line included; reaching the end of
+// the file before the closing """ is an error.
+fn lex_multiline_string(lx: *Lexer, start: usize) {
+  let open_line: i32 = lx.t.line2;
+  let open_col: i32 = lx.t.col2;
+  lx.t.pos += 3;
+  let sb: *main.Vec[u8] = new main.Vec[u8] { items: make([]u8, 32), n: 0 };
+  let mut line: i32 = open_line;
+  let mut col: i32 = open_col + 3;
+  loop {
+    if lx.t.pos >= len(lx.src) {
+      main.err_at(lx.file, line, 1, "unterminated multiline string literal");
+      break;
+    }
+    let d: u8 = lx.src[lx.t.pos];
+    if d == 34 && lx.t.pos + 2 < len(lx.src) && lx.src[lx.t.pos + 1] == 34 && lx.src[lx.t.pos + 2] == 34 {
+      lx.t.pos += 3;
+      col += 3;
+      break;
+    }
+    if d == 92 {
+      lx.t.pos += 1;
+      col += 1;
+      if lx.t.pos < len(lx.src) {
+        let e: u8 = lx.src[lx.t.pos];
+        lx.t.pos += 1;
+        col += 1;
+        if e == 110 {
+          sb.push(10);
+        } else if e == 116 {
+          sb.push(9);
+        } else if e == 114 {
+          sb.push(13);
+        } else if e == 92 {
+          sb.push(92);
+        } else if e == 34 {
+          sb.push(34);
+        } else if e == 48 {
+          sb.push(0);
+        } else if e == 120 {
+          if is_hex(ch_at(lx, 0)) && is_hex(ch_at(lx, 1)) {
+            sb.push((hex_val(ch_at(lx, 0)) * 16 + hex_val(ch_at(lx, 1))) as u8);
+            lx.t.pos += 2;
+            col += 2;
+          } else {
+            main.err_at(lx.file, line, col, "malformed \\x escape");
+          }
+        } else {
+          main.err_at(lx.file, line, col, "unknown escape");
+          sb.push(e);
+        }
+      }
+      continue;
+    }
+    if d == 10 {
+      lx.t.pos += 1;
+      line += 1;
+      col = 1;
+      sb.push(10);
+      continue;
+    }
+    sb.push(d);
+    lx.t.pos += 1;
+    col += 1;
+  }
+  // the token records the literal's opening position; the lexer's cursor
+  // parks after the closing delimiter
+  lx.t.line2 = open_line;
+  lx.t.col2 = open_col;
+  emit_tok(lx, Tok.TkStr, start);
+  lx.out.last().text = intrinsics.slice_string(sb.items[0..sb.n]);
+  lx.t.line2 = line;
+  lx.t.col2 = col;
+}
+
+pub fn lex_file(file: string, src: string, out: *main.Vec[*Token]) {
+  let lx: *Lexer = new Lexer {
+    file: file,
+    src: src,
+    t: *new Token {
+      kind: Tok.TkEof,
+      text: "",
+      file: file,
+      line: 1,
+      col: 1,
+      iv: 0,
+      fv: 0.0,
+      pre: new main.Vec[string] { items: make([]string, 8), n: 0 },
+      pending: new main.Vec[string] { items: make([]string, 8), n: 0 },
+      pos: 0,
+      line2: 1,
+      col2: 1,
+    },
+    out: out,
+  };
+  lx.t.pending = new main.Vec[string] { items: make([]string, 8), n: 0 };
+  loop {
+    if lx.t.pos >= len(src) {
+      break;
+    }
+    let c: u8 = src[lx.t.pos];
+    let start: usize = lx.t.pos;
+    let start_line: i32 = lx.t.line2;
+    let start_col: i32 = lx.t.col2;
+
+    if c == 10 {
+      lx.t.pos += 1;
+      lx.t.line2 += 1;
+      lx.t.col2 = 1;
+      continue;
+    }
+    if is_ws(c) {
+      lx.t.pos += 1;
+      lx.t.col2 += 1;
+      continue;
+    }
+    if c == 47 && ch_at(lx, 1) == 47 {
+      // line comment: trivia riding on the next token
+      lx.t.pos += 2;
+      let cs: usize = lx.t.pos;
+      loop {
+        if lx.t.pos >= len(src) || src[lx.t.pos] == 10 {
+          break;
+        }
+        lx.t.pos += 1;
+      }
+      lx.t.pending.push(src[cs..lx.t.pos]);
+      continue;
+    }
+
+    // identifiers & keywords
+    if is_ident_start(c) {
+      loop {
+        if lx.t.pos >= len(src) || !is_ident_char(src[lx.t.pos]) {
+          break;
+        }
+        lx.t.pos += 1;
+      }
+      emit_tok(lx, ident_or_keyword(src[start..lx.t.pos]), start);
+      lx.t.col2 += (lx.t.pos - start) as i32;
+      continue;
+    }
+
+    // numbers (int / float / hex / bin)
+    if is_digit(c) {
+      let mut is_float: bool = false;
+      let mut base: u64 = 10;
+      if c == 48 && (ch_at(lx, 1) == 120 || ch_at(lx, 1) == 98) {
+        base = if ch_at(lx, 1) == 120 { 16 } else { 2 };
+        lx.t.pos += 2;
+      }
+      let digits: usize = lx.t.pos;
+      loop {
+        if lx.t.pos >= len(src) {
+          break;
+        }
+        let d: u8 = src[lx.t.pos];
+        if d != 95 && digit_val(d, base) < 0 {
+          break;
+        }
+        lx.t.pos += 1;
+      }
+      if base == 10 && ch_at(lx, 0) == 46 && is_digit(ch_at(lx, 1)) {
+        is_float = true;
+        lx.t.pos += 1;
+        loop {
+          if lx.t.pos >= len(src) {
+            break;
+          }
+          let d: u8 = src[lx.t.pos];
+          if !is_digit(d) && d != 95 {
+            break;
+          }
+          lx.t.pos += 1;
+        }
+      }
+      if base == 10 && lx.t.pos < len(src) && (src[lx.t.pos] == 101 || src[lx.t.pos] == 69) {
+        let save: usize = lx.t.pos;
+        lx.t.pos += 1;
+        if lx.t.pos < len(src) && (src[lx.t.pos] == 43 || src[lx.t.pos] == 45) {
+          lx.t.pos += 1;
+        }
+        if lx.t.pos < len(src) && is_digit(src[lx.t.pos]) {
+          is_float = true;
+          loop {
+            if lx.t.pos >= len(src) || !is_digit(src[lx.t.pos]) {
+              break;
+            }
+            lx.t.pos += 1;
+          }
+        } else {
+          lx.t.pos = save;
+        }
+      }
+      if lx.t.pos == digits {
+        lex_error(lx, "malformed number");
+        lx.t.pos += 1;
+        lx.t.col2 += 1;
+        continue;
+      }
+      emit_tok(lx, if is_float { Tok.TkFloat } else { Tok.TkInt }, start);
+      let mut i: usize = start;
+      if is_float {
+        let clean: *main.Vec[u8] = new main.Vec[u8] { items: make([]u8, 64), n: 0 };
+        while i < lx.t.pos {
+          if src[i] != 95 {
+            clean.push(src[i]);
+          }
+          i += 1;
+        }
+        lx.out.last().fv = parse_float(intrinsics.slice_string(clean.items[0..clean.n]));
+      } else {
+        let mut v: u64 = 0;
+        let mut overflow: bool = false;
+        if base != 10 {
+          i += 2; // skip the 0x/0b prefix: the value digits start after it
+        }
+        while i < lx.t.pos {
+          let d: u8 = src[i];
+          i += 1;
+          if d == 95 {
+            continue;
+          }
+          let dv: i32 = digit_val(d, base);
+          if dv < 0 {
+            main.err_at(file, start_line, start_col, "invalid digit for this base");
+            break;
+          }
+          let next: u64 = v * base + dv as u64;
+          if next < v {
+            overflow = true;
+          }
+          v = next;
+        }
+        if overflow {
+          main.err_at(file, start_line, start_col, "integer literal too large");
+        }
+        lx.out.last().iv = v;
+      }
+      lx.t.col2 += (lx.t.pos - start) as i32;
+      continue;
+    }
+
+    // strings
+    if c == 34 {
+      if ch_at(lx, 1) == 34 && ch_at(lx, 2) == 34 {
+        lex_multiline_string(lx, start);
+      } else {
+        lex_string(lx, start);
+      }
+      continue;
+    }
+
+    // two-char operators
+    if op2(lx, c, 61, 61, Tok.PEq) { continue; }
+    if op2(lx, c, 33, 61, Tok.PNe) { continue; }
+    if op2(lx, c, 60, 61, Tok.PLe) { continue; }
+    if op2(lx, c, 62, 61, Tok.PGe) { continue; }
+    if op2(lx, c, 38, 38, Tok.PAndand) { continue; }
+    if op2(lx, c, 124, 124, Tok.POror) { continue; }
+    if op2(lx, c, 38, 61, Tok.PAmpeq) { continue; }
+    if op2(lx, c, 124, 61, Tok.PPipeeq) { continue; }
+    if op2(lx, c, 94, 61, Tok.PCareteq) { continue; }
+    if op2(lx, c, 43, 61, Tok.PPluseq) { continue; }
+    if op2(lx, c, 45, 61, Tok.PMinuseq) { continue; }
+    if op2(lx, c, 42, 61, Tok.PStareq) { continue; }
+    if op2(lx, c, 47, 61, Tok.PSlasheq) { continue; }
+    if op2(lx, c, 37, 61, Tok.PPercenteq) { continue; }
+    if op2(lx, c, 61, 62, Tok.PFatarrow) { continue; }
+    if op2(lx, c, 45, 62, Tok.PArrow) { continue; }
+    if op3(lx, c, 46, 46, 46, Tok.PEllipsis3) { continue; }
+    if op2(lx, c, 46, 46, Tok.PEllipsis2) { continue; }
+    if op2(lx, c, 60, 60, Tok.PShl) { continue; }
+    if op2(lx, c, 62, 62, Tok.PShr) { continue; }
+
+    // single-char operators
+    let mut kind: Tok = Tok.TkEof;
+    if c == 40 { kind = Tok.PLparen; }
+    else if c == 41 { kind = Tok.PRparen; }
+    else if c == 123 { kind = Tok.PLbrace; }
+    else if c == 125 { kind = Tok.PRbrace; }
+    else if c == 91 { kind = Tok.PLbracket; }
+    else if c == 93 { kind = Tok.PRbracket; }
+    else if c == 44 { kind = Tok.PComma; }
+    else if c == 58 { kind = Tok.PColon; }
+    else if c == 59 { kind = Tok.PSemi; }
+    else if c == 46 { kind = Tok.PDot; }
+    else if c == 43 { kind = Tok.PPlus; }
+    else if c == 45 { kind = Tok.PMinus; }
+    else if c == 42 { kind = Tok.PStar; }
+    else if c == 47 { kind = Tok.PSlash; }
+    else if c == 37 { kind = Tok.PPercent; }
+    else if c == 33 { kind = Tok.PBang; }
+    else if c == 126 { kind = Tok.PTilde; }
+    else if c == 38 { kind = Tok.PAmp; }
+    else if c == 124 { kind = Tok.PPipe; }
+    else if c == 94 { kind = Tok.PCaret; }
+    else if c == 60 { kind = Tok.PLt; }
+    else if c == 62 { kind = Tok.PGt; }
+    else if c == 61 { kind = Tok.PAssign; }
+    else if c == 63 { kind = Tok.PQmark; }
+    else {
+      lex_error(lx, "unexpected character");
+      lx.t.pos += 1;
+      lx.t.col2 += 1;
+      continue;
+    }
+    lx.t.pos += 1;
+    lx.t.col2 += 1;
+    emit_tok(lx, kind, start);
+  }
+  let eof: *Token = new Token {
+    kind: Tok.TkEof,
+    text: "",
+    file: file,
+    line: lx.t.line2,
+    col: lx.t.col2,
+    iv: 0,
+    fv: 0.0,
+    pre: new main.Vec[string] { items: make([]string, 8), n: 0 },
+    pending: new main.Vec[string] { items: make([]string, 8), n: 0 },
+    pos: 0,
+    line2: 1,
+    col2: 1,
+  };
+  eof.pre = lx.t.pending;
+  out.push(eof);
+}
+
+fn op3(lx: *Lexer, c: u8, a: u8, b: u8, d: u8, kind: Tok) -> bool {
+  if c == a && lx.t.pos + 2 < len(lx.src) && lx.src[lx.t.pos + 1] == b && lx.src[lx.t.pos + 2] == d {
+    lx.t.pos += 3;
+    lx.t.col2 += 3;
+    emit_tok(lx, kind, 0);
+    return true;
+  }
+  return false;
+}
+
+fn op2(lx: *Lexer, c: u8, a: u8, b: u8, kind: Tok) -> bool {
+  if c != a || ch_at(lx, 1) != b {
+    return false;
+  }
+  let start: usize = lx.t.pos;
+  lx.t.pos += 2;
+  lx.t.col2 += 2;
+  emit_tok(lx, kind, start);
+  return true;
+}

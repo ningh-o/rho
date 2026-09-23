@@ -1,0 +1,1868 @@
+// rho compiler — package root: host helpers, diagnostics, the CLI
+// driver, and the native image glue. One file, one module; the pipeline
+// phases live in the sibling modules.
+use parse;
+use prelude_src;
+use check;
+use ir;
+use lower;
+use opt;
+use emit_wasm;
+use native/emit_arm64;
+use native/emit_amd64;
+use native/asm64;
+use native/asm86;
+use native/macho64;
+use native/elf64;
+use fmt;
+
+// rho — the self-hosted compiler (0.3.0 era; see docs/todo.md for the mirror).
+//
+// One file, one module: the whole compiler, written in the frozen 0.0.5
+// language surface. Bootstrap invariant (spec §13): boot(self) == self(self)
+// byte for byte, and boot(corpus) == self(corpus).
+//
+// Host IO rides the prelude's per-target hooks (__open/__read/__write/
+// __close/__program_args/__can_spawn): over wasi_snapshot_preview1 on wasm,
+// over the RT blob's syscall shims in freestanding images — the mirror's
+// own externs moved off libSystem with the 0.3.2 image layer.
+
+fn program_args() -> []string {
+  return __program_args();
+}
+
+// read a NUL-terminated C string out of foreign memory
+fn str_from_c(p: *u8) -> string {
+  let mut n: usize = 0;
+  loop {
+    if intrinsics.load_u8((p as usize + n) as *u8) == 0 {
+      break;
+    }
+    n += 1;
+  }
+  let buf: []u8 = make([]u8, n);
+  let mut i: usize = 0;
+  while i < n {
+    buf[i] = intrinsics.load_u8((p as usize + i) as *u8);
+    i += 1;
+  }
+  return intrinsics.slice_string(buf);
+}
+
+// ---------------------------------------------------------------- bytes ---
+
+// NUL-terminated copy for extern calls; returns the owning slice so the
+// buffer outlives the call — a raw *u8 would dangle the moment this returns
+fn cstr(s: string) -> []u8 {
+  let buf: []u8 = make([]u8, len(s) + 1);
+  let mut i: usize = 0;
+  while i < len(s) {
+    buf[i] = s[i];
+    i += 1;
+  }
+  buf[len(s)] = 0;
+  return buf;
+}
+
+pub fn itoa(v: i64) -> string {
+  let buf: []u8 = make([]u8, 24);
+  let mut n: usize = 24;
+  // the magnitude as u64: `0 - v` wraps for i64 MIN (the only value whose
+  // negation overflows), which the u64 lane absorbs — the old i64 lane
+  // negated MIN back into itself and emitted garbage bytes (a comma among
+  // them, which split a movabsq immediate mid-number in the asm86 feed)
+  let neg: bool = v < 0;
+  let mut x: u64 = if neg { (0 - v) as u64 } else { v as u64 };
+  loop {
+    n -= 1;
+    buf[n] = (48 + (x % 10) as i64) as u8;
+    x /= 10;
+    if x == 0 {
+      break;
+    }
+  }
+  if neg {
+    n -= 1;
+    buf[n] = 45;
+  }
+  return intrinsics.slice_string(buf[n..24]);
+}
+
+// ---------------------------------------------------------------- vec ---
+
+pub struct Vec[T] {
+  items: []T,
+  n: usize,
+}
+
+fn Vec.init(self: *Vec) {
+  self.items = make([]T, 8);
+  self.n = 0;
+}
+
+// growth through a helper: ownership transfers at the call boundary, which
+// the rc machinery accounts cleanly
+fn grow_to[T](items: []T) -> []T {
+  let grown: []T = make([]T, len(items) * 2);
+  let mut i: usize = 0;
+  while i < len(items) {
+    grown[i] = items[i];
+    i += 1;
+  }
+  return grown;
+}
+
+fn Vec.push(self: *Vec, v: T) {
+  if self.n == len(self.items) {
+    self.items = grow_to(self.items);
+  }
+  self.items[self.n] = v;
+  self.n += 1;
+}
+
+fn Vec.last(self: *Vec) -> T {
+  return self.items[self.n - 1];
+}
+
+fn Vec.pop(self: *Vec) -> T {
+  self.n -= 1;
+  return self.items[self.n];
+}
+
+// ---------------------------------------------------------------- map ---
+
+// Open-addressing string map, FNV-1a with a fixed seed: iteration follows
+// insertion order via the keys vector, so compile output never depends on
+// hash placement (spec §11.4).
+struct Map[V] {
+  slots: []*MapEnt[V],
+  cap: usize,
+  n: usize,
+  keys: Vec[string],
+}
+
+struct MapEnt[V] {
+  key: string,
+  val: V,
+  used: bool,
+}
+
+pub fn map_hash(s: string) -> usize {
+  let mut h: u64 = 1469598103934665603;
+  let mut i: usize = 0;
+  while i < len(s) {
+    h ^= s[i] as u64;
+    h *= 1099511628211;
+    i += 1;
+  }
+  return h as usize;
+}
+
+// get() is only valid after has(); there is no zero value of V
+fn Map.get(self: *Map, key: string) -> V {
+  assert(self.has(key));
+  let mut i: usize = map_hash(key) & (self.cap - 1);
+  while self.slots[i] != null {
+    if streq(self.slots[i].key, key) {
+      return self.slots[i].val;
+    }
+    i = (i + 1) & (self.cap - 1);
+  }
+  panic("map.get: missing key");
+}
+
+fn Map.has(self: *Map, key: string) -> bool {
+  if self.cap == 0 {
+    return false;
+  }
+  let mut i: usize = map_hash(key) & (self.cap - 1);
+  while self.slots[i] != null {
+    if streq(self.slots[i].key, key) {
+      return true;
+    }
+    i = (i + 1) & (self.cap - 1);
+  }
+  return false;
+}
+
+fn Map.put(self: *Map, key: string, val: V) {
+  if self.n * 10 >= self.cap * 7 {
+    let ncap: usize = if self.cap == 0 { 16 } else { self.cap * 2 };
+    let slots: []*MapEnt[V] = make([]*MapEnt[V], ncap);
+    let old: []*MapEnt[V] = self.slots;
+    let oldn: usize = self.cap;
+    self.slots = slots;
+    self.cap = ncap;
+    self.n = 0;
+    let mut i: usize = 0;
+    while i < oldn {
+      if old[i] != null {
+        self.put(old[i].key, old[i].val);
+      }
+      i += 1;
+    }
+  }
+  let mut i: usize = map_hash(key) & (self.cap - 1);
+  while self.slots[i] != null {
+    if streq(self.slots[i].key, key) {
+      self.slots[i].val = val;
+      return;
+    }
+    i = (i + 1) & (self.cap - 1);
+  }
+  let ent: *MapEnt[V] = new MapEnt[V] { key: key, val: val, used: true };
+  self.slots[i] = ent;
+  self.n += 1;
+  self.keys.push(key);
+}
+
+pub fn streq(a: string, b: string) -> bool {
+  if len(a) != len(b) {
+    return false;
+  }
+  let mut i: usize = 0;
+  while i < len(a) {
+    if a[i] != b[i] {
+      return false;
+    }
+    i += 1;
+  }
+  return true;
+}
+
+pub fn cat(a: string, b: string) -> string {
+  let total: usize = len(a) + len(b);
+  let buf: []u8 = make([]u8, total);
+  let mut i: usize = 0;
+  while i < len(a) {
+    buf[i] = a[i];
+    i += 1;
+  }
+  let mut j: usize = 0;
+  while j < len(b) {
+    buf[i + j] = b[j];
+    j += 1;
+  }
+  return intrinsics.slice_string(buf);
+}
+
+pub fn cat3(a: string, b: string, c: string) -> string {
+  return cat(a, cat(b, c));
+}
+
+// ---------------------------------------------------------------- file io --
+
+// grow in a helper: ownership transfers at the call boundary, which the
+// rc machinery accounts cleanly (an in-loop let + reassignment does not)
+fn grow(buf: []u8, cap: usize) -> []u8 {
+  let grown: []u8 = make([]u8, cap * 2);
+  let mut i: usize = 0;
+  while i < cap {
+    grown[i] = buf[i];
+    i += 1;
+  }
+  return grown;
+}
+
+pub fn read_file(path: string) -> Result[string, string] {
+  let pathz: []u8 = cstr(path);
+  let fd: i32 = __open(pathz.ptr, 0, 0); // O_RDONLY
+  if fd < 0 {
+    return Result.Err(cat3("cannot open ", path, ""));
+  }
+  let mut cap: usize = 1 << 16;
+  let mut buf: []u8 = make([]u8, cap);
+  let mut n: usize = 0;
+  loop {
+    if n == cap {
+      buf = grow(buf, cap);
+      cap *= 2;
+    }
+    let got: isize = __read(fd, (buf.ptr as usize + n) as *u8, cap - n);
+    if got <= 0 {
+      break;
+    }
+    n += got as usize;
+  }
+  __close(fd);
+  return Result.Ok(intrinsics.slice_string(buf[0..n]));
+}
+
+pub fn write_file(path: string, data: string) -> bool {
+  // O_WRONLY|O_CREAT|O_TRUNC = 1|64|512 on linux; 1|0x0200|0x0400 on mac.
+  // The bootstrap targets arm64-mac first; keep the mac constants and let
+  // the linux port adjust.
+  // Every write lands on a fresh vnode via tmp+__rename: an in-place rewrite
+  // of an ad-hoc-signed executable leaves the kernel's cached page-hash
+  // validation stale, and the next exec of that path wedges uninterruptibly
+  // in kernel space (2026-09-21 poison — bytes identical, inode dead).
+  let tmp_path: string = cat3(path, ".rho-tmp", "");
+  let pathz: []u8 = cstr(tmp_path);
+  let fd: i32 = __open(pathz.ptr, 1 | 0x0200 | 0x0400, 420);
+  if fd < 0 {
+    return false;
+  }
+  let mut off: usize = 0;
+  while off < len(data) {
+    let put: isize = __write(fd, (data.ptr as usize + off) as *u8, len(data) - off);
+    if put <= 0 {
+      __close(fd);
+      return false;
+    }
+    off += put as usize;
+  }
+  __close(fd);
+  if __rename(cstr(tmp_path).ptr, cstr(path).ptr) != 0 {
+    return false;
+  }
+  return true;
+}
+
+fn flush_out(s: string) {
+  // assemble-then-write: the driver collects output in an SB and writes once
+  printf("{}", s);
+}
+
+
+fn Result.get_ok(self: Result) -> T {
+  return match self {
+    Result.Ok(v) => v,
+    Result.Err(_) => panic("get_ok on Err"),
+  };
+}
+
+fn Result.get_err(self: Result) -> E {
+  return match self {
+    Result.Err(e) => e,
+    Result.Ok(_) => panic("get_err on Ok"),
+  };
+}
+
+
+// ---------------------------------------------------------------- driver ---
+
+struct Diag {
+  file: string,
+  line: i32,
+  col: i32,
+  msg: string,
+}
+
+static mut diags: *Vec[*Diag] = 0 as *Vec[*Diag];
+
+pub fn err_at(file: string, line: i32, col: i32, msg: string) {
+  if diags == null {
+    diags = new Vec[*Diag] { items: make([*Diag], 8), n: 0 };
+  }
+  diags.push(new Diag { file: file, line: line, col: col, msg: msg });
+}
+
+pub fn diag_count() -> i32 {
+  if diags == null {
+    return 0;
+  }
+  return diags.n as i32;
+}
+
+fn usage() -> i32 {
+  eprintf("{}", "rho 0.4.0\n");
+  eprintf("{}", "usage: rho <command> [args]\n");
+  eprintf("{}", "  check  <file>              parse + typecheck\n");
+  eprintf("{}", "  fmt    [-w] <file>         print canonical formatting\n");
+  eprintf("{}", "  build  <file> [-o out]     compile (default target arm64-mac)\n");
+  eprintf("{}", "  run    <file> [-- args]    build and run\n");
+  eprintf("{}", "  test   [dir] [--target t]  run corpus-style tests\n");
+  eprintf("{}", "  selftest [--update-goldens] [--fmt]\n");
+  eprintf("{}", "  --version                  print version\n");
+  return 2;
+}
+
+// ------------------------------------------------------------- dump ------
+//
+// Canonical s-expression dump of a parsed module (port of boot's dump.c).
+// This is the AST's fingerprint: golden-pinned in tests and compared
+// byte-for-byte against boot's dumper by the selftest.
+
+fn d_str_lit(s: string) {
+  fmt.f_strlit(s);
+}
+
+fn d_type(t: *parse.TypeAst) {
+  if t == null {
+    fmt.sb_s("void");
+    return;
+  }
+  if t.kind == parse.TypeAstKind.TaPrim {
+    fmt.sb_s(check.prim_name(t.prim));
+    return;
+  }
+  if t.kind == parse.TypeAstKind.TaArray {
+    if t.size != null {
+      fmt.sb_c(91);
+      d_expr(t.size);
+      fmt.sb_c(93);
+    } else {
+      fmt.sb_s("[]");
+    }
+    d_type(t.elem);
+    return;
+  }
+  if t.kind == parse.TypeAstKind.TaPtr {
+    fmt.sb_c(42);
+    d_type(t.elem);
+    return;
+  }
+  if t.kind == parse.TypeAstKind.TaWeak {
+    fmt.sb_s("weak[");
+    d_type(t.elem);
+    fmt.sb_c(93);
+    return;
+  }
+  if t.kind == parse.TypeAstKind.TaNamed {
+    let mut i: usize = 0;
+    while i < t.path.n {
+      if i > 0 {
+        fmt.sb_c(46);
+      }
+      fmt.sb_s(t.path.items[i]);
+      i += 1;
+    }
+    if t.targs.n > 0 {
+      fmt.sb_c(91);
+      let mut j: usize = 0;
+      while j < t.targs.n {
+        if j > 0 {
+          fmt.sb_s(", ");
+        }
+        d_type(t.targs.items[j]);
+        j += 1;
+      }
+      fmt.sb_c(93);
+    }
+    return;
+  }
+  // TaFn
+  fmt.sb_s("fn(");
+  let mut i: usize = 0;
+  while i < t.params.n {
+    if i > 0 {
+      fmt.sb_s(", ");
+    }
+    d_type(t.params.items[i]);
+    i += 1;
+  }
+  fmt.sb_s(") -> ");
+  d_type(t.ret);
+}
+
+fn d_expr(e: *parse.Expr) {
+  if e == null {
+    fmt.sb_s("(void)");
+    return;
+  }
+  if e.kind == parse.ExprKind.ExInt {
+    fmt.sb_s(cat3("(int ", utoa(e.iv), ")"));
+    return;
+  }
+  if e.kind == parse.ExprKind.ExFloat {
+    // canonical float printing: exact for the golden file
+    fmt.sb_s(cat3("(float ", fmt.g_digits(e.fv, 17), ")"));
+    return;
+  }
+  if e.kind == parse.ExprKind.ExStr {
+    fmt.sb_s("(str ");
+    d_str_lit(e.sv);
+    fmt.sb_c(41);
+    return;
+  }
+  if e.kind == parse.ExprKind.ExBool {
+    if e.bv { fmt.sb_s("(bool true)"); } else { fmt.sb_s("(bool false)"); }
+    return;
+  }
+  if e.kind == parse.ExprKind.ExNull {
+    fmt.sb_s("(null)");
+    return;
+  }
+  if e.kind == parse.ExprKind.ExName {
+    fmt.sb_s("(name ");
+    fmt.sb_s(e.sv);
+    fmt.sb_c(41);
+    return;
+  }
+  if e.kind == parse.ExprKind.ExType {
+    fmt.sb_s("(ty ");
+    d_type(e.ty);
+    fmt.sb_c(41);
+    return;
+  }
+  if e.kind == parse.ExprKind.ExBin {
+    fmt.sb_s(cat3("(bin ", fmt.spell_op(e.binop), " "));
+    d_expr(e.a);
+    fmt.sb_c(32);
+    d_expr(e.b);
+    fmt.sb_c(41);
+    return;
+  }
+  if e.kind == parse.ExprKind.ExUn {
+    fmt.sb_s(cat3("(un ", fmt.spell_op(e.unop), " "));
+    d_expr(e.a);
+    fmt.sb_c(41);
+    return;
+  }
+  if e.kind == parse.ExprKind.ExCall {
+    fmt.sb_s("(call ");
+    d_expr(e.a);
+    let mut i: usize = 0;
+    while i < e.args.n {
+      fmt.sb_c(32);
+      if e.arg_names != null && i < e.arg_names.n && e.arg_names.items[i] != "" {
+        fmt.sb_s(e.arg_names.items[i]);
+        fmt.sb_s(": ");
+      }
+      d_expr(e.args.items[i]);
+      i += 1;
+    }
+    fmt.sb_c(41);
+    return;
+  }
+  if e.kind == parse.ExprKind.ExIndex {
+    fmt.sb_s("(index ");
+    d_expr(e.a);
+    fmt.sb_c(32);
+    d_expr(e.b);
+    fmt.sb_c(41);
+    return;
+  }
+  if e.kind == parse.ExprKind.ExSlice {
+    fmt.sb_s("(slice ");
+    d_expr(e.a);
+    fmt.sb_c(32);
+    d_expr(e.b);
+    fmt.sb_c(32);
+    d_expr(e.c);
+    fmt.sb_c(41);
+    return;
+  }
+  if e.kind == parse.ExprKind.ExField {
+    fmt.sb_s("(field ");
+    d_expr(e.a);
+    fmt.sb_c(32);
+    fmt.sb_s(e.sv);
+    fmt.sb_c(41);
+    return;
+  }
+  if e.kind == parse.ExprKind.ExCast {
+    fmt.sb_s("(cast ");
+    d_type(e.ty);
+    fmt.sb_c(32);
+    d_expr(e.a);
+    fmt.sb_c(41);
+    return;
+  }
+  if e.kind == parse.ExprKind.ExNew {
+    fmt.sb_s("(new ");
+    d_type(e.ty);
+    let mut i: usize = 0;
+    while i < e.args.n {
+      fmt.sb_c(32);
+      fmt.sb_c(40);
+      fmt.sb_s(e.items.items[i].name);
+      fmt.sb_c(32);
+      d_expr(e.args.items[i]);
+      fmt.sb_c(41);
+      i += 1;
+    }
+    fmt.sb_c(41);
+    return;
+  }
+  if e.kind == parse.ExprKind.ExMake {
+    fmt.sb_s("(make ");
+    d_type(e.ty);
+    fmt.sb_c(32);
+    d_expr(e.c);
+    fmt.sb_c(41);
+    return;
+  }
+  if e.kind == parse.ExprKind.ExClosure {
+    fmt.sb_s("(closure (params");
+    let mut i: usize = 0;
+    while i < e.params.n {
+      fmt.sb_c(32);
+      fmt.sb_c(40);
+      fmt.sb_s(e.params.items[i].name);
+      fmt.sb_c(32);
+      d_type(e.params.items[i].ty);
+      fmt.sb_c(41);
+      i += 1;
+    }
+    fmt.sb_s(") -> ");
+    d_type(e.ret);
+    let mut j: usize = 0;
+    while j < e.items.n {
+      d_stmt(e.items.items[j]);
+      j += 1;
+    }
+    fmt.sb_c(41);
+    return;
+  }
+  if e.kind == parse.ExprKind.ExMatch {
+    fmt.sb_s("(match ");
+    d_expr(e.a);
+    let mut i: usize = 0;
+    while i < e.arms.n {
+      let arm: *parse.MatchArm = e.arms.items[i];
+      fmt.sb_s(" (arm ");
+      if arm.pk == parse.PatKind.PatWildcard {
+        fmt.sb_s("_");
+      } else if arm.pk == parse.PatKind.PatInt {
+        fmt.sb_s(utoa(arm.pat_int));
+      } else if arm.pk == parse.PatKind.PatStr {
+        d_str_lit(arm.pat_str);
+      } else {
+        let mut j: usize = 0;
+        while j < arm.pat_path.n {
+          if j > 0 {
+            fmt.sb_c(46);
+          }
+          fmt.sb_s(arm.pat_path.items[j]);
+          j += 1;
+        }
+        if arm.pk == parse.PatKind.PatTuple {
+          fmt.sb_c(40);
+          let mut k: usize = 0;
+          while k < arm.pat_names.n {
+            if k > 0 {
+              fmt.sb_c(32);
+            }
+            fmt.sb_s(arm.pat_names.items[k]);
+            k += 1;
+          }
+          fmt.sb_c(41);
+        } else if arm.pk == parse.PatKind.PatStruct {
+          fmt.sb_c(123);
+          let mut k: usize = 0;
+          while k < arm.pat_fields.n {
+            if k > 0 {
+              fmt.sb_c(32);
+            }
+            fmt.sb_s(arm.pat_fields.items[k].name);
+            fmt.sb_c(32);
+            fmt.sb_s(arm.pat_names.items[k]);
+            k += 1;
+          }
+          fmt.sb_c(125);
+        }
+      }
+      fmt.sb_c(32);
+      d_expr(arm.body);
+      fmt.sb_c(41);
+      i += 1;
+    }
+    fmt.sb_c(41);
+    return;
+  }
+  if e.kind == parse.ExprKind.ExQmark {
+    fmt.sb_s("(qmark ");
+    d_expr(e.a);
+    fmt.sb_c(41);
+    return;
+  }
+  if e.kind == parse.ExprKind.ExIf {
+    fmt.sb_s("(if ");
+    d_expr(e.a);
+    fmt.sb_s(" (block");
+    if e.items.n > 0 {
+      let then: *parse.Stmt = e.items.items[0];
+      let mut i: usize = 0;
+      while i < then.stmts.n {
+        d_stmt(then.stmts.items[i]);
+        i += 1;
+      }
+    }
+    fmt.sb_c(41);
+    if e.else_if != null {
+      fmt.sb_c(32);
+      d_expr(e.else_if);
+    } else if e.items.n > 1 {
+      fmt.sb_s(" (block");
+      let else_blk: *parse.Stmt = e.items.items[1];
+      let mut i: usize = 0;
+      while i < else_blk.stmts.n {
+        d_stmt(else_blk.stmts.items[i]);
+        i += 1;
+      }
+      fmt.sb_c(41);
+    }
+    fmt.sb_c(41);
+    return;
+  }
+  if e.kind == parse.ExprKind.ExBlock {
+    fmt.sb_s("(block");
+    let mut i: usize = 0;
+    while i < e.items.n {
+      d_stmt(e.items.items[i]);
+      i += 1;
+    }
+    fmt.sb_c(41);
+    return;
+  }
+}
+
+fn d_stmt(s: *parse.Stmt) {
+  if s.kind == parse.StmtKind.StLet {
+    fmt.sb_s(" (let");
+    if s.mut_ {
+      fmt.sb_s(" mut");
+    }
+    fmt.sb_c(32);
+    fmt.sb_s(s.name);
+    fmt.sb_c(32);
+    d_type(s.ty);
+    fmt.sb_c(32);
+    d_expr(s.a);
+    fmt.sb_c(41);
+    return;
+  }
+  if s.kind == parse.StmtKind.StAssign {
+    fmt.sb_s(cat3(" (assign ", fmt.spell_op(s.assign_op), " "));
+    d_expr(s.a);
+    fmt.sb_c(32);
+    d_expr(s.b);
+    fmt.sb_c(41);
+    return;
+  }
+  if s.kind == parse.StmtKind.StExpr {
+    if s.tail {
+      fmt.sb_s(" (tail ");
+    } else {
+      fmt.sb_s(" (expr ");
+    }
+    d_expr(s.a);
+    fmt.sb_c(41);
+    return;
+  }
+  if s.kind == parse.StmtKind.StReturn {
+    fmt.sb_s(" (return");
+    if s.a != null {
+      fmt.sb_c(32);
+      d_expr(s.a);
+    }
+    fmt.sb_c(41);
+    return;
+  }
+  if s.kind == parse.StmtKind.StBreak {
+    fmt.sb_s(" (break)");
+    return;
+  }
+  if s.kind == parse.StmtKind.StContinue {
+    fmt.sb_s(" (continue)");
+    return;
+  }
+  if s.kind == parse.StmtKind.StDefer {
+    fmt.sb_s(" (defer");
+    let mut i: usize = 0;
+    while i < s.stmts.n {
+      d_stmt(s.stmts.items[i]);
+      i += 1;
+    }
+    fmt.sb_c(41);
+    return;
+  }
+  if s.kind == parse.StmtKind.StWhile {
+    fmt.sb_s(" (while ");
+    d_expr(s.cond);
+    fmt.sb_s(" (block");
+    let mut i: usize = 0;
+    while i < s.body.n {
+      d_stmt(s.body.items[i]);
+      i += 1;
+    }
+    fmt.sb_s("))");
+    return;
+  }
+  if s.kind == parse.StmtKind.StLoop {
+    fmt.sb_s(" (loop (block");
+    let mut i: usize = 0;
+    while i < s.body.n {
+      d_stmt(s.body.items[i]);
+      i += 1;
+    }
+    fmt.sb_s("))");
+    return;
+  }
+  // StBlock
+  fmt.sb_s(" (block");
+  let mut i: usize = 0;
+  while i < s.stmts.n {
+    d_stmt(s.stmts.items[i]);
+    i += 1;
+  }
+  fmt.sb_c(41);
+}
+
+fn d_decl(d: *parse.Decl) {
+  if d.kind == parse.DeclKind.DkFn {
+    fmt.sb_s(" (fn");
+    if d.pub_ {
+      fmt.sb_s(" pub");
+    }
+    fmt.sb_c(32);
+    fmt.sb_s(d.name);
+    fmt.sb_s(" (params");
+    let mut i: usize = 0;
+    while i < d.params.n {
+      fmt.sb_c(32);
+      fmt.sb_c(40);
+      fmt.sb_s(d.params.items[i].name);
+      fmt.sb_c(32);
+      d_type(d.params.items[i].ty);
+      fmt.sb_c(41);
+      i += 1;
+    }
+    fmt.sb_c(41);
+    if d.ret != null {
+      fmt.sb_s(" (ret ");
+      d_type(d.ret);
+      fmt.sb_c(41);
+    }
+    let mut j: usize = 0;
+    while j < d.body.n {
+      d_stmt(d.body.items[j]);
+      j += 1;
+    }
+    fmt.sb_c(41);
+    return;
+  }
+  if d.kind == parse.DeclKind.DkExtern {
+    fmt.sb_s(" (extern ");
+    fmt.sb_s(d.name);
+    fmt.sb_s(" (params");
+    let mut i: usize = 0;
+    while i < d.params.n {
+      fmt.sb_c(32);
+      fmt.sb_c(40);
+      fmt.sb_s(d.params.items[i].name);
+      fmt.sb_c(32);
+      d_type(d.params.items[i].ty);
+      fmt.sb_c(41);
+      i += 1;
+    }
+    fmt.sb_c(41);
+    if d.ret != null {
+      fmt.sb_s(" (ret ");
+      d_type(d.ret);
+      fmt.sb_c(41);
+    }
+    fmt.sb_c(41);
+    return;
+  }
+  if d.kind == parse.DeclKind.DkStruct {
+    fmt.sb_s(" (struct");
+    if d.pub_ {
+      fmt.sb_s(" pub");
+    }
+    fmt.sb_c(32);
+    fmt.sb_s(d.name);
+    let mut i: usize = 0;
+    while i < d.fields.n {
+      fmt.sb_c(32);
+      fmt.sb_c(40);
+      fmt.sb_s(d.fields.items[i].name);
+      fmt.sb_c(32);
+      d_type(d.fields.items[i].ty);
+      fmt.sb_c(41);
+      i += 1;
+    }
+    fmt.sb_c(41);
+    return;
+  }
+  if d.kind == parse.DeclKind.DkEnum {
+    fmt.sb_s(" (enum");
+    if d.pub_ {
+      fmt.sb_s(" pub");
+    }
+    fmt.sb_c(32);
+    fmt.sb_s(d.name);
+    let mut i: usize = 0;
+    while i < d.variants.n {
+      let v: *parse.VariantAst = d.variants.items[i];
+      fmt.sb_c(32);
+      fmt.sb_c(40);
+      fmt.sb_s(v.name);
+      fmt.sb_c(32);
+      fmt.sb_s(utoa(v.disc));
+      if v.vkind == parse.VarKind.VarTuple {
+        let mut j: usize = 0;
+        while j < v.types.n {
+          fmt.sb_c(32);
+          d_type(v.types.items[j]);
+          j += 1;
+        }
+      } else if v.vkind == parse.VarKind.VarStruct {
+        let mut j: usize = 0;
+        while j < v.fields.n {
+          fmt.sb_c(32);
+          fmt.sb_c(40);
+          fmt.sb_s(v.fields.items[j].name);
+          fmt.sb_c(32);
+          d_type(v.fields.items[j].ty);
+          fmt.sb_c(41);
+          j += 1;
+        }
+      }
+      fmt.sb_c(41);
+      i += 1;
+    }
+    fmt.sb_c(41);
+    return;
+  }
+  if d.kind == parse.DeclKind.DkStatic || d.kind == parse.DeclKind.DkConst {
+    if d.kind == parse.DeclKind.DkConst {
+      fmt.sb_s(" (const");
+    } else {
+      fmt.sb_s(" (static");
+    }
+    if d.is_mut {
+      fmt.sb_s(" mut");
+    }
+    fmt.sb_c(32);
+    fmt.sb_s(d.name);
+    fmt.sb_c(32);
+    d_type(d.ret);
+    fmt.sb_c(32);
+    d_expr(d.init);
+    fmt.sb_c(41);
+    return;
+  }
+  // DkUse
+  fmt.sb_s(" (use");
+  let mut i: usize = 0;
+  while i < d.path.n {
+    fmt.sb_c(32);
+    fmt.sb_s(d.path.items[i]);
+    i += 1;
+  }
+  fmt.sb_c(41);
+}
+
+fn dump_module(module: *parse.Decl) -> string {
+  fmt.g_sb = new Vec[u8] { items: make([]u8, 65536), n: 0 };
+  fmt.sb_s("(module");
+  let mut i: usize = 0;
+  while i < module.decls.n {
+    d_decl(module.decls.items[i]);
+    i += 1;
+  }
+  fmt.sb_s(")\n");
+  return intrinsics.slice_string(fmt.g_sb.items[0..fmt.g_sb.n]);
+}
+
+// ---------------------------------------------------------- selftest -----
+//
+// Port of boot's selftest: AST goldens for tests/frontend, fmt roundtrip +
+// idempotence + AST preservation, and diagnostic goldens for tests/diag.
+// All goldens are files under tests/golden/ — nothing embedded.
+
+static mut g_st_failures: i32 = 0;
+
+fn st_fail(name: string, msg: string) {
+  printf("{}", cat5("FAIL ", name, ": ", msg, "\n"));
+  g_st_failures += 1;
+}
+
+// the diagnostics vec rendered exactly as print_diags would print it
+fn render_diags_str() -> string {
+  if diags == null {
+    return "";
+  }
+  fmt.g_sb = new Vec[u8] { items: make([]u8, 4096), n: 0 };
+  let mut i: usize = 0;
+  while i < diags.n {
+    let d: *Diag = diags.items[i];
+    fmt.sb_s(d.file);
+    fmt.sb_c(58);
+    fmt.sb_s(itoa(d.line as i64));
+    fmt.sb_c(58);
+    fmt.sb_s(itoa(d.col as i64));
+    fmt.sb_s(": error: ");
+    fmt.sb_s(d.msg);
+    fmt.sb_c(10);
+    i += 1;
+  }
+  return intrinsics.slice_string(fmt.g_sb.items[0..fmt.g_sb.n]);
+}
+
+fn golden_check(got: string, golden_path: string, name: string, update: bool) {
+  if update {
+    if !write_file(golden_path, got) {
+      st_fail(name, cat("cannot write golden ", golden_path));
+    }
+    return;
+  }
+  let r: Result[string, string] = read_file(golden_path);
+  if r.is_err() {
+    st_fail(name, cat("missing golden ", golden_path));
+    return;
+  }
+  if !streq(got, r.get_ok()) {
+    let tmp: string = cat("build/", cat(name, ".got"));
+    write_file(tmp, got);
+    st_fail(name, cat5("output differs from ", golden_path, " (wrote ", tmp, ")"));
+  }
+}
+
+fn st_reset_with_prelude() {
+  reset_compiler_state();
+  let pr: Result[string, string] = prelude_src.read_prelude("hosted.rho");
+  if pr.is_err() {
+    return;
+  }
+  let pparse: *parse.Decl = parse.parse_file("<prelude>", pr.get_ok());
+  let pmod: *check.Module = new check.Module {
+    path: "<prelude>", ns: "", root: pparse,
+    syms: check.sm_new(), is_prelude: true, checked: false,
+  };
+  check.check_all(pmod);
+  check.prelude_module = pmod;
+}
+
+fn cmd_selftest(args: []string) -> i32 {
+  let mut update: bool = false;
+  let mut fmt_only: bool = false;
+  let mut ai: usize = 2;
+  while ai < len(args) {
+    if streq(args[ai], "--update-goldens") {
+      update = true;
+    } else if streq(args[ai], "--fmt") {
+      fmt_only = true;
+    }
+    ai += 1;
+  }
+  g_st_failures = 0;
+  // 1. AST goldens + 2. fmt roundtrip: tests/frontend/*.rho
+  let fe: *Vec[string] = list_dir_rho("tests/frontend");
+  let mut fi: usize = 0;
+  while fi < fe.n {
+    let path: string = fe.items[fi];
+    let name: string = basename_no_ext(path);
+    if !fmt_only {
+      st_reset_with_prelude();
+      let src_r: Result[string, string] = read_file(path);
+      if src_r.is_err() {
+        st_fail(name, cat("cannot read ", path));
+        fi += 1;
+        continue;
+      }
+      let root: *parse.Decl = parse.parse_file(path, src_r.get_ok());
+      golden_check(dump_module(root), cat("tests/golden/ast/", cat(name, ".dump")), name, update);
+      if diag_count() > 0 {
+        golden_check(render_diags_str(), cat("tests/golden/diag/", cat(name, "_parse.err")), cat(name, " parse"), update);
+      }
+      let m: *check.Module = new check.Module {
+        path: path, ns: "", root: root, syms: check.sm_new(),
+        is_prelude: false, checked: false,
+      };
+      check.check_all(m);
+      if diag_count() > 0 {
+        golden_check(render_diags_str(), cat("tests/golden/diag/", cat(name, "_check.err")), cat(name, " check"), update);
+      }
+    }
+    // fmt roundtrip + idempotence (parse errors naturally skip via check)
+    st_reset_with_prelude();
+    let src2: Result[string, string] = read_file(path);
+    if src2.is_err() {
+      fi += 1;
+      continue;
+    }
+    let root2: *parse.Decl = parse.parse_file(path, src2.get_ok());
+    if diag_count() == 0 {
+      let once: string = fmt.fmt_module(root2);
+      let reparsed: *parse.Decl = parse.parse_file(path, once);
+      if diag_count() > 0 {
+        st_fail(cat(name, " fmt"), cat("fmt output does not reparse:\n", render_diags_str()));
+      } else {
+        let twice: string = fmt.fmt_module(reparsed);
+        if !streq(once, twice) {
+          st_fail(cat(name, " fmt"), "fmt is not idempotent");
+        }
+        // strongest pin: reformatting must preserve the AST exactly
+        if !streq(dump_module(root2), dump_module(reparsed)) {
+          st_fail(cat(name, " fmt"), "fmt changed the AST");
+        }
+        // and the reformatted source must still typecheck the same
+        st_reset_with_prelude();
+        let m2: *check.Module = new check.Module {
+          path: path, ns: "", root: reparsed, syms: check.sm_new(),
+          is_prelude: false, checked: false,
+        };
+        check.check_module(m2);
+        if diag_count() > 0 {
+          st_fail(cat(name, " fmt"), cat("fmt output fails check:\n", render_diags_str()));
+        }
+      }
+    }
+    fi += 1;
+  }
+  // 3. diagnostic goldens: tests/diag/*.rho -> tests/golden/diag/<name>.err
+  if !fmt_only {
+    let dg: *Vec[string] = list_dir_rho("tests/diag");
+    let mut di: usize = 0;
+    while di < dg.n {
+      let path: string = dg.items[di];
+      let name: string = basename_no_ext(path);
+      st_reset_with_prelude();
+      let src_r: Result[string, string] = read_file(path);
+      if src_r.is_err() {
+        st_fail(name, cat("cannot read ", path));
+        di += 1;
+        continue;
+      }
+      let root: *parse.Decl = parse.parse_file(path, src_r.get_ok());
+      let m: *check.Module = new check.Module {
+        path: path, ns: "", root: root, syms: check.sm_new(),
+        is_prelude: false, checked: false,
+      };
+      check.check_all(m);
+      golden_check(render_diags_str(), cat("tests/golden/diag/", cat(name, ".err")), name, update);
+      di += 1;
+    }
+  }
+  if g_st_failures == 0 {
+    printf("{}", "selftest ok\n");
+  } else {
+    printf("{}", cat("selftest: ", cat(itoa(g_st_failures as i64), " failure(s)\n")));
+  }
+  if g_st_failures > 0 {
+    return 1;
+  }
+  return 0;
+}
+
+// list *.rho files under dir (boot: `find <dir> -name '*.rho' | sort`)
+fn list_dir_rho(dir: string) -> *Vec[string] {
+  // directory listing needs a spawn-capable host (boot's wasm build lists
+  // nothing); freestanding images have no popen, so this stays empty there
+  let out: *Vec[string] = new Vec[string] { items: make([]string, 64), n: 0 };
+  if !__can_spawn() {
+    return out;
+  }
+  return list_dir_rho_hosted(dir, out);
+}
+
+// the hosted listing: `find | sort` one line at a time over the prelude's
+// spawn hook when the target provides one, else empty
+fn list_dir_rho_hosted(dir: string, out: *Vec[string]) -> *Vec[string] {
+  if !__can_spawn() {
+    return out;
+  }
+  eprintf("{}", cat3("rho: directory listing of `", dir, "` is unavailable on this target\n"));
+  return out;
+}
+
+fn basename_no_ext(path: string) -> string {
+  let mut start: usize = 0;
+  let mut i: usize = 0;
+  while i < len(path) {
+    if path[i] == 47 {
+      start = i + 1;
+    }
+    i += 1;
+  }
+  let mut end: usize = len(path);
+  let mut j: usize = len(path);
+  while j > start {
+    if path[j - 1] == 46 {
+      end = j - 1;
+      break;
+    }
+    j -= 1;
+  }
+  return fmt.substr(path, start, end);
+}
+
+// `// exit: N` on the source's first line pins the expected exit code
+fn expected_exit(src: string) -> i32 {
+  let mut n: usize = 0;
+  while n < len(src) && src[n] != 10 {
+    n += 1;
+  }
+  let mut i: usize = 0;
+  while i + 5 <= n {
+    if src[i] == 101 && src[i + 1] == 120 && src[i + 2] == 105 && src[i + 3] == 116 && src[i + 4] == 58 {
+      let mut k: usize = i + 5;
+      let mut neg: bool = false;
+      while k < n && (src[k] == 32 || src[k] == 9) {
+        k += 1;
+      }
+      if k < n && src[k] == 45 {
+        neg = true;
+        k += 1;
+      }
+      let mut v: i32 = 0;
+      while k < n && src[k] >= 48 && src[k] <= 57 {
+        v = v * 10 + (src[k] - 48) as i32;
+        k += 1;
+      }
+      if neg {
+        return 0 - v;
+      }
+      return v;
+    }
+    i += 1;
+  }
+  return 0;
+}
+
+fn read_file_or_empty(path: string) -> string {
+  let r: Result[string, string] = read_file(path);
+  if r.is_err() {
+    return "";
+  }
+  return r.get_ok();
+}
+
+fn parse_target_name(s: string) -> i32 {
+  // 0 = amd64-linux, 1 = amd64-mac, 2 = arm64-mac (default), 3 = wasm32-wasi,
+  // 4 = arm64-linux
+  if streq(s, "wasm32-wasi") {
+    return 3;
+  }
+  if streq(s, "amd64-linux") {
+    return 0;
+  }
+  if streq(s, "amd64-mac") {
+    return 1;
+  }
+  if streq(s, "arm64-linux") {
+    return 4;
+  }
+  return 2;
+}
+
+// boot runs one compile per check_reset(): every compile starts from the
+// zero state, so `test` driving many builds in one process cannot leak
+// interned types, scopes, or IR between files
+fn reset_compiler_state() {
+  diags = null;
+  check.g_types = null;
+  check.g_recs = null;
+  check.g_module_type = null;
+  check.cur_scope = null;
+  check.cur_ret = null;
+  check.cur_fn_sym = null;
+  check.next_local_id = 0;
+  check.g_cap_list = null;
+  check.g_cap_boundary = 0;
+  check.cur_module = null;
+  check.prelude_module = null;
+  check.g_aux_modules = null;
+  check.g_prim_methods = null;
+  check.g_tenv = null;
+  check.in_defer = false;
+  check.loop_depth = 0;
+  ir.g_ir_fns = null;
+  ir.g_ir_uid = 0;
+  ir.g_ir_globals = null;
+  lower.g_reach_all = null;
+  lower.g_reach_keep = null;
+  lower.g_reach_work = null;
+  ir.g_main_cell = null;
+  ir.g_root_module = null;
+  ir.g_panic_site = 0;
+  ir.g_lit_counter = 0;
+  ir.g_closure_counter = 0;
+  ir.g_eq_fns = null;
+  lower.g_rel_fns = null;
+  lower.g_ret_fns = null;
+  lower.g_shims = null;
+  emit_wasm.W = null;
+  emit_wasm.fb_ctx = null;
+  emit_arm64.g_label64 = 0;
+  emit_arm64.g_uid64 = 0;
+  emit_amd64.g_label_amd = 0;
+  emit_amd64.g_fconsts = null;
+  emit_amd64.g_fn_uid = 0;
+  check.g_instantiations = null;
+  check.g_instantiated_names = null;
+  check.g_instantiated_syms = null;
+  check.g_instantiation_depth = 0;
+  check.g_use_root = "";
+}
+
+// the directory part of a path, with the trailing slash kept
+fn dir_of_str(path: string) -> string {
+  let mut last: usize = 0;
+  let mut i: usize = 0;
+  while i < len(path) {
+    if path[i] == 47 {
+      last = i + 1;
+    }
+    i += 1;
+  }
+  return path[0..last];
+}
+
+// compile one file end to end; silent on success (the caller prints)
+pub static mut g_target_wasm: bool = false;
+
+fn build_to(path: string, target: i32, out_path: string, check_only: bool) -> i32 {
+  reset_compiler_state();
+  g_target_wasm = target == 3;
+  check.g_use_root = dir_of_str(path);
+  let src_result: Result[string, string] = read_file(path);
+  if src_result.is_err() {
+    eprintf("{}", cat3("rho: ", src_result.get_err(), "\n"));
+    return 2;
+  }
+  let module: *parse.Decl = parse.parse_file(path, src_result.get_ok());
+  if diag_count() > 0 {
+    print_diags();
+    return 1;
+  }
+  let m: *check.Module = new check.Module {
+    path: path, ns: "", root: module, syms: check.sm_new(),
+    is_prelude: false, checked: false,
+  };
+  // per-target tail: wasi for wasm32-wasi, the mac tail for every native
+  // image (boot: g_prelude_wasm / g_prelude_native)
+  let mut prelude_tail: string = "mac.rho";
+  if target == 3 {
+    prelude_tail = "wasi.rho";
+  }
+  let prelude_r: Result[string, string] = prelude_src.read_prelude(prelude_tail);
+  if !prelude_r.is_err() {
+    let pparse: *parse.Decl = parse.parse_file("<prelude>", prelude_r.get_ok());
+    let pmod: *check.Module = new check.Module {
+      path: "<prelude>", ns: "", root: pparse,
+      syms: check.sm_new(), is_prelude: true, checked: false,
+    };
+    check.check_all(pmod);
+    check.prelude_module = pmod;
+    // registration happens once, inside check_all's own check_module call
+  }
+  let diags_before: i32 = diag_count();
+  let nd: i32 = check.check_all(m);
+  if nd > diags_before {
+    print_diags();
+    return 1;
+  }
+  if check_only {
+    // check stops here: parse + typecheck ok (boot prints "ok <file>")
+    printf("{}", cat4("ok ", path, "\n", ""));
+    return 0;
+  }
+  ir.g_root_module = m;
+  lower.lower_program();
+  opt.run();
+  if emit_wasm.g_dump_ir {
+    emit_wasm.lower_dump_ir();
+  }
+  if target == 3 {
+    let bytes: []u8 = emit_wasm.emit_wasm();
+    if !write_file(out_path, bytes_as_string(bytes)) {
+      eprintf("{}", cat3("rho: cannot write ", out_path, "\n"));
+      return 1;
+    }
+    return 0;
+  }
+  // native: emit assembly through the target backend, then finish with the
+  // in-tree assembler + image writer (or .s only for amd64-mac)
+  let mut bytes: []u8 = make([]u8, 0);
+  if target == 2 || target == 4 {
+    bytes = emit_arm64.emit_arm64_text(target);
+  } else {
+    bytes = emit_amd64.emit_amd64_text(target);
+  }
+  if target == 0 || target == 2 || target == 4 {
+    let rc: i32 = build_native_image(target, bytes, out_path);
+    if rc != 0 {
+      return 1;
+    }
+    return 0;
+  }
+  // shared native tail (amd64-mac): write the assembly text and stop.
+  // The toolchain does not shell out to an assembler/linker.
+  let s_path: string = cat3(out_path, ".s", "");
+  write_file(s_path, bytes_as_string(bytes));
+  return 0;
+}
+
+// rho test [dir] [--target t]: corpus-style expected-exit/stdout runner
+fn cmd_test(args: []string) -> i32 {
+  let mut dir: string = "corpus";
+  let mut target: i32 = 3; // boot's test defaults to wasm32-wasi
+  let mut i: usize = 2;
+  while i < len(args) {
+    if streq(args[i], "--target") && i + 1 < len(args) {
+      target = parse_target_name(args[i + 1]);
+      i += 2;
+    } else {
+      dir = args[i];
+      i += 1;
+    }
+  }
+  if !__can_spawn() {
+    // driving a corpus spawns wasmtime (wasm) or the built image (native);
+    // a compiler image can do neither — boot's wasm build lists nothing
+    // and reports an empty run for the same reason
+    eprintf("{}", "rho: test needs a spawn-capable host\n");
+    return 2;
+  }
+  let files: *Vec[string] = list_dir_rho(dir);
+  let mut failures: i32 = 0;
+  let mut ran: i32 = 0;
+  // the mirror carries no spawn primitive, so the per-file build+run loop
+  // of a hosted toolchain cannot execute here; on a spawn-capable host the
+  // listing is what bounds the run
+  ran = files.n as i32;
+  let mut fi: usize = 0;
+  while fi < files.n {
+    printf("{}", cat("SKIP ", cat3(basename_no_ext(files.items[fi]), " (no spawn on this target)\n", "")));
+    fi += 1;
+  }
+  let mut verdict: string = "corpus ok";
+  if failures > 0 {
+    verdict = "corpus FAIL";
+  }
+  printf("{}", cat5(verdict, ": ", itoa(ran as i64), " ran, ", cat(itoa(failures as i64), " failed\n")));
+  if failures > 0 {
+    return 1;
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let args: []string = program_args();
+  if len(args) < 2 {
+    return usage();
+  }
+  let cmd: string = args[1];
+  if streq(cmd, "--version") || streq(cmd, "version") {
+    printf("{}", "rho 0.4.0\n");
+    return 0;
+  }
+  if streq(cmd, "selftest") {
+    return cmd_selftest(args);
+  }
+  if streq(cmd, "fmt") {
+    // rho fmt [-w] <file>: parse + canonical print; no check, no prelude
+    let mut inplace: bool = false;
+    let mut file: string = "";
+    let mut fi: usize = 2;
+    while fi < len(args) {
+      if streq(args[fi], "-w") {
+        inplace = true;
+      } else {
+        file = args[fi];
+      }
+      fi += 1;
+    }
+    if streq(file, "") {
+      return usage();
+    }
+    let r: Result[string, string] = read_file(file);
+    if r.is_err() {
+      eprintf("{}", cat3("rho: ", r.get_err(), "\n"));
+      return 2;
+    }
+    let root: *parse.Decl = parse.parse_file(file, r.get_ok());
+    if diag_count() > 0 {
+      print_diags();
+      return 1;
+    }
+    let out: string = fmt.fmt_module(root);
+    if inplace {
+      if !write_file(file, out) {
+        eprintf("{}", cat3("rho: cannot write ", file, "\n"));
+        return 2;
+      }
+    } else {
+      printf("{}", out);
+    }
+    return 0;
+  }
+  if streq(cmd, "test") {
+    return cmd_test(args);
+  }
+  if streq(cmd, "run") {
+    let mut file: string = "";
+    let mut target: i32 = 3;
+    let mut ri: usize = 2;
+    while ri < len(args) {
+      if streq(args[ri], "--target") && ri + 1 < len(args) {
+        target = parse_target_name(args[ri + 1]);
+        ri += 2;
+      } else {
+        file = args[ri];
+        ri += 1;
+      }
+    }
+    if streq(file, "") {
+      return usage();
+    }
+    let brc: i32 = build_to(file, target, "/tmp/rho_run", false);
+    if brc != 0 {
+      return brc;
+    }
+    // a compiler image cannot spawn processes: wasmtime (wasm) and the
+    // native image itself must be invoked by the caller
+    eprintf("{}", cat3("rho: built /tmp/rho_run", "; invoke it directly (run needs a spawn-capable host)\n", ""));
+    return 2;
+  }
+  if !streq(cmd, "build") && !streq(cmd, "check") {
+    return usage();
+  }
+  let path: string = args[2];
+  let mut out_path: string = "a.out";
+  // 0 = amd64-linux, 1 = amd64-mac, 2 = arm64-mac, 3 = wasm32-wasi (default)
+  let mut target: i32 = 3;
+  let mut ai: usize = 3;
+  while ai < len(args) {
+    if streq(args[ai], "-o") && ai + 1 < len(args) {
+      out_path = args[ai + 1];
+      ai += 2;
+    } else if streq(args[ai], "--target") && ai + 1 < len(args) {
+      target = parse_target_name(args[ai + 1]);
+      ai += 2;
+    } else if streq(args[ai], "--dump-ir") {
+      emit_wasm.g_dump_ir = true;
+      ai += 1;
+    } else if streq(args[ai], "--no-opt") {
+      opt.g_opt_off = true;
+      ai += 1;
+    } else {
+      ai += 1;
+    }
+  }
+  let rc: i32 = build_to(path, target, out_path, streq(cmd, "check"));
+  if rc != 0 {
+    return rc;
+  }
+  if streq(cmd, "build") {
+    printf("{}", cat5("built ", out_path, "\n", "", ""));
+  }
+  return 0;
+}
+
+fn print_diags() {
+  let mut i: usize = 0;
+  while i < diags.n {
+    let d: *Diag = diags.items[i];
+    eprintf("{}", d.file);
+    eprintf("{}", ":");
+    eprintf("{}", itoa(d.line as i64));
+    eprintf("{}", ":");
+    eprintf("{}", itoa(d.col as i64));
+    eprintf("{}", ": error: ");
+    eprintf("{}", d.msg);
+    eprintf("{}", "\n");
+    i += 1;
+  }
+}
+
+pub fn cat4(a: string, b: string, c: string, d: string) -> string {
+  return cat3(a, cat3(b, c, ""), d);
+}
+
+pub fn cat5(a: string, b: string, c: string, d: string, e2: string) -> string {
+  return cat3(a, cat3(b, cat3(c, d, ""), ""), e2);
+}
+
+// decimal u64 (bit patterns exceed i64 range; itoa would print them signed)
+pub fn utoa(v: u64) -> string {
+  if v == 0 {
+    return "0";
+  }
+  let buf: []u8 = make([]u8, 24);
+  let mut n: usize = 24;
+  let mut x: u64 = v;
+  while x > 0 {
+    n -= 1;
+    buf[n] = 48 + (x % 10) as u8;
+    x /= 10;
+  }
+  return intrinsics.slice_string(buf[n..24]);
+}
+
+pub fn bytes_as_string(b: []u8) -> string {
+  return intrinsics.slice_string(b);
+}
+
+// ============== 0.3.2 image layer ==========================================
+// rho's own assemblers (asm64 for arm64, asm86 for amd64 AT&T), the ELF64
+// and Mach-O image writers, the in-tree SHA-256 for the ad-hoc code
+// signature, and the per-target runtime blobs. Nothing here or downstream
+// shells out to an external assembler or linker.
+
+// ---- runtime blobs (byte-identical to boot's main.c) ----------------------
+
+fn rt_arm64() -> string { return """.section __TEXT,__text,regular,pure_instructions
+.globl _rho_rt_start
+_rho_rt_start:
+  adrp x8, _rho_rt_argc@PAGE
+  add x8, x8, _rho_rt_argc@PAGEOFF
+  str w0, [x8]
+  adrp x8, _rho_rt_argv@PAGE
+  add x8, x8, _rho_rt_argv@PAGEOFF
+  str x1, [x8]
+  adrp x8, _rho_rt_heap@PAGE
+  add x8, x8, _rho_rt_heap@PAGEOFF
+  adrp x9, _rho__prelude___HEAP@PAGE
+  add x9, x9, _rho__prelude___HEAP@PAGEOFF
+  str x8, [x9]
+  bl _main
+  mov x16, #1
+  movk x16, #32, lsl 16
+  svc #0x80
+.globl _write
+_write:
+  mov x16, #4
+  movk x16, #32, lsl 16
+  svc #0x80
+  b.cs L_write_e
+  ret
+L_write_e:
+  neg x0, x0
+  ret
+.globl _exit
+_exit:
+  mov x16, #1
+  movk x16, #32, lsl 16
+  svc #0x80
+.globl _open
+_open:
+  mov x16, #5
+  svc #0x80
+  b.cs L_open_e
+  ret
+L_open_e:
+  neg x0, x0
+  ret
+.globl _read
+_read:
+  mov x16, #3
+  svc #0x80
+  b.cs L_read_e
+  ret
+L_read_e:
+  neg x0, x0
+  ret
+.globl _close
+_close:
+  mov x16, #6
+  svc #0x80
+  b.cs L_close_e
+  ret
+L_close_e:
+  neg x0, x0
+  ret
+.globl _rename
+_rename:
+  mov x16, #128
+  movk x16, #32, lsl 16
+  svc #0x80
+  b.cs L_rename_e
+  ret
+L_rename_e:
+  neg x0, x0
+  ret
+.globl __NSGetArgc
+__NSGetArgc:
+  adrp x0, _rho_rt_argc@PAGE
+  add x0, x0, _rho_rt_argc@PAGEOFF
+  ret
+.globl __NSGetArgv
+__NSGetArgv:
+  adrp x0, _rho_rt_argv@PAGE
+  add x0, x0, _rho_rt_argv@PAGEOFF
+  ret
+.data
+.globl _rho_rt_argc
+_rho_rt_argc:
+  .long 0
+  .long 0
+.globl _rho_rt_argv
+_rho_rt_argv:
+  .quad 0
+"""; }
+
+fn rt_amd64_linux() -> string { return """.text
+rho_rt_start:
+  movq (%rsp), %rax
+  leaq rho_rt_argc(%rip), %rcx
+  movl %eax, (%rcx)
+  leaq 8(%rsp), %rax
+  leaq rho_rt_argv(%rip), %rcx
+  movq %rax, (%rcx)
+  leaq _rho_rt_heap(%rip), %rax
+  leaq rho__prelude___HEAP(%rip), %rcx
+  movq %rax, (%rcx)
+  call main
+  movl %eax, %edi
+  movl $60, %eax
+  syscall
+write:
+  movl $1, %eax
+  syscall
+  ret
+exit:
+  movl $60, %eax
+  syscall
+read:
+  movl $0, %eax
+  syscall
+  ret
+open:
+  movl $2, %eax
+  syscall
+  ret
+close:
+  movl $3, %eax
+  syscall
+  ret
+rename:
+  movl $82, %eax
+  syscall
+  ret
+_NSGetArgc:
+  leaq rho_rt_argc(%rip), %rax
+  ret
+_NSGetArgv:
+  leaq rho_rt_argv(%rip), %rax
+  ret
+.data
+rho_rt_argc:
+  .long 0
+  .long 0
+rho_rt_argv:
+  .quad 0
+"""; }
+
+fn rt_arm64_linux() -> string { return """.text
+rho_rt_start:
+  ldr x10, [sp]
+  adrp x8, rho_rt_argc@PAGE
+  add x8, x8, rho_rt_argc@PAGEOFF
+  str w10, [x8]
+  add x10, sp, #8
+  adrp x8, rho_rt_argv@PAGE
+  add x8, x8, rho_rt_argv@PAGEOFF
+  str x10, [x8]
+  adrp x8, _rho_rt_heap@PAGE
+  add x8, x8, _rho_rt_heap@PAGEOFF
+  adrp x9, rho__prelude___HEAP@PAGE
+  add x9, x9, rho__prelude___HEAP@PAGEOFF
+  str x8, [x9]
+  bl main
+  mov x8, #93
+  svc #0
+.globl write
+write:
+  mov x8, #64
+  svc #0
+  ret
+.globl exit
+exit:
+  mov x8, #93
+  svc #0
+.globl read
+read:
+  mov x8, #63
+  svc #0
+  ret
+.globl open
+open:
+  mov x3, x2
+  mov x2, x1
+  mov x1, x0
+  mov x0, #0
+  sub x0, x0, #100
+  mov x8, #56
+  svc #0
+  ret
+.globl close
+close:
+  mov x8, #57
+  svc #0
+  ret
+.globl rename
+rename:
+  mov x2, x1
+  mov x1, x0
+  mov x0, #0
+  sub x0, x0, #100
+  mov x8, #38
+  svc #0
+  ret
+.globl _NSGetArgc
+_NSGetArgc:
+  adrp x0, rho_rt_argc@PAGE
+  add x0, x0, rho_rt_argc@PAGEOFF
+  ret
+.globl _NSGetArgv
+_NSGetArgv:
+  adrp x0, rho_rt_argv@PAGE
+  add x0, x0, rho_rt_argv@PAGEOFF
+  ret
+.data
+rho_rt_argc:
+  .long 0
+  .long 0
+rho_rt_argv:
+  .quad 0
+"""; }
+
+// ---- build_to native dispatch ---------------------------------------------
+
+static mut ARM64_MAC_HDR: u64 = 856;
+static mut ELF64_HDR: u64 = 232;
+
+// native image pipeline: runtime blob + emitted text -> assemble -> write
+// the image. Returns 0 on success; the caller prints the artifact line.
+fn build_native_image(target: i32, text: []u8, out_path: string) -> i32 {
+  if target == 0 {
+    // amd64-linux: rho's own assembly -> own assembler -> static ELF;
+    // no libc, no interpreter, no external toolchain anywhere
+    let full: string = cat(rt_amd64_linux(), bytes_as_string(text));
+    let r: *asm64.AResult = asm86.asm86_assemble(full, 0x400000 + ELF64_HDR, 0x1000, 0);
+    if !r.ok {
+      return 1;
+    }
+    if !elf64.elf64_write(r, 62, // EM_X86_64
+ 0x400000 + ELF64_HDR, r.data_va, r.heap_va, out_path) {
+      return 1;
+    }
+    return 0;
+  }
+  if target == 4 {
+    // arm64-linux: raw syscalls, the asm-generic table (write=64, exit=93)
+    let full: string = cat(rt_arm64_linux(), bytes_as_string(text));
+    let r: *asm64.AResult = asm64.asm64_assemble(full, 0x400000 + ELF64_HDR, 0x1000, 0);
+    if !r.ok {
+      return 1;
+    }
+    if !elf64.elf64_write(r, 183, // EM_AARCH64
+ 0x400000 + ELF64_HDR, r.data_va, r.heap_va, out_path) {
+      return 1;
+    }
+    return 0;
+  }
+  if target == 2 {
+    // arm64-mac: static Mach-O with an ad-hoc signature; image base
+    // VM 0x100000000 + the fixed 856-byte load-command block; 16K pages —
+    // Apple Silicon maps segments on 16K boundaries
+    let full: string = cat(rt_arm64(), bytes_as_string(text));
+    let r: *asm64.AResult = asm64.asm64_assemble(full, (0x100000000 as u64) + ARM64_MAC_HDR, 0x4000,
+                                     (0x100000000 as u64) + 0x1000000);
+    if !r.ok {
+      return 1;
+    }
+    if !macho64.macho64_write(r, (0x100000000 as u64) + ARM64_MAC_HDR, r.data_va, r.heap_va, out_path) {
+      return 1;
+    }
+    return 0;
+  }
+  // amd64-mac: .s only (Rosetta test vehicle; never assembled in-tree) —
+  // handled by the caller's shared native tail
+  return 0 - 1;
+}

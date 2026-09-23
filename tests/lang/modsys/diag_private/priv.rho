@@ -1,0 +1,3 @@
+enum Secret {
+  Mk(i32),
+}

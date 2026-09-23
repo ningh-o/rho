@@ -22,12 +22,12 @@ fn bracketed(parts: string...) -> string {
   let mut i: usize = 0;
   while i < len(parts) {
     if i > 0 {
-      out = cat(out, ",");
+      out = out + ",";
     }
-    out = cat(out, parts[i]);
+    out = out + parts[i];
     i += 1;
   }
-  return cat(out, "]");
+  return out + "]";
 }
 
 fn main() -> i32 {

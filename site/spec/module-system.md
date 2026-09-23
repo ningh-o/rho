@@ -5,18 +5,45 @@ How source files become one program — aligned with the boot compiler
 
 ## One file, one module
 
-A `.rho` file is a module. Its name is its path relative to the root
-file's directory, without the extension: `use io/file;` loads
-`io/file.rho` and binds the namespace `file`. Items inside are reached as
-`file.item`. The root file (the one named on the command line) is a module
-like any other; `main` must live in it.
+A `.rho` file is a module. A `use` names it with a dot-separated path —
+`use a.b.c;` — whose segments are plain identifiers resolved relative to
+the using file's directory (falling back to the entry file's directory,
+so a nested module reaches its package root), without the extension:
+`use io.file;` loads `io/file.rho` and binds the namespace `file` — the
+last segment. Items inside are reached as `file.item`; an alias renames
+the binding: `use io.file as f;` binds `f`. The root file (the one named
+on the command line, `main.rho`) is a module like any other; `main` must
+live in it.
+
+## Packages: a directory behind its `lib.rho` facade
+
+A directory holding a `lib.rho` is a **package**. `use vendor.json;`
+loads `vendor/json/lib.rho` and binds `json` — the facade, the package's
+only entry from outside:
+
+- The package's other files are **package-private**: they import each
+  other (and the facade) freely, but no file outside the package can
+  reach past the facade — with `vendor/json/lib.rho` present,
+  `use vendor.json.reader;` is rejected. A directory *without* a
+  `lib.rho` is a loose set of modules, each addressable.
+- A subdirectory with its own `lib.rho` is **itself a package** with its
+  own facade: `use json.internal;` loads `json/internal/lib.rho`.
+- `pub use` **re-exports**: inside `lib.rho`, `pub use reader;` makes the
+  used module's public items reachable as `json.<item>` from outside, so
+  a package presents one namespace no matter how its internals are split
+  (without `pub`, the `use` stays package-internal).
+
+`main.rho` marks an **executable**: the file the toolchain builds and
+runs, holding `fn main`. `lib.rho` marks a library package, which has no
+entry of its own.
 
 ## Visibility
 
 Items are private unless marked `pub`. A private item is visible only
-inside its own module. The prelude is imported into every module
+inside its own module (and, for package interior files, inside their
+package). The prelude is imported into every module
 implicitly and all of its items are visible everywhere — that is how
-`printf`, `cat`, `Option`, `panic` need no import.
+`printf`, `Option`, `panic` need no import.
 
 ## Resolution
 
@@ -44,7 +71,8 @@ everywhere. It is composed of a pure, target-independent **core**
 (`boot/prelude/core.rho`) and a small per-target **tail**:
 
 - the core defines `Result`, `Option`, `panic`, `assert*`, the `to_str`
-  family on every primitive, `cat`, and the variadic format sinks
+  family on every primitive, the concat glue the string `+` operator
+  lowers to, and the variadic format sinks
   (`__fmt_print` / `__fmt_eprint`) that `printf`/`eprintf` desugar into;
 - the tail (`boot/prelude/wasi.rho`, `hosted.rho`, `mac.rho`) defines
   `__alloc`/`__free`, the rc count helpers' hooks, `__print_str` /
@@ -78,8 +106,8 @@ kernel the std library is built on.
 A program is the root module plus every transitively `use`d module,
 compiled as one unit: monomorphization and reachability run over the
 whole graph (spec §11), so unused prelude machinery costs nothing. The
-entry point is `fn main() -> i32` in the root module; its return value is
-the exit code.
+entry point is `fn main() -> i32` in the root module (`main.rho`); its
+return value is the exit code.
 
 ## Impl ownership
 

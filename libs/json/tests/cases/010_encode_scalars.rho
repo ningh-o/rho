@@ -4,7 +4,7 @@ use json/json;
 fn enc(v: *json.Json) -> string {
   let r = json.encode(v);
   if r.is_err() {
-    return cat("ERR: ", json.err_msg(r));
+    return ("ERR: " + json.err_msg(r));
   }
   return json.err_text(r);
 }

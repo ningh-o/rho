@@ -1,0 +1,22 @@
+// exit: 0
+// s01 — string `+` basics: literals and variables, left-associative
+// chains, parenthesized right-leaning chains, the empty-string
+// identities, and sums flowing through printf/format/to_str
+fn main() -> i32 {
+  let a: string = "foo";
+  let b: string = "bar";
+  assert_eq(a + b, "foobar");
+  assert_eq("x" + "y" + "z", "xyz");
+  assert_eq(a + ("b" + "c"), a + "b" + "c");
+  assert_eq("" + a + "", "foo");
+  assert_eq("" + "", "");
+  let left: string = (("a" + "b") + "c") + "d";
+  let right: string = "a" + ("b" + ("c" + "d"));
+  assert_eq(left, right);
+  printf("{}\n", a + b);
+  printf("[{}] [{}]\n", a + "-" + b, a + (b + "!"));
+  printf("{}\n", "n=" + format("{}", 5));
+  printf("{}\n", "flag=" + true.to_str());
+  printf("{}\n", len(a + b + a));
+  return 0;
+}

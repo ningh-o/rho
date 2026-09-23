@@ -8,7 +8,7 @@ pub fn add(a: i32, b: i32) -> i32 {
 }
 
 pub fn concat(a: string, b: string) -> string {
-  return cat(a, b);
+  return a + b;
 }
 
 pub fn is_even(n: i32) -> bool {

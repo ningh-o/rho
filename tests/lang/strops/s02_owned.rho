@@ -1,0 +1,40 @@
+// exit: 0
+// s02 — string `+` under the ownership rules: a sum bound by `let`
+// owns its fresh string, a sum passed as an argument hands its +1 to
+// the callee's param copy, a returned sum transfers to the caller,
+// and loop accumulation releases every intermediate (the rc law)
+fn dup(s: string) -> string {
+  return s + s;
+}
+
+fn shout(s: string) -> string {
+  return s + "!";
+}
+
+struct Pair {
+  left: string,
+  right: string,
+}
+
+fn main() -> i32 {
+  let a: string = "ab";
+  let joined: string = a + "cd";
+  assert_eq(joined, "abcd");
+  let mut acc: string = "";
+  let mut i: usize = 0;
+  while i < 5 {
+    acc = acc + a;
+    i += 1;
+  }
+  assert_eq(acc, "ababababab");
+  assert_eq(dup("x" + "y"), "xyxy");
+  assert_eq(shout(a + "c"), "abc!");
+  let p = new Pair {
+    left: "l" + "1",
+    right: "r" + "1",
+  };
+  assert_eq(p.left + p.right, "l1r1");
+  printf("{}\n", dup(acc + "-"));
+  printf("{}\n", joined + "|" + p.left + "|" + p.right);
+  return 0;
+}

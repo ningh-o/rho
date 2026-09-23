@@ -1,0 +1,1 @@
+tests/lang/modsys/diag_private/main.rho:6:29: error: `priv.Secret` is not public

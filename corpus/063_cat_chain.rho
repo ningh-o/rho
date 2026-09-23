@@ -1,5 +1,5 @@
 // exit: 0
-// 063 — cat over dynamic (non-literal) operands: a loop of one-byte
+// 063 — `+` over dynamic (non-literal) operands: a loop of one-byte
 // slices reassembles the whole source, a slice-of-slice piece and a
 // format piece ride the same chain, and == judges every result
 fn main() -> i32 {
@@ -7,18 +7,18 @@ fn main() -> i32 {
   let mut built: string = "";
   let mut i: usize = 0;
   while (i < len(src)) {
-    built = cat(built, src[i..(i + 1)]);
+    built = built + src[i..(i + 1)];
     i += 1;
   }
   assert_eq(built, src);
   printf("{}\n", built);
-  let piece: string = cat(src[0..5], cat(src[6..8], src[9..15]));
+  let piece: string = src[0..5] + src[6..8] + src[9..15];
   assert_eq(piece, "chainofpieces");
   printf("{}\n", piece);
-  let nested: string = cat(src[0..9][6..8], cat(src[9..15], ""));
+  let nested: string = src[0..9][6..8] + (src[9..15] + "");
   assert_eq(nested, "ofpieces");
   printf("{}\n", nested);
-  let mixed: string = cat(cat(format("[{}]", len(src)), "|"), src[0..5]);
+  let mixed: string = format("[{}]", len(src)) + "|" + src[0..5];
   assert_eq(mixed, "[15]|chain");
   printf("{}\n", mixed);
   return 0;

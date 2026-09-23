@@ -16,7 +16,7 @@ fn main() -> i32 {
   let mut s: string = "";
   let mut i: usize = 0;
   while i < 1500 {
-    s = cat(s, pieces[i & 3]);
+    s = s + pieces[i & 3];
     i += 1;
   }
   let mut sum: u64 = 0;

@@ -1,0 +1,593 @@
+// the mach-o 64-bit writer: Sha256, the section buffer, the image
+use main;
+use asm64;
+
+
+// ---- SHA-256 (macho64.c port) ---------------------------------------------
+
+struct Sha256 {
+  h: []u64, // eight 32-bit words, held in u64 and masked on update
+  len: u64,
+  buf: []u8,
+  n: usize,
+}
+
+fn sha256_init(s: *Sha256) {
+  s.h[0] = 0x6A09E667;
+  s.h[1] = 0xBB67AE85;
+  s.h[2] = 0x3C6EF372;
+  s.h[3] = 0xA54FF53A;
+  s.h[4] = 0x510E527F;
+  s.h[5] = 0x9B05688C;
+  s.h[6] = 0x1F83D9AB;
+  s.h[7] = 0x5BE0CD19;
+  s.len = 0;
+  s.n = 0;
+}
+
+fn sha_rotr(x: u64, n: i32) -> u64 {
+  let m: u64 = 0xFFFFFFFF;
+  return ((x >> n) | (x << (32 - n))) & m;
+}
+
+fn sha_k(i: i32) -> u64 {
+  // the SHA-256 round constants, in order
+  if i == 0 { return 0x428A2F98; }
+  if i == 1 { return 0x71374491; }
+  if i == 2 { return 0xB5C0FBCF; }
+  if i == 3 { return 0xE9B5DBA5; }
+  if i == 4 { return 0x3956C25B; }
+  if i == 5 { return 0x59F111F1; }
+  if i == 6 { return 0x923F82A4; }
+  if i == 7 { return 0xAB1C5ED5; }
+  if i == 8 { return 0xD807AA98; }
+  if i == 9 { return 0x12835B01; }
+  if i == 10 { return 0x243185BE; }
+  if i == 11 { return 0x550C7DC3; }
+  if i == 12 { return 0x72BE5D74; }
+  if i == 13 { return 0x80DEB1FE; }
+  if i == 14 { return 0x9BDC06A7; }
+  if i == 15 { return 0xC19BF174; }
+  if i == 16 { return 0xE49B69C1; }
+  if i == 17 { return 0xEFBE4786; }
+  if i == 18 { return 0x0FC19DC6; }
+  if i == 19 { return 0x240CA1CC; }
+  if i == 20 { return 0x2DE92C6F; }
+  if i == 21 { return 0x4A7484AA; }
+  if i == 22 { return 0x5CB0A9DC; }
+  if i == 23 { return 0x76F988DA; }
+  if i == 24 { return 0x983E5152; }
+  if i == 25 { return 0xA831C66D; }
+  if i == 26 { return 0xB00327C8; }
+  if i == 27 { return 0xBF597FC7; }
+  if i == 28 { return 0xC6E00BF3; }
+  if i == 29 { return 0xD5A79147; }
+  if i == 30 { return 0x06CA6351; }
+  if i == 31 { return 0x14292967; }
+  if i == 32 { return 0x27B70A85; }
+  if i == 33 { return 0x2E1B2138; }
+  if i == 34 { return 0x4D2C6DFC; }
+  if i == 35 { return 0x53380D13; }
+  if i == 36 { return 0x650A7354; }
+  if i == 37 { return 0x766A0ABB; }
+  if i == 38 { return 0x81C2C92E; }
+  if i == 39 { return 0x92722C85; }
+  if i == 40 { return 0xA2BFE8A1; }
+  if i == 41 { return 0xA81A664B; }
+  if i == 42 { return 0xC24B8B70; }
+  if i == 43 { return 0xC76C51A3; }
+  if i == 44 { return 0xD192E819; }
+  if i == 45 { return 0xD6990624; }
+  if i == 46 { return 0xF40E3585; }
+  if i == 47 { return 0x106AA070; }
+  if i == 48 { return 0x19A4C116; }
+  if i == 49 { return 0x1E376C08; }
+  if i == 50 { return 0x2748774C; }
+  if i == 51 { return 0x34B0BCB5; }
+  if i == 52 { return 0x391C0CB3; }
+  if i == 53 { return 0x4ED8AA4A; }
+  if i == 54 { return 0x5B9CCA4F; }
+  if i == 55 { return 0x682E6FF3; }
+  if i == 56 { return 0x748F82EE; }
+  if i == 57 { return 0x78A5636F; }
+  if i == 58 { return 0x84C87814; }
+  if i == 59 { return 0x8CC70208; }
+  if i == 60 { return 0x90BEFFFA; }
+  if i == 61 { return 0xA4506CEB; }
+  if i == 62 { return 0xBEF9A3F7; }
+  return 0xC67178F2;
+}
+
+fn sha256_block(s: *Sha256, p: []u8) {
+  let M: u64 = 0xFFFFFFFF;
+  let w: []u64 = make([]u64, 64);
+  let mut i: i32 = 0;
+  while i < 16 {
+    w[i] = ((p[i * 4] as u64) << 24) | ((p[i * 4 + 1] as u64) << 16) |
+           ((p[i * 4 + 2] as u64) << 8) | (p[i * 4 + 3] as u64);
+    i += 1;
+  }
+  while i < 64 {
+    let s0: u64 = (sha_rotr(w[i - 15], 7) ^ sha_rotr(w[i - 15], 18) ^ (w[i - 15] >> 3)) & M;
+    let s1: u64 = (sha_rotr(w[i - 2], 17) ^ sha_rotr(w[i - 2], 19) ^ (w[i - 2] >> 10)) & M;
+    w[i] = (w[i - 16] + s0 + w[i - 7] + s1) & M;
+    i += 1;
+  }
+  let mut a: u64 = s.h[0];
+  let mut b: u64 = s.h[1];
+  let mut c: u64 = s.h[2];
+  let mut d: u64 = s.h[3];
+  let mut e: u64 = s.h[4];
+  let mut f: u64 = s.h[5];
+  let mut g: u64 = s.h[6];
+  let mut hh: u64 = s.h[7];
+  i = 0;
+  while i < 64 {
+    let S1: u64 = (sha_rotr(e, 6) ^ sha_rotr(e, 11) ^ sha_rotr(e, 25)) & M;
+    let ch: u64 = ((e & f) ^ (~e & g)) & M;
+    let t1: u64 = (hh + S1 + ch + sha_k(i) + w[i]) & M;
+    let S0: u64 = (sha_rotr(a, 2) ^ sha_rotr(a, 13) ^ sha_rotr(a, 22)) & M;
+    let maj: u64 = ((a & b) ^ (a & c) ^ (b & c)) & M;
+    let t2: u64 = (S0 + maj) & M;
+    hh = g;
+    g = f;
+    f = e;
+    e = (d + t1) & M;
+    d = c;
+    c = b;
+    b = a;
+    a = (t1 + t2) & M;
+    i += 1;
+  }
+  s.h[0] = (s.h[0] + a) & M;
+  s.h[1] = (s.h[1] + b) & M;
+  s.h[2] = (s.h[2] + c) & M;
+  s.h[3] = (s.h[3] + d) & M;
+  s.h[4] = (s.h[4] + e) & M;
+  s.h[5] = (s.h[5] + f) & M;
+  s.h[6] = (s.h[6] + g) & M;
+  s.h[7] = (s.h[7] + hh) & M;
+}
+
+fn sha256_update(s: *Sha256, data: []u8) {
+  s.len = s.len + len(data) as u64;
+  let mut idx: usize = 0;
+  let mut remaining: usize = len(data);
+  while remaining > 0 {
+    let room: usize = 64 - s.n;
+    let take: usize = if room < remaining { room } else { remaining };
+    let mut k: usize = 0;
+    while k < take {
+      s.buf[s.n + k] = data[idx + k];
+      k += 1;
+    }
+    s.n = s.n + take;
+    idx = idx + take;
+    remaining = remaining - take;
+    if s.n == 64 {
+      sha256_block(s, s.buf);
+      s.n = 0;
+    }
+  }
+}
+
+fn sha256_final(s: *Sha256) -> []u8 {
+  let out: []u8 = make([]u8, 32);
+  let bits: u64 = s.len * 8;
+  let pad: []u8 = make([]u8, 1);
+  pad[0] = 0x80;
+  sha256_update(s, pad);
+  let z: []u8 = make([]u8, 1);
+  z[0] = 0;
+  while s.n != 56 {
+    sha256_update(s, z);
+  }
+  let lenb: []u8 = make([]u8, 8);
+  let mut i: i32 = 0;
+  while i < 8 {
+    lenb[i] = ((bits >> (56 - i * 8)) & 255) as u8;
+    i += 1;
+  }
+  sha256_update(s, lenb);
+  i = 0;
+  while i < 8 {
+    out[i * 4] = ((s.h[i] >> 24) & 255) as u8;
+    out[i * 4 + 1] = ((s.h[i] >> 16) & 255) as u8;
+    out[i * 4 + 2] = ((s.h[i] >> 8) & 255) as u8;
+    out[i * 4 + 3] = (s.h[i] & 255) as u8;
+    i += 1;
+  }
+  return out;
+}
+
+// ---- image writers (elf64.c / macho64.c ports) ----------------------------
+
+pub fn b_put32(b: *main.Vec[u8], v: u32) {
+  b.push((v & 255) as u8);
+  b.push(((v >> 8) & 255) as u8);
+  b.push(((v >> 16) & 255) as u8);
+  b.push(((v >> 24) & 255) as u8);
+}
+
+pub fn b_put64(b: *main.Vec[u8], v: u64) {
+  let mut i: i32 = 0;
+  while i < 8 {
+    b.push(((v >> (8 * i)) & 255) as u8);
+    i += 1;
+  }
+}
+
+pub fn b_put16(b: *main.Vec[u8], v: u32) {
+  b.push((v & 255) as u8);
+  b.push(((v >> 8) & 255) as u8);
+}
+
+fn b_put_be32(b: *main.Vec[u8], v: u32) {
+  b.push(((v >> 24) & 255) as u8);
+  b.push(((v >> 16) & 255) as u8);
+  b.push(((v >> 8) & 255) as u8);
+  b.push((v & 255) as u8);
+}
+
+fn b_put_be64(b: *main.Vec[u8], v: u64) {
+  let mut i: i32 = 7;
+  while i >= 0 {
+    b.push(((v >> (8 * i)) & 255) as u8);
+    i -= 1;
+  }
+}
+
+fn b_put_name(b: *main.Vec[u8], name: string) {
+  let n: usize = len(name);
+  let mut i: i32 = 0;
+  while i < 16 {
+    if i < n as i32 {
+      b.push(name[i as usize]);
+    } else {
+      b.push(0);
+    }
+    i += 1;
+  }
+}
+
+fn b_push_str(b: *main.Vec[u8], s: string) {
+  let mut i: usize = 0;
+  while i < len(s) {
+    b.push(s[i]);
+    i += 1;
+  }
+}
+
+// writes a section_64 entry
+fn macho_sect(b: *main.Vec[u8], sect_name: string, seg_name: string, addr: u64, size: u64, offset: u32, align_exp: u32, flags: u32) {
+  b_put_name(b, sect_name);
+  b_put_name(b, seg_name);
+  b_put64(b, addr);
+  b_put64(b, size);
+  b_put32(b, offset);
+  b_put32(b, align_exp); // 2^align
+  b_put32(b, 0);         // reloff
+  b_put32(b, 0);         // nreloc
+  b_put32(b, flags);
+  b_put32(b, 0); // reserved1
+  b_put32(b, 0); // reserved2
+  b_put32(b, 0); // reserved3
+}
+
+// the zero-fill bump heap: its own trailing segment, fixed address
+pub static mut HEAP_BYTES: u64 = 0x70000000;    // 1.75 GiB — measured ceiling: 0x7E000000 starves the dyld shared-region carve (kernel kills the map)
+static mut HEAP_VADDR_OFF: u64 = 0x1000000; // heap vmaddr = VM_BASE + this
+
+// writes a static Mach-O for arm64-mac: a fixed-address executable plus the
+// ad-hoc code signature (SHA-256 page hashes in a SuperBlob)
+pub fn macho64_write(r: *asm64.AResult, text_vaddr: u64, data_vaddr: u64, heap_vaddr: u64, out_path: string) -> bool {
+  let page: u64 = 4096;            // signature page size (log2 12) — Apple's
+                                   // own ld signs arm64 images at 4K too
+  let segpage: u64 = 0x4000;       // arm64 segments map on 16K boundaries;
+                                   // the kernel's strict validation rejects
+                                   // any other segment size
+  let VM_BASE: u64 = 0x100000000;  // main-image load address
+
+  let text_size: u64 = r.text.n as u64;
+  let data_size: u64 = r.data.n as u64;
+
+  let hdr: u64 = text_vaddr - VM_BASE;
+  let text_end: u64 = data_vaddr - VM_BASE; // 16K-aligned (asm64 lays it out)
+  let data_fileoff: u64 = data_vaddr - VM_BASE;
+  // one page discipline, no segment ever overlaps another; the heap is its
+  // own trailing zero-fill segment at a fixed address
+  let data_fs: u64 = (data_size + segpage - 1) & ~(segpage - 1);
+  // __LINKEDIT = minimal chained-fixups table + empty exports trie + the
+  // signature (AppleSystemPolicy kills MH_DYLDLINK images whose fixups or
+  // trie commands are absent or empty — dyld must find parseable blobs)
+  let FIXUPS_BYTES: u64 = 56; // ld's exact shape: header, pad, 5-seg table
+  let TRIE_BYTES: u64 = 8;    // one terminal byte + pad
+  let le_off: u64 = data_fileoff + data_fs; // still 16K-aligned
+  let fixups_off: u64 = le_off;
+  let trie_off: u64 = le_off + FIXUPS_BYTES;
+  let sig_off: u64 = le_off + FIXUPS_BYTES + (TRIE_BYTES as u64); // codeLimit
+  let sig_nslots: u64 = (sig_off + page - (1 as u64)) / page;
+  let sig_size: u64 = ((20 + 88 + 4) as u64) + sig_nslots * (32 as u64);
+  let le_fs: u64 = FIXUPS_BYTES + TRIE_BYTES + sig_size;
+
+  let b: *main.Vec[u8] = new main.Vec[u8] { items: make([]u8, 4096), n: 0 };
+  b_put32(b, 0xFEEDFACF);
+  b_put32(b, 0x0100000C);         // cputype ARM64
+  b_put32(b, 0);                  // cpusubtype
+  b_put32(b, 2);                  // MH_EXECUTE
+  b_put32(b, 14);                 // ncmds
+  b_put32(b, 824);                 // sizeofcmds (ARM64_MAC_HDR - 32)
+  b_put32(b, 0x00200085);         // flags: NOUNDEFS|DYLDLINK|TWOLEVEL|PIE
+  b_put32(b, 0);                  // reserved
+
+  // LC_SEGMENT_64 __PAGEZERO
+  b_put32(b, 0x19);
+  b_put32(b, 72);
+  b_put_name(b, "__PAGEZERO");
+  b_put64(b, 0);
+  b_put64(b, VM_BASE);
+  b_put64(b, 0);
+  b_put64(b, 0);
+  b_put32(b, 0);
+  b_put32(b, 0);
+  b_put32(b, 0);
+  b_put32(b, 0);
+
+  // LC_SEGMENT_64 __TEXT (r-x)
+  b_put32(b, 0x19);
+  b_put32(b, 152);
+  b_put_name(b, "__TEXT");
+  b_put64(b, VM_BASE);
+  b_put64(b, text_end);
+  b_put64(b, 0);
+  b_put64(b, text_end);
+  b_put32(b, 5);
+  b_put32(b, 5);
+  b_put32(b, 1);
+  b_put32(b, 0);
+  macho_sect(b, "__text", "__TEXT", text_vaddr, text_size, hdr as u32, 3, 0x80000400);
+
+  // LC_SEGMENT_64 __DATA (rw-): file-backed, vmsize == filesize
+  b_put32(b, 0x19);
+  b_put32(b, 152);
+  b_put_name(b, "__DATA");
+  b_put64(b, data_vaddr);
+  b_put64(b, data_fs);
+  b_put64(b, data_fileoff);
+  b_put64(b, data_fs);
+  b_put32(b, 3);
+  b_put32(b, 3);
+  b_put32(b, 1);
+  b_put32(b, 0);
+  macho_sect(b, "__data", "__DATA", data_vaddr, data_size, data_fileoff as u32, 3, 0);
+
+  // LC_SEGMENT_64 __HEAP (rw-): the 16 MiB bump heap as a pure zero-fill
+  // segment at a fixed address — nothing in the file, fresh zero pages
+  b_put32(b, 0x19);
+  b_put32(b, 152);
+  b_put_name(b, "__HEAP");
+  b_put64(b, VM_BASE + HEAP_VADDR_OFF);
+  b_put64(b, HEAP_BYTES);
+  b_put64(b, 0);
+  b_put64(b, 0);
+  b_put32(b, 3);
+  b_put32(b, 3);
+  b_put32(b, 1);
+  b_put32(b, 0);
+  macho_sect(b, "__rhoheap", "__HEAP", heap_vaddr, HEAP_BYTES, 0, 4, 1); // S_ZEROFILL
+
+  // LC_SEGMENT_64 __LINKEDIT (r--): its vmaddr sits PAST the BSS heap — a
+  // segment overlapping __DATA's zero-fill tail is a load-time overlap the
+  // kernel kills on sight; vaddr and fileoff only need to agree modulo the
+  // 16K page, and both are aligned
+  b_put32(b, 0x19);
+  b_put32(b, 72);
+  b_put_name(b, "__LINKEDIT");
+  b_put64(b, VM_BASE + le_off);
+  b_put64(b, (le_fs + segpage - 1) & ~(segpage - 1));
+  b_put64(b, le_off);
+  b_put64(b, le_fs);
+  b_put32(b, 1);
+  b_put32(b, 1);
+  b_put32(b, 0);
+  b_put32(b, 0);
+
+  // LC_DYLD_CHAINED_FIXUPS: a well-formed, entirely-empty fixups table —
+  // three segments, no starts, no imports
+  b_put32(b, 0x80000034);
+  b_put32(b, 16);
+  b_put32(b, fixups_off as u32);
+  b_put32(b, FIXUPS_BYTES as u32);
+
+  // LC_DYLD_EXPORTS_TRIE: a single terminal byte — no exported symbols
+  b_put32(b, 0x80000033);
+  b_put32(b, 16);
+  b_put32(b, trie_off as u32);
+  b_put32(b, TRIE_BYTES as u32);
+
+  // LC_UUID: deterministic
+  b_put32(b, 0x1B);
+  b_put32(b, 24);
+  let mut i: i32 = 0;
+  while i < 16 {
+    b.push(((i * 37 + 11) & 0xFF) as u8);
+    i += 1;
+  }
+
+  // LC_BUILD_VERSION: platform macOS, minOS/SDK 13.0.0
+  b_put32(b, 0x32);
+  b_put32(b, 24);
+  b_put32(b, 1);
+  b_put32(b, 0x000D0000);
+  b_put32(b, 0x000D0000);
+  b_put32(b, 0);
+
+  // LC_SOURCE_VERSION: 0.0
+  b_put32(b, 0x2A);
+  b_put32(b, 16);
+  b_put_be64(b, 0);
+
+  // LC_LOAD_DYLIB libSystem: present-but-unused — a MH_DYLDLINK main image
+  // with zero dylibs is killed by the kernel's system policy
+  b_put32(b, 0xC);
+  b_put32(b, 56); // cmdsize
+  b_put32(b, 24); // name offset
+  b_put32(b, 0);  // timestamp
+  b_put32(b, 0);  // current_version
+  b_put32(b, 0);  // compatibility_version
+  b_push_str(b, "/usr/lib/libSystem.B.dylib");
+  while b.n % 8 != 0 {
+    b.push(0);
+  }
+
+  // LC_LOAD_DYLINKER: on arm64 macOS every executable is entered via dyld —
+  // a static image without this command is killed at exec
+  b_put32(b, 0xE);
+  b_put32(b, 32); // cmdsize: 12 + name, 8-aligned
+  b_put32(b, 12);
+  b_push_str(b, "/usr/lib/dyld");
+  while b.n % 8 != 0 {
+    b.push(0);
+  }
+
+  // LC_MAIN: dyld jumps to _rho_rt_start (the first text byte)
+  b_put32(b, 0x80000028);
+  b_put32(b, 24);
+  b_put64(b, hdr);
+  b_put64(b, 0);
+
+  // LC_CODE_SIGNATURE — size deterministic, written before hashing
+  b_put32(b, 0x1D);
+  b_put32(b, 16);
+  b_put32(b, sig_off as u32);
+  b_put32(b, sig_size as u32);
+
+  // __text starts 8-aligned: pad the command block after the last command
+  while b.n % 8 != 0 {
+    b.push(0);
+  }
+
+  if b.n as u64 != hdr {
+    eprintf("{}", "rho: macho64: header block != expected size\n");
+    return false;
+  }
+
+  b_push_str_bytes(b, r.text);
+  b_push_str_bytes(b, r.strsec);
+  while (b.n as u64) < data_fileoff {
+    b.push(0);
+  }
+  b_push_str_bytes(b, r.data);
+  while (b.n as u64) < le_off { // zero pad __DATA out to its rounded size
+    b.push(0);
+  }
+
+  // ---- __LINKEDIT: chained fixups (LE), ld's exact shape ----
+  b_put32(b, 0);            // fixups_version
+  b_put32(b, 32);           // starts_offset
+  b_put32(b, FIXUPS_BYTES as u32); // imports_offset (empty table)
+  b_put32(b, FIXUPS_BYTES as u32); // symbols_offset (empty table)
+  b_put32(b, 0);            // imports_count
+  b_put32(b, 1);            // imports_format: DYLD_CHAINED_IMPORT — dyld
+                            // rejects 0 ("unknown imports format") even
+                            // with no imports
+  b_put32(b, 0);            // symbols_format
+  b_put32(b, 0);            // 4 bytes of pad, starts table 4-aligned at 32
+  b_put32(b, 5);            // segCount (every segment, incl. PAGEZERO/HEAP)
+  b_put32(b, 0);            // segInfoOffset[0] — no fixups anywhere
+  b_put32(b, 0);            // segInfoOffset[1]
+  b_put32(b, 0);            // segInfoOffset[2]
+  b_put32(b, 0);            // segInfoOffset[3]
+  b_put32(b, 0);            // segInfoOffset[4]
+  // ---- exports trie: one terminal node, no children ----
+  b.push(0);
+  i = 1;
+  while i < TRIE_BYTES as i32 {
+    b.push(0);
+    i += 1;
+  }
+
+  // ---- ad-hoc code signature (CS_ADHOC | CS_LINKER_SIGNED) ----
+  let ident: string = "rho";
+  let ident_len: u64 = 4; // "rho" + NUL
+  let sig: *main.Vec[u8] = new main.Vec[u8] { items: make([]u8, 4096), n: 0 };
+  b_put_be32(sig, 0xFADE0CC0);
+  b_put_be32(sig, sig_size as u32);
+  b_put_be32(sig, 1);
+  b_put_be32(sig, 0);
+  b_put_be32(sig, 20);
+
+  b_put_be32(sig, 0xFADE0C02);
+  b_put_be32(sig, (sig_size - 20) as u32);
+  b_put_be32(sig, 0x00020400);
+  b_put_be32(sig, 0x00020002); // CS_ADHOC | CS_LINKER_SIGNED — plain CS_ADHOC is intermittently rejected by the kernel (unkillable wait, not a kill; measured 2026-09-21)
+                               // provenance chain is what the kernel's
+                               // system policy kills
+  b_put_be32(sig, (88 + ident_len) as u32);
+  b_put_be32(sig, 88);
+  b_put_be32(sig, 0);
+  b_put_be32(sig, sig_nslots as u32);
+  b_put_be32(sig, sig_off as u32);
+  sig.push(32);
+  sig.push(2);
+  sig.push(0);
+  sig.push(12);
+  b_put_be32(sig, 0);
+  b_put_be32(sig, 0);
+  b_put_be32(sig, 0);
+  b_put_be32(sig, 0);
+  b_put_be64(sig, 0);
+  b_put_be64(sig, 0);
+  b_put_be64(sig, text_end);
+  b_put_be64(sig, 1); // CS_EXECSEG_MAIN_BINARY
+  b_push_str(sig, ident);
+  sig.push(0);
+  let mut p: u64 = 0;
+  while p < sig_nslots {
+    let start: u64 = p * page;
+    let mut take: u64 = page;
+    if sig_off - start < page {
+      take = sig_off - start;
+    }
+    let sha: *Sha256 = new Sha256 { h: make([]u64, 8), len: 0, buf: make([]u8, 64), n: 0 };
+    sha256_init(sha);
+    sha256_update(sha, b.items[start..(start + take) as usize]);
+    let digest: []u8 = sha256_final(sha);
+    let mut di: usize = 0;
+    while di < 32 {
+      sig.push(digest[di]);
+      di += 1;
+    }
+    p += 1;
+  }
+
+  if sig.n as u64 != sig_size {
+    eprintf("{}", "rho: macho64: signature != expected size\n");
+    return false;
+  }
+
+  // image + signature in one write (the file ends exactly at
+  // dataoff+datasize — anything after the signature fails the kernel's
+  // strict validation; mode bits are the caller's concern: a freestanding
+  // compiler cannot chmod)
+  let out_all: []u8 = make([]u8, b.n + sig.n);
+  let mut k: usize = 0;
+  while k < b.n {
+    out_all[k] = b.items[k];
+    k += 1;
+  }
+  k = 0;
+  while k < sig.n {
+    out_all[b.n + k] = sig.items[k];
+    k += 1;
+  }
+  return main.write_file(out_path, main.bytes_as_string(out_all));
+}
+
+pub fn b_push_str_bytes(b: *main.Vec[u8], data: *main.Vec[u8]) {
+  let mut i: usize = 0;
+  while i < data.n {
+    b.push(data.items[i]);
+    i += 1;
+  }
+}

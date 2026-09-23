@@ -17,8 +17,9 @@ print("\n");
 ```
 
 Three statements, one line of output, and the string-conversion protocol
-leaks into every program's foreground. `cat` chains were worse
-(`cat(cat(..))`), and `println` only ever took one value.
+leaks into every program's foreground. Nesting binary string concatenation
+was worse (a hand-built concat pyramid per line), and `println` only ever
+took one value.
 
 ## Alternatives considered
 
@@ -106,8 +107,9 @@ let s: string = format("({}, {})", x, y); // the same string, as a value
   }
   ```
 
-  `cat` stays binary and low-level on purpose — one way to assemble a
-  string at the surface, and it is not `cat`.
+  String `+` stays binary and low-level on purpose — one way to assemble
+  a string at the surface — and `__fmt_build` is not it: it joins every
+  part in one two-pass copy, no intermediate strings.
 - `print`, `println`, `eprint` are **removed**. They were the 0.3.0
   surface; `printf("{}", x)` is the same call with one honest syntax.
 
@@ -127,8 +129,8 @@ file that defines the feature.
 
 - The `to_str` protocol (a type is printable when it has
   `to_str(self) -> string`), primitive methods and their global
-  registration, user `to_str` via `cat`, and the honest
-  no-`to_str`-for-slices error.
+  registration, user `to_str` bodies composed with `format` and `+`, and
+  the honest no-`to_str`-for-slices error.
 - Float formatting: the exact-decimal round-trip formatter — D = 17 for
   f64, 9 for f32, half-to-even, fixed in `[-4, D)`, scientific otherwise,
   `inf`/`nan` as such. `{}` prints exactly what `println` printed.

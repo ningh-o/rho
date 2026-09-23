@@ -1,0 +1,7 @@
+// a subdirectory module: its own `use aux;` must fall back to the
+// package root, where aux.rho actually lives
+use aux;
+
+pub fn DEEP_TAG() -> i32 {
+  return aux.ROOT_TAG() * 10;
+}

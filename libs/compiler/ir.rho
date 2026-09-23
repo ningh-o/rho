@@ -1,0 +1,157 @@
+// the IR structures (lower.c port LOW-1)
+use main;
+use parse;
+use check;
+use lower;
+
+
+
+// ================= IR structures (lower.c port LOW-1) ======================
+
+pub enum IRType {
+  ItI8, ItI16, ItI32, ItI64,
+  ItU8, ItU16, ItU32, ItU64, ItUsize,
+  ItF32, ItF64,
+  ItPtr,
+}
+
+pub struct IRSlot {
+  id: i32,
+  size: i64,
+  align: i64,
+  name: string,
+}
+
+pub struct IRVreg {
+  id: i32,
+  ty: IRType,
+}
+
+pub enum IROp {
+  IrConst, IrFconst,
+  IrAdd, IrSub, IrMul, IrDiv, IrMod, IrAnd, IrOr, IrXor, IrShl, IrShr,
+  IrCmp,
+  IrLoad,
+  IrStore,
+  IrAddrc,
+  IrAddi,
+  IrCall,
+  IrCast,
+  IrCopymem,
+  IrZero,
+  IrLitaddr,
+  IrMemsize,
+  IrMemgrow,
+}
+
+pub enum IRCC { CcEq, CcNe, CcLt, CcLe, CcGt, CcGe }
+
+pub enum IRCastKind {
+  CastTrunc, CastSext, CastZext, CastI2f, CastF2i, CastF32F64,
+  CastF64F32, CastBitcopy, CastReinterp,
+}
+
+struct IRArg {
+  vreg: *IRVreg,
+}
+
+pub struct IRPhi {
+  dst: *IRVreg,
+  args: []*IRVreg,
+  preds: []*IRBlock,
+}
+
+pub struct IRIns {
+  op: IROp,
+  dst: *IRVreg,
+  a: *IRVreg,
+  b: *IRVreg,
+  slot: *IRSlot,
+  imm: i64,
+  fimm: f64,
+  size: i64,
+  is_float: bool,
+  signed_ops: bool,
+  cc: IRCC,
+  cast: IRCastKind,
+  cast_from: IRType,
+  cast_to: IRType,
+  callee: string,
+  callee_vreg: *IRVreg,
+  args: []*IRVreg,
+  addr: *IRVreg,
+  lit: i32,
+  join_hint: *IRBlock,
+}
+
+pub struct IRBlock {
+  id: i32,
+  phis: []*IRPhi,
+  ins: []*IRIns,
+  term_op: i32,      // 0 = none, 100 = br, 101 = cbr, 102 = ret
+  br_true: *IRBlock,
+  br_false: *IRBlock,
+  ret_val: *IRVreg,
+  cbr_cond: *IRVreg,
+  join_hint: *IRBlock,
+  loop_header: bool,
+  loop_exit: *IRBlock,
+  emitted: bool,     // wasm: control-flow re-nesting marks blocks as it goes
+}
+
+pub struct IRLit {
+  label: string,
+  bytes: []u8,
+}
+
+pub struct IRFn {
+  uid: i32,
+  symbol: string,
+  ret_is_void: bool,
+  ret: *parse.Type,            // null for synthesized (rc) helpers
+  returns_aggregate: bool,
+  params: []*IRSlot,
+  param_types: []*parse.Type,  // parallel to params (null = opaque machine word)
+  out_slot: *IRSlot,
+  slots: []*IRSlot,
+  blocks: []*IRBlock,
+  entry: *IRBlock,
+  cur: *IRBlock,
+  literals: []*IRLit,
+  next_vreg: i32,
+  next_block: i32,
+  next_slot: i32,
+  vreg_base: i32, // vreg slot offset base = named slot count at layout
+}
+
+pub static mut g_ir_fns: *main.Vec[*IRFn] = 0 as *main.Vec[*IRFn];
+pub static mut g_ir_uid: i32 = 0;
+
+pub struct IRGlobal {
+  symbol: string,
+  size: i64,
+  align: i64,
+  init: []u8,        // empty => zero-initialized
+  relocs: []string,  // per-8-byte-word relocation labels ("" = none)
+  static_lit: *IRLit, // static string literal block (null = none)
+  is_extern: bool,
+}
+
+pub static mut g_ir_globals: *main.Vec[*IRGlobal] = 0 as *main.Vec[*IRGlobal];
+pub static mut g_main_cell: *main.Vec[string] = 0 as *main.Vec[string]; // [main symbol]
+pub static mut g_root_module: *check.Module = 0 as *check.Module;
+pub static mut g_panic_site: i32 = 0;
+pub static mut g_lit_counter: i32 = 0;
+pub static mut g_closure_counter: i32 = 0;
+pub static mut g_eq_fns: *lower.TypeMap2 = 0 as *lower.TypeMap2;
+
+pub fn ir_size_of(t: IRType) -> i64 {
+  if t == IRType.ItI8 || t == IRType.ItU8 { return 1; }
+  if t == IRType.ItI16 || t == IRType.ItU16 { return 2; }
+  if t == IRType.ItI32 || t == IRType.ItU32 || t == IRType.ItF32 { return 4; }
+  return 8;
+}
+
+pub fn ir_is_float_t(t: IRType) -> bool {
+  return t == IRType.ItF32 || t == IRType.ItF64;
+}

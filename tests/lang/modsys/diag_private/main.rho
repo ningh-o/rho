@@ -1,0 +1,8 @@
+// diag
+// an unmarked type behind a module stays private
+use priv;
+
+fn main() -> i32 {
+  let s: priv.Secret = priv.Secret.Mk(1);
+  return 0;
+}

@@ -1,0 +1,7 @@
+// a mutable static is writable from other modules when spelled `pub`
+pub static mut TOTAL: i32 = 0;
+pub static CAP: i32 = 4096;
+
+pub fn bump() {
+  TOTAL = TOTAL + 1;
+}

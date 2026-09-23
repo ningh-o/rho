@@ -485,6 +485,8 @@ static IRVreg *lower_slice(LCtx *c, Expr *e) {
 }
 
 static Sym *prelude_fn(const char *name);
+static bool expr_owned(Expr *e);
+static void release_addr(LCtx *c, Type *t, IRVreg *addr);
 
 // string equality: both operands lowered as slice addresses; calls prelude
 static IRVreg *call_str_cmp(LCtx *c, Expr *e, bool want_eq) {
@@ -512,6 +514,40 @@ static IRVreg *call_str_cmp(LCtx *c, Expr *e, bool want_eq) {
     return x->dst;
   }
   return call->dst;
+}
+
+// string concatenation: `a + b` on strings calls the prelude's internal
+// two-arg concat primitive (__cat2) — the same runtime plumbing the
+// printf/__fmt_print machine uses, no new language surface. Aggregate-
+// return ABI: the out slot address is the first argument. Owned operands
+// hand their +1 to the callee's param copy, so the fresh result is the
+// only count left behind (the caller of an owned rvalue takes it over).
+static IRVreg *call_string_concat(LCtx *c, Expr *e) {
+  Type *t = e->typed;
+  IRVreg *a = lv_expr(c, e->a);
+  IRVreg *b = lv_expr(c, e->b);
+  Sym *fn = prelude_fn("__cat2");
+  IRSlot *tmp = new_slot(c, type_size(t), type_align(t), "catval");
+  IRVreg *out = v_slotaddr(c, tmp);
+  IRIns *call = emit(c, IR_CALL);
+  call->callee = sym_symbol(fn);
+  IRArg *ao = arena_alloc(sizeof(IRArg));
+  ao->vreg = out;
+  ao->ty = NULL;
+  vec_push(&call->args, ao);
+  IRArg *aa = arena_alloc(sizeof(IRArg));
+  aa->vreg = a;
+  aa->ty = e->a->typed;
+  vec_push(&call->args, aa);
+  IRArg *ab = arena_alloc(sizeof(IRArg));
+  ab->vreg = b;
+  ab->ty = e->b->typed;
+  vec_push(&call->args, ab);
+  if (e->a->typed && ty_is_managed((Type *)e->a->typed) && expr_owned(e->a))
+    release_addr(c, (Type *)e->a->typed, a);
+  if (e->b->typed && ty_is_managed((Type *)e->b->typed) && expr_owned(e->b))
+    release_addr(c, (Type *)e->b->typed, b);
+  return out;
 }
 
 // ------------------------------------------------------------ aggregates ---
@@ -552,6 +588,10 @@ static bool expr_owned(Expr *e) {
   case EX_MATCH:
   case EX_IF:
     return ty_is_managed(e->typed);
+  case EX_BIN:
+    // string `+` produces a fresh string from the __cat2 primitive: a +1
+    // the consumer takes over, exactly like a call result
+    return e->binop == P_PLUS && e->typed && ((Type *)e->typed)->kind == TY_STRING;
   default:
     return false;
   }
@@ -1542,6 +1582,15 @@ static IRVreg *compute_addr(LCtx *c, Expr *e) {
     return v_const(c, 0, IT_PTR);
   }
   case EX_FIELD: {
+    // module-qualified static storage: `mod.STATIC` as an assignment target
+    Sym *gsym = e->sym;
+    if (gsym && gsym->kind == SY_STATIC) {
+      IRIns *i = emit(c, IR_ADDRC);
+      i->dst = new_vreg(c, IT_PTR);
+      i->callee = sym_symbol(gsym);
+      i->lit = -1; // global-address form
+      return i->dst;
+    }
     Type *bt = e->a->typed;
     // slice/string built-in fields: {buf, ptr, len}
     Type *value_t = bt;
@@ -1723,6 +1772,10 @@ static IRVreg *lv_expr(LCtx *c, Expr *e) {
   }
   case EX_BIN: {
     Tok op = e->binop;
+    // string `+`: call the concat primitive; a chain (a+b+c) stays nested
+    // calls — folding into one allocation is allowed but never required
+    if (op == P_PLUS && t && t->kind == TY_STRING)
+      return call_string_concat(c, e);
     if (op == P_ANDAND || op == P_OROR) {
       IRBlock *rhs = new_block(c), *join = new_block(c);
       IRPhi *phi = emit_phi_in(c, join, IT_U8);

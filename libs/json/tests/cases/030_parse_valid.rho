@@ -6,11 +6,11 @@ fn parse_or_show(src: string) -> string {
   let out = json.new_out();
   let r = json.parse(src, out);
   if r.is_err() {
-    return cat("ERR: ", json.err_msg(r));
+    return ("ERR: " + json.err_msg(r));
   }
   let e = json.encode(out.root);
   if e.is_err() {
-    return cat("ENC: ", json.err_msg(e));
+    return ("ENC: " + json.err_msg(e));
   }
   return json.err_text(e);
 }
@@ -19,7 +19,7 @@ fn join(parts: []string) -> string {
   let mut out: string = "";
   let mut i: usize = 0;
   while i < len(parts) {
-    out = cat(out, parts[i]);
+    out = (out + parts[i]);
     i += 1;
   }
   return out;

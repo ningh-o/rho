@@ -1,0 +1,1 @@
+tests/lang/strops/d02_int_plus_str.rho:5:16: error: type mismatch in `+`: `(null)` vs `string`

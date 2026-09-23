@@ -1,0 +1,88 @@
+// the ELF 64-bit writer
+use main;
+use asm64;
+use macho64;
+
+
+fn elf_phdr(b: *main.Vec[u8], ptype: u32, flags: u32, off: u64, vaddr: u64, filesz: u64, memsz: u64, align: u64) {
+  macho64.b_put32(b, ptype);
+  macho64.b_put32(b, flags);
+  macho64.b_put64(b, off);
+  macho64.b_put64(b, vaddr);
+  macho64.b_put64(b, vaddr); // p_paddr
+  macho64.b_put64(b, filesz);
+  macho64.b_put64(b, memsz);
+  macho64.b_put64(b, align);
+}
+
+// writes a static ELF64 for the linux targets (amd64-linux, arm64-linux):
+// an ET_EXEC image with two PT_LOAD segments — r-x covering the ELF header,
+// program headers, text and the rodata strings folded into it; rw- covering
+// the data image with a zero-fill tail that is the bump-allocator heap —
+// plus PT_GNU_STACK. No interpreter, no relocations, no section table.
+pub fn elf64_write(r: *asm64.AResult, machine: u32, text_vaddr: u64, data_vaddr: u64, heap_vaddr: u64, out_path: string) -> bool {
+  let base: u64 = 0x400000; // fixed non-PIE load address
+  let hdr: u64 = 232;       // 64-byte Ehdr + 3 program headers
+
+  let data_size: u64 = r.data.n as u64;
+  let off_data: u64 = data_vaddr - base; // congruent: vaddr - offset = 0x400000
+
+  if text_vaddr != base + hdr || heap_vaddr < data_vaddr + data_size {
+    eprintf("{}", "rho: elf64: layout mismatch\n");
+    return false;
+  }
+
+  let b: *main.Vec[u8] = new main.Vec[u8] { items: make([]u8, 4096), n: 0 };
+
+  // ---- Ehdr ----
+  let ident: []u8 = make([]u8, 16);
+  ident[0] = 0x7F;
+  ident[1] = 69;  // 'E'
+  ident[2] = 76;  // 'L'
+  ident[3] = 70;  // 'F'
+  ident[4] = 2;
+  ident[5] = 1;
+  ident[6] = 1;
+  ident[7] = 0;
+  let mut qi: usize = 0;
+  while qi < 16 {
+    b.push(ident[qi]);
+    qi += 1;
+  }
+  macho64.b_put16(b, 2);          // e_type = ET_EXEC
+  macho64.b_put16(b, machine);
+  macho64.b_put32(b, 1);          // e_version
+  macho64.b_put64(b, text_vaddr); // e_entry — first text byte (the runtime blob)
+  macho64.b_put64(b, 64);         // e_phoff
+  macho64.b_put64(b, 0);          // e_shoff — no section table
+  macho64.b_put32(b, 0);          // e_flags
+  macho64.b_put16(b, 64);         // e_ehsize
+  macho64.b_put16(b, 56);         // e_phentsize
+  macho64.b_put16(b, 3);          // e_phnum
+  macho64.b_put16(b, 0);          // e_shentsize
+  macho64.b_put16(b, 0);          // e_shnum
+  macho64.b_put16(b, 0);          // e_shstrndx
+
+  // ---- Phdr[0]: r-x text (header block + text + folded strings) ----
+  elf_phdr(b, 1, 5, 0, base, off_data, off_data, 0x10000);
+
+  // ---- Phdr[1]: rw- data, BSS tail = the bump heap ----
+  elf_phdr(b, 1, 6, off_data, data_vaddr, data_size,
+           heap_vaddr + macho64.HEAP_BYTES - data_vaddr, 0x10000);
+
+  // ---- Phdr[2]: PT_GNU_STACK — non-executable stack ----
+  elf_phdr(b, 0x6474E551, 6, 0, 0, 0, 0, 0x10);
+
+  if b.n as u64 != hdr {
+    eprintf("{}", "rho: elf64: header block != expected size\n");
+    return false;
+  }
+
+  macho64.b_push_str_bytes(b, r.text);
+  macho64.b_push_str_bytes(b, r.strsec);
+  while (b.n as u64) < off_data {
+    b.push(0);
+  }
+  macho64.b_push_str_bytes(b, r.data);
+  return main.write_file(out_path, main.bytes_as_string(b.items[0..b.n]));
+}

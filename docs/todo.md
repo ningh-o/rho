@@ -2,7 +2,7 @@
 
 Living backlog. This file holds only what is still undone. The wasm
 bootstrap is closed (its closing measurements are recorded once, below);
-boot is frozen by decision; the native backends are the current batch.
+boot is frozen by decision; the native wave and the optimizer are in.
 
 ## The wasm bootstrap — closed, measured 2026-09-23
 
@@ -17,9 +17,12 @@ boot is frozen by decision; the native backends are the current batch.
   seeds identical behavior**, 0 differences, 0 both-invalid,
   0 both-reject (13.3s wall clock of the 900s budget).
 - The shipped compiler is the self-built chain: `make site` produces
-  `site/assets/rho.wasm` (boot compiles `self/rho.rho`), byte-identical
+  `site/assets/rho.wasm` (boot compiles `libs/compiler/main.rho`), byte-identical
   to `build/rho.wasm` and to the gate's `build/gate/m.wasm`
-  (SHA-256 `c5dd9fc7…`, 3,975,646 bytes). Verified under wasmtime: it
+  (SHA-256 `c5dd9fc7…`, 3,975,646 bytes, at closure; now
+  `dc8e25ea…`, 4226060 bytes — cat retired to `+`, the optimizer aboard, the
+  root double-lowering gone, the HEAP@ scratch prints removed).
+  Verified under wasmtime: it
   answers `--version` (`rho 0.4.0`), compiles `corpus/001_hello.rho`
   (`built`), and the built program prints `hello, world` (exit 0).
   wasi-sdk is retired — no C compiler takes part in any shipped
@@ -39,41 +42,72 @@ boot is frozen by decision; the native backends are the current batch.
   language tests roundtrip it byte for byte) — the last feature the
   two ends ever had to land together.
 - The feature subset law stands and is ENFORCED, not conventional:
-  `self/rho.rho` may only use features boot already implements, and
+  `libs/compiler/` may only use features boot already implements, and
   the gate's build-mirror leg is the enforcement — a mirror source
   that runs ahead of the seed simply fails to build, red gate.
   `docs/bootstrap.md` is the map: the seed chain, who builds which
   artifact, the feature-subset law, the rebuild commands.
 
-## Native backends — the current batch (open)
+## Native backends — closed, measured 2026-09-23
 
-All native code lives in the mirror (`self/rho.rho`); boot cannot emit
+All native code lives in the mirror (`libs/compiler/`); boot cannot emit
 a native image at all. The gate's crossing legs are build-only — a
 corrupt native image is never exec'd here (the kernel-wedge lore lives
-in this file's git history). Measured 2026-09-23:
+in this file's git history). `tools/gate.sh` full run: **11 green,
+0 red** — every target's hello smoke AND full self-build:
 
-- `amd64-linux`: **GREEN** — the hello smoke (41,256 bytes) AND the
-  full self-build (6,374,172 bytes).
-- `arm64-mac`: RED — the hello smoke aborts (rc 134).
-- `arm64-linux`: RED — the hello smoke aborts (rc 134).
+- `arm64-mac`: hello + self-build (13,110,736-byte Mach-O).
+- `arm64-linux`: hello + self-build.
+- `amd64-linux`: hello + self-build.
 
-The repair batch targets the arm64 pair first (mac + linux, aarch64),
-then amd64 completes. Repro seats carried from the earlier rounds
-(full notes in git history): the emit-phase O(n²) offset-table build
-(`ac_layout`'s growing `e.offs`; the pre-sized fix is written but
-parked until the next item falls), the loop-carried field-reassignment
-lowering bug (`e.offs = push_i64(…)` inside `while` — surfaces as
-`ac_slot_off#N index out of bounds` within the first ~25 functions of
-an arm64 self-build), the assembler's whole-text `asm_split_lines`
-memory ceiling, and the mac image's fixed heap segment (~1 GB baked
-into the image; either size it from the target's need or mmap-grow it
-in the mac RT blob).
+What the batch actually was (three bugs, none of them the suspected
+lowering bug):
+
+1. **Unzeroed layout table** — `ac_layout` pre-sizes `e.offs` but rho's
+   `make()` does not zero (the law; wasm's grow-zeroed pages only mask
+   it until the allocator hands back reused memory). `ac_slot_off`
+   reads 0 as "not cached", so a garbage nonzero slot read as a giant
+   offset and the offset walk looped on it — gigabytes of emitted text,
+   OOM, the arm64 rc-134. The same unzeroed-`make` bug also lived in
+   the optimizer's const table (it folded a load as garbage).
+2. **Root module lowered twice** — a sibling's `use main` registers the
+   ROOT file as an aux module (separate Module object, same path);
+   lowering both emitted the root's statics twice → duplicate labels in
+   the native assemblers (and dead duplicate globals in every wasm
+   artifact — the fix shrinks them all).
+3. **`itoa(i64 MIN)`** — the negation wrapped back into itself and
+   emitted garbage bytes, a comma among them, which split a `movabsq`
+   immediate mid-number in the amd64 assembler feed.
+
+The pre-seat notes (loop-carried field reassignment, asm_split_lines
+ceiling, mac heap segment) never fired once these three fell; the
+62.9 MB self-build assembly text rides the wasm32 heap fine today.
+
+## The optimizer — landed 2026-09-23
+
+`libs/compiler/opt.rho` (spec §3.6): constant folding + dead-instruction
+elimination, mirror-only, on by default (`--no-opt` disables). The gate's
+differential legs are the referee (92 programs × boot vs mirror, plus
+the grandchild chain), and `tests/lang/opt/` pins the folds themselves
+(9 cases: arith chains, wrap edges at both widths, shift masking +
+i64/u64 lanes, comparison folding, divisor-0 trap survival, the signed
+−1 wrap law, the const-lane cast corner, the i64-min dogfood, and
+uncalled-fn tree-shaking — s07
+caught the first cut of the cast folds diverging from the runtime and
+narrowed them to the two evidenced shapes: integer bitcopy, and sext
+i32→i64). The differential fuzzer
+re-ran with the optimizer live: **1000/1000 seeds identical behavior**
+(seeds 1..1000, 96 s, 2026-09-23). Artifact effect: −2.1% total bytes across the corpus programs (small
+programs are prelude-dominated; constant-heavy user code gains more),
+−1.4% on the compiler's own 4.2 MB self-build — and the pass costs
+~0.5% compile time (12.70 s vs 12.64 s for the full self-build,
+noise-level).
 
 ## Later batches
 
 - Native real-machine exec verification: the gate never runs a native
-  image; per-target exec happens on real hardware / in a container
-  once the crossings are green.
+  image; per-target exec happens on real hardware / in a container —
+  the crossings are green, so this is unblocked.
 - In-container corpus: the corpus differential re-run inside a Linux
   container, per native target.
 - GitHub release: owner-decided NOT this round — the release (and the
@@ -81,6 +115,9 @@ in the mac RT blob).
   lands.
 - Package-manager polish: argv instead of stdin (`__program_args`
   works on wasm, measured), native pkg targets after the crossings.
+- Bench the shipped compiler: the suite's rho lane builds with the boot
+  seed; running it through the mirror (optimizer on) alongside is a
+  methodology decision plus a full re-record — owner's call.
 
 ## 0.2 backlog (unchanged)
 

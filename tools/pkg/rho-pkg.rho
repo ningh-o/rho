@@ -49,7 +49,7 @@ fn read_file(path: string) -> Result[string, string] {
   let pathz: []u8 = cstr(path);
   let fd: i32 = __open(pathz.ptr, 0, 0);
   if (fd < 0) {
-    return Result.Err(cat("cannot open ", path));
+    return Result.Err(("cannot open " + path));
   }
   let mut cap: usize = (1 << 12);
   let mut buf: []u8 = make([]u8, cap);
@@ -180,7 +180,7 @@ fn split_ws(s: string) -> []string {
         cur = "";
       }
     } else {
-      cur = cat(cur, singleton(s[i]));
+      cur = (cur + singleton(s[i]));
     }
     i += 1;
   }
@@ -215,11 +215,11 @@ fn esc(s: string) -> string {
   let mut i: usize = 0;
   while (i < len(s)) {
     if (s[i] == "\\"[0]) {
-      out = cat(out, "\\\\");
+      out = (out + "\\\\");
     } else if (s[i] == "\""[0]) {
-      out = cat(out, "\\\"");
+      out = (out + "\\\"");
     } else {
-      out = cat(out, singleton(s[i]));
+      out = (out + singleton(s[i]));
     }
     i += 1;
   }
@@ -227,15 +227,15 @@ fn esc(s: string) -> string {
 }
 
 fn cat3(a: string, b: string, c: string) -> string {
-  return cat(cat(a, b), c);
+  return ((a + b) + c);
 }
 
 fn cat4(a: string, b: string, c: string, d: string) -> string {
-  return cat(cat(cat(a, b), c), d);
+  return (((a + b) + c) + d);
 }
 
 fn cat5(a: string, b: string, c: string, d: string, e: string) -> string {
-  return cat(cat(cat(cat(a, b), c), d), e);
+  return ((((a + b) + c) + d) + e);
 }
 
 fn itos(n: i32) -> string {
@@ -307,21 +307,21 @@ fn decode_string(raw: string) -> Result[string, string] {
       }
       let e: u8 = raw[(i + 1)];
       if (e == "n"[0]) {
-        out = cat(out, "\n");
+        out = (out + "\n");
       } else if (e == "t"[0]) {
-        out = cat(out, "\t");
+        out = (out + "\t");
       } else if (e == "r"[0]) {
-        out = cat(out, "\r");
+        out = (out + "\r");
       } else if (e == "\\"[0]) {
-        out = cat(out, "\\");
+        out = (out + "\\");
       } else if (e == "\""[0]) {
-        out = cat(out, "\"");
+        out = (out + "\"");
       } else {
         return Result.Err("unsupported escape in string");
       }
       i += 2;
     } else {
-      out = cat(out, singleton(raw[i]));
+      out = (out + singleton(raw[i]));
       i += 1;
     }
   }
@@ -488,7 +488,7 @@ fn manifest_of(sections: []*Section, fname: string, m: *Manifest) -> Result[stri
     } else if starts_with(sec.name, "dependencies.") {
       let dname: string = slice_str(sec.name, 13, len(sec.name));
       if (len(dname) == 0) {
-        return Result.Err(cat(fname, ": empty dependency name"));
+        return Result.Err((fname + ": empty dependency name"));
       }
       let mut d: *Dep = new Dep { name: dname, kind: "", path: "", url: "", rev: "" };
       let mut k: usize = 0;
@@ -527,10 +527,10 @@ fn manifest_of(sections: []*Section, fname: string, m: *Manifest) -> Result[stri
     s += 1;
   }
   if ((len(m.name) == 0) || (len(m.version) == 0)) {
-    return Result.Err(cat(fname, ": [package] needs name and version"));
+    return Result.Err((fname + ": [package] needs name and version"));
   }
   if (!valid_name(m.name)) {
-    return Result.Err(cat(fname, ": package name must match [a-z0-9_-]+ (it names the entry module)"));
+    return Result.Err((fname + ": package name must match [a-z0-9_-]+ (it names the entry module)"));
   }
   return Result.Ok("");
 }
@@ -538,7 +538,7 @@ fn manifest_of(sections: []*Section, fname: string, m: *Manifest) -> Result[stri
 fn load_manifest(path: string, m: *Manifest) -> Result[string, string] {
   let src = read_file(path);
   if src.is_err() {
-    return Result.Err(cat(path, ": cannot read (is this a package root?)"));
+    return Result.Err((path + ": cannot read (is this a package root?)"));
   }
   let mut doc: *TomlDoc = new TomlDoc { secs: make([]*Section, 0) };
   let pr = parse_toml(err_text(src), path, doc);
@@ -566,7 +566,7 @@ fn norm_path(p: string) -> Result[string, string] {
     if ((i == len(p)) || (p[i] == "/"[0])) {
       if (len(seg) > 0) {
         if (seg == "..") {
-          return Result.Err(cat("`..` is not allowed in dependency paths: ", p));
+          return Result.Err(("`..` is not allowed in dependency paths: " + p));
         }
         if (seg != ".") {
           parts = push_str(parts, seg);
@@ -574,7 +574,7 @@ fn norm_path(p: string) -> Result[string, string] {
         seg = "";
       }
     } else {
-      seg = cat(seg, singleton(p[i]));
+      seg = (seg + singleton(p[i]));
     }
     i += 1;
   }
@@ -582,9 +582,9 @@ fn norm_path(p: string) -> Result[string, string] {
   let mut k: usize = 0;
   while (k < len(parts)) {
     if (k > 0) {
-      out = cat(out, "/");
+      out = (out + "/");
     }
-    out = cat(out, parts[k]);
+    out = (out + parts[k]);
     k += 1;
   }
   if (len(out) == 0) {
@@ -680,7 +680,7 @@ fn resolve(m: *Manifest, out: *LockSet) -> Result[string, string] {
     // are consumed in place at their declared (descending) path
     let mut raw: string = join_path(p.root, p.dep.path);
     if (p.dep.kind == "git") {
-      raw = join_path(p.root, cat("vendor/", p.dep.name));
+      raw = join_path(p.root, ("vendor/" + p.dep.name));
     }
     let nloc = norm_path(raw);
     if nloc.is_err() {
@@ -708,7 +708,7 @@ fn resolve(m: *Manifest, out: *LockSet) -> Result[string, string] {
       continue;
     }
     seen = push_seen(seen, new Seen { name: p.dep.name, sig: sig });
-    let mpath: string = cat(location, "/rho.toml");
+    let mpath: string = (location + "/rho.toml");
     let msrc = read_file(mpath);
     if msrc.is_err() {
       if (p.dep.kind == "git") {
@@ -774,7 +774,7 @@ fn verify(l: *Locked) -> Result[string, string] {
     return Result.Err(cat4("path dependency `", l.name, "`: missing entry module ", entry));
   }
   if (l.kind == "git") {
-    let head = read_file(cat(l.location, "/.git/HEAD"));
+    let head = read_file((l.location + "/.git/HEAD"));
     if head.is_err() {
       return Result.Err(cat5("git dependency `", l.name, "` at ", l.location, " is not a git checkout — remove it and clone"));
     }
@@ -792,8 +792,8 @@ fn verify(l: *Locked) -> Result[string, string] {
 // ------------------------------------------------------- lockfile ---------
 fn lock_string(m: *Manifest, pkgs: []*Locked) -> string {
   let mut out: string = "# generated by rho-pkg; do not edit\n[package]\n";
-  out = cat(out, cat4("name = \"", esc(m.name), "\"\nversion = \"", esc(m.version)));
-  out = cat(out, "\"\n");
+  out = (out + cat4("name = \"", esc(m.name), "\"\nversion = \"", esc(m.version)));
+  out = (out + "\"\n");
   let mut i: usize = 0;
   while (i < len(pkgs)) {
     let p: *Locked = pkgs[i];
@@ -804,7 +804,7 @@ fn lock_string(m: *Manifest, pkgs: []*Locked) -> string {
       out = cat5(out, "\"\nlocation = \"", esc(p.location), "\"\n", "");
     } else {
       out = cat5(out, "path = \"", esc(p.path), "\"\nlocation = \"", esc(p.location));
-      out = cat(out, "\"\n");
+      out = (out + "\"\n");
     }
     i += 1;
   }
@@ -833,20 +833,20 @@ fn cmd_init(name: string) -> i32 {
   if file_exists("rho.toml") {
     return fail("rho.toml already exists here");
   }
-  let entry_path: string = cat(name, ".rho");
+  let entry_path: string = (name + ".rho");
   if file_exists(entry_path) {
-    return fail(cat(entry_path, " already exists here"));
+    return fail((entry_path + " already exists here"));
   }
   let mut man: string = "# package manifest — format: docs/package-manager.md\n[package]\n";
   man = cat4(man, "name = \"", esc(name), "\"\nversion = \"");
-  man = cat(man, "0.1.0\"\n");
+  man = (man + "0.1.0\"\n");
   if (!write_file("rho.toml", man)) {
     return fail("cannot write rho.toml");
   }
   let mut entry: string = cat3("// ", name, " — entry module; its basename is the package namespace.\n// pub items are the public API (spec/module-system.md).\n\npub fn hello() -> string {\n  return \"hello from ");
   entry = cat3(entry, name, "\";\n}\n");
   if (!write_file(entry_path, entry)) {
-    return fail(cat("cannot write ", entry_path));
+    return fail(("cannot write " + entry_path));
   }
   printf("initialized package {}\n", name);
   printf("next: `add <name> --path <dir>|--git <url> --rev <rev>`, then `install`\n");
@@ -856,7 +856,7 @@ fn cmd_init(name: string) -> i32 {
 // textually upsert the [dependencies.<name>] section: every other byte of
 // the manifest (comments included) survives
 fn upsert_dep_section(text: string, name: string, block: []string) -> string {
-  let header: string = cat(cat("[dependencies.", name), "]");
+  let header: string = (("[dependencies." + name) + "]");
   let lines: []string = split_lines(text);
   let mut found: bool = false;
   let mut start: usize = 0;
@@ -884,27 +884,27 @@ fn upsert_dep_section(text: string, name: string, block: []string) -> string {
   i = 0;
   if found {
     while (i < start) {
-      out = cat(out, cat(lines[i], "\n"));
+      out = (out + (lines[i] + "\n"));
       i += 1;
     }
   } else {
     while (i < len(lines)) {
-      out = cat(out, cat(lines[i], "\n"));
+      out = (out + (lines[i] + "\n"));
       i += 1;
     }
     if (len(lines) > 0) {
-      out = cat(out, "\n");
+      out = (out + "\n");
     }
   }
   let mut b: usize = 0;
   while (b < len(block)) {
-    out = cat(out, cat(block[b], "\n"));
+    out = (out + (block[b] + "\n"));
     b += 1;
   }
   if found {
     i = end;
     while (i < len(lines)) {
-      out = cat(out, cat(lines[i], "\n"));
+      out = (out + (lines[i] + "\n"));
       i += 1;
     }
   }
@@ -921,7 +921,7 @@ fn cmd_add(name: string, path: string, url: string, rev: string) -> i32 {
   }
   let text: string = err_text(msrc);
   let mut block: []string = make([]string, 0);
-  block = push_str(block, cat(cat("[dependencies.", name), "]"));
+  block = push_str(block, (("[dependencies." + name) + "]"));
   if (len(path) > 0) {
     if ((len(url) > 0) || (len(rev) > 0)) {
       return fail("choose either --path or --git/--rev, not both");

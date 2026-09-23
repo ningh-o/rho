@@ -1,0 +1,13 @@
+// exit: 0
+// s07 — casts around constants: the checker's const lane pins literal
+// expressions to their value (corpus 051 pins VARIABLE narrowing — a
+// const-expression `as u8` keeps 1012, a variable's truncates). This pins
+// that the optimizer's cast folds never diverge from boot on the same
+// source: both compilers print the same three values.
+fn main() -> i32 {
+  let a: i64 = (((1000 as i64) + 12) as u8) as i64;
+  let b: i64 = (((0 - 1) as i32) as i8) as i64;
+  let c: i64 = (((0 - 40000) as i32) as i16) as i64;
+  printf("{} {} {}\n", a, b, c);
+  return 0;
+}

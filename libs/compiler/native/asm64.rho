@@ -1,0 +1,1186 @@
+// the arm64 assembler plus the shared assembly frontend (lexer,
+// fixups, section images, AResult)
+use main;
+
+
+// ---- shared assembler helpers ---------------------------------------------
+
+pub struct ASym {
+  name: string,
+  sec: i32,
+  off: u64,
+  defined: bool,
+}
+
+pub struct AFix {
+  sec: i32,
+  at: u64,   // byte offset of the patched field inside its section
+  kind: i32,
+  sym: string,
+}
+
+struct AEnt { key: string, val: *ASym }
+
+struct AMap {
+  slots: []*AEnt,
+  cap: usize,
+  n: usize,
+}
+
+fn am_put(m: *AMap, key: string, val: *ASym) {
+  if m.n * 10 >= m.cap * 7 {
+    let ncap: usize = if m.cap == 0 { 64 } else { m.cap * 2 };
+    let slots: []*AEnt = make([]*AEnt, ncap);
+    let old: []*AEnt = m.slots;
+    let oldn: usize = m.cap;
+    m.slots = slots;
+    m.cap = ncap;
+    m.n = 0;
+    let mut i: usize = 0;
+    while i < oldn {
+      if old[i] != null {
+        am_put(m, old[i].key, old[i].val);
+      }
+      i += 1;
+    }
+  }
+  let mut i: usize = main.map_hash(key) & (m.cap - 1);
+  while m.slots[i] != null {
+    if main.streq(m.slots[i].key, key) {
+      m.slots[i].val = val;
+      return;
+    }
+    i = (i + 1) & (m.cap - 1);
+  }
+  m.slots[i] = new AEnt { key: key, val: val };
+  m.n += 1;
+}
+
+pub fn am_get(m: *AMap, key: string) -> *ASym {
+  if m.cap == 0 {
+    return null;
+  }
+  let mut i: usize = main.map_hash(key) & (m.cap - 1);
+  while m.slots[i] != null {
+    if main.streq(m.slots[i].key, key) {
+      return m.slots[i].val;
+    }
+    i = (i + 1) & (m.cap - 1);
+  }
+  return null;
+}
+
+// arm64 fixup kinds (0-6) and amd64 fixup kinds (7-8)
+static mut FIX_ADRP: i32 = 0;
+static mut FIX_ADDPAGE: i32 = 1;
+static mut FIX_B26: i32 = 2;
+static mut FIX_BL26: i32 = 3;
+static mut FIX_BC19: i32 = 4;
+static mut FIX_CB19: i32 = 5;
+pub static mut FIX_ABS64: i32 = 6;
+pub static mut FIX_REL32: i32 = 7;
+pub static mut FIX_RIPREL: i32 = 8;
+
+// section images: 0 text, 1 strings, 2 data
+pub struct ASMCtx {
+  out: []*main.Vec[u8],
+  syms: *main.Vec[*ASym],
+  by_name: *AMap,
+  fixes: *main.Vec[*AFix],
+  sec: i32,
+  base: u64, // vaddr of the first text byte
+  errors: i32,
+  is_arm: bool,
+}
+
+pub fn ac_new(base: u64, is_arm: bool) -> *ASMCtx {
+  let out: []*main.Vec[u8] = make([]*main.Vec[u8], 3);
+  let mut i: usize = 0;
+  while i < 3 {
+    out[i] = new main.Vec[u8] { items: make([]u8, 4096), n: 0 };
+    i += 1;
+  }
+  return new ASMCtx {
+    out: out, syms: new main.Vec[*ASym] { items: make([]*ASym, 256), n: 0 },
+    by_name: new AMap { slots: make([]*AEnt, 0), cap: 0, n: 0 },
+    fixes: new main.Vec[*AFix] { items: make([]*AFix, 256), n: 0 },
+    sec: 0, base: base, errors: 0, is_arm: is_arm,
+  };
+}
+
+pub fn asm_err(a: *ASMCtx, msg: string) {
+  if a.is_arm {
+    eprintf("{}", main.cat("rho: asm64: ", main.cat3(msg, "\n", "")));
+  } else {
+    eprintf("{}", main.cat("rho: asm86: ", main.cat3(msg, "\n", "")));
+  }
+  a.errors += 1;
+}
+
+pub fn a_emitb(a: *ASMCtx, byte: i32) {
+  a.out[a.sec as usize].push((byte & 255) as u8);
+}
+
+pub fn a_emit4(a: *ASMCtx, w: u32) {
+  a.out[a.sec as usize].push((w & 255) as u8);
+  a.out[a.sec as usize].push(((w >> 8) & 255) as u8);
+  a.out[a.sec as usize].push(((w >> 16) & 255) as u8);
+  a.out[a.sec as usize].push(((w >> 24) & 255) as u8);
+}
+
+fn a_emit32(a: *ASMCtx, w: u32) {
+  a_emit4(a, w);
+}
+
+pub fn a_cur(a: *ASMCtx) -> *main.Vec[u8] {
+  return a.out[a.sec as usize];
+}
+
+pub fn sym_get(a: *ASMCtx, name: string, define: bool) -> *ASym {
+  let s: *ASym = am_get(a.by_name, name);
+  if s != null {
+    return s;
+  }
+  if !define {
+    return null;
+  }
+  let ns: *ASym = new ASym { name: name, sec: a.sec, off: a_cur(a).n as u64, defined: false };
+  a.syms.push(ns);
+  am_put(a.by_name, name, ns);
+  return ns;
+}
+
+pub fn a_fixup(a: *ASMCtx, kind: i32, sym: string) {
+  a.fixes.push(new AFix { sec: a.sec, at: a_cur(a).n as u64, kind: kind, sym: sym });
+}
+
+fn asm_hexv(c: u8) -> i32 {
+  if c >= 48 && c <= 57 {
+    return (c - 48) as i32;
+  }
+  if c >= 97 && c <= 102 {
+    return (c - 97) as i32 + 10;
+  }
+  if c >= 65 && c <= 70 {
+    return (c - 65) as i32 + 10;
+  }
+  return 0 - 1;
+}
+
+pub struct AImm { ok: bool, v: i64 }
+
+// accepts an optional immediate marker (# arm64, $ AT&T), a sign, and
+// decimal or 0x hex digits
+pub fn asm_parse_imm(s_in: string) -> *AImm {
+  let s: string = s_in;
+  let mut i: usize = 0;
+  let n: usize = len(s);
+  if i < n && (s[i] == 35 || s[i] == 36) { // '#' '$'
+    i += 1;
+  }
+  let mut neg: bool = false;
+  if i < n && s[i] == 45 { // '-'
+    neg = true;
+    i += 1;
+  }
+  if i >= n {
+    return new AImm { ok: false, v: 0 };
+  }
+  let mut v: i64 = 0;
+  if i + 1 < n && s[i] == 48 && (s[i + 1] == 120 || s[i + 1] == 88) { // 0x 0X
+    i += 2;
+    let mut any: bool = false;
+    while i < n {
+      let hv: i32 = asm_hexv(s[i]);
+      if hv < 0 {
+        break;
+      }
+      v = v * 16 + hv as i64;
+      i += 1;
+      any = true;
+    }
+    if !any {
+      return new AImm { ok: false, v: 0 };
+    }
+  } else {
+    let mut any: bool = false;
+    while i < n && s[i] >= 48 && s[i] <= 57 {
+      v = v * 10 + (s[i] - 48) as i64;
+      i += 1;
+      any = true;
+    }
+    if !any {
+      return new AImm { ok: false, v: 0 };
+    }
+  }
+  if i != n {
+    return new AImm { ok: false, v: 0 };
+  }
+  if neg {
+    v = 0 - v;
+  }
+  return new AImm { ok: true, v: v };
+}
+
+// leading-run atoi for directive arguments ("16", "2")
+pub fn asm_atoi(s: string) -> i32 {
+  let mut i: usize = 0;
+  let n: usize = len(s);
+  let mut neg: bool = false;
+  while i < n && (s[i] == 32 || s[i] == 9) {
+    i += 1;
+  }
+  if i < n && s[i] == 45 {
+    neg = true;
+    i += 1;
+  }
+  let mut v: i32 = 0;
+  while i < n && s[i] >= 48 && s[i] <= 57 {
+    v = v * 10 + (s[i] - 48) as i32;
+    i += 1;
+  }
+  if neg {
+    return 0 - v;
+  }
+  return v;
+}
+
+// index of needle in hay at/after `from`, -1 when absent
+pub fn str_index_from(hay: string, needle: string, from: usize) -> i64 {
+  let hn: usize = len(hay);
+  let nn: usize = len(needle);
+  if nn == 0 {
+    return from as i64;
+  }
+  let mut i: usize = from;
+  while i + nn <= hn {
+    let mut k: usize = 0;
+    let mut eq: bool = true;
+    while k < nn {
+      if hay[i + k] != needle[k] {
+        eq = false;
+        k = nn;
+      }
+      k += 1;
+    }
+    if eq {
+      return i as i64;
+    }
+    i += 1;
+  }
+  return (0 - 1) as i64;
+}
+
+pub fn str_starts(s: string, prefix: string) -> bool {
+  if len(s) < len(prefix) {
+    return false;
+  }
+  return main.streq(s[0..len(prefix)], prefix);
+}
+
+pub fn str_ends_byte(s: string, last: u8) -> bool {
+  return len(s) > 0 && s[len(s) - 1] == last;
+}
+
+// split on '\n' (strtok_r semantics: empty lines skipped)
+pub fn asm_split_lines(text: string) -> *main.Vec[string] {
+  let out: *main.Vec[string] = new main.Vec[string] { items: make([]string, 256), n: 0 };
+  let n: usize = len(text);
+  let mut start: usize = 0;
+  let mut i: usize = 0;
+  while i <= n {
+    if i == n || text[i] == 10 {
+      if i > start {
+        out.push(text[start..i]);
+      }
+      start = i + 1;
+    }
+    i += 1;
+  }
+  return out;
+}
+
+// `//` starts a comment only outside a quoted payload: .ascii lines carry
+// string bytes that may themselves contain `//` (the embedded prelude is
+// full of line comments) and must survive the comment strip verbatim
+fn asm_line_comment(line: string) -> i64 {
+  let mut in_str: bool = false;
+  let n: usize = len(line);
+  let mut i: usize = 0;
+  while i < n {
+    let c: u8 = line[i];
+    if in_str {
+      if c == 92 {
+        i += 2;
+        continue;
+      }
+      if c == 34 {
+        in_str = false;
+      }
+    } else if c == 34 {
+      in_str = true;
+    } else if c == 47 && i + 1 < n && line[i + 1] == 47 {
+      return i as i64;
+    }
+    i += 1;
+  }
+  return -1;
+}
+
+// strip a `//` comment, then leading spaces/tabs
+pub fn asm_prepare(line: string) -> string {
+  let mut s: string = line;
+  let cut: i64 = asm_line_comment(s);
+  if cut >= 0 {
+    s = s[0..cut as usize];
+  }
+  let mut i: usize = 0;
+  while i < len(s) && (s[i] == 32 || s[i] == 9) {
+    i += 1;
+  }
+  return s[i..len(s)];
+}
+
+// splits the mnemonic off the first operand, then the rest on top-level
+// commas; bracketed groups and quoted strings keep their commas
+pub fn asm_split_ops(line: string) -> *main.Vec[string] {
+  let ops: *main.Vec[string] = new main.Vec[string] { items: make([]string, 8), n: 0 };
+  let n: usize = len(line);
+  let mut p: usize = 0;
+  while p < n && (line[p] == 32 || line[p] == 9) {
+    p += 1;
+  }
+  if p >= n {
+    return ops;
+  }
+  let mn_start: usize = p;
+  while p < n && line[p] != 32 && line[p] != 9 {
+    p += 1;
+  }
+  ops.push(line[mn_start..p]);
+  while p < n && (line[p] == 32 || line[p] == 9) {
+    p += 1;
+  }
+  while p < n && ops.n < 8 {
+    let op_start: usize = p;
+    let mut in_br: bool = false;
+    let mut in_str: bool = false;
+    while p < n {
+      let c: u8 = line[p];
+      if c == 34 { // '"'
+        in_str = !in_str;
+      } else if !in_str && c == 91 { // '['
+        in_br = true;
+      } else if !in_str && c == 93 { // ']'
+        in_br = false;
+      } else if !in_str && !in_br && c == 44 { // ','
+        break;
+      }
+      p += 1;
+    }
+    ops.push(line[op_start..p]);
+    if p < n && line[p] == 44 {
+      p += 1;
+    }
+    while p < n && (line[p] == 32 || line[p] == 9) {
+      p += 1;
+    }
+  }
+  return ops;
+}
+
+// vaddr of an offset inside a section under the final image layout: text
+// at base, strings 8-aligned after text (same page), data on its own page
+pub struct ALayout { str_a: u64, data_a: u64, heap_a: u64 }
+
+pub fn a_sec_vaddr(a: *ASMCtx, ly: *ALayout, sec: i32, off: u64) -> u64 {
+  if sec == 0 {
+    return a.base + off;
+  }
+  if sec == 1 {
+    return ly.str_a + off;
+  }
+  return ly.data_a + off;
+}
+
+// ---- arm64 assembler (asm64.c port) ---------------------------------------
+
+static mut RC_X: i32 = 0;
+static mut RC_W: i32 = 1;
+static mut RC_SP: i32 = 2;
+static mut RC_VS: i32 = 3;
+static mut RC_VD: i32 = 4;
+static mut RC_NONE: i32 = 5;
+
+struct AReg { cls: i32, n: i32 }
+
+fn ar_reg(cls: i32, n: i32) -> *AReg {
+  return new AReg { cls: cls, n: n };
+}
+
+fn ar_parse_reg(s: string) -> *AReg {
+  if main.streq(s, "sp") {
+    return ar_reg(RC_SP, 31);
+  }
+  if main.streq(s, "xzr") {
+    return ar_reg(RC_X, 31);
+  }
+  if len(s) >= 2 {
+    let c0: u8 = s[0];
+    let c1: u8 = s[1];
+    if c1 >= 48 && c1 <= 57 {
+      let num: i32 = asm_atoi(s[1..len(s)]);
+      if num <= 30 {
+        if c0 == 120 { return ar_reg(RC_X, num); }  // 'x'
+        if c0 == 119 { return ar_reg(RC_W, num); }  // 'w'
+        if c0 == 115 { return ar_reg(RC_VS, num); } // 's'
+        if c0 == 100 { return ar_reg(RC_VD, num); } // 'd'
+      }
+    }
+  }
+  return ar_reg(RC_NONE, 0);
+}
+
+fn ar_cond_code(s: string) -> i32 {
+  // ARM condition codes; hs/lo are aliases of cs/cc
+  if main.streq(s, "eq") { return 0; }
+  if main.streq(s, "ne") { return 1; }
+  if main.streq(s, "cs") { return 2; }
+  if main.streq(s, "cc") { return 3; }
+  if main.streq(s, "mi") { return 4; }
+  if main.streq(s, "pl") { return 5; }
+  if main.streq(s, "vs") { return 6; }
+  if main.streq(s, "vc") { return 7; }
+  if main.streq(s, "hi") { return 8; }
+  if main.streq(s, "ls") { return 9; }
+  if main.streq(s, "ge") { return 10; }
+  if main.streq(s, "lt") { return 11; }
+  if main.streq(s, "gt") { return 12; }
+  if main.streq(s, "le") { return 13; }
+  if main.streq(s, "hs") { return 2; }
+  if main.streq(s, "lo") { return 3; }
+  return 0 - 1;
+}
+
+// strip an @PAGE/@PAGEOFF marker from a symbol reference
+fn ar_sym_ref(s: string) -> string {
+  let at: i64 = str_index_from(s, "@PAGE", 0);
+  if at >= 0 {
+    return s[0..at as usize];
+  }
+  return s;
+}
+
+fn ar_addsub_imm(a: *ASMCtx, is_sub_in: bool, set: bool, rd: *AReg, rn: *AReg, imm_in: i64, mn: string) {
+  let mut is_sub: bool = is_sub_in;
+  let mut imm: i64 = imm_in;
+  if imm < 0 { // the emitter prints negative immediates; flip add/sub
+    is_sub = !is_sub;
+    imm = 0 - imm;
+  }
+  if imm > 4095 {
+    asm_err(a, main.cat3(mn, main.cat3(" immediate out of range: ", main.itoa(imm), ""), ""));
+    return;
+  }
+  let mut base: u32 = 0;
+  if rd.cls == RC_W { // sp always rides the 64-bit form
+    base = if is_sub { if set { 0x71000000 } else { 0x51000000 } } else { if set { 0x31000000 } else { 0x11000000 } };
+  } else {
+    base = if is_sub { if set { 0xF1000000 } else { 0xD1000000 } } else { if set { 0xB1000000 } else { 0x91000000 } };
+  }
+  let rn_enc: u32 = if rn.cls == RC_SP { 31 } else { rn.n as u32 };
+  let rd_enc: u32 = if rd.cls == RC_SP { 31 } else { rd.n as u32 };
+  a_emit32(a, base | ((imm as u32) << 10) | (rn_enc << 5) | rd_enc);
+}
+
+fn ar_addsub_reg(a: *ASMCtx, is_sub: bool, set: bool, rd: *AReg, rn: *AReg, rm: *AReg) {
+  let base: u32 = if rd.cls == RC_X {
+    if is_sub { if set { 0xEB000000 } else { 0xCB000000 } } else { if set { 0xAB000000 } else { 0x8B000000 } }
+  } else {
+    if is_sub { if set { 0x6B000000 } else { 0x4B000000 } } else { if set { 0x2B000000 } else { 0x0B000000 } }
+  };
+  let rn_enc: u32 = if rn.cls == RC_SP { 31 } else { rn.n as u32 };
+  let rd_enc: u32 = if rd.cls == RC_SP { 31 } else { rd.n as u32 };
+  a_emit32(a, base | ((rm.n as u32) << 16) | (rn_enc << 5) | rd_enc);
+}
+
+fn ar_movz(a: *ASMCtx, rd: *AReg, imm: i64, hw: i32) {
+  let maxhw: i32 = if rd.cls == RC_X { 3 } else { 1 };
+  if imm < 0 || imm > 65535 || hw < 0 || hw > maxhw {
+    asm_err(a, main.cat3("movz/movk out of range: ", main.itoa(imm), ""));
+    return;
+  }
+  let base: u32 = if rd.cls == RC_X { 0xD2800000 } else { 0x52800000 };
+  a_emit32(a, base | ((hw as u32) << 21) | ((imm as u32) << 5) | (rd.n as u32));
+}
+
+fn ar_movk(a: *ASMCtx, rd: *AReg, imm: i64, hw: i32) {
+  let maxhw: i32 = if rd.cls == RC_X { 3 } else { 1 };
+  if imm < 0 || imm > 65535 || hw < 0 || hw > maxhw {
+    asm_err(a, main.cat3("movk out of range: ", main.itoa(imm), ""));
+    return;
+  }
+  let base: u32 = if rd.cls == RC_X { 0xF2800000 } else { 0x72800000 };
+  a_emit32(a, base | ((hw as u32) << 21) | ((imm as u32) << 5) | (rd.n as u32));
+}
+
+// loads/stores, unsigned-offset [Xn] forms (imm12 = 0)
+fn ar_mem(a: *ASMCtx, base: u32, rt: *AReg, rn: *AReg) {
+  a_emit32(a, base | ((rn.n as u32) << 5) | (rt.n as u32));
+}
+
+fn ar_pair(a: *ASMCtx, load: bool, post: bool, rt: *AReg, rt2: *AReg, rn: *AReg, imm: i64) {
+  if imm % 8 != 0 || imm > 240 || imm + 256 < 0 {
+    asm_err(a, main.cat3("stp/ldp offset out of range: ", main.itoa(imm), ""));
+    return;
+  }
+  let imm7: u32 = ((imm / 8) as u32) & 0x7F;
+  let base: u32 = if load {
+    if post { 0xA8C00000 } else { 0xA9C00000 }
+  } else {
+    if post { 0xA8800000 } else { 0xA9800000 }
+  };
+  a_emit32(a, base | (imm7 << 15) | ((rt2.n as u32) << 10) | ((rn.n as u32) << 5) | (rt.n as u32));
+}
+
+fn ar_dprec2(a: *ASMCtx, opcode6: u32, rd: *AReg, rn: *AReg, rm: *AReg) {
+  a_emit32(a, 0x9AC00000 | ((rm.n as u32) << 16) | (opcode6 << 10) | ((rn.n as u32) << 5) | (rd.n as u32));
+}
+
+fn ar_dprec3(a: *ASMCtx, msub: bool, rd: *AReg, rn: *AReg, rm: *AReg, ra: *AReg) {
+  let base: u32 = 0x9B000000 | ((if msub { 0x8000 } else { 0 }) as u32);
+  a_emit32(a, base | ((rm.n as u32) << 16) | ((ra.n as u32) << 10) | ((rn.n as u32) << 5) | (rd.n as u32));
+}
+
+// FP data-processing: opcode FMUL=0 FDIV=1 FADD=2 FSUB=3
+fn ar_fp3(a: *ASMCtx, opcode: u32, rd: *AReg, rn: *AReg, rm: *AReg) {
+  let word: u32 = 0x1E000000 | ((if rd.cls == RC_VD { 1 << 22 } else { 0 }) as u32) | (1 << 21) |
+                  ((rm.n as u32) << 16) | (opcode << 12) | (1 << 11) | ((rn.n as u32) << 5) | (rd.n as u32);
+  a_emit32(a, word);
+}
+
+fn ar_asm_line(a: *ASMCtx, mn: string, ops: []string) {
+  let nops: i32 = len(ops) as i32;
+  if str_starts(mn, "b.") { // b.cond
+    let cond: i32 = ar_cond_code(mn[2..len(mn)]);
+    if cond < 0 || nops != 1 {
+      asm_err(a, "bad b.cond");
+      return;
+    }
+    let s: *ASym = sym_get(a, ops[0], true);
+    a_fixup(a, FIX_BC19, s.name);
+    a_emit32(a, 0x54000000 | (cond as u32));
+    return;
+  }
+  if main.streq(mn, "adrp") && nops == 2 {
+    let rd: *AReg = ar_parse_reg(ops[0]);
+    if rd.cls != RC_X {
+      asm_err(a, "bad adrp");
+      return;
+    }
+    let s: *ASym = sym_get(a, ar_sym_ref(ops[1]), true);
+    a_fixup(a, FIX_ADRP, s.name);
+    a_emit32(a, 0x90000000 | (rd.n as u32));
+    return;
+  }
+  if (main.streq(mn, "add") || main.streq(mn, "sub")) && nops == 3 {
+    let rd: *AReg = ar_parse_reg(ops[0]);
+    let rn: *AReg = ar_parse_reg(ops[1]);
+    let is_sub: bool = mn[0] == 115; // 's'
+    let o2: string = ops[2];
+    if len(o2) > 0 && o2[0] == 35 { // '#'
+      let imm: *AImm = asm_parse_imm(o2);
+      if !imm.ok {
+        asm_err(a, main.cat("bad ", main.cat3(mn, " immediate", "")));
+        return;
+      }
+      ar_addsub_imm(a, is_sub, false, rd, rn, imm.v, mn);
+    } else if str_index_from(o2, "@", 0) >= 0 || ar_parse_reg(o2).cls == RC_NONE {
+      // @PAGEOFF marker (mac dialect) or a bare symbol (ELF dialect):
+      // the low page half of a page-relative address
+      if is_sub || rd.cls != RC_X {
+        asm_err(a, "bad pageoff add");
+        return;
+      }
+      let s: *ASym = sym_get(a, ar_sym_ref(o2), true);
+      a_fixup(a, FIX_ADDPAGE, s.name);
+      a_emit32(a, 0x91000000 | ((rn.n as u32) << 5) | (rd.n as u32));
+    } else {
+      ar_addsub_reg(a, is_sub, false, rd, rn, ar_parse_reg(o2));
+    }
+    return;
+  }
+  if main.streq(mn, "cmp") && nops == 2 {
+    let rn: *AReg = ar_parse_reg(ops[0]);
+    let xzr: *AReg = ar_reg(RC_X, 31);
+    let o1: string = ops[1];
+    if len(o1) > 0 && o1[0] == 35 {
+      let imm: *AImm = asm_parse_imm(o1);
+      ar_addsub_imm(a, true, true, xzr, rn, imm.v, mn);
+    } else {
+      ar_addsub_reg(a, true, true, xzr, rn, ar_parse_reg(o1));
+    }
+    return;
+  }
+  if main.streq(mn, "subs") && nops == 3 {
+    let rd: *AReg = ar_parse_reg(ops[0]);
+    let rn: *AReg = ar_parse_reg(ops[1]);
+    let o2: string = ops[2];
+    if len(o2) > 0 && o2[0] == 35 {
+      let imm: *AImm = asm_parse_imm(o2);
+      ar_addsub_imm(a, true, true, rd, rn, imm.v, mn);
+    } else {
+      ar_addsub_reg(a, true, true, rd, rn, ar_parse_reg(o2));
+    }
+    return;
+  }
+  if main.streq(mn, "cset") && nops == 2 {
+    let rd: *AReg = ar_parse_reg(ops[0]);
+    let cond: i32 = ar_cond_code(ops[1]);
+    if rd.cls != RC_X || cond < 0 {
+      asm_err(a, "bad cset");
+      return;
+    }
+    // CSET Xd, cond = CSINC Xd, XZR, XZR, cond^1
+    a_emit32(a, 0x9A9F07E0 | (((cond ^ 1) as u32) << 12) | (rd.n as u32));
+    return;
+  }
+  if (main.streq(mn, "cbz") || main.streq(mn, "cbnz")) && nops == 2 {
+    let rt: *AReg = ar_parse_reg(ops[0]);
+    let s: *ASym = sym_get(a, ops[1], true);
+    a_fixup(a, FIX_CB19, s.name);
+    let nz: bool = mn[2] == 110; // 'n'
+    let base: u32 = if rt.cls == RC_X {
+      if nz { 0xB5000000 } else { 0xB4000000 }
+    } else {
+      if nz { 0x35000000 } else { 0x34000000 }
+    };
+    a_emit32(a, base | (rt.n as u32));
+    return;
+  }
+  if main.streq(mn, "b") && nops == 1 {
+    let s: *ASym = sym_get(a, ops[0], true);
+    a_fixup(a, FIX_B26, s.name);
+    a_emit32(a, 0x14000000);
+    return;
+  }
+  if main.streq(mn, "bl") && nops == 1 {
+    let s: *ASym = sym_get(a, ops[0], true);
+    a_fixup(a, FIX_BL26, s.name);
+    a_emit32(a, 0x94000000);
+    return;
+  }
+  if main.streq(mn, "blr") && nops == 1 {
+    let rn: *AReg = ar_parse_reg(ops[0]);
+    a_emit32(a, 0xD63F0000 | ((rn.n as u32) << 5));
+    return;
+  }
+  if main.streq(mn, "ret") && nops == 0 {
+    a_emit32(a, 0xD65F03C0);
+    return;
+  }
+  if main.streq(mn, "svc") && nops == 1 {
+    let imm: *AImm = asm_parse_imm(ops[0]);
+    a_emit32(a, 0xD4000001 | ((imm.v as u32) << 5));
+    return;
+  }
+  if main.streq(mn, "mov") && nops == 2 {
+    let rd: *AReg = ar_parse_reg(ops[0]);
+    let o1: string = ops[1];
+    if len(o1) > 0 && o1[0] == 35 {
+      let imm: *AImm = asm_parse_imm(o1);
+      ar_movz(a, rd, imm.v, 0);
+    } else if rd.cls == RC_SP || main.streq(o1, "sp") {
+      // mov SP, Xn / mov Xd, SP — the ADD-immediate #0 form
+      ar_addsub_imm(a, false, false, rd, ar_parse_reg(o1), 0, "mov");
+    } else {
+      let rm: *AReg = ar_parse_reg(o1);
+      let base: u32 = if rd.cls == RC_X { 0xAA000000 } else { 0x2A000000 };
+      a_emit32(a, base | ((rm.n as u32) << 16) | (31 << 5) | (rd.n as u32)); // ORR Xd, XZR, Xm
+    }
+    return;
+  }
+  if main.streq(mn, "movz") && nops == 2 {
+    let imm: *AImm = asm_parse_imm(ops[1]);
+    ar_movz(a, ar_parse_reg(ops[0]), imm.v, 0);
+    return;
+  }
+  if main.streq(mn, "movk") && (nops == 2 || nops == 3) {
+    let imm: *AImm = asm_parse_imm(ops[1]);
+    let mut hw: i32 = 0;
+    if nops == 3 && str_starts(ops[2], "lsl") {
+      hw = asm_atoi(ops[2][3..len(ops[2])]) / 16;
+    }
+    ar_movk(a, ar_parse_reg(ops[0]), imm.v, hw);
+    return;
+  }
+  if (main.streq(mn, "stp") || main.streq(mn, "ldp")) && nops >= 3 {
+    let load: bool = mn[0] == 108; // 'l'
+    let rt: *AReg = ar_parse_reg(ops[0]);
+    let rt2: *AReg = ar_parse_reg(ops[1]);
+    let sp: *AReg = ar_reg(RC_SP, 31);
+    if nops == 3 && str_starts(ops[2], "[sp, ") { // pre-index [sp, #-N]!
+      let imm_s_full: string = ops[2][5..len(ops[2])];
+      let close: i64 = str_index_from(imm_s_full, "]", 0);
+      let mut imm_s: string = imm_s_full;
+      if close >= 0 {
+        imm_s = imm_s_full[0..close as usize];
+      }
+      let imm: *AImm = asm_parse_imm(imm_s);
+      if imm.ok {
+        ar_pair(a, load, false, rt, rt2, sp, imm.v);
+        return;
+      }
+    } else if nops == 4 && main.streq(ops[2], "[sp]") { // post-index [sp], #N
+      let imm: *AImm = asm_parse_imm(ops[3]);
+      if imm.ok {
+        ar_pair(a, load, true, rt, rt2, sp, imm.v);
+        return;
+      }
+    }
+    asm_err(a, main.cat("bad ", main.cat3(mn, " addressing", "")));
+    return;
+  }
+  if main.streq(mn, "mul") && nops == 3 {
+    let xzr: *AReg = ar_reg(RC_X, 31);
+    ar_dprec3(a, false, ar_parse_reg(ops[0]), ar_parse_reg(ops[1]),
+              ar_parse_reg(ops[2]), xzr);
+    return;
+  }
+  if main.streq(mn, "msub") && nops == 4 {
+    ar_dprec3(a, true, ar_parse_reg(ops[0]), ar_parse_reg(ops[1]),
+              ar_parse_reg(ops[2]), ar_parse_reg(ops[3]));
+    return;
+  }
+  if (main.streq(mn, "sdiv") || main.streq(mn, "udiv")) && nops == 3 {
+    ar_dprec2(a, if main.streq(mn, "sdiv") { 0x03 } else { 0x02 },
+              ar_parse_reg(ops[0]), ar_parse_reg(ops[1]), ar_parse_reg(ops[2]));
+    return;
+  }
+  if (main.streq(mn, "lslv") || main.streq(mn, "lsrv") || main.streq(mn, "asrv")) && nops == 3 {
+    let op: u32 = if main.streq(mn, "lslv") { 0x08 } else { if main.streq(mn, "lsrv") { 0x09 } else { 0x0A } };
+    ar_dprec2(a, op, ar_parse_reg(ops[0]), ar_parse_reg(ops[1]), ar_parse_reg(ops[2]));
+    return;
+  }
+  if (main.streq(mn, "and") || main.streq(mn, "orr") || main.streq(mn, "eor")) && nops == 3 {
+    let rd: *AReg = ar_parse_reg(ops[0]);
+    let rn: *AReg = ar_parse_reg(ops[1]);
+    let rm: *AReg = ar_parse_reg(ops[2]);
+    let opc: i32 = if main.streq(mn, "and") { 0 } else { if main.streq(mn, "orr") { 1 } else { 2 } };
+    let mut base: u32 = if rd.cls == RC_X { 0x8A000000 } else { 0x0A000000 };
+    base |= (((opc >> 1) as u32) << 30) | (((opc & 1) as u32) << 29);
+    a_emit32(a, base | ((rm.n as u32) << 16) | ((rn.n as u32) << 5) | (rd.n as u32));
+    return;
+  }
+  if main.streq(mn, "neg") && nops == 2 {
+    let rd: *AReg = ar_parse_reg(ops[0]);
+    let rm: *AReg = ar_parse_reg(ops[1]);
+    let base: u32 = if rd.cls == RC_X { 0xCB0003E0 } else { 0x4B0003E0 };
+    a_emit32(a, base | ((rm.n as u32) << 16) | (rd.n as u32));
+    return;
+  }
+  if main.streq(mn, "sxtw") && nops == 2 {
+    let rd: *AReg = ar_parse_reg(ops[0]);
+    let rn: *AReg = ar_parse_reg(ops[1]);
+    a_emit32(a, 0x93407C00 | ((rn.n as u32) << 5) | (rd.n as u32)); // SBFM Xd, Wn, #0, #31
+    return;
+  }
+  if main.streq(mn, "uxtw") && nops == 2 {
+    let rd: *AReg = ar_parse_reg(ops[0]);
+    let rn: *AReg = ar_parse_reg(ops[1]);
+    a_emit32(a, 0xD3407C00 | ((rn.n as u32) << 5) | (rd.n as u32)); // UBFM Xd, Wn, #0, #31
+    return;
+  }
+  if main.streq(mn, "uxtb") && nops == 2 {
+    let rd: *AReg = ar_parse_reg(ops[0]);
+    let rn: *AReg = ar_parse_reg(ops[1]);
+    a_emit32(a, 0x53001C00 | ((rn.n as u32) << 5) | (rd.n as u32)); // UBFM Wd, Wn, #0, #7
+    return;
+  }
+  if (main.streq(mn, "fadd") || main.streq(mn, "fsub") || main.streq(mn, "fmul") || main.streq(mn, "fdiv")) && nops == 3 {
+    let opcode: u32 = if main.streq(mn, "fmul") { 0 } else { if main.streq(mn, "fdiv") { 1 } else { if main.streq(mn, "fadd") { 2 } else { 3 } } };
+    ar_fp3(a, opcode, ar_parse_reg(ops[0]), ar_parse_reg(ops[1]), ar_parse_reg(ops[2]));
+    return;
+  }
+  if main.streq(mn, "fcmp") && nops == 2 {
+    let rn: *AReg = ar_parse_reg(ops[0]);
+    let rm: *AReg = ar_parse_reg(ops[1]);
+    let base: u32 = 0x1E202000 | ((if rn.cls == RC_VD { 1 << 22 } else { 0 }) as u32);
+    a_emit32(a, base | ((rm.n as u32) << 16) | ((rn.n as u32) << 5));
+    return;
+  }
+  if main.streq(mn, "fcvt") && nops == 2 {
+    let rd: *AReg = ar_parse_reg(ops[0]);
+    let rn: *AReg = ar_parse_reg(ops[1]);
+    if rd.cls == RC_VD && rn.cls == RC_VS {
+      a_emit32(a, 0x1E22C000 | ((rn.n as u32) << 5) | (rd.n as u32)); // S -> D
+    } else if rd.cls == RC_VS && rn.cls == RC_VD {
+      a_emit32(a, 0x1E62C000 | ((rn.n as u32) << 5) | (rd.n as u32)); // D -> S
+    } else {
+      asm_err(a, "bad fcvt");
+    }
+    return;
+  }
+  if main.streq(mn, "fcvtzs") && nops == 2 {
+    let rd: *AReg = ar_parse_reg(ops[0]);
+    let rn: *AReg = ar_parse_reg(ops[1]);
+    a_emit32(a, (if rd.cls == RC_X { 0x9E780000 } else { 0x1E780000 }) | ((rn.n as u32) << 5) | (rd.n as u32));
+    return;
+  }
+  if (main.streq(mn, "scvtf") || main.streq(mn, "ucvtf")) && nops == 2 {
+    // the emitter always converts from x8: D dest rides sf=1, S dest sf=0
+    let rd: *AReg = ar_parse_reg(ops[0]);
+    let rn: *AReg = ar_parse_reg(ops[1]);
+    if rn.cls != RC_X || (rd.cls != RC_VD && rd.cls != RC_VS) {
+      asm_err(a, main.cat("bad ", main.cat3(mn, "", "")));
+      return;
+    }
+    let mut base: u32 = 0x9E220000;
+    if main.streq(mn, "ucvtf") {
+      base = 0x9E230000;
+    }
+    if rd.cls == RC_VS {
+      base = base & 0x7FFFFFFF;
+    }
+    a_emit32(a, base | ((rn.n as u32) << 5) | (rd.n as u32));
+    return;
+  }
+  if (main.streq(mn, "scvtf") || main.streq(mn, "ucvtf")) && nops == 2 {
+    let rd: *AReg = ar_parse_reg(ops[0]);
+    let rn: *AReg = ar_parse_reg(ops[1]);
+    // the emitter always converts from x8: D dest rides sf=1, S dest sf=0
+    if rn.cls != RC_X || (rd.cls != RC_VD && rd.cls != RC_VS) {
+      asm_err(a, main.cat3("bad ", mn, ""));
+      return;
+    }
+    let base: u32 = if main.streq(mn, "scvtf") {
+      if rd.cls == RC_VD { 0x9E220000 } else { 0x1E220000 }
+    } else {
+      if rd.cls == RC_VD { 0x9E230000 } else { 0x1E230000 }
+    };
+    a_emit32(a, base | ((rn.n as u32) << 5) | (rd.n as u32));
+    return;
+  }
+  if main.streq(mn, "fmov") && nops == 2 {
+    let rd: *AReg = ar_parse_reg(ops[0]);
+    let rn: *AReg = ar_parse_reg(ops[1]);
+    if rd.cls == RC_X && rn.cls == RC_VD {
+      a_emit32(a, 0x9E660000 | ((rn.n as u32) << 5) | (rd.n as u32));
+    } else if rd.cls == RC_VD && rn.cls == RC_X {
+      a_emit32(a, 0x9E670000 | ((rn.n as u32) << 5) | (rd.n as u32));
+    } else if rd.cls == RC_VS && rn.cls == RC_W {
+      a_emit32(a, 0x1E270000 | ((rn.n as u32) << 5) | (rd.n as u32));
+    } else if rd.cls == RC_W && rn.cls == RC_VS {
+      a_emit32(a, 0x1E660000 | ((rn.n as u32) << 5) | (rd.n as u32)); // fmov wd, sn — f32 bits
+    } else {
+      asm_err(a, "bad fmov");
+    }
+    return;
+  }
+
+  // loads/stores — mnemonic plus register class pick the encoding row
+  {
+    let rt: *AReg = ar_parse_reg(ops[0]);
+    let src: string = ops[1];
+    let mut matched: bool = true;
+    let mut base: u32 = 0;
+    if main.streq(mn, "str") && rt.cls == RC_X { base = 0xF9000000; }
+    else if main.streq(mn, "ldr") && rt.cls == RC_X { base = 0xF9400000; }
+    else if main.streq(mn, "str") && rt.cls == RC_W { base = 0xB9000000; }
+    else if main.streq(mn, "ldr") && rt.cls == RC_W { base = 0xB9400000; }
+    else if main.streq(mn, "str") && rt.cls == RC_VS { base = 0xBD000000; }
+    else if main.streq(mn, "ldr") && rt.cls == RC_VS { base = 0xBD400000; }
+    else if main.streq(mn, "str") && rt.cls == RC_VD { base = 0xFD000000; }
+    else if main.streq(mn, "ldr") && rt.cls == RC_VD { base = 0xFD400000; }
+    else if main.streq(mn, "strb") && rt.cls == RC_W { base = 0x39000000; }
+    else if main.streq(mn, "ldrb") && rt.cls == RC_W { base = 0x39400000; }
+    else if main.streq(mn, "strh") && rt.cls == RC_W { base = 0x79000000; }
+    else if main.streq(mn, "ldrh") && rt.cls == RC_W { base = 0x79400000; }
+    else if main.streq(mn, "ldrsb") && rt.cls == RC_X { base = 0x39800000; }
+    else if main.streq(mn, "ldrsh") && rt.cls == RC_X { base = 0x79800000; }
+    else if main.streq(mn, "ldrsw") && rt.cls == RC_X { base = 0xB9800000; }
+    else { matched = false; }
+    if matched {
+      if len(src) == 0 || src[0] != 91 { // '['
+        asm_err(a, main.cat("bad ", main.cat3(mn, " addressing", "")));
+        return;
+      }
+      let rn: *AReg = ar_parse_reg(src[1..len(src)]);
+      ar_mem(a, base, rt, rn);
+      return;
+    }
+  }
+
+  asm_err(a, main.cat("unknown instruction `", main.cat3(mn, "'", "")));
+}
+
+// ---- assembly drivers ------------------------------------------------------
+
+fn rd32le(buf: []u8, at: u64) -> u32 {
+  let i: usize = at as usize;
+  return (buf[i] as u32) | ((buf[i + 1] as u32) << 8) | ((buf[i + 2] as u32) << 16) | ((buf[i + 3] as u32) << 24);
+}
+
+pub fn wr32le(buf: []u8, at: u64, w: u32) {
+  let i: usize = at as usize;
+  buf[i] = (w & 255) as u8;
+  buf[i + 1] = ((w >> 8) & 255) as u8;
+  buf[i + 2] = ((w >> 16) & 255) as u8;
+  buf[i + 3] = ((w >> 24) & 255) as u8;
+}
+
+pub fn wr64le(buf: []u8, at: u64, v: u64) {
+  let mut b: i32 = 0;
+  while b < 8 {
+    buf[at as usize + b as usize] = ((v >> (8 * b)) & 255) as u8;
+    b += 1;
+  }
+}
+
+// `.quad`/`.long`/`.byte`/`.zero`/`.p2align`/`.ascii`, shared by both
+// assemblers; returns false for anything unrecognized (skipped by the caller)
+pub fn a_directive_data(a: *ASMCtx, rest: string, which: string) -> bool {
+  if main.streq(which, ".quad") {
+    let v: *AImm = asm_parse_imm(rest);
+    if v.ok {
+      let mut i: i32 = 0;
+      while i < 8 {
+        a_emitb(a, (((v.v as u64) >> (8 * i)) & 255) as i32);
+        i += 1;
+      }
+    } else {
+      // `.quad Lsymbol` — absolute address relocation (any label name)
+      let s: *ASym = sym_get(a, rest, true);
+      a_fixup(a, FIX_ABS64, s.name);
+      let mut i: i32 = 0;
+      while i < 8 {
+        a_emitb(a, 0);
+        i += 1;
+      }
+    }
+    return true;
+  }
+  if main.streq(which, ".long") {
+    let v: *AImm = asm_parse_imm(rest);
+    let mut i: i32 = 0;
+    while i < 4 {
+      a_emitb(a, (((v.v as u64) >> (8 * i)) & 255) as i32);
+      i += 1;
+    }
+    return true;
+  }
+  if main.streq(which, ".byte") {
+    let v: *AImm = asm_parse_imm(rest);
+    a_emitb(a, (v.v & 255) as i32);
+    return true;
+  }
+  if main.streq(which, ".zero") {
+    let v: *AImm = asm_parse_imm(rest);
+    let mut i: i64 = 0;
+    while i < v.v {
+      a_emitb(a, 0);
+      i += 1;
+    }
+    return true;
+  }
+  if main.streq(which, ".p2align") {
+    let n: i32 = asm_atoi(rest);
+    let mask: u64 = (1 as u64 << n) - 1;
+    while (a_cur(a).n as u64) & mask != 0 {
+      a_emitb(a, 0);
+    }
+    return true;
+  }
+  if main.streq(which, ".ascii") {
+    let q_i: i64 = str_index_from(rest, "\"", 0);
+    if q_i < 0 {
+      return true;
+    }
+    let mut p: usize = q_i as usize + 1;
+    while p < len(rest) && rest[p] != 34 {
+      if rest[p] == 92 && p + 1 < len(rest) && rest[p + 1] >= 48 && rest[p + 1] <= 55 { // '\' + octal
+        let mut v: i32 = 0;
+        let mut nd: i32 = 0;
+        p += 1;
+        while p < len(rest) && rest[p] >= 48 && rest[p] <= 55 && nd < 3 {
+          v = v * 8 + (rest[p] - 48) as i32;
+          p += 1;
+          nd += 1;
+        }
+        p -= 1;
+        a_emitb(a, v);
+      } else {
+        a_emitb(a, rest[p] as i32);
+      }
+      p += 1;
+    }
+    return true;
+  }
+  return false;
+}
+
+fn asm64_resolve(a: *ASMCtx, ly: *ALayout) {
+  let mut i: usize = 0;
+  while i < a.fixes.n {
+    let f: *AFix = a.fixes.items[i];
+    let s: *ASym = am_get(a.by_name, f.sym);
+    let mut target: u64 = 0;
+    if s != null && s.defined {
+      target = a_sec_vaddr(a, ly, s.sec, s.off);
+    } else if main.streq(f.sym, "_rho_rt_heap") {
+      target = ly.heap_a;
+    } else {
+      asm_err(a, main.cat("undefined symbol `", main.cat3(f.sym, main.cat("' (fixup kind ", main.cat3(main.itoa(f.kind as i64), ")", "")), "")));
+      i += 1;
+      continue;
+    }
+    let pc: u64 = a_sec_vaddr(a, ly, f.sec, f.at);
+    let mut w: u32 = rd32le(a.out[f.sec as usize].items, f.at);
+    if f.kind == FIX_ADRP {
+      let page: i64 = ((target >> 12) as i64) - ((pc >> 12) as i64);
+      if page + (1 << 20) < 0 || page >= (1 << 20) {
+        asm_err(a, "adrp page out of range");
+        i += 1;
+        continue;
+      }
+      w |= (((page & 3) as u32) << 29) | ((((page >> 2) & 0x7FFFF) as u32) << 5);
+    } else if f.kind == FIX_ADDPAGE {
+      w |= ((target & 0xFFF) as u32) << 10;
+    } else if f.kind == FIX_B26 || f.kind == FIX_BL26 {
+      let d: i64 = (target as i64 - pc as i64) >> 2;
+      if d + (1 << 25) < 0 || d >= (1 << 25) {
+        asm_err(a, "branch out of range");
+        i += 1;
+        continue;
+      }
+      w |= (d as u32) & 0x3FFFFFF;
+    } else if f.kind == FIX_ABS64 {
+      wr64le(a.out[f.sec as usize].items, f.at, target);
+      i += 1;
+      continue;
+    } else if f.kind == FIX_BC19 || f.kind == FIX_CB19 {
+      let d: i64 = (target as i64 - pc as i64) >> 2;
+      if d + (1 << 18) < 0 || d >= (1 << 18) {
+        asm_err(a, "branch out of range");
+        i += 1;
+        continue;
+      }
+      w |= ((d & 0x7FFFF) as u32) << 5;
+    }
+    wr32le(a.out[f.sec as usize].items, f.at, w);
+    i += 1;
+  }
+}
+
+// computes the text|strings|page|data|page|heap layout both assemblers and
+// both image writers share
+pub fn a_layout(a: *ASMCtx, page: u64, heap_override: u64) -> *ALayout {
+  let pmask: u64 = page - 1;
+  let ly: *ALayout = new ALayout { str_a: 0, data_a: 0, heap_a: 0 };
+  ly.str_a = a.base + ((a.out[0].n as u64 + 7) & ~(7 as u64));
+  // the data page starts past EVERYTHING in the r-x image — the rodata
+  // strings fold into the text section bytes, so rounding past str alone
+  // would let __DATA overlap the string tail
+  ly.data_a = (ly.str_a + a.out[1].n as u64 + pmask) & ~pmask;
+  if ly.data_a < a.base + a.out[0].n as u64 {
+    ly.data_a = (a.base + a.out[0].n as u64 + pmask) & ~pmask;
+  }
+  if heap_override != 0 {
+    ly.heap_a = heap_override;
+  } else {
+    ly.heap_a = (ly.data_a + a.out[2].n as u64 + pmask) & ~pmask;
+  }
+  return ly;
+}
+
+pub struct AResult { ok: bool, text: *main.Vec[u8], strsec: *main.Vec[u8], data: *main.Vec[u8], str_va: u64, data_va: u64, heap_va: u64 }
+
+pub fn a_result_failed() -> *AResult {
+  return new AResult { ok: false, text: null, strsec: null, data: null, str_va: 0, data_va: 0, heap_va: 0 };
+}
+
+// assembles the full text (runtime blob first, then the emitted program).
+// `base` is the vaddr the first text byte will have in the final image;
+// `page` is the target's segment alignment (0x1000 linux, 0x4000 arm64-mac
+// — Apple Silicon maps segments on 16K boundaries and the kernel's strict
+// validation rejects anything else). `heap_override` pins the bump heap's
+// vaddr (mac images carry the heap in a fixed trailing segment); 0 = lay
+// it out right after the data page.
+pub fn asm64_assemble(text: string, base: u64, page: u64, heap_override: u64) -> *AResult {
+  let a: *ASMCtx = ac_new(base, true);
+  let lines: *main.Vec[string] = asm_split_lines(text);
+  let mut li: usize = 0;
+  while li < lines.n {
+    let line: string = asm_prepare(lines.items[li]);
+    li += 1;
+    if len(line) == 0 {
+      continue;
+    }
+    if line[0] == 46 { // '.'
+      let sp_i: i64 = str_index_from(line, " ", 0);
+      let mut name: string = line;
+      let mut rest: string = "";
+      if sp_i >= 0 {
+        name = line[0..sp_i as usize];
+        let mut r: usize = sp_i as usize + 1;
+        while r < len(line) && line[r] == 32 {
+          r += 1;
+        }
+        rest = line[r..len(line)];
+      }
+      if main.streq(name, ".data") {
+        a.sec = 2;
+      } else if main.streq(name, ".text") || main.streq(name, ".rodata") {
+        // standalone section switches (the ELF dialect emits them)
+        a.sec = 0;
+      } else if main.streq(name, ".section") {
+        // the rodata strings fold into the text section image: they ride
+        // the same bytes in the final image (one r-x page). mach-o names
+        // come in as __text/__rhostr/__data fragments; ELF targets use
+        // the plain dot names
+        if main.streq(rest, ".text") || main.streq(rest, ".rodata") {
+          a.sec = 0;
+        } else if main.streq(rest, ".data") {
+          a.sec = 2;
+        } else {
+          a.sec = 0;
+          if str_index_from(rest, "__rhostr", 0) >= 0 {
+            a.sec = 0; // strings fold into text
+          } else if str_index_from(rest, "__data", 0) >= 0 {
+            a.sec = 2;
+          }
+        }
+      } else if main.streq(name, ".globl") {
+        sym_get(a, rest, true);
+      } else {
+        // .build_version / .subsections_via_symbols / anything else:
+        // a_directive_data handles the data directives, the rest skip
+        a_directive_data(a, rest, name);
+      }
+      continue;
+    }
+    if str_ends_byte(line, 58) { // ':'
+      let label: string = line[0..len(line) - 1];
+      let s: *ASym = sym_get(a, label, true);
+      if s.defined {
+        asm_err(a, main.cat("duplicate label `", main.cat3(label, "'", "")));
+        continue;
+      }
+      s.defined = true;
+      s.sec = a.sec;
+      s.off = a_cur(a).n as u64;
+      continue;
+    }
+    let ops: *main.Vec[string] = asm_split_ops(line);
+    if ops.n > 0 {
+      let rest: []string = ops.items[1..ops.n];
+      ar_asm_line(a, ops.items[0], rest);
+    }
+  }
+  let ly: *ALayout = a_layout(a, page, heap_override);
+  asm64_resolve(a, ly);
+  if a.errors > 0 {
+    return a_result_failed();
+  }
+  return new AResult { ok: true, text: a.out[0], strsec: a.out[1], data: a.out[2], str_va: ly.str_a, data_va: ly.data_a, heap_va: ly.heap_a };
+}

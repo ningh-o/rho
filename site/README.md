@@ -45,8 +45,9 @@ textarea. Three sources feed it:
    approximation of visibility). Methods (`fn Type.name`) are skipped —
    they complete after a dot, which this layer does not cover.
 3. **The prelude** — the user-facing surface of `boot/prelude/core.rho`
-   (builtins per `spec/module-system.md`, plus `cat` / `assert*` /
-   `Option` / `Result` / `Show`), as static data with English docs.
+   (builtins per `spec/module-system.md`, plus `assert*` /
+   `Option` / `Result` / `Show`), as static data with English docs. String
+   concatenation is the `+` operator, not a prelude function.
 
 Interaction: typing an identifier opens the popup (120 ms debounce);
 ArrowUp/Down move, Tab or Enter accepts, Escape closes, clicking a row

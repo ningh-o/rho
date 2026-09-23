@@ -39,7 +39,7 @@ export const KEYWORDS = [
   ["true", "let b: bool = true;", "the true literal"],
   ["false", "let b: bool = false;", "the false literal"],
   ["as", "x as T", "explicit cast between numeric/pointer types"],
-  ["use", "use module;", "imports another module into the graph"],
+  ["use", "use a.b.c;", "imports another module into the graph"],
   ["pub", "pub fn … / pub struct …", "exports an item beyond its module"],
   ["static", "static NAME: T = …;", "module-level storage"],
   ["const", "const NAME: T = …;", "compile-time constant"],
@@ -122,14 +122,9 @@ export const BUILTINS = [
 
 // Prelude surface the wasm32-wasi build actually embeds (boot/prelude/
 // core.rho — the wasi tail only adds __-prefixed hooks user code never
-// calls). Signatures are copied from core.rho.
+// calls). Signatures are copied from core.rho. String concatenation is
+// the `+` operator (no cat function — retired; nothing coerces to string).
 export const PRELUDE = [
-  {
-    label: "cat",
-    kind: "fn",
-    detail: "cat(a: string, b: string) -> string",
-    doc: "concatenates two strings into a fresh buffer",
-  },
   {
     label: "assert",
     kind: "fn",

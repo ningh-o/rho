@@ -1,0 +1,1 @@
+tests/lang/modsys/diag_const/main.rho:6:3: error: cannot assign to an immutable binding (declare it `let mut`)

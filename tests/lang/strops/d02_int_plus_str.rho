@@ -1,0 +1,7 @@
+// diag
+// d02 — the mirror image: integer + string mismatches the same way
+fn main() -> i32 {
+  let s: string = "a";
+  let x: i32 = 1 + s;
+  return x;
+}

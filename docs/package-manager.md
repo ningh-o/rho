@@ -39,10 +39,12 @@ round (see the fixture script for the living proof):
   the emitter wires a fixed wasi import table (`boot/src/emit_wasm.c`,
   `wasi_imports[]`: fd_write, proc_exit, args_sizes_get, args_get,
   path_open, fd_read, fd_close) and unknown externs silently emit zero.
-- **`use` paths are downward-only identifiers** (`spec/module-system.md`;
-  `boot/src/check.c` resolve pass, `boot/src/parse.c` `use` parsing): a
-  segment is an identifier, resolution is relative to the importing file's
-  directory, `..` is not expressible. Probed: `use ../x;` is a parse error.
+- **`use` paths are downward-only dot-separated identifiers**
+  (`spec/module-system.md`; `boot/src/check.c` resolve pass,
+  `boot/src/parse.c` `use` parsing): every segment is an identifier,
+  resolution is relative to the importing file's directory (falling back
+  to the entry file's directory), `..` is not expressible. Probed:
+  `use ../x;` is a parse error.
 
 Three consequences shape everything below:
 
@@ -75,8 +77,9 @@ git = "https://github.com/ningh-o/rho-jsonx"   # git dependency
 rev = "9c1fa37b2e33d39e7d90a4b251d8f232c5b3d6aa"  # full sha1 (or tag)
 ```
 
-`[package]` requires `name` (an identifier: `[a-z0-9_-]+`, matching a
-filename) and `version` (a string, semver-shaped but not interpreted).
+`[package]` requires `name` (an identifier: `[a-z0-9_-]+`, matching the
+package directory's name — the last segment of the import path) and
+`version` (a string, semver-shaped but not interpreted).
 `[dependencies.<name>]` takes either `path = "..."` or the pair `git` +
 `rev`. The dependency key must equal the dependency's own `[package].name`.
 
@@ -96,11 +99,11 @@ downward path**. The layout law:
 <package root>/
   rho.toml            # manifest
   rho.lock            # lockfile (generated, committed)
-  <name>.rho          # entry module: namespace = package name
-  <name>/             # private modules of the package (optional)
+  lib.rho             # the facade: the package's only entry; namespace = package name
+  <module>.rho        # the package's own files — package-private (optional)
   vendor/             # dependencies, one directory each
     <dep>/rho.toml
-    <dep>/<dep>.rho   # the dependency's entry module
+    <dep>/lib.rho     # the dependency's facade
     <dep>/vendor/     # ... and the dependency's own dependencies
 ```
 
@@ -113,21 +116,24 @@ downward path**. The layout law:
 - **Transitivity is structural**: a dependency carries its own `vendor/`
   inside its own tree. If `mathx` depends on `strs`, then `mathx`'s tree
   contains `mathx/vendor/strs/`, and mathx's source imports
-  `use vendor/strs/strs;` — which keeps resolving at every nesting level,
+  `use vendor.strs;` — which keeps resolving at every nesting level,
   because every package's imports are spelled relative to its own root.
   Libraries that are meant to be consumed should therefore commit their
   `vendor/` (the Go 1.5 vendoring bargain, minus the copying).
 - **Import spelling**: a package imports a dependency with
-  `use vendor/<dep>/<dep>;` and its own private modules with
-  `use <name>/<module>;`. The doubled `<dep>/<dep>` is forced by the
-  module system's namespace law — a module's namespace is the *basename*
-  of its file (`spec/module-system.md`), so the entry file must be named
-  `<dep>.rho` and must sit one level below the consumer's import
-  statement. The consumer then writes `mathx.add(...)`, not
-  `dep.something`.
-- Inside a package, the entry module composes; private modules import
-  their siblings by bare name (`use util;` from `<name>/util.rho`'s
-  directory) and never import the entry — the same downward-only shape
+  `use vendor.<dep>;` — the facade, `vendor/<dep>/lib.rho` — and its own
+  private modules by their relative dot path (`use util;` from the
+  package root, `use net.http;` for `net/http.rho`). The namespace is the
+  *last path segment* (`spec/module-system.md`), so `use vendor.mathx;`
+  binds `mathx`: the dependency's directory name, which the manifest law
+  makes equal to its `[package].name`. The consumer then writes
+  `mathx.add(...)`, not `dep.something` — and because the facade is the
+  only entry, a package's interior is invisible from outside:
+  `use vendor.mathx.util;` is rejected while `mathx/lib.rho` exists.
+- Inside a package, the facade composes; private modules import
+  their siblings by bare name (`use util;` from a sibling file's
+  directory, falling back to the package root) and never import past
+  another package's facade — the same downward-only shape
   every rho program already follows.
 
 ## 5. The lockfile: `rho.lock`
@@ -184,7 +190,7 @@ vendored its own copy) and each location is verified.
 3. read the dependency's own `rho.toml`, check its `name` matches the
    dependency key, and recurse into its dependencies;
 4. dedupe by name; a name reached with two different sources is an error;
-5. verify every resolved package: `<location>/<name>.rho` must open; git
+5. verify every resolved package: `<location>/lib.rho` must open; git
    deps must be checked out at the locked `rev` (`<location>/.git/HEAD`
    must be the detached sha1 — otherwise the exact repair command is
    printed);
@@ -229,9 +235,9 @@ printf 'install\n'                     | $RHO_PKG   # resolve + verify + write r
 printf 'install --frozen\n'            | $RHO_PKG   # verify only (CI)
 ```
 
-- `init <name>` — writes a minimal `rho.toml` and an entry module
-  `<name>.rho` (`pub fn` skeleton). No directories are created (the tool
-  cannot mkdir, §2); the layout law (§4) needs none.
+- `init <name>` — writes a minimal `rho.toml` and the executable entry
+  module `main.rho` (`pub fn` skeleton). No directories are created (the
+  tool cannot mkdir, §2); the layout law (§4) needs none.
 - `add <name> (--path <dir> | --git <url> --rev <rev>)` — textually
   upserts the `[dependencies.<name>]` section into `rho.toml` (everything
   else in the file, comments included, survives byte-for-byte), then

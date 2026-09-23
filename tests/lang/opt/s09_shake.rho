@@ -1,0 +1,17 @@
+// exit: 0
+// s09 — tree-shaking: an uncalled fn (however public) never enters the
+// artifact — the reachability pass keeps the entry and everything
+// transitively called, nothing else; the .no pin asserts the dead fn is
+// absent from the IR entirely
+fn used_helper(x: i64) -> i64 {
+  return x * 2;
+}
+
+pub fn dead_helper(x: i64) -> i64 {
+  return x * 3;
+}
+
+fn main() -> i32 {
+  printf("{}\n", used_helper(21));
+  return 0;
+}

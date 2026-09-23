@@ -7,7 +7,7 @@ fn err_of(src: string) -> string {
   let out = json.new_out();
   let r = json.parse(src, out);
   if r.is_ok() {
-    return cat("ACCEPTED (bug): ", json.err_text(json.encode(out.root)));
+    return "ACCEPTED (bug): " + json.err_text(json.encode(out.root));
   }
   return json.err_msg(r);
 }
@@ -52,14 +52,14 @@ fn main() -> i32 {
   printf("{}\n", err_of("\"raw\x01control\""));
   printf("{}\n", err_of("\"newline-in-string\n\""));
   // invalid UTF-8 inside strings (raw bytes, escaped here)
-  printf("{}\n", err_of(cat(cat("\"", "\xa0"), "\"")));          // stray continuation
-  printf("{}\n", err_of(cat(cat("\"", "\xc3"), "\"")));          // truncated 2-byte
-  printf("{}\n", err_of(cat(cat("\"", "\xc0\xaf"), "\"")));      // overlong 2-byte
-  printf("{}\n", err_of(cat(cat("\"", "\xe0\x80\xaf"), "\"")));  // overlong 3-byte
-  printf("{}\n", err_of(cat(cat("\"", "\xed\xa0\x80"), "\"")));  // UTF-16 surrogate
-  printf("{}\n", err_of(cat(cat("\"", "\xf4\x90\x80\x80"), "\""))); // past U+10FFFF
-  printf("{}\n", err_of(cat(cat("\"", "\xf0\x9f"), "\"")));      // truncated 4-byte
-  printf("{}\n", err_of(cat(cat("\"", "\xff"), "\"")));          // never valid
+  printf("{}\n", err_of((("\"" + "\xa0") + "\"")));          // stray continuation
+  printf("{}\n", err_of((("\"" + "\xc3") + "\"")));          // truncated 2-byte
+  printf("{}\n", err_of((("\"" + "\xc0\xaf") + "\"")));      // overlong 2-byte
+  printf("{}\n", err_of((("\"" + "\xe0\x80\xaf") + "\"")));  // overlong 3-byte
+  printf("{}\n", err_of((("\"" + "\xed\xa0\x80") + "\"")));  // UTF-16 surrogate
+  printf("{}\n", err_of((("\"" + "\xf4\x90\x80\x80") + "\""))); // past U+10FFFF
+  printf("{}\n", err_of((("\"" + "\xf0\x9f") + "\"")));      // truncated 4-byte
+  printf("{}\n", err_of((("\"" + "\xff") + "\"")));          // never valid
   // containers
   printf("{}\n", err_of("["));
   printf("{}\n", err_of("[1,2"));
@@ -82,7 +82,7 @@ fn main() -> i32 {
   printf("{}\n", err_of("[1]x"));
   printf("{}\n", err_of("\"a\"."));
   // position tracking across lines: the error is on line 3
-  printf("{}\n", err_of(cat(cat(cat(cat(cat("[1,", "\n"), " 2,"), "\n"), " x]"), "")));
-  printf("{}\n", err_of(cat(cat(cat(cat(cat("{\"a\":", "\n"), "\"b\":"), "\n"), "\"bad\\q\"}"), "")));
+  printf("{}\n", err_of(("[1," + "\n" + " 2," + "\n" + " x]" + "")));
+  printf("{}\n", err_of(("{\"a\":" + "\n" + "\"b\":" + "\n" + "\"bad\\q\"}")));
   return 0;
 }

@@ -1,0 +1,13 @@
+// exit: 101
+// 100 — the empty-base slice corner, pinned as the law of BOTH compilers:
+// slicing a NON-empty base at [0..0] is the valid empty copy (069), but
+// the same range on an EMPTY base is a bounds panic today — the slice
+// lowering checks lo < len first, and 0 < 0 fails. Pinned so a future
+// widening (if ever) lands consciously with both ends in the gate.
+fn main() -> i32 {
+  let s: string = "abc";
+  printf("{}\n", len(s[0..0]));
+  let e: string = "";
+  printf("{}", len(e[0..0]).to_str());
+  return 0;
+}

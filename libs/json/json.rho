@@ -49,11 +49,11 @@ fn singleton(b: u8) -> string {
 }
 
 fn cat3(a: string, b: string, c: string) -> string {
-  return cat(cat(a, b), c);
+  return ((a + b) + c);
 }
 
 fn cat4(a: string, b: string, c: string, d: string) -> string {
-  return cat(cat(cat(a, b), c), d);
+  return (((a + b) + c) + d);
 }
 
 // Exact f64 negation. `0.0 - x` would work for every nonzero x but turns
@@ -1032,7 +1032,7 @@ fn Members.take(self: *Members) -> []*Member {
 // =================================================== numbers: text -> f64
 //
 // Correctly rounded (round half to even) decimal -> binary conversion,
-// the algorithm self/rho.rho's lexer uses for float literals — exact
+// the algorithm the rho lexer uses for float literals — exact
 // bigint arithmetic, no libc strtod on any target. Leading zeros never
 // count toward the digit budget (a fully spelled subnormal keeps its
 // value), and digits past MAX_SIG_DIGITS are dropped: that shifts the

@@ -81,7 +81,7 @@ pub fn fib(n: i32) -> i32 {
 }
 
 pub fn concat(a: string, b: string) -> string {
-  return cat(a, b);
+  return a + b;
 }
 
 fn main() -> i32 {

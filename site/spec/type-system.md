@@ -14,7 +14,7 @@ boot compiler (`boot/src/check.c`). Surface syntax lives in
 | `i8 i16 i32 i64 isize` | signed two's-complement integers, wrapping |
 | `u8 u16 u32 u64 usize` | unsigned integers, wrapping |
 | `f32 f64` | IEEE-754 floats |
-| `string` | immutable UTF-8 byte slice; `==` compares contents |
+| `string` | immutable UTF-8 byte slice; `==` compares contents, `+` concatenates |
 
 Pointer/`usize` width is fixed per target: 64 bits on `amd64-linux` and
 `arm64-mac`, 32 bits on `wasm32-wasi`.
@@ -53,12 +53,21 @@ exists only through the `intrinsics` namespace.
 - Shifts accept any integer right operand, masked to the left width.
   Signed shifts are arithmetic.
 - Floats follow IEEE-754; `/ 0.0` gives infinities, not panics.
+- `+` on two strings concatenates (left-associative, the same precedence
+  level as integer addition). Nothing coerces: a non-string operand is a
+  type error, never an implicit `to_str` — build mixed lines with
+  `format`, or splice `x.to_str()` by hand.
 - `==`/`!=`: pointers compare identity, strings compare contents, enums
   compare tag then payload (compiler-generated, recursive). Element-wise
   `==` on structs, arrays and slices arrives with the self-hosted compiler.
   Not defined on `fn` values.
 - `as` casts: between integer types (wrap/truncate/extend), float↔integer
   (truncates toward zero; out-of-range saturates), enum→tag integer.
+  Known corner (both compilers agree, `tests/lang/opt/s07`): a narrowing
+  cast of a fully constant expression keeps the value instead of
+  truncating (`((1000 + 12) as u8)` is 1012, not 244) — the const lane
+  pins the literal before the cast narrows it; narrowing a VARIABLE
+  truncates as specified (corpus `051`).
   Nothing else.
 
 ## Functions
@@ -154,8 +163,8 @@ Formatting is canonical, deterministic, identical on every target:
   otherwise, `inf`/`nan` as such. The digits always suffice to recover the
   identical float.
 
-`panic(msg)` takes a `string` only; compose with `cat`. `assert_eq` prints
-both values (via `to_str`) in its failure message.
+`panic(msg)` takes a `string` only; compose with `format` or `+`.
+`assert_eq` prints both values (via `to_str`) in its failure message.
 
 ## Traits, bounds, and `dyn`
 

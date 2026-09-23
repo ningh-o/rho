@@ -26,7 +26,7 @@
         " M boot/src/prelude_data.c",
         " M boot/src/prelude_mac_data.inc",
         " M boot/src/prelude_wasi_data.inc",
-        " M self/rho.rho",
+        " M libs/compiler/main.rho",
         "?? bench/",
         "?? docs/package-manager.md",
         "?? tools/lsp/",
@@ -440,7 +440,7 @@
     },
     {
       "name": "strings",
-      "task": "append 200k small pieces into a 500KB string. rho: preallocated []u8 + index writes + one intrinsics.slice_string (rho's cat append is O(n^2) — see naive_append); C: one malloc + memcpy per piece; JS: s += piece",
+      "task": "append 200k small pieces into a 500KB string. rho: preallocated []u8 + index writes + one intrinsics.slice_string (rho's naive + append is O(n^2) — see naive_append); C: one malloc + memcpy per piece; JS: s += piece",
       "expected_output": "strings n=500000 bytes=50750000",
       "all_implementations_passed": true,
       "impls": [
@@ -517,7 +517,7 @@
     },
     {
       "name": "naive_append",
-      "task": "SUPPLEMENTARY (1.5k pieces, not the 200k kernel): the naive append loop in each language — rho: s = cat(s, p); C: strcat; JS: s +=. rho's cat is O(n^2) in copies AND in live memory (the prelude bump allocator never frees; each append allocates twice — cat's make + slice_string's copy): at 20k pieces the module dies with `wasm trap: out of bounds memory access` (exit 134, observed this run), and 2k pieces dies the same way; 1.5k pieces (~5.6MB cumulative over the ~8MB heap) is the largest round scale that fits",
+      "task": "SUPPLEMENTARY (1.5k pieces, not the 200k kernel): the naive append loop in each language — rho: s = s + p; C: strcat; JS: s +=. rho's + is O(n^2) in copies AND in live memory (the prelude bump allocator never frees; each append allocates twice — the fresh buffer's make plus the copy): at 20k pieces the module dies with `wasm trap: out of bounds memory access` (exit 134, observed this run), and 2k pieces dies the same way; 1.5k pieces (~5.6MB cumulative over the ~8MB heap) is the largest round scale that fits",
       "expected_output": "naive n=3750 bytes=380625",
       "all_implementations_passed": true,
       "impls": [

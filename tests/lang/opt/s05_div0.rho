@@ -1,0 +1,10 @@
+// exit: 101
+// s05 — division by a literal zero must NOT fold away the trap: the pass
+// skips the fold precisely so the runtime panic survives (stdout is only
+// the line before the division)
+fn main() -> i32 {
+  printf("{}", "before\n");
+  let x: i32 = 7 / 0;
+  printf("{}", x.to_str());
+  return 0;
+}

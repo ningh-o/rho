@@ -20,7 +20,7 @@ The adapter today (all paths under `tools/lsp/src/`):
 | Concern | Where | How |
 | --- | --- | --- |
 | LSP server, stdio | `server.ts:55` | `createConnection(..., process.stdin, process.stdout)` — LSP over stdio, no network |
-| Compiler host | `compiler.ts` | three backends: wasm in a worker thread (supervised: 10 s timeout, kill + respawn, `compiler.ts:190-237`), native CLI via temp files (`compiler.ts:260-288`), inert (`compiler.ts:307-330`) |
+| Compiler host | `compiler.ts` | three backends: wasm in a worker thread (supervised: 10 s timeout, kill + respawn, `compiler.ts:190-237`), native CLI via temp files (`compiler.ts:260-288`; when the resolved binary is the boot seed, `fmt` routes through the wasm mirror — the seed carries no formatter), inert (`compiler.ts:307-330`) |
 | One compiler call | `compiler-worker.ts:39-48` | write `/main.rho` into an in-memory WASI fs, run `rho check` / `rho fmt` as argv, read stdout/stderr |
 | Diagnostics | `diag.ts:27-43` | regex `^(.*?):(\d+):(\d+): error: (.*)$` over the compiler's stderr lines |
 | Positions | `diag.ts:107-160` | `LineIndex`: JS string offsets ↔ LSP (line, character) |
@@ -115,7 +115,7 @@ On that line the error token `a` sits at 1-based **UTF-16 column 38** and
 The sources agree: the lexer counts columns in **bytes**. The boot lexer
 advances `lx.col += (int)(lx.p - start)` over `char *` (`boot/src/lex.c:110`).
 The self-hosted lexer advances `lx.t.col2 += (lx.t.pos - start) as i32`
-over `u8` (`self/rho.rho:816`, `:883`). Positions are 1-based line,
+over `u8` (`libs/compiler/lex.rho`, the `lex_file`/`ch_at` region). Positions are 1-based line,
 1-based byte column. Tabs count as one byte; no expansion. Only `\n`
 (0x0A) starts a new line; `\r` is an ordinary byte of whitespace that
 counts toward the column (`boot/src/lex.c:82-92`) — a CRLF file's line
@@ -125,7 +125,7 @@ the LF, but its byte length includes the CR.
 The AST carries only these start points — there are no end positions and
 no byte offsets on nodes (tokens store `line`/`col`; the self-hosted
 token's `pos` field is set to 0 inside `emit_tok`,
-`self/rho.rho:594-615`). This is a real gap the service work must close
+`libs/compiler/lex.rho`, the `emit_tok` region). This is a real gap the service work must close
 (§5.2): ranges need ends.
 
 ### 3.2 What LSP wants
@@ -377,7 +377,8 @@ Measurements first, because they bound the problem:
 $ time wasmtime run --dir . $RHO/site/assets/rho.wasm check main.rho
 # hello-world check: 0.010s total (includes wasmtime startup)
 
-$ cp rho/self/rho.rho big.rho   # 20,333 lines — the largest real rho file
+$ cp rho/libs/compiler/check.rho big.rho   # ~4,600 lines — the largest
+                                          # real rho module
 $ time wasmtime run --dir . $RHO/site/assets/rho.wasm check big.rho
 # 0.043s total, cold, including VM startup and the full check
 ```

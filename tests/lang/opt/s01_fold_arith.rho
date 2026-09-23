@@ -1,0 +1,10 @@
+// exit: 0
+// s01 — literal arithmetic folds: nested parens, precedence, mod, or;
+// every value here is computed entirely at compile time
+fn main() -> i32 {
+  let a: i32 = (17 + 5) * (31 - 3);
+  let b: i32 = 987654 % 997;
+  let c: i32 = (1 << 20) | (3 << 4);
+  printf("{} {} {}\n", a, b, c);
+  return 0;
+}

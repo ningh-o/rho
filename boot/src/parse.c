@@ -948,9 +948,14 @@ Decl *parse_file(Str path, Str src) {
         vec_push(&d->decls, m);
       }
       expect(&p, P_RBRACE, "`}`");
-    } else if (accept(&p, KW_STATIC) || accept(&p, KW_CONST)) {
-      d->kind = start->kind == KW_STATIC ? DK_STATIC : DK_CONST;
-      d->is_mut = start->kind == KW_STATIC && accept(&p, KW_MUT);
+    } else if (at(&p, KW_STATIC) || at(&p, KW_CONST)) {
+      // mut must be recognized behind `pub` too: `pub static mut X` is the
+      // spelled form of a cross-module writable static
+      bool kw_static = accept(&p, KW_STATIC);
+      if (!kw_static)
+        accept(&p, KW_CONST);
+      d->kind = kw_static ? DK_STATIC : DK_CONST;
+      d->is_mut = kw_static && accept(&p, KW_MUT);
       Token *id = expect_ident(&p, "name");
       d->name = id->text;
       expect(&p, P_COLON, "`:`");

@@ -1,0 +1,10 @@
+// exit: 0
+// s08 — i64 wrap edges fold (max+1 -> min, min<<.. pattern) and the
+// dump prints the folded i64 MIN through the repaired itoa — the value
+// whose negation once wrapped and poisoned an asm86 immediate
+fn main() -> i32 {
+  let a: i64 = (9223372036854775807 as i64) + 1;
+  let b: i64 = ((1 as i64) << 63) - 1;
+  printf("{} {}\n", a, b);
+  return 0;
+}

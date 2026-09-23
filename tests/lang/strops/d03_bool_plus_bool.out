@@ -1,0 +1,2 @@
+tests/lang/strops/d03_bool_plus_bool.rho:6:16: error: arithmetic needs numbers, found `bool`
+tests/lang/strops/d03_bool_plus_bool.rho:6:16: error: initializer: expected `i32`, found `bool`

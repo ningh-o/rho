@@ -12,9 +12,9 @@ fn dump(s: string) -> string {
   let mut i: usize = 0;
   while i < len(s) {
     if i > 0 {
-      out = cat(out, " ");
+      out = (out + " ");
     }
-    out = cat(out, format("{}", s[i]));
+    out = (out + format("{}", s[i]));
     i += 1;
   }
   return out;
@@ -26,7 +26,7 @@ fn dec(src: string) -> string {
   let out = json.new_out();
   let r = json.parse(src, out);
   if r.is_err() {
-    return cat("ERR: ", json.err_msg(r));
+    return ("ERR: " + json.err_msg(r));
   }
   return dump(json.as_str(out.root));
 }
@@ -52,7 +52,7 @@ fn main() -> i32 {
   // the decoded string re-encodes to JSON with raw UTF-8 and minimal
   // escapes — encode never emits \u for a surrogate pair
   let out = json.new_out();
-  if json.parse(cat("\"", cat("\\ud83d\\ude00\\u0001", "\"")), out).is_err() {
+  if json.parse(("\"" + ("\\ud83d\\ude00\\u0001" + "\"")), out).is_err() {
     return 1;
   }
   printf("{}\n", json.err_text(json.encode(out.root)));

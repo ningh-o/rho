@@ -32,10 +32,19 @@ fail() {
 command -v wasmtime >/dev/null 2>&1 || fail "wasmtime not on PATH"
 [ -x "$BOOT" ] || fail "missing $BOOT (build it once: make -C $ROOT build/rho-boot)"
 
+# the formatter lives in the self-hosted compiler since boot's slimming:
+# boot builds/checks, the mirror canonicalizes (bootstrap.md)
+MIRROR="$ROOT/build/rho.wasm"
+[ -f "$MIRROR" ] || MIRROR="$ROOT/build/gate/m.wasm"
+[ -f "$MIRROR" ] || fail "missing the self-hosted compiler (make -C $ROOT site)"
+mfmt() {
+  wasmtime run -W max-wasm-stack=1073741824 --dir . "$MIRROR" fmt "$1"
+}
+
 # ---- 1. the package gates: typecheck + canonical formatting --------------
 (cd "$PKGDIR" && "$BOOT" check json.rho) || fail "json.rho does not typecheck"
-if ! (cd "$PKGDIR" && "$BOOT" fmt json.rho) | diff - "$PKGDIR/json.rho" >/dev/null; then
-  fail "json.rho is not fmt-canonical (run: rho-boot fmt -w json.rho)"
+if ! (cd "$PKGDIR" && mfmt json.rho) 2>/dev/null | diff - "$PKGDIR/json.rho" >/dev/null; then
+  fail "json.rho is not fmt-canonical (run: rho fmt -w json.rho through the self-hosted compiler)"
 fi
 
 # ---- 2. the case suite ----------------------------------------------------

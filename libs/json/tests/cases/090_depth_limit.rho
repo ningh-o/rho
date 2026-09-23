@@ -6,13 +6,13 @@ fn nest(open: string, close: string, times: i32, inner: string) -> string {
   let mut buf: string = "";
   let mut i: i32 = 0;
   while i < times {
-    buf = cat(buf, open);
+    buf = (buf + open);
     i += 1;
   }
-  buf = cat(buf, inner);
+  buf = (buf + inner);
   let mut j: i32 = 0;
   while j < times {
-    buf = cat(buf, close);
+    buf = (buf + close);
     j += 1;
   }
   return buf;
@@ -26,10 +26,10 @@ fn try_parse(src: string) -> string {
   }
   let e = json.encode(out.root);
   if e.is_err() {
-    return cat("ENC: ", json.err_msg(e));
+    return ("ENC: " + json.err_msg(e));
   }
   let s: string = json.err_text(e);
-  return cat(cat("encoded, ", format("{}", len(s))), " bytes");
+  return "encoded, " + format("{}", len(s)) + " bytes";
 }
 
 fn main() -> i32 {

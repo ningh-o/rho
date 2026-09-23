@@ -1,18 +1,18 @@
 // exit: 0
-// 060 — binary `cat` nested deep: right-leaning, left-leaning and
-// balanced pyramids over the same eight leaves all spell one string,
-// and a cat may nest in its own trailing argument
+// 060 — string `+` nested deep: right-leaning, left-leaning and
+// balanced chains over the same eight leaves all spell one string,
+// and a sum may nest in its own trailing operand
 fn main() -> i32 {
   let flat: string = "abcdefgh";
-  let right: string = cat("a", cat("b", cat("c", cat("d", cat("e", cat("f", cat("g", "h")))))));
-  let left: string = cat(cat(cat(cat(cat(cat(cat("a", "b"), "c"), "d"), "e"), "f"), "g"), "h");
-  let balanced: string = cat(cat(cat("a", "b"), cat("c", "d")), cat(cat("e", "f"), cat("g", "h")));
-  let tail: string = cat("abc", cat("def", cat("gh", "")));
+  let right: string = "a" + ("b" + ("c" + ("d" + ("e" + ("f" + ("g" + "h"))))));
+  let left: string = ((((((("a" + "b") + "c") + "d") + "e") + "f") + "g") + "h");
+  let balanced: string = (("a" + "b") + ("c" + "d")) + (("e" + "f") + ("g" + "h"));
+  let tail: string = "abc" + ("def" + ("gh" + ""));
   assert_eq(right, flat);
   assert_eq(left, flat);
   assert_eq(balanced, flat);
   assert_eq(tail, flat);
   printf("{}\n{}\n{}\n{}\n", right, left, balanced, tail);
-  printf("{}\n", cat(flat, cat(flat, flat)));
+  printf("{}\n", flat + flat + flat);
   return 0;
 }

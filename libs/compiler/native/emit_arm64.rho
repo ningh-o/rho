@@ -1,0 +1,996 @@
+// the arm64 text emitter: IR to asm64 assembly
+use main;
+use parse;
+use check;
+use ir;
+use lower;
+use emit_wasm;
+use emit_amd64;
+
+
+// ============================ native emitters ==============================
+// ports of boot emit_arm64.c / emit_amd64.c — spill-everything assembly
+// text; the driver writes <out>.s and runs cc exactly like boot's main.
+
+fn char_str(b: u8) -> string {
+  let buf: []u8 = make([]u8, 1);
+  buf[0] = b;
+  return main.bytes_as_string(buf);
+}
+
+pub fn oct3(ch: u8) -> string {
+  let d0: u8 = 48 + ((ch >> 6) & 7) as u8;
+  let d1: u8 = 48 + ((ch >> 3) & 7) as u8;
+  let d2: u8 = 48 + (ch & 7) as u8;
+  return main.cat3(char_str(d0), main.cat3(char_str(d1), char_str(d2), ""), "");
+}
+
+pub fn bs(sb: *main.Vec[u8], s: string) {
+  let mut i: usize = 0;
+  while i < len(s) {
+    emit_wasm.b8(sb, s[i] as u8);
+    i += 1;
+  }
+}
+
+// ---- arm64 (Apple Silicon) ------------------------------------------------
+// x12 is the dedicated address scratch; every vreg lives in a stack slot
+// addressed off the frame pointer (x29).
+
+struct ACtx {
+  out: *main.Vec[u8],
+  fn_: *ir.IRFn,
+  offs: []i64, // slot id -> negative offset from x29; vregs at slots.n + id
+  frame: i64,
+  is_mac: bool, // mac images prefix every symbol with `_`; ELF uses the plain name
+}
+
+// mac64 images prefix every symbol with `_` (Mach-O convention); ELF
+// targets use the plain name
+fn ac_sym(e: *ACtx, s: string) -> string {
+  if e.is_mac {
+    return main.cat3("_", s, "");
+  }
+  return s;
+}
+
+pub static mut g_label64: i32 = 0;
+
+fn ac_slot_off(e: *ACtx, s: *ir.IRSlot) -> i64 {
+  if s.id < len(e.offs) as i32 {
+    // 0 = not laid out yet (a real slot offset is always negative): the
+    // table is pre-sized by ac_layout, so the length check alone can no
+    // longer tell "cached" from "never filled"
+    let cached: i64 = e.offs[s.id as usize];
+    if cached != 0 {
+      return cached;
+    }
+  }
+  if s.id < 0 {
+    // TEMP diagnostics: a negative slot id is dangling-IR garbage — the
+    // lazy growth below cannot serve it. The DEAD stamp in the rc slot
+    // would prove the block was freed and reused under a live pointer.
+    let hdr: u64 = intrinsics.load_u64(s as usize as *u8);
+    eprintf("{}", main.cat5("SLOT-GARBAGE fn=", e.fn_.symbol, " id=", main.itoa(s.id as i64), " "));
+    eprintf("{}", main.cat3("rc=", main.cat3(main.itoa(hdr as i64), " align=", main.cat3(main.itoa(s.align as i64), " size=", main.cat3(main.itoa(s.size as i64), "\n", ""))), ""));
+    return -8;
+  }
+  let mut off: i64 = e.frame;
+  let al: i64 = if s.align > 8 { 8 } else { s.align };
+  off = (off + al - 1) / al * al;
+  off += s.size;
+  e.frame = off;
+  while (len(e.offs) as i32) <= s.id {
+    e.offs = lower.push_i64(e.offs, 0);
+  }
+  e.offs[s.id as usize] = -off;
+  return -off;
+}
+
+fn ac_vreg_off(e: *ACtx, v: *ir.IRVreg) -> i64 {
+  let idx: usize = len(e.fn_.slots) + v.id as usize;
+  while len(e.offs) <= idx {
+    e.offs = lower.push_i64(e.offs, 0);
+  }
+  return e.offs[idx];
+}
+
+fn ac_layout(e: *ACtx) {
+  // pre-size the whole table: push_i64 grows by full copy per call, so the
+  // lazy fill was O(n^2) — the giant functions (4K+ slots and vregs) burned
+  // gigabytes of never-recycled intermediates before the fill even ran.
+  // make() does NOT zero (rho law; wasm's grow-zeroed pages only mask it
+  // until the allocator hands back reused memory), and ac_slot_off reads
+  // 0 as "not cached yet" — an unzeroed table returned garbage offsets
+  // and the offset walk below looped on them (the arm64 rc-134 OOM)
+  e.offs = make([]i64, len(e.fn_.slots) + e.fn_.next_vreg as usize);
+  let mut zi: usize = 0;
+  while zi < len(e.offs) {
+    e.offs[zi] = 0;
+    zi += 1;
+  }
+  e.frame = 0;
+  let mut i: usize = 0;
+  while i < len(e.fn_.slots) {
+    ac_slot_off(e, e.fn_.slots[i]);
+    i += 1;
+  }
+  let mut v: i32 = 0;
+  while v < e.fn_.next_vreg {
+    e.frame += 8;
+    e.offs[len(e.fn_.slots) + v as usize] = -e.frame;
+    v += 1;
+  }
+  e.frame = (e.frame + 15) / 16 * 16 + 16;
+}
+
+// imm12 caps at 4095; big frames walk the offset in 4080-sized steps through
+// x12 (x29 stays intact — the epilogue restores sp from it)
+fn ac_addr_into(e: *ACtx, off: i64) {
+  let mut left: i64 = if off < 0 { 0 - off } else { off };
+  let op: string = ac_addop(off);
+  let mut base: string = "x29";
+  while left > 4095 {
+    bs(e.out, main.cat5("  ", op, " x12, ", base, ", #4080\n"));
+    base = "x12";
+    left -= 4080;
+  }
+  bs(e.out, main.cat5("  ", op, " x12, ", base, main.cat3(", #", main.cat3(main.itoa(left), "\n", ""), "")));
+}
+
+fn ac_ld(e: *ACtx, off: i64, size: i64, flt: bool, reg: string) {
+  ac_addr_into(e, off);
+  if flt {
+    bs(e.out, main.cat4("  ldr ", reg, ", [x12]\n", ""));
+    return;
+  }
+  if size == 1 {
+    bs(e.out, main.cat4("  ldrsb ", reg, ", [x12]\n", ""));
+  } else if size == 2 {
+    bs(e.out, main.cat4("  ldrsh ", reg, ", [x12]\n", ""));
+  } else if size == 4 {
+    bs(e.out, main.cat4("  ldrsw ", reg, ", [x12]\n", ""));
+  } else {
+    bs(e.out, main.cat4("  ldr ", reg, ", [x12]\n", ""));
+  }
+}
+
+// the spill registers are a closed set (x8..x11, x0); map the x-form to the
+// w-form for narrow stores
+fn ac_wname(reg: string) -> string {
+  if main.streq(reg, "x8") { return "w8"; }
+  if main.streq(reg, "x9") { return "w9"; }
+  if main.streq(reg, "x10") { return "w10"; }
+  if main.streq(reg, "x11") { return "w11"; }
+  if main.streq(reg, "x0") { return "w0"; }
+  return reg;
+}
+
+fn ac_st(e: *ACtx, off: i64, size: i64, flt: bool, reg: string) {
+  ac_addr_into(e, off);
+  if flt {
+    bs(e.out, main.cat4("  str ", reg, ", [x12]\n", ""));
+    return;
+  }
+  if size == 1 {
+    bs(e.out, main.cat4("  strb ", ac_wname(reg), ", [x12]\n", ""));
+  } else if size == 2 {
+    bs(e.out, main.cat4("  strh ", ac_wname(reg), ", [x12]\n", ""));
+  } else if size == 4 {
+    bs(e.out, main.cat4("  str ", ac_wname(reg), ", [x12]\n", ""));
+  } else {
+    bs(e.out, main.cat4("  str ", reg, ", [x12]\n", ""));
+  }
+}
+
+fn ac_cmp(e: *ACtx, i: *ir.IRIns) {
+  let ao: i64 = ac_vreg_off(e, i.a);
+  let bo: i64 = ac_vreg_off(e, i.b);
+  let dof: i64 = ac_vreg_off(e, i.dst);
+  if !i.is_float {
+    let u: bool = !i.signed_ops;
+    let cc: string = ac_icc(i.cc, u);
+    ac_ld(e, ao, 8, false, "x8");
+    ac_ld(e, bo, 8, false, "x9");
+    bs(e.out, main.cat4("  cmp x8, x9\n  cset x8, ", main.cat3(cc, "\n", ""), "", ""));
+    ac_addr_into(e, dof);
+    // full-width store: cmp results flow through 8-byte spill moves and
+    // returns, and stale high bytes would poison them
+    bs(e.out, "  str x8, [x12]\n");
+    return;
+  }
+  let s64: bool = i.size == 8;
+  let areg: string = ac_dreg(s64, true);
+  let breg: string = ac_dreg(s64, false);
+  ac_ld(e, ao, if s64 { 8 } else { 4 }, true, areg);
+  ac_ld(e, bo, if s64 { 8 } else { 4 }, true, breg);
+  bs(e.out, main.cat5("  fcmp ", areg, ", ", breg, "\n"));
+  if i.cc == ir.IRCC.CcEq {
+    // eq & !vs
+    bs(e.out, "  cset x8, eq\n  cset x9, vs\n  eor x8, x8, x9\n");
+  } else if i.cc == ir.IRCC.CcNe {
+    // ne | vs
+    bs(e.out, "  cset x8, ne\n  cset x9, vs\n  orr x8, x8, x9\n");
+  } else if i.cc == ir.IRCC.CcLt {
+    // mi is NaN-false on unordered
+    bs(e.out, "  cset x8, mi\n");
+  } else if i.cc == ir.IRCC.CcLe {
+    // le & !vs
+    bs(e.out, "  cset x8, le\n  cset x9, vs\n  eor x8, x8, x9\n");
+  } else if i.cc == ir.IRCC.CcGt {
+    // gt is NaN-false
+    bs(e.out, "  cset x8, gt\n");
+  } else {
+    // ge is NaN-false
+    bs(e.out, "  cset x8, ge\n");
+  }
+  ac_addr_into(e, dof);
+  bs(e.out, "  strb w8, [x12]\n");
+}
+
+fn ac_divmod(e: *ACtx, i: *ir.IRIns, is_mod: bool) {
+  let ao: i64 = ac_vreg_off(e, i.a);
+  let bo: i64 = ac_vreg_off(e, i.b);
+  let dof: i64 = ac_vreg_off(e, i.dst);
+  if i.is_float {
+    let r0: string = ac_cvt_dreg(i.dst.ty == ir.IRType.ItF32);
+    let mut r1: string = "d1";
+    if i.dst.ty == ir.IRType.ItF32 {
+      r1 = "s1";
+    }
+    let fw: i64 = if i.dst.ty == ir.IRType.ItF32 { 4 } else { 8 };
+    ac_ld(e, ao, fw, true, r0);
+    ac_ld(e, bo, fw, true, r1);
+    bs(e.out, main.cat5("  fdiv ", r0, ", ", r0, main.cat3(", ", r1, "\n")));
+    ac_st(e, dof, fw, true, r0);
+    return;
+  }
+  let lbl: i32 = g_label64;
+  g_label64 += 1;
+  ac_ld(e, bo, 8, false, "x9");
+  bs(e.out, main.cat4("  cbnz x9, Ldz", main.cat3(main.itoa(lbl as i64), "\n", ""), "", ""));
+  bs(e.out, main.cat4("  bl ", main.cat3(ac_sym(e, emit_wasm.prelude_symbol("__panic_div")), "\n", ""), "", ""));
+  bs(e.out, main.cat4("Ldz", main.cat3(main.itoa(lbl as i64), ":\n", ""), "", ""));
+  if i.signed_ops {
+    bs(e.out, main.cat4("  cmp x9, #-1\n  b.ne Lmin", main.cat3(main.itoa(lbl as i64), "\n", ""), "", ""));
+    ac_ld(e, ao, 8, false, "x8");
+    bs(e.out, main.cat4("  neg x8, x8\n  mov x9, #0\n  b Ldone", main.cat3(main.itoa(lbl as i64), "\n", ""), "", ""));
+    bs(e.out, main.cat4("Lmin", main.cat3(main.itoa(lbl as i64), ":\n", ""), "", ""));
+  }
+  ac_ld(e, ao, 8, false, "x10");
+  let mn: string = ac_divmn(i.signed_ops);
+  bs(e.out, main.cat5("  ", mn, " x8, x10, x9\n", "", ""));
+  if is_mod {
+    bs(e.out, "  msub x8, x8, x9, x10\n");
+  }
+  bs(e.out, main.cat4("Ldone", main.cat3(main.itoa(lbl as i64), ":\n", ""), "", ""));
+  ac_st(e, dof, 8, false, "x8");
+}
+
+fn ac_xreg(n: i32) -> string {
+  if n == 0 { return "x0"; }
+  if n == 1 { return "x1"; }
+  if n == 2 { return "x2"; }
+  if n == 3 { return "x3"; }
+  if n == 4 { return "x4"; }
+  if n == 5 { return "x5"; }
+  if n == 6 { return "x6"; }
+  return "x7";
+}
+
+fn ac_freg(n: i32) -> string {
+  if n == 0 { return "d0"; }
+  if n == 1 { return "d1"; }
+  if n == 2 { return "d2"; }
+  if n == 3 { return "d3"; }
+  if n == 4 { return "d4"; }
+  if n == 5 { return "d5"; }
+  if n == 6 { return "d6"; }
+  return "d7";
+}
+
+fn ac_sreg(n: i32) -> string {
+  if n == 0 { return "s0"; }
+  if n == 1 { return "s1"; }
+  if n == 2 { return "s2"; }
+  if n == 3 { return "s3"; }
+  if n == 4 { return "s4"; }
+  if n == 5 { return "s5"; }
+  if n == 6 { return "s6"; }
+  return "s7";
+}
+
+fn ac_call(e: *ACtx, i: *ir.IRIns) {
+  let mut ri: i32 = 0;
+  let mut fi: i32 = 0;
+  if i.callee_vreg != null {
+    // indirect target in x17, outside the arg regs
+    ac_addr_into(e, ac_vreg_off(e, i.callee_vreg));
+    bs(e.out, "  ldr x17, [x12]\n");
+  }
+  let mut k: usize = 0;
+  while k < len(i.args) {
+    let a: *ir.IRVreg = i.args[k];
+    let isf: bool = a.ty == ir.IRType.ItF32 || a.ty == ir.IRType.ItF64;
+    let off: i64 = ac_vreg_off(e, a);
+    if isf && fi < 8 {
+      // f32 args ride the low lane: ldr sN, never the 8-byte dN form
+      ac_addr_into(e, off);
+      if a.ty == ir.IRType.ItF32 {
+        bs(e.out, main.cat5("  ldr ", ac_sreg(fi), ", [x12]\n", "", ""));
+      } else {
+        bs(e.out, main.cat5("  ldr ", ac_freg(fi), ", [x12]\n", "", ""));
+      }
+      fi += 1;
+    } else if !isf && ri < 8 {
+      ac_addr_into(e, off);
+      bs(e.out, main.cat5("  ldr ", ac_xreg(ri), ", [x12]\n", "", ""));
+      ri += 1;
+    } else {
+      ac_addr_into(e, off);
+      bs(e.out, main.cat4("  ldr x10, [x12]\n  str x10, [sp, #", main.cat3(main.itoa((ri * 8) as i64), "]\n", ""), "", ""));
+    }
+    k += 1;
+  }
+  if i.callee_vreg != null {
+    bs(e.out, "  blr x17\n");
+  } else {
+    bs(e.out, main.cat4("  bl ", main.cat3(ac_sym(e, i.callee), "\n", ""), "", ""));
+  }
+  if i.dst != null {
+    let f: bool = ir.ir_is_float_t(i.dst.ty);
+    if f {
+      ac_st(e, ac_vreg_off(e, i.dst), if i.dst.ty == ir.IRType.ItF32 { 4 } else { 8 }, true,
+            ac_cvt_dreg(i.dst.ty == ir.IRType.ItF32));
+    } else {
+      ac_st(e, ac_vreg_off(e, i.dst), 8, false, "x0");
+    }
+  }
+}
+
+// after a narrow-width 64-bit arith result, canonicalize the value to the
+// operand's width (wrap semantics) — sign/zero-extend from the low part
+fn ac_canon(e: *ACtx, dof: i64, t: ir.IRType) {
+  let w: i64 = ir.ir_size_of(t);
+  if w < 8 {
+    let sgn: bool = lower.ty_is_signed_int(t);
+    if w == 4 {
+      if sgn { bs(e.out, "  sxtw x8, w8\n"); } else { bs(e.out, "  mov w8, w8\n"); }
+    } else if w == 2 {
+      if sgn { bs(e.out, "  sxth x8, w8\n"); } else { bs(e.out, "  uxth x8, w8\n"); }
+    } else {
+      if sgn { bs(e.out, "  sxtb x8, w8\n"); } else { bs(e.out, "  uxtb x8, w8\n"); }
+    }
+  }
+}
+
+pub fn m_canon(e: *emit_amd64.MCtx, dof: i64, t: ir.IRType) {
+  let w: i64 = ir.ir_size_of(t);
+  if w < 8 {
+    let sgn: bool = lower.ty_is_signed_int(t);
+    if w == 4 {
+      if sgn { bs(e.out, "  movslq %eax, %rax\n"); } else { bs(e.out, "  movl %eax, %eax\n"); }
+    } else if w == 2 {
+      if sgn { bs(e.out, "  movswq %ax, %rax\n"); } else { bs(e.out, "  movzwq %ax, %rax\n"); }
+    } else {
+      if sgn { bs(e.out, "  movsbq %al, %rax\n"); } else { bs(e.out, "  movzbq %al, %rax\n"); }
+    }
+  }
+}
+
+fn ac_ins(e: *ACtx, i: *ir.IRIns) {
+  if i.op == ir.IROp.IrMemsize || i.op == ir.IROp.IrMemgrow {
+    eprintf("{}", "rho: mem_size/mem_grow are wasm-only intrinsics\n");
+    __exit(70);
+  }
+  if i.op == ir.IROp.IrConst {
+    let dof: i64 = ac_vreg_off(e, i.dst);
+    let v: u64 = i.imm as u64;
+    if v <= 65535 {
+      bs(e.out, main.cat4("  mov x8, #", main.cat3(main.utoa(v), "\n", ""), "", ""));
+    } else {
+      bs(e.out, main.cat4("  movz x8, #", main.cat3(main.utoa(v & 65535), "\n", ""), "", ""));
+      bs(e.out, main.cat4("  movk x8, #", main.cat3(main.utoa((v >> 16) & 65535), ", lsl 16\n", ""), "", ""));
+      bs(e.out, main.cat4("  movk x8, #", main.cat3(main.utoa((v >> 32) & 65535), ", lsl 32\n", ""), "", ""));
+      bs(e.out, main.cat4("  movk x8, #", main.cat3(main.utoa((v >> 48) & 65535), ", lsl 48\n", ""), "", ""));
+    }
+    ac_st(e, dof, 8, false, "x8");
+    return;
+  }
+  if i.op == ir.IROp.IrFconst {
+    // materialize the IEEE-754 bit pattern, then move into the float reg;
+    // f32 constants carry the FLOAT pattern (the double's low half is not
+    // the f32 encoding — 0.5 would become +0.0)
+    let dof: i64 = ac_vreg_off(e, i.dst);
+    if i.dst.ty == ir.IRType.ItF32 {
+      let bits32: u32 = intrinsics.f32_bits(i.fimm as f32);
+      bs(e.out, main.cat4("  movz w8, #", main.cat3(main.utoa((bits32 & 65535) as u64), "\n", ""), "", ""));
+      bs(e.out, main.cat4("  movk w8, #", main.cat3(main.utoa(((bits32 >> 16) & 65535) as u64), ", lsl 16\n", ""), "", ""));
+      bs(e.out, "  fmov s0, w8\n");
+      ac_st(e, dof, 4, true, "s0");
+    } else {
+      let bits: u64 = intrinsics.f64_bits(i.fimm);
+      bs(e.out, main.cat4("  movz x8, #", main.cat3(main.utoa(bits & 65535), "\n", ""), "", ""));
+      bs(e.out, main.cat4("  movk x8, #", main.cat3(main.utoa((bits >> 16) & 65535), ", lsl 16\n", ""), "", ""));
+      bs(e.out, main.cat4("  movk x8, #", main.cat3(main.utoa((bits >> 32) & 65535), ", lsl 32\n", ""), "", ""));
+      bs(e.out, main.cat4("  movk x8, #", main.cat3(main.utoa((bits >> 48) & 65535), ", lsl 48\n", ""), "", ""));
+      bs(e.out, "  fmov d0, x8\n");
+      ac_st(e, dof, 8, true, "d0");
+    }
+    return;
+  }
+  if i.op == ir.IROp.IrAdd || i.op == ir.IROp.IrSub || i.op == ir.IROp.IrMul ||
+     i.op == ir.IROp.IrAnd || i.op == ir.IROp.IrOr || i.op == ir.IROp.IrXor {
+    let dof: i64 = ac_vreg_off(e, i.dst);
+    if i.is_float {
+      // f32 arithmetic rides the s registers (low lane); touching d0 here
+      // smears the spill slot's high half into the value
+      let mn: string = ac_fmn(i.op);
+      let r0: string = ac_cvt_dreg(i.dst.ty == ir.IRType.ItF32);
+      let mut r1: string = "d1";
+    if i.dst.ty == ir.IRType.ItF32 {
+      r1 = "s1";
+    }
+      let fw: i64 = if i.dst.ty == ir.IRType.ItF32 { 4 } else { 8 };
+      ac_ld(e, ac_vreg_off(e, i.a), fw, true, r0);
+      ac_ld(e, ac_vreg_off(e, i.b), fw, true, r1);
+      bs(e.out, main.cat5("  ", mn, " ", r0, main.cat3(", ", r0, main.cat3(", ", r1, "\n"))));
+      ac_st(e, dof, fw, true, r0);
+      return;
+    }
+    let mn: string = ac_imn(i.op);
+    ac_ld(e, ac_vreg_off(e, i.a), 8, false, "x8");
+    ac_ld(e, ac_vreg_off(e, i.b), 8, false, "x9");
+    bs(e.out, main.cat4("  ", main.cat3(mn, " x8, x8, x9\n", ""), "", ""));
+    ac_canon(e, dof, i.a.ty);
+    ac_st(e, dof, 8, false, "x8");
+    return;
+  }
+  if i.op == ir.IROp.IrDiv || i.op == ir.IROp.IrMod {
+    ac_divmod(e, i, i.op == ir.IROp.IrMod);
+    return;
+  }
+  if i.op == ir.IROp.IrShl || i.op == ir.IROp.IrShr {
+    let dof: i64 = ac_vreg_off(e, i.dst);
+    ac_ld(e, ac_vreg_off(e, i.a), 8, false, "x8");
+    ac_ld(e, ac_vreg_off(e, i.b), 8, false, "x9");
+    let mn: string = ac_shmn(i.op, i.signed_ops);
+    bs(e.out, main.cat4("  ", main.cat3(mn, " x8, x8, x9\n", ""), "", ""));
+    if i.op == ir.IROp.IrShl {
+      ac_canon(e, dof, i.a.ty);
+    }
+    ac_st(e, dof, 8, false, "x8");
+    return;
+  }
+  if i.op == ir.IROp.IrCmp {
+    ac_cmp(e, i);
+    return;
+  }
+  if i.op == ir.IROp.IrLoad {
+    let dof: i64 = ac_vreg_off(e, i.dst);
+    ac_ld(e, ac_vreg_off(e, i.addr), 8, false, "x8");
+    if i.is_float {
+      let fr: string = ac_fld(i.size);
+      bs(e.out, main.cat4("  ldr ", main.cat3(fr, ", [x8]\n", ""), "", ""));
+      ac_st(e, dof, i.size, true, fr);
+    } else {
+      let op: string = ac_ldop(i.size, lower.ty_is_signed_int(i.dst.ty));
+      bs(e.out, main.cat4("  ", main.cat3(op, "\n", ""), "", ""));
+      ac_st(e, dof, 8, false, "x8");
+    }
+    return;
+  }
+  if i.op == ir.IROp.IrStore {
+    ac_ld(e, ac_vreg_off(e, i.addr), 8, false, "x8");
+    if i.is_float {
+      let fr: string = ac_fld(i.size);
+      ac_ld(e, ac_vreg_off(e, i.a), i.size, true, fr);
+      bs(e.out, main.cat4("  str ", main.cat3(fr, ", [x8]\n", ""), "", ""));
+    } else {
+      ac_ld(e, ac_vreg_off(e, i.a), i.size, false, "x9");
+      if i.size == 1 {
+        bs(e.out, "  strb w9, [x8]\n");
+      } else if i.size == 2 {
+        bs(e.out, "  strh w9, [x8]\n");
+      } else if i.size == 4 {
+        bs(e.out, "  str w9, [x8]\n");
+      } else {
+        bs(e.out, "  str x9, [x8]\n");
+      }
+    }
+    return;
+  }
+  if i.op == ir.IROp.IrAddrc {
+    let dof: i64 = ac_vreg_off(e, i.dst);
+    if i.lit == -1 {
+      let gs: string = ac_sym(e, i.callee);
+      bs(e.out, main.cat5("  adrp x8, ", gs, "@PAGE\n  add x8, x8, ", main.cat3(gs, "@PAGEOFF\n", ""), ""));
+    } else {
+      ac_addr_into(e, ac_slot_off(e, i.slot));
+      bs(e.out, "  mov x8, x12\n");
+    }
+    ac_st(e, dof, 8, false, "x8");
+    return;
+  }
+  if i.op == ir.IROp.IrAddi {
+    let dof: i64 = ac_vreg_off(e, i.dst);
+    ac_ld(e, ac_vreg_off(e, i.a), 8, false, "x8");
+    bs(e.out, main.cat4("  add x8, x8, #", main.cat3(main.itoa(i.imm), "\n", ""), "", ""));
+    ac_st(e, dof, 8, false, "x8");
+    return;
+  }
+  if i.op == ir.IROp.IrCast {
+    let sof: i64 = ac_vreg_off(e, i.a);
+    let dof: i64 = ac_vreg_off(e, i.dst);
+    if i.cast == ir.IRCastKind.CastTrunc {
+      // store full width: spill-slot readers reload 8 bytes
+      ac_ld(e, sof, ir.ir_size_of(i.cast_from), false, "x8");
+      ac_st(e, dof, 8, false, "x8");
+    } else if i.cast == ir.IRCastKind.CastSext {
+      ac_ld(e, sof, ir.ir_size_of(i.cast_from), false, "x8");
+      ac_st(e, dof, 8, false, "x8");
+    } else if i.cast == ir.IRCastKind.CastZext {
+      // zero-extend from the source width: the w-form loads zero their
+      // upper half; uxtw then lifts to 64 (a no-op after ldr w8)
+      ac_addr_into(e, sof);
+      if ir.ir_size_of(i.cast_from) == 1 {
+        bs(e.out, "  ldrb w8, [x12]\n");
+      } else if ir.ir_size_of(i.cast_from) == 2 {
+        bs(e.out, "  ldrh w8, [x12]\n");
+      } else {
+        bs(e.out, "  ldr w8, [x12]\n");
+      }
+      bs(e.out, "  uxtw x8, w8\n");
+      ac_st(e, dof, 8, false, "x8");
+    } else if i.cast == ir.IRCastKind.CastI2f {
+      // narrow ints load sign/zero-extended per their own type, then
+      // convert; unsigned 64-bit needs ucvtf (scvtf reads it as i64)
+      let fw: i64 = ir.ir_size_of(i.cast_from);
+      let sgn: bool = lower.ty_is_signed_int(i.cast_from);
+      ac_addr_into(e, sof);
+      if fw == 1 {
+        if sgn { bs(e.out, "  ldrsb x8, [x12]\n"); } else { bs(e.out, "  ldrb w8, [x12]\n"); }
+      } else if fw == 2 {
+        if sgn { bs(e.out, "  ldrsh x8, [x12]\n"); } else { bs(e.out, "  ldrh w8, [x12]\n"); }
+      } else if fw == 4 {
+        if sgn { bs(e.out, "  ldrsw x8, [x12]\n"); } else { bs(e.out, "  ldr w8, [x12]\n"); }
+      } else {
+        bs(e.out, "  ldr x8, [x12]\n");
+      }
+      if fw == 1 || fw == 2 {
+        bs(e.out, "  uxtw x8, w8\n");
+      }
+      let dst: string = ac_cvt_dreg(i.cast_to == ir.IRType.ItF32);
+      if sgn {
+        bs(e.out, main.cat4("  scvtf ", main.cat3(dst, ", x8\n", ""), "", ""));
+      } else {
+        bs(e.out, main.cat4("  ucvtf ", main.cat3(dst, ", x8\n", ""), "", ""));
+      }
+      ac_st(e, dof, if i.cast_to == ir.IRType.ItF32 { 4 } else { 8 }, true, dst);
+    } else if i.cast == ir.IRCastKind.CastF2i {
+      // fcvtzs saturates (spec: out-of-range float→int saturates)
+      let src: string = ac_cvt_dreg(i.cast_from == ir.IRType.ItF32);
+      let sw: i64 = if i.cast_from == ir.IRType.ItF32 { 4 } else { 8 };
+      ac_ld(e, sof, sw, true, src);
+      if i.cast_to == ir.IRType.ItI64 || i.cast_to == ir.IRType.ItU64 {
+        bs(e.out, main.cat4("  fcvtzs x8, ", main.cat3(src, "\n", ""), "", ""));
+      } else {
+        bs(e.out, main.cat4("  fcvtzs w8, ", main.cat3(src, "\n", ""), "", ""));
+      }
+      ac_st(e, dof, 8, false, "x8");
+    } else if i.cast == ir.IRCastKind.CastF32F64 {
+      ac_ld(e, sof, 4, true, "s0");
+      bs(e.out, "  fcvt d0, s0\n");
+      ac_st(e, dof, 8, true, "d0");
+    } else if i.cast == ir.IRCastKind.CastF64F32 {
+      ac_ld(e, sof, 8, true, "d0");
+      bs(e.out, "  fcvt s0, d0\n");
+      ac_st(e, dof, 4, true, "s0");
+    } else if i.cast == ir.IRCastKind.CastReinterp {
+      // fmov gpr, fpr — exact bit move (f32_bits/f64_bits)
+      if i.cast_from == ir.IRType.ItF32 {
+        ac_ld(e, sof, 4, true, "s0");
+        bs(e.out, "  fmov w8, s0\n");
+      } else {
+        ac_ld(e, sof, 8, true, "d0");
+        bs(e.out, "  fmov x8, d0\n");
+      }
+      ac_st(e, dof, if i.cast_from == ir.IRType.ItF32 { 4 } else { 8 }, false, "x8");
+    } else {
+      // CastBitcopy
+      ac_ld(e, sof, 8, false, "x8");
+      ac_st(e, dof, 8, false, "x8");
+    }
+    return;
+  }
+  if i.op == ir.IROp.IrCopymem {
+    ac_ld(e, ac_vreg_off(e, i.addr), 8, false, "x8");
+    ac_ld(e, ac_vreg_off(e, i.a), 8, false, "x9");
+    if i.size < 0 {
+      // runtime byte count
+      ac_ld(e, ac_vreg_off(e, i.b), 8, false, "x10");
+    } else {
+      bs(e.out, main.cat4("  mov x10, #", main.cat3(main.itoa(i.size), "\n", ""), "", ""));
+    }
+    let lbl: i32 = g_label64;
+    g_label64 += 1;
+    // count==0 must not enter the loop: subs-first would wrap to -1 and
+    // copy for 2^64 iterations (empty slice_string is the everyday case)
+    bs(e.out, main.cat4("  cbz x10, Lcpyd", main.cat3(main.itoa(lbl as i64), "\n", ""), "", ""));
+    bs(e.out, main.cat4("Lcpy", main.cat3(main.itoa(lbl as i64),
+        ":\n  ldrb w11, [x9]\n  strb w11, [x8]\n  add x8, x8, #1\n  add x9, x9, #1\n  subs x10, x10, #1\n  b.ne Lcpy",
+        main.cat3(main.itoa(lbl as i64), "\n", "")), "", ""));
+    bs(e.out, main.cat4("Lcpyd", main.cat3(main.itoa(lbl as i64), ":\n", ""), "", ""));
+    return;
+  }
+  if i.op == ir.IROp.IrZero {
+    ac_ld(e, ac_vreg_off(e, i.addr), 8, false, "x8");
+    bs(e.out, main.cat4("  mov x10, #", main.cat3(main.itoa(i.size), "\n  mov w11, #0\n", ""), "", ""));
+    let lbl: i32 = g_label64;
+    g_label64 += 1;
+    bs(e.out, main.cat4("Lzro", main.cat3(main.itoa(lbl as i64),
+        ":\n  strb w11, [x8]\n  add x8, x8, #1\n  subs x10, x10, #1\n  b.ne Lzro",
+        main.cat3(main.itoa(lbl as i64), "\n", "")), "", ""));
+    return;
+  }
+  if i.op == ir.IROp.IrLitaddr {
+    let dof: i64 = ac_vreg_off(e, i.dst);
+    let l: *ir.IRLit = e.fn_.literals[i.lit as usize];
+    bs(e.out, main.cat4("  adrp x8, L", l.label, "@PAGE\n  add x8, x8, L", main.cat3(l.label, "@PAGEOFF\n", "")));
+    ac_st(e, dof, 8, false, "x8");
+    return;
+  }
+  if i.op == ir.IROp.IrCall {
+    ac_call(e, i);
+    return;
+  }
+}
+
+fn ac_edge(e: *ACtx, succ: *ir.IRBlock) {
+  let mut p: usize = 0;
+  while p < len(succ.phis) {
+    let phi: *ir.IRPhi = succ.phis[p];
+    let mut k: usize = 0;
+    while k < len(phi.preds) {
+      if phi.preds[k] == e.fn_.cur {
+        let val: *ir.IRVreg = phi.args[k];
+        if val != null && phi.dst != null {
+          let d: i64 = ac_vreg_off(e, phi.dst);
+          let s: i64 = ac_vreg_off(e, val);
+          ac_ld(e, s, 8, false, "x8");
+          ac_st(e, d, 8, false, "x8");
+        }
+        k = len(phi.preds);
+      }
+      k += 1;
+    }
+    p += 1;
+  }
+}
+
+fn ac_term(e: *ACtx) {
+  let fn_: *ir.IRFn = e.fn_;
+  if fn_.cur.term_op == 100 {
+    let to: *ir.IRBlock = fn_.cur.br_true;
+    ac_edge(e, to);
+    bs(e.out, main.cat5("  b L", main.itoa(fn_.uid as i64), "_", main.itoa(to.id as i64), "\n"));
+  } else if fn_.cur.term_op == 101 {
+    let tt: *ir.IRBlock = fn_.cur.br_true;
+    let ff: *ir.IRBlock = fn_.cur.br_false;
+    let cof: i64 = ac_vreg_off(e, fn_.cur.cbr_cond);
+    let lbl: i32 = g_label64;
+    g_label64 += 1;
+    ac_ld(e, cof, 1, false, "x8");
+    bs(e.out, main.cat4("  cbz x8, Lcbf", main.cat3(main.itoa(lbl as i64), "\n", ""), "", ""));
+    // phi edge copies match preds against cur, which must stay the
+    // branching block for both arms (mirrors emit_amd64)
+    ac_edge(e, tt);
+    bs(e.out, main.cat5("  b L", main.itoa(fn_.uid as i64), "_", main.itoa(tt.id as i64), "\n"));
+    bs(e.out, main.cat4("Lcbf", main.cat3(main.itoa(lbl as i64), ":\n", ""), "", ""));
+    ac_edge(e, ff);
+    bs(e.out, main.cat5("  b L", main.itoa(fn_.uid as i64), "_", main.itoa(ff.id as i64), "\n"));
+  } else if fn_.cur.term_op == 102 {
+    if fn_.cur.ret_val != null {
+      let f: bool = ir.ir_is_float_t(fn_.cur.ret_val.ty);
+      if f {
+        // f32 returns ride the low lane at 4 bytes
+        let fr: string = ac_cvt_dreg(fn_.cur.ret_val.ty == ir.IRType.ItF32);
+        ac_ld(e, ac_vreg_off(e, fn_.cur.ret_val),
+              if fn_.cur.ret_val.ty == ir.IRType.ItF32 { 4 } else { 8 }, true, fr);
+      } else {
+        ac_ld(e, ac_vreg_off(e, fn_.cur.ret_val), 8, false, "x0");
+      }
+    }
+    bs(e.out, "  mov sp, x29\n  ldp x29, x30, [sp], #16\n  ret\n");
+  } else {
+    bs(e.out, "  mov sp, x29\n  ldp x29, x30, [sp], #16\n  ret\n");
+  }
+}
+
+pub static mut g_uid64: i32 = 0;
+
+fn ac_fn(e: *ACtx, fn_: *ir.IRFn) {
+  e.fn_ = fn_;
+  fn_.uid = g_uid64;
+  g_uid64 += 1;
+  ac_layout(e);
+  let fs: string = ac_sym(e, fn_.symbol);
+  bs(e.out, main.cat5("\n  .globl ", fs, "\n", fs, ":\n"));
+  bs(e.out, "  stp x29, x30, [sp, #-16]!\n  mov x29, sp\n");
+  if e.frame != 0 {
+    // the sub sp immediate is 12 bits; the epilogue restores sp from x29,
+    // so big frames just reserve in chunks
+    let mut left: i64 = e.frame;
+    while left > 0 {
+      let chunk: i64 = if left > 4080 { 4080 } else { left };
+      bs(e.out, main.cat4("  sub sp, sp, #", main.cat3(main.itoa(chunk), "\n", ""), "", ""));
+      left -= chunk;
+    }
+  }
+  let mut ri: i32 = 0;
+  let mut fi: i32 = 0;
+  if fn_.returns_aggregate {
+    ri += 1;
+    ac_addr_into(e, ac_slot_off(e, fn_.out_slot));
+    bs(e.out, "  str x0, [x12]\n");
+  }
+  let mut p: usize = 0;
+  while p < len(fn_.params) {
+    let slot: *ir.IRSlot = fn_.params[p];
+    let mut pt: *parse.Type = null;
+    if p < len(fn_.param_types) {
+      pt = fn_.param_types[p];
+    }
+    let isf: bool = pt != null && (pt.kind == check.TypeKind.TyF32 || pt.kind == check.TypeKind.TyF64);
+    if isf && fi < 8 {
+      ac_addr_into(e, ac_slot_off(e, slot));
+      // f32 params arrive in the s registers (low lane)
+      if pt.kind == check.TypeKind.TyF32 {
+        bs(e.out, main.cat4("  str ", main.cat3(ac_sreg(fi), ", [x12]\n", ""), "", ""));
+      } else {
+        bs(e.out, main.cat4("  str ", main.cat3(ac_freg(fi), ", [x12]\n", ""), "", ""));
+      }
+      fi += 1;
+    } else if !isf && ri < 8 {
+      ac_addr_into(e, ac_slot_off(e, slot));
+      bs(e.out, main.cat4("  str ", main.cat3(ac_xreg(ri), ", [x12]\n", ""), "", ""));
+      ri += 1;
+    }
+    p += 1;
+  }
+  let mut bi: usize = 0;
+  while bi < len(fn_.blocks) {
+    let b: *ir.IRBlock = fn_.blocks[bi];
+    e.fn_.cur = b;
+    bs(e.out, main.cat5("L", main.itoa(fn_.uid as i64), "_", main.itoa(b.id as i64), ":\n"));
+    let mut ii: usize = 0;
+    while ii < len(b.ins) {
+      ac_ins(e, b.ins[ii]);
+      ii += 1;
+    }
+    ac_term(e);
+    bi += 1;
+  }
+}
+
+pub fn emit_arm64_text(target: i32) -> []u8 {
+  let out: *main.Vec[u8] = new main.Vec[u8] { items: make([]u8, 1024), n: 0 };
+  let is_mac: bool = target == 2;
+  let e: *ACtx = new ACtx { out: out, fn_: null, offs: make([]i64, 0), frame: 0, is_mac: is_mac };
+  // mach-o carves the image into typed sections; ELF targets use the three
+  // plain names the in-tree arm64 assembler maps (strings fold into text)
+  if is_mac {
+    bs(out, ".section __TEXT,__text,regular,pure_instructions\n");
+    bs(out, ".build_version macos, 13, 0\n");
+  } else {
+    bs(out, ".text\n");
+  }
+  let mut i: usize = 0;
+  while i < ir.g_ir_fns.n {
+    ac_fn(e, ir.g_ir_fns.items[i]);
+    i += 1;
+  }
+  // rc-headed literals must live in a non-merging section: ld64 folds and
+  // reorders __cstring literals, which would break the buf/+24 pairing
+  if is_mac {
+    bs(out, ".section __TEXT,__rhostr,regular\n");
+  } else {
+    bs(out, ".section .rodata\n");
+  }
+  i = 0;
+  while i < ir.g_ir_fns.n {
+    let fn_: *ir.IRFn = ir.g_ir_fns.items[i];
+    let mut j: usize = 0;
+    while j < len(fn_.literals) {
+      let l: *ir.IRLit = fn_.literals[j];
+      bs(out, main.cat5("  .p2align 3\nL", l.label, ":\n  .quad 0x8000000000000000\n  .quad 0\n  .quad 0\nL", l.label, "_b:\n  .ascii \""));
+      let mut k: usize = 0;
+      while k < len(l.bytes) {
+        let ch: u8 = l.bytes[k];
+        if ch >= 0x20 && ch < 0x7F && ch != 34 && ch != 92 {
+          emit_wasm.b8(out, ch);
+        } else {
+          bs(out, main.cat3("\\", oct3(ch), ""));
+        }
+        k += 1;
+      }
+      bs(out, "\"\n");
+      j += 1;
+    }
+    i += 1;
+  }
+  // static string initializers: their rodata blocks belong to the global,
+  // not to any fn — without this the L<sym>_str relocs dangle (fixup 6)
+  i = 0;
+  while i < ir.g_ir_globals.n {
+    let g: *ir.IRGlobal = ir.g_ir_globals.items[i];
+    if g.static_lit != null {
+      let l: *ir.IRLit = g.static_lit;
+      bs(out, main.cat5("  .p2align 3\nL", l.label, ":\n  .quad 0x8000000000000000\n  .quad 0\n  .quad 0\nL", l.label, "_b:\n  .ascii \""));
+      let mut k: usize = 0;
+      while k < len(l.bytes) {
+        let ch: u8 = l.bytes[k];
+        if ch >= 0x20 && ch < 0x7F && ch != 34 && ch != 92 {
+          emit_wasm.b8(out, ch);
+        } else {
+          bs(out, main.cat3("\\", oct3(ch), ""));
+        }
+        k += 1;
+      }
+      bs(out, "\"\n");
+    }
+    i += 1;
+  }
+  i = 0;
+  while i < ir.g_ir_globals.n {
+    let g: *ir.IRGlobal = ir.g_ir_globals.items[i];
+    let gs: string = ac_sym(e, g.symbol);
+    bs(out, main.cat5("\n  .globl ", gs, "\n", "", ""));
+    if is_mac {
+      bs(out, ".section __DATA,__data\n");
+    } else {
+      bs(out, ".section .data\n");
+    }
+    bs(out, main.cat5("  .p2align ", main.itoa(glob_p2align(g.align)), "\n", "", ""));
+    bs(out, main.cat5(gs, ":\n", "", "", ""));
+    emit_glob_data(out, g, "L");
+    i += 1;
+  }
+  if ir.g_main_cell != null && ir.g_main_cell.items[0] != "" {
+    if is_mac {
+      bs(out, ".section __TEXT,__text,regular,pure_instructions\n");
+    } else {
+      bs(out, ".text\n");
+    }
+    // the string pool may end mid-word: every arm64 instruction boundary
+    // (and the labels branches target) needs 4-byte alignment
+    bs(out, main.cat5("\n  .p2align 2\n  .globl ", ac_sym(e, "main"), "\n", ac_sym(e, "main"), ":\n"));
+    bs(out, "  stp x29, x30, [sp, #-16]!\n  mov x29, sp\n");
+    bs(out, main.cat4("  bl ", main.cat3(ac_sym(e, ir.g_main_cell.items[0]), "\n", ""), "", ""));
+    bs(out, "  ldp x29, x30, [sp], #16\n  ret\n");
+  }
+  return out.items[0..out.n];
+}
+
+pub fn glob_p2align(align: i64) -> i64 {
+  if align >= 8 { return 3; }
+  if align >= 4 { return 2; }
+  if align >= 2 { return 1; }
+  return 0;
+}
+
+// globals init data: three relocated words (string literals) or raw bytes;
+// lab_prefix is "L" (mach-o) or "." (elf)
+pub fn emit_glob_data(out: *main.Vec[u8], g: *ir.IRGlobal, lab_prefix: string) {
+  let mut word: usize = 0;
+  if len(g.relocs) > 0 {
+    let mut w: i32 = 0;
+    while w < 3 {
+      let wi: usize = w as usize;
+      if wi < len(g.relocs) && g.relocs[wi] != "" {
+        bs(out, main.cat4("  .quad ", lab_prefix, g.relocs[wi], "\n"));
+      } else {
+        let mut v: u64 = 0;
+        let mut b: i32 = 0;
+        while b < 8 {
+          v = v | ((g.init[word * 8 + b as usize] as u64) << (8 * b));
+          b += 1;
+        }
+        bs(out, main.cat4("  .quad ", main.utoa(v), "\n", ""));
+      }
+      word += 1;
+      w += 1;
+    }
+  } else if len(g.init) > 0 {
+    let mut b: usize = 0;
+    while b < len(g.init) {
+      bs(out, main.cat4("  .byte ", main.cat3(main.itoa(g.init[b] as i64), "\n", ""), "", ""));
+      b += 1;
+    }
+    if g.size as usize > len(g.init) {
+      bs(out, main.cat4("  .zero ", main.cat3(main.itoa(g.size - len(g.init) as i64), "\n", ""), "", ""));
+    }
+  } else {
+    bs(out, main.cat4("  .zero ", main.cat3(main.itoa(g.size), "\n", ""), "", ""));
+  }
+}
+
+// string-valued if-expressions are not lowerable in 0.0.5 (aggregate arms);
+// the emitters pick mnemonics through these helpers instead
+fn ac_addop(off: i64) -> string {
+  if off < 0 { return "sub"; }
+  return "add";
+}
+
+fn ac_icc(cc: ir.IRCC, u: bool) -> string {
+  if cc == ir.IRCC.CcEq { return "eq"; }
+  if cc == ir.IRCC.CcNe { return "ne"; }
+  if cc == ir.IRCC.CcLt { if u { return "lo"; } return "lt"; }
+  if cc == ir.IRCC.CcLe { if u { return "ls"; } return "le"; }
+  if cc == ir.IRCC.CcGt { if u { return "hi"; } return "gt"; }
+  if u { return "hs"; }
+  return "ge";
+}
+
+fn ac_dreg(s64: bool, zero: bool) -> string {
+  if s64 {
+    if zero { return "d0"; }
+    return "d1";
+  }
+  if zero { return "s0"; }
+  return "s1";
+}
+
+fn ac_divmn(signed: bool) -> string {
+  if signed { return "sdiv"; }
+  return "udiv";
+}
+
+fn ac_fmn(op: ir.IROp) -> string {
+  if op == ir.IROp.IrAdd { return "fadd"; }
+  if op == ir.IROp.IrSub { return "fsub"; }
+  return "fmul";
+}
+
+fn ac_imn(op: ir.IROp) -> string {
+  if op == ir.IROp.IrAdd { return "add"; }
+  if op == ir.IROp.IrSub { return "sub"; }
+  if op == ir.IROp.IrMul { return "mul"; }
+  if op == ir.IROp.IrAnd { return "and"; }
+  if op == ir.IROp.IrOr { return "orr"; }
+  return "eor";
+}
+
+fn ac_shmn(op: ir.IROp, signed: bool) -> string {
+  if op == ir.IROp.IrShl { return "lslv"; }
+  if signed { return "asrv"; }
+  return "lsrv";
+}
+
+fn ac_fld(size: i64) -> string {
+  if size == 8 { return "d0"; }
+  return "s0";
+}
+
+fn ac_ldop(size: i64, sgn: bool) -> string {
+  // zero-extend unsigned loads (spill slots hold 8 bytes)
+  if size == 1 { if sgn { return "ldrsb x8, [x8]"; } return "ldrb w8, [x8]"; }
+  if size == 2 { if sgn { return "ldrsh x8, [x8]"; } return "ldrh w8, [x8]"; }
+  if size == 4 { if sgn { return "ldrsw x8, [x8]"; } return "ldr w8, [x8]"; }
+  return "ldr x8, [x8]";
+}
+
+fn ac_streg(flt: bool) -> string {
+  if flt { return "d0"; }
+  return "x9";
+}
+
+fn ac_cvt_dreg(f32: bool) -> string {
+  if f32 { return "s0"; }
+  return "d0";
+}
+
+fn ac_retreg(flt: bool) -> string {
+  if flt { return "d0"; }
+  return "x0";
+}

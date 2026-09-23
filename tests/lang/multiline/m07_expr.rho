@@ -1,9 +1,9 @@
 // exit: 0
 fn main() -> i32 {
   // a multiline literal as a call argument
-  printf("[{}]\n", cat("join", """
+  printf("[{}]\n", "join" + """
   ed
-  """));
+  """);
   // one as the printf format itself; escapes decode in here too, and
   // the raw newline before the closing delimiter is part of the format
   printf("""
@@ -15,9 +15,9 @@ fn main() -> i32 {
   """ == "\n  alpha\n  " {
     printf("eq\n");
   }
-  printf("{}\n", len(cat("""
+  printf("{}\n", len(("""
   a
-  """, """
+  """ + """
   b
   """)) as i64);
   return 0;

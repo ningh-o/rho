@@ -612,6 +612,42 @@ static Str dir_of(Str path) {
   return str_slice(path, 0, cut);
 }
 
+// `use` resolution: the using file's directory wins; when nothing lives
+// there, the root file's directory (g_root_dir, set by check_module) is
+// tried — vendored sources nest (a package's vendor/ carries its own
+// vendor/), while a package's subdirectory modules reach back to the
+// package root for their siblings
+static bool file_exists(Str path) {
+  FILE *f = fopen(str_to_c(path), "rb");
+  if (!f)
+    return false;
+  fclose(f);
+  return true;
+}
+
+static Str use_path_from(Str dir, Decl *d) {
+  SB p = {0};
+  sb_append(&p, dir);
+  for (size_t j = 0; j < d->path.n; j++) {
+    if (j)
+      sb_append_c(&p, "/");
+    sb_append_c(&p, d->path.items[j]);
+  }
+  sb_append_c(&p, ".rho");
+  return sb_finish(&p);
+}
+
+static Str resolve_use_path(Module *m, Decl *d) {
+  Str rel = use_path_from(dir_of(m->path), d);
+  Str root = str_from(g_root_dir ? g_root_dir : ".");
+  if (!str_eq_c(root, ".") && !str_eq(root, dir_of(m->path)) && !file_exists(rel)) {
+    Str rootrel = use_path_from(root, d);
+    if (file_exists(rootrel))
+      return rootrel;
+  }
+  return rel;
+}
+
 static Str read_file_or_exit(Str path) {
   FILE *f = fopen(str_to_c(path), "rb");
   if (!f) {
@@ -687,16 +723,8 @@ static Module *load_module(Str path, Str ns, bool is_prelude) {
   for (size_t i = 0; i < root->decls.n; i++) {
     Decl *d = root->decls.items[i];
     if (d->kind == DK_USE) {
-      SB p = {0};
-      sb_append(&p, dir_of(m->path));
-      for (size_t j = 0; j < d->path.n; j++) {
-        if (j)
-          sb_append_c(&p, "/");
-        sb_append_c(&p, d->path.items[j]);
-      }
-      sb_append_c(&p, ".rho");
       Str ns_name = str_from(d->path.items[d->path.n - 1]);
-      Module *target = load_module(sb_finish(&p), ns_name, false);
+      Module *target = load_module(resolve_use_path(m, d), ns_name, false);
       Sym *sym = arena_alloc_zeroed(sizeof(Sym));
       sym->kind = SY_MODULE;
       sym->name = ns_name;
@@ -758,6 +786,7 @@ void check_reset(void) {
   prelude_module = NULL;
   cur_scope = NULL;
   prelude_loaded = false;
+  g_root_dir = ".";
   g_tenv = NULL;
   g_instantiations = (Vec){0};
   g_instantiated = (Map){0};
@@ -930,7 +959,11 @@ static Type *named_type(Sym *sym, Module *owner, TypeAst *ta) {
   }
   Vec targs = {0};
   for (size_t i = 0; i < ntargs; i++) {
-    Type *targ = resolve_type_in_module(owner, ta->targs.items[i]);
+    // type arguments resolve in the CALLER's module (cur_module, set by
+    // resolve_type_in_module) — `mod.Vec[LocalType]` names the caller's
+    // `LocalType`, exactly as the unqualified form does when owner and
+    // caller share a file
+    Type *targ = resolve_type_in_module(cur_module, ta->targs.items[i]);
     if (targ->kind == TY_INT_LIT)
       targ = ty_prim(PRIM_I32);
     if (targ->kind == TY_FLOAT_LIT)
@@ -1363,6 +1396,11 @@ static bool lvalue_mutable(Expr *e) {
     return false;
   }
   if (e->kind == EX_FIELD) {
+    // module-qualified storage: `mod.STATIC = x` mutates the static itself;
+    // a const stays immutable wherever it is named
+    Sym *fsym = e->sym;
+    if (fsym && (fsym->kind == SY_STATIC || fsym->kind == SY_CONST))
+      return fsym->kind == SY_STATIC && fsym->mutable;
     Type *bt = e->a->typed;
     if (bt && bt->kind == TY_PTR)
       return true; // heap object
@@ -1562,7 +1600,11 @@ static Type *check_expr(Expr *e, Type *expected) {
       return e->typed;
     }
     if (op == P_PLUS || op == P_MINUS || op == P_STAR || op == P_SLASH || op == P_PERCENT) {
-      if (!ty_is_int(l) && !ty_is_float(l))
+      // `+` also concatenates strings (string + string -> string, the same
+      // precedence/associativity as arithmetic +); there is no implicit
+      // to_str — mismatched operand types take the mismatch diag above,
+      // verbatim
+      if (!ty_is_int(l) && !ty_is_float(l) && !(op == P_PLUS && l->kind == TY_STRING))
         ERR(e, "arithmetic needs numbers, found `%s`", ty_name(l));
     } else if (op == P_AMP || op == P_PIPE || op == P_CARET) {
       if (!ty_is_int(l))
@@ -1872,6 +1914,18 @@ static Type *check_field_access(Expr *e, Type *expected) {
       e->fnval = true;
       return e->typed;
     }
+    // a named type behind a module: `lex.Tok` yields the type so chained
+    // variant access and constructor calls resolve (`lex.Tok.TkA`,
+    // `lex.Tok.TkIdent(...)`) — the module-qualified mirror of the local
+    // `Tok` path
+    if (item->kind == SY_ENUM || item->kind == SY_STRUCT) {
+      if (!item->decl->pub_ && !((Module *)item->owner)->is_prelude) {
+        ERR(e, "`%s.%s` is not public", str_to_c(e->a->sv), str_to_c(e->sv));
+      }
+      e->sym = item;
+      e->typed = item->type;
+      return e->typed;
+    }
     ERR(e, "`%s.%s` is a type; types are not values", str_to_c(e->a->sv), str_to_c(e->sv));
     e->typed = ty_err_;
     return e->typed;
@@ -1929,8 +1983,8 @@ static Type *check_field_access(Expr *e, Type *expected) {
     e->typed = ty_err_;
     return e->typed;
   }
-  // enum variant: `Color.Red`
-  if (e->a->kind == EX_NAME) {
+  // enum variant: `Color.Red`, or module-qualified `lex.Tok.TkA`
+  if (e->a->kind == EX_NAME || e->a->kind == EX_FIELD) {
     Sym *sym = e->a->sym;
     if (sym && sym->kind == SY_ENUM) {
       Decl *d = sym->decl;
@@ -2068,6 +2122,49 @@ static CallTarget resolve_callee(Expr *callee) {
         ERR(callee, "type `%s` has no associated function `%s`", str_to_c(callee->a->sv),
             str_to_c(callee->sv));
         return ct;
+      }
+    }
+    // 3b) module-qualified type callee: `lex.Tok.TkIdent(...)`,
+    // `lex.Box.make(...)` — a two-segment `mod.Type` chain resolves to the
+    // type sym, so variants construct and associated fns call exactly as
+    // the unqualified forms do
+    if (callee->a->kind == EX_FIELD && callee->a->a->kind == EX_NAME) {
+      Sym *ns = lookup(callee->a->a->sv);
+      if (ns && ns->kind == SY_MODULE) {
+        check_expr(callee->a, NULL);
+        Sym *base = callee->a->sym;
+        if (base && base->kind == SY_ENUM) {
+          Decl *d = base->decl;
+          for (size_t i = 0; i < d->variants.n; i++) {
+            VariantAst *v = d->variants.items[i];
+            if (str_eq(v->name, callee->sv)) {
+              ct.kind = CT_VARIANT;
+              ct.variant = (int)i;
+              ct.enum_type = base->type;
+              ct.is_ctor = v->vkind == VAR_STRUCT;
+              Sym *vs = arena_alloc_zeroed(sizeof(Sym));
+              vs->kind = SY_VARIANT;
+              vs->name = callee->sv;
+              vs->type = base->type;
+              vs->decl = d;
+              vs->variant_index = (int)i;
+              callee->sym = vs;
+              return ct;
+            }
+          }
+        }
+        if (base && (base->kind == SY_STRUCT || base->kind == SY_ENUM)) {
+          Sym *fn = map_get(&((Module *)base->owner)->syms, callee->sv);
+          if (fn && fn->kind == SY_FN && !fn->decl->is_method) {
+            ct.kind = CT_FN;
+            ct.sym = fn;
+            ct.fn_type = fn->type;
+            callee->sym = fn;
+            return ct;
+          }
+          // not a variant ctor or associated fn: a method on the type —
+          // falls through to 4) below
+        }
       }
     }
     // 4) method call: `receiver.name(...)` — receiver typed by now?
@@ -3462,6 +3559,7 @@ int check_module(Decl *module) {
 
   // register the root module if not already loaded (it never is)
   Str path = module->file;
+  g_root_dir = str_to_c(dir_of(path));
   if (!map_get(&modules_by_path, path)) {
     Module *m = arena_alloc_zeroed(sizeof(Module));
     m->path = path;
@@ -3474,16 +3572,8 @@ int check_module(Decl *module) {
     for (size_t i = 0; i < module->decls.n; i++) {
       Decl *d = module->decls.items[i];
       if (d->kind == DK_USE) {
-        SB p = {0};
-        sb_append(&p, dir_of(m->path));
-        for (size_t j = 0; j < d->path.n; j++) {
-          if (j)
-            sb_append_c(&p, "/");
-          sb_append_c(&p, d->path.items[j]);
-        }
-        sb_append_c(&p, ".rho");
         Str ns_name = str_from(d->path.items[d->path.n - 1]);
-        Module *target = load_module(sb_finish(&p), ns_name, false);
+        Module *target = load_module(resolve_use_path(m, d), ns_name, false);
         Sym *sym = arena_alloc_zeroed(sizeof(Sym));
         sym->kind = SY_MODULE;
         sym->name = ns_name;

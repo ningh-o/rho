@@ -1,0 +1,8 @@
+// diag
+// d03 — `+` stays arithmetic for non-strings: bool + bool keeps the
+// arithmetic-needs-numbers diag, unchanged wording
+fn main() -> i32 {
+  let b: bool = true;
+  let x: i32 = b + false;
+  return x;
+}

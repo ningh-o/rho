@@ -1,0 +1,1 @@
+fn rho_tests_lang_opt_s09_shake_rho__dead_helper

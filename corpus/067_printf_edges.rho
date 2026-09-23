@@ -12,6 +12,6 @@ fn main() -> i32 {
   printf("close }}\n");
   printf("[{}]\n", format("{{}}"));
   printf("no holes at all\n");
-  printf("{}\n", cat("braced ", "{}"));
+  printf("{}\n", "braced " + "{}");
   return 0;
 }

@@ -1,6 +1,6 @@
 // exit: 0
 // 0.3.4: format — printf's desugar pointed at a string sink, so a
-// to_str body reads as one format line instead of a cat pyramid
+// to_str body reads as one format line instead of a concat pyramid
 struct Point {
   x: i32,
   y: i32,
@@ -45,7 +45,7 @@ fn main() -> i32 {
   let s: string = format("sum={} half={}", 7 + 8, 0 - 2);
   assert_eq(s, "sum=15 half=-2");
   printf("{}\n", s);
-  printf("{}\n", cat("[", cat(format("{}", 5), "]")));
+  printf("{}\n", "[" + (format("{}", 5) + "]"));
   let z: string = format("no holes at all");
   assert_eq(z, "no holes at all");
   return 0;

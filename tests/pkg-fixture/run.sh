@@ -59,7 +59,7 @@ printf 'pub fn placeholder() -> i32 {\n  return 0;\n}\n' > strlib.rho
 git add -A
 git commit -qm "strlib 0.1.0 base"
 REV1=$(git rev-parse HEAD)
-printf '// strlib — a library package delivered as a git dependency.\npub fn rev(s: string) -> string {\n  let mut out: string = "";\n  let mut i: usize = len(s);\n  while i > 0 {\n    i -= 1;\n    let one: []u8 = make([]u8, 1);\n    one[0] = s[i];\n    out = cat(out, intrinsics.slice_string(one));\n  }\n  return out;\n}\n' > strlib.rho
+printf '// strlib — a library package delivered as a git dependency.\npub fn rev(s: string) -> string {\n  let mut out: string = "";\n  let mut i: usize = len(s);\n  while i > 0 {\n    i -= 1;\n    let one: []u8 = make([]u8, 1);\n    one[0] = s[i];\n    out = out + intrinsics.slice_string(one);\n  }\n  return out;\n}\n' > strlib.rho
 git add -A
 git commit -qm "strlib 0.2.0"
 REV2=$(git rev-parse HEAD)

@@ -1,0 +1,22 @@
+// exit: 0
+// module-qualified enum types: constructor calls, unit variant values,
+// qualified match patterns — all through the module namespace
+use color;
+
+fn main() -> i32 {
+  let mixed: color.Color = color.Color.RGB(200, 10);
+  let named: color.Color = color.Color.Red;
+  let v: i32 = match mixed {
+    color.Color.Red => 1,
+    color.Color.RGB(r, g) => {
+      printf("rgb={}\n", r + g);
+      r + g
+    },
+  };
+  let red: i32 = match named {
+    color.Color.Red => 1,
+    color.Color.RGB(_, _) => 0,
+  };
+  printf("red={} v={}\n", red, v);
+  return 0;
+}

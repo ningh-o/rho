@@ -4,7 +4,7 @@ struct Point {
 }
 
 fn Point.to_str(self: *Point) -> string {
-  return cat("(", cat(self.x.to_str(), "))"));
+  return "(" + (self.x.to_str() + "))");
 }
 
 fn i32.double(self: i32) -> i32 {

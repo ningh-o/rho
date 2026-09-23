@@ -1,0 +1,431 @@
+// opt.rho — the IR optimizer: constant folding + dead-instruction
+// elimination (mirror-only; boot stays frozen, and the gate grades
+// behavior — boot-built vs mirror-built artifacts must run identically,
+// so every fold is semantics-preserving by construction).
+//
+// Folding is vreg-granular and rewrites instructions IN PLACE: a binop
+// whose operands are both known constants becomes an IrConst with the
+// same dst vreg, so uses never need rewriting. Constants are tracked
+// per function (SSA: a vreg has exactly one def, and a use executes
+// only after that def — no dominance analysis needed); phi dsts are
+// never constants, and float arithmetic never folds.
+//
+// Integer folds run only at UNIFORM width (a.ty, b.ty, dst.ty all 64-bit
+// or all 32-bit): the wasm emitter computes mixed-width binops at the
+// operand width then zero-extends or wraps to the dst width, and that
+// reconcile is easy to get subtly wrong — mixed-width cases stay
+// unfolded instead. Division by a constant zero never folds (the
+// runtime panic IS the program's behavior); signed divisor −1 folds to
+// the wrap law `0 − a`, exactly what the backends emit. Shift counts
+// mask exactly like the hardware (wasm masks by width-1). Cast folds
+// cover only the two evidenced shapes (integer bitcopy identity, and
+// sext i32→i64) — the const-lane narrowing corner keeps them honest.
+//
+// DCE removes pure instructions (consts, binops, cmps, casts, addi)
+// whose dst has no remaining use — uses include phi edges, the cbr
+// condition and the ret value, which the emitters read by vreg. Both
+// passes run to a bounded fixpoint; iteration order is the emission
+// order, so the result is deterministic.
+
+use main;
+use parse;
+use check;
+use ir;
+
+pub static mut g_opt_off: bool = false;
+pub static mut g_opt_folds: i64 = 0;
+pub static mut g_opt_dropped: i64 = 0;
+
+// per-function constant table, parallel arrays indexed by vreg id (ids
+// are dense from 0 — new_vreg bumps fn.next_vreg)
+struct ConstTab {
+  known: []bool,
+  val: []u64,
+}
+
+fn ent_get(ct: *ConstTab, v: *ir.IRVreg) -> u64 {
+  return ct.val[v.id];
+}
+
+fn ent_known(ct: *ConstTab, v: *ir.IRVreg) -> bool {
+  if v == null {
+    return false;
+  }
+  return ct.known[v.id];
+}
+
+fn mask_of(is64: bool) -> u64 {
+  if is64 {
+    return 0xFFFFFFFFFFFFFFFF;
+  }
+  return 0xFFFFFFFF;
+}
+
+fn bits64(t: ir.IRType) -> bool {
+  return t == ir.IRType.ItI64 || t == ir.IRType.ItU64 || t == ir.IRType.ItUsize;
+}
+
+fn foldable_ty(t: ir.IRType) -> bool {
+  // uniform 32/64-bit integer lanes only: i8/i16 arithmetic is rare in
+  // lowered IR and the emitters widen those accesses differently
+  if t == ir.IRType.ItI32 || t == ir.IRType.ItU32 {
+    return true;
+  }
+  return bits64(t);
+}
+
+// one fold sweep over a function: seeds every IrConst, then folds in
+// emission order. Returns the number of instructions rewritten this
+// sweep (0 = fixpoint).
+// sign-extend a 32-bit lane to i64 for SIGNED folds: the table stores
+// raw bit patterns, and `pattern as i64` on a zero-extended 32-bit value
+// would read negatives as huge positives
+fn sx64(a: u64, is64: bool) -> i64 {
+  if is64 {
+    return a as i64;
+  }
+  return (a as i32) as i64;
+}
+
+fn fold_sweep(f: *ir.IRFn) -> i64 {
+  let nv: usize = f.next_vreg as usize;
+  // rho's make() does not promise zeroed memory (the prelude zeroes its
+  // own bump allocations by hand) — an unzeroed known[] bit would fold a
+  // load result as a garbage constant
+  let ct: *ConstTab = new ConstTab { known: make([]bool, nv), val: make([]u64, nv) };
+  let mut zi: usize = 0;
+  while zi < nv {
+    ct.known[zi] = false;
+    zi += 1;
+  }
+  let mut folded: i64 = 0;
+  let mut b: usize = 0;
+  while b < len(f.blocks) {
+    let blk: *ir.IRBlock = f.blocks[b];
+    let mut k: usize = 0;
+    while k < len(blk.ins) {
+      let ins: *ir.IRIns = blk.ins[k];
+      if ins.op == ir.IROp.IrConst {
+        ct.known[ins.dst.id] = true;
+        ct.val[ins.dst.id] = ins.imm as u64;
+        k += 1;
+        continue;
+      }
+      if ins.is_float {
+        k += 1;
+        continue;
+      }
+      // pure integer binop with both operands known
+      if ins.op == ir.IROp.IrAdd || ins.op == ir.IROp.IrSub || ins.op == ir.IROp.IrMul ||
+         ins.op == ir.IROp.IrDiv || ins.op == ir.IROp.IrMod || ins.op == ir.IROp.IrAnd ||
+         ins.op == ir.IROp.IrOr || ins.op == ir.IROp.IrXor || ins.op == ir.IROp.IrShl ||
+         ins.op == ir.IROp.IrShr {
+        if ent_known(ct, ins.a) && ent_known(ct, ins.b) &&
+           foldable_ty(ins.a.ty) && ins.a.ty == ins.b.ty && ins.a.ty == ins.dst.ty {
+          let is64: bool = bits64(ins.a.ty);
+          let m: u64 = mask_of(is64);
+          let a: u64 = ent_get(ct, ins.a);
+          let bval: u64 = ent_get(ct, ins.b);
+          let shift_m: u64 = if is64 { 63 } else { 31 };
+          let mut ok: bool = true;
+          let mut r: u64 = 0;
+          if ins.op == ir.IROp.IrAdd {
+            r = (a + bval) & m;
+          } else if ins.op == ir.IROp.IrSub {
+            r = (a - bval) & m;
+          } else if ins.op == ir.IROp.IrMul {
+            r = (a * bval) & m;
+          } else if ins.op == ir.IROp.IrDiv || ins.op == ir.IROp.IrMod {
+            // divisor 0 never folds: the runtime panic IS the program's
+            // behavior. Signed divisor -1 is rho's wrap law (pinned by
+            // corpus 042): the backends emit `0 - a` for BOTH div and
+            // mod — fold to exactly that
+            if bval == 0 {
+              ok = false;
+            } else if ins.signed_ops && bval == m {
+              r = ((0 - sx64(a, is64)) as u64) & m;
+            } else if ins.signed_ops {
+              if ins.op == ir.IROp.IrDiv {
+                r = ((sx64(a, is64) / sx64(bval, is64)) as u64) & m;
+              } else {
+                r = ((sx64(a, is64) % sx64(bval, is64)) as u64) & m;
+              }
+            } else {
+              if ins.op == ir.IROp.IrDiv {
+                r = (a / bval) & m;
+              } else {
+                r = (a % bval) & m;
+              }
+            }
+          } else if ins.op == ir.IROp.IrAnd {
+            r = a & bval;
+          } else if ins.op == ir.IROp.IrOr {
+            r = a | bval;
+          } else if ins.op == ir.IROp.IrXor {
+            r = a ^ bval;
+          } else if ins.op == ir.IROp.IrShl {
+            r = (a << (bval & shift_m)) & m;
+          } else if ins.op == ir.IROp.IrShr {
+            if ins.signed_ops {
+              r = ((sx64(a, is64) >> (bval & shift_m)) as u64) & m;
+            } else {
+              r = (a >> (bval & shift_m)) & m;
+            }
+          }
+          if ok {
+            ins.op = ir.IROp.IrConst;
+            ins.imm = r as i64;
+            ins.a = null;
+            ins.b = null;
+            ins.is_float = false;
+            ins.signed_ops = false;
+            ct.known[ins.dst.id] = true;
+            ct.val[ins.dst.id] = r;
+            folded += 1;
+          }
+        }
+        k += 1;
+        continue;
+      }
+      // integer comparison of two constants
+      if ins.op == ir.IROp.IrCmp {
+        if ent_known(ct, ins.a) && ent_known(ct, ins.b) &&
+           foldable_ty(ins.a.ty) && ins.a.ty == ins.b.ty {
+          let a: u64 = ent_get(ct, ins.a);
+          let bval: u64 = ent_get(ct, ins.b);
+          let mut r: u64 = 0;
+          if ins.cc == ir.IRCC.CcEq {
+            if a == bval { r = 1; }
+          } else if ins.cc == ir.IRCC.CcNe {
+            if a != bval { r = 1; }
+          } else if ins.signed_ops {
+            let sa: i64 = sx64(a, bits64(ins.a.ty));
+            let sb: i64 = sx64(bval, bits64(ins.a.ty));
+            if ins.cc == ir.IRCC.CcLt {
+              if sa < sb { r = 1; }
+            } else if ins.cc == ir.IRCC.CcLe {
+              if sa <= sb { r = 1; }
+            } else if ins.cc == ir.IRCC.CcGt {
+              if sa > sb { r = 1; }
+            } else if ins.cc == ir.IRCC.CcGe {
+              if sa >= sb { r = 1; }
+            }
+          } else {
+            if ins.cc == ir.IRCC.CcLt {
+              if a < bval { r = 1; }
+            } else if ins.cc == ir.IRCC.CcLe {
+              if a <= bval { r = 1; }
+            } else if ins.cc == ir.IRCC.CcGt {
+              if a > bval { r = 1; }
+            } else if ins.cc == ir.IRCC.CcGe {
+              if a >= bval { r = 1; }
+            }
+          }
+          ins.op = ir.IROp.IrConst;
+          ins.imm = r as i64;
+          ins.a = null;
+          ins.b = null;
+          ins.is_float = false;
+          ins.signed_ops = false;
+          ct.known[ins.dst.id] = true;
+          ct.val[ins.dst.id] = r;
+          folded += 1;
+        }
+        k += 1;
+        continue;
+      }
+      // Two cast shapes fold, each with end-to-end evidence; everything
+      // else deliberately stays:
+      //  - integer Bitcopy (same-width reinterpret — a literal the checker
+      //    already pinned to the target width behind an `as`)
+      //  - CastSext i32->i64 (verified against the runtime by s03's
+      //    `((0 - 2) as i64) >> 63` chain)
+      // Trunc/Zext do NOT fold: the backends' const-lane narrowing is
+      // value-preserving for constant operands (a const-expression
+      // `x as u8` keeps x — corpus 051 pins only the VARIABLE form), so
+      // spec-truncating here would diverge from the runtime (s07 caught
+      // exactly that).
+      if ins.op == ir.IROp.IrCast {
+        if ent_known(ct, ins.a) &&
+           ((ins.cast == ir.IRCastKind.CastBitcopy && !ir.ir_is_float_t(ins.cast_from) &&
+             !ir.ir_is_float_t(ins.cast_to)) ||
+            (ins.cast == ir.IRCastKind.CastSext && ins.cast_from == ir.IRType.ItI32 &&
+             ins.cast_to == ir.IRType.ItI64)) {
+          let mut r: u64 = ent_get(ct, ins.a);
+          if ins.cast == ir.IRCastKind.CastSext {
+            r = ((r & 0xFFFFFFFF) as i32) as i64 as u64;
+          }
+          ins.op = ir.IROp.IrConst;
+          ins.imm = r as i64;
+          ins.a = null;
+          ins.b = null;
+          ins.is_float = false;
+          ins.signed_ops = false;
+          ct.known[ins.dst.id] = true;
+          ct.val[ins.dst.id] = r;
+          folded += 1;
+        }
+        k += 1;
+        continue;
+      }
+      // ptr + const with a constant base: modular arithmetic composes,
+      // so folding at 64 bits and letting the emitters wrap at their own
+      // width (wasm32 addi is i32.add) gives the same bits
+      if ins.op == ir.IROp.IrAddi {
+        if ent_known(ct, ins.a) {
+          let a: u64 = ent_get(ct, ins.a);
+          let r: u64 = (a + (ins.imm as u64)) & 0xFFFFFFFFFFFFFFFF;
+          ins.op = ir.IROp.IrConst;
+          ins.imm = r as i64;
+          ins.a = null;
+          ins.b = null;
+          ins.is_float = false;
+          ins.signed_ops = false;
+          ct.known[ins.dst.id] = true;
+          ct.val[ins.dst.id] = r;
+          folded += 1;
+        }
+        k += 1;
+        continue;
+      }
+      k += 1;
+    }
+    b += 1;
+  }
+  return folded;
+}
+
+// mark one vreg used (null-tolerant)
+fn use_vreg(used: []u8, v: *ir.IRVreg) {
+  if v != null {
+    used[v.id] = 1;
+  }
+}
+
+fn pure_dst_op(op: ir.IROp) -> bool {
+  if op == ir.IROp.IrConst || op == ir.IROp.IrFconst {
+    return true;
+  }
+  if op == ir.IROp.IrAdd || op == ir.IROp.IrSub || op == ir.IROp.IrMul ||
+     op == ir.IROp.IrDiv || op == ir.IROp.IrMod || op == ir.IROp.IrAnd ||
+     op == ir.IROp.IrOr || op == ir.IROp.IrXor || op == ir.IROp.IrShl ||
+     op == ir.IROp.IrShr {
+    return true;
+  }
+  if op == ir.IROp.IrCmp || op == ir.IROp.IrCast || op == ir.IROp.IrAddi {
+    return true;
+  }
+  return false;
+}
+
+// one DCE sweep: collect every used vreg, then drop pure instructions
+// whose dst nobody reads. Returns the number dropped.
+fn dce_sweep(f: *ir.IRFn) -> i64 {
+  let nv: usize = f.next_vreg as usize;
+  let used: []u8 = make([]u8, nv);
+  let mut i: usize = 0;
+  while i < nv {
+    used[i] = 0;
+    i += 1;
+  }
+  let mut b: usize = 0;
+  while b < len(f.blocks) {
+    let blk: *ir.IRBlock = f.blocks[b];
+    let mut p: usize = 0;
+    while p < len(blk.phis) {
+      let phi: *ir.IRPhi = blk.phis[p];
+      let mut q: usize = 0;
+      while q < len(phi.args) {
+        use_vreg(used, phi.args[q]);
+        q += 1;
+      }
+      p += 1;
+    }
+    let mut k: usize = 0;
+    while k < len(blk.ins) {
+      let ins: *ir.IRIns = blk.ins[k];
+      use_vreg(used, ins.a);
+      use_vreg(used, ins.b);
+      use_vreg(used, ins.addr);
+      use_vreg(used, ins.callee_vreg);
+      let mut q: usize = 0;
+      while q < len(ins.args) {
+        use_vreg(used, ins.args[q]);
+        q += 1;
+      }
+      k += 1;
+    }
+    if blk.term_op == 101 {
+      use_vreg(used, blk.cbr_cond);
+    }
+    if blk.term_op == 102 {
+      use_vreg(used, blk.ret_val);
+    }
+    b += 1;
+  }
+  let mut dropped: i64 = 0;
+  let mut b2: usize = 0;
+  while b2 < len(f.blocks) {
+    let blk: *ir.IRBlock = f.blocks[b2];
+    let keep: []*ir.IRIns = make([]*ir.IRIns, len(blk.ins));
+    let mut n: usize = 0;
+    let mut k: usize = 0;
+    while k < len(blk.ins) {
+      let ins: *ir.IRIns = blk.ins[k];
+      if pure_dst_op(ins.op) && ins.dst != null && used[ins.dst.id] == 0 {
+        dropped += 1;
+      } else {
+        keep[n] = ins;
+        n += 1;
+      }
+      k += 1;
+    }
+    // rho slices reject [0..0] on an empty base and the emitter wants a
+    // real slice: keep the original when nothing dropped, take an empty
+    // make when everything dropped, slice otherwise
+    if n == len(blk.ins) {
+      // unchanged — keep the original slice object
+    } else if n == 0 {
+      blk.ins = make([]*ir.IRIns, 0);
+    } else {
+      blk.ins = keep[0..n];
+    }
+    b2 += 1;
+  }
+  return dropped;
+}
+
+pub fn run() {
+  if g_opt_off {
+    return;
+  }
+  if ir.g_ir_fns == null {
+    return;
+  }
+  let mut i: usize = 0;
+  while i < ir.g_ir_fns.n {
+    let f: *ir.IRFn = ir.g_ir_fns.items[i];
+    // fold to a bounded fixpoint: each sweep that folds anything can only
+    // enable more folds downstream (chains), and chains in one function
+    // are short; the cap keeps the worst case deterministic
+    let mut rounds: i32 = 0;
+    while rounds < 8 {
+      let folded: i64 = fold_sweep(f);
+      g_opt_folds += folded;
+      if folded == 0 {
+        break;
+      }
+      rounds += 1;
+    }
+    let mut drounds: i32 = 0;
+    while drounds < 8 {
+      let dropped: i64 = dce_sweep(f);
+      g_opt_dropped += dropped;
+      if dropped == 0 {
+        break;
+      }
+      drounds += 1;
+    }
+    i += 1;
+  }
+}

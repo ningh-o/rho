@@ -57,9 +57,10 @@ wasmtime_run() {
     wasmtime run -W max-wasm-stack=1073741824 --dir . "$@"
 }
 
-# strip the temporary HEAP@/WE debug prints (scratch lines currently in
-# boot/src and self/rho.rho: "HEAP@<stage> <n>" from self/rho.rho, "WE <n>
-# <symbol>" from boot/src/emit_wasm.c) before text compares. ^WE is anchored
+# strip the temporary WE debug prints (scratch lines in boot/src:
+# "WE <n> <symbol>" from boot/src/emit_wasm.c; the mirror's HEAP@ scratch
+# lines were removed 2026-09-23 — the filter keeps boot's)
+# before text compares. ^WE is anchored
 # with a space — the debug format always has one — so a real output line that
 # merely begins with the letters WE ("WEird…") survives. Nothing else is
 # filtered.
@@ -97,7 +98,7 @@ cross_smoke() {
 
 # cross_self <target> <image> — the full self-build for one native target
 cross_self() {
-  wasmtime_run 300 $G/m.wasm build self/rho.rho --target "$1" -o "$2" && [ -f "$2" ]
+  wasmtime_run 900 $G/m.wasm build libs/compiler/main.rho --target "$1" -o "$2" && [ -f "$2" ]
 }
 
 echo "== rho bootstrap gate $(date '+%H:%M:%S') =="
@@ -110,7 +111,7 @@ leg boot-selftest run_t 10 ./build/rho-boot selftest
 # compiler. Boot builds the mirror in under a second (measured 0.6s); the
 # 60s cap is headroom for a cold machine, not slack.
 rm -f $G/m.wasm
-leg build-mirror run_t 60 ./build/rho-boot build self/rho.rho --target wasm32-wasi -o $G/m.wasm
+leg build-mirror run_t 60 ./build/rho-boot build libs/compiler/main.rho --target wasm32-wasi -o $G/m.wasm
 
 # every leg below grades the mirror THIS run produced; without one there is
 # nothing to compare and the leg goes RED saying so — it never falls back
@@ -165,9 +166,9 @@ if [ "$FAST" = 0 ]; then
   # HEAP@ scratch lines, and the verdict line owns the leg's output
   if [ ! -f $G/m.wasm ]; then
     no_mirror self-chain
-  elif ! wasmtime_run 300 $G/m.wasm build self/rho.rho --target wasm32-wasi -o $G/child.wasm >/dev/null 2>&1 || [ ! -f $G/child.wasm ]; then
+  elif ! wasmtime_run 900 $G/m.wasm build libs/compiler/main.rho --target wasm32-wasi -o $G/child.wasm >/dev/null 2>&1 || [ ! -f $G/child.wasm ]; then
     echo "RED (child build failed)"; FAIL=$((FAIL+1))
-  elif ! wasmtime_run 300 $G/child.wasm build self/rho.rho --target wasm32-wasi -o $G/grandchild.wasm >/dev/null 2>&1 || [ ! -f $G/grandchild.wasm ]; then
+  elif ! wasmtime_run 900 $G/child.wasm build libs/compiler/main.rho --target wasm32-wasi -o $G/grandchild.wasm >/dev/null 2>&1 || [ ! -f $G/grandchild.wasm ]; then
     echo "RED (grandchild build failed)"; FAIL=$((FAIL+1))
   else
     mkdir -p $G/selfchain

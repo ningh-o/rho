@@ -1,0 +1,13 @@
+// exit: 0
+// pub static mut: cross-module write, compound write, fn write, read
+use counter;
+
+fn main() -> i32 {
+  counter.TOTAL = 10;
+  counter.TOTAL += 5;
+  counter.bump();
+  counter.bump();
+  printf("total={}\n", counter.TOTAL);
+  printf("cap={}\n", counter.CAP);
+  return 0;
+}

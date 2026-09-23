@@ -1,0 +1,4 @@
+pub enum Color {
+  Red,
+  RGB(i32, i32),
+}

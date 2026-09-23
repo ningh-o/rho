@@ -19,7 +19,7 @@
 
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import type { RunResult } from './wasi.js';
@@ -371,13 +371,28 @@ export function createCompiler(options: CompilerOptions = {}): Compiler {
     const binaryPath = resolveNativeBinary();
     if (binaryPath) {
       const host = new NativeCliHost(binaryPath, onIssue);
+      // the frozen boot seed carries no fmt — canonicalization moved to
+      // the self-hosted compiler, so fmt routes through the wasm mirror
+      // when the resolved binary is the seed (a real installed `rho`
+      // keeps its own fmt)
+      const isBootSeed = /rho-boot(\.\w+)?$/.test(basename(binaryPath));
+      let fmtHost: WasmWorkerHost | null = null;
       return {
         backend: 'native-cli',
         wasmPath: null,
         binaryPath,
         check: (source) => host.run('check', source),
-        fmt: (source) => host.run('fmt', source),
-        dispose: () => host.dispose(),
+        fmt: (source: string) => {
+          if (!isBootSeed) return host.run('fmt', source);
+          const wasmPath = resolveCompilerWasm();
+          if (!wasmPath) return host.run('fmt', source); // surface the CLI's own error
+          fmtHost ??= new WasmWorkerHost(wasmPath, onIssue, timeoutMs);
+          return fmtHost.run('fmt', source);
+        },
+        dispose: async () => {
+          host.dispose();
+          await fmtHost?.dispose();
+        },
         crashForTest: () => host.crashForTest(),
       };
     }

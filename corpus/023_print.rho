@@ -21,6 +21,6 @@ fn main() -> i32 {
   printf("{}\n", false);
   printf("{}\n", "a string");
   eprintf("stderr line\n");
-  printf("{}\n", cat("con", cat("cat", "enated")));
+  printf("{}\n", "con" + ("cat" + "enated"));
   return 0;
 }

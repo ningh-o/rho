@@ -12,7 +12,7 @@ const TYPES = new Set([
 ]);
 const BUILTINS = new Set([
   "printf", "eprintf", "format", "panic", "make", "len", "assert", "assert_eq",
-  "cat", "read_line", "size_of",
+  "read_line", "size_of",
 ]);
 
 function esc(s) {

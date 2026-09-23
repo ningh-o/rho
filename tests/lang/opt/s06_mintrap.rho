@@ -1,0 +1,12 @@
+// exit: 0
+// s06 — signed divisor -1 is rho's wrap law (corpus 042): div and mod
+// BOTH yield 0 - a, and the fold produces exactly that; only divisor 0
+// keeps its runtime panic (s05)
+fn main() -> i32 {
+  let a: i32 = 7 / (0 - 1);
+  let b: i32 = 5 % (0 - 1);
+  let c: i32 = ((0 - 2147483647) - 1) / (0 - 1);
+  let d: i32 = ((0 - 2147483647) - 1) % (0 - 1);
+  printf("{} {} {} {}\n", a, b, c, d);
+  return 0;
+}

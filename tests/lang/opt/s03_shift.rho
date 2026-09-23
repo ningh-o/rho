@@ -1,0 +1,12 @@
+// exit: 0
+// s03 — shift semantics under folding: arithmetic >> of a negative
+// constant, count masking (33 -> 1 at i32), i64 >> 63 of -2, unsigned
+// u64 division (cast-seeded: untyped literals pin i32)
+fn main() -> i32 {
+  let a: i32 = (0 - 8) >> 1;
+  let b: i32 = 1 << 33;
+  let c: i64 = ((0 - 2) as i64) >> 63;
+  let d: u64 = (1000003 as u64) / (997 as u64);
+  printf("{} {} {} {}\n", a, b, c, d);
+  return 0;
+}

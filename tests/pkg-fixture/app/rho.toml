@@ -10,4 +10,4 @@ path = "vendor/mathx"
 
 [dependencies.strlib]
 git = "https://rho-fixture.local/strlib"
-rev = "fae685b13126201f6ea3331475825d8e83a1b1a2"
+rev = "0d744dc6dc4f4d0da72fe7e1c63cfd027e914939"

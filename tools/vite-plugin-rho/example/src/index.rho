@@ -18,7 +18,7 @@ pub fn add(a: i32, b: i32) -> i32 {
 }
 
 pub fn exclaim(who: string) -> string {
-  return cat(who, ", from rho!");
+  return who + ", from rho!";
 }
 
 pub fn is_even(n: i32) -> bool {

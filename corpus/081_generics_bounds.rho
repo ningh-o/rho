@@ -54,7 +54,7 @@ fn main() -> i32 {
   tags[0] = label(p);
   tags[1] = twice_str(false);
   tags[2] = label(w);
-  let joined: string = cat(cat(tags[0], " "), cat(tags[1], cat(" ", tags[2])));
+  let joined: string = tags[0] + " " + (tags[1] + (" " + tags[2]));
   printf("joined={}\n", joined);
   return 0;
 }
