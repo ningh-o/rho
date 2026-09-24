@@ -1,0 +1,10 @@
+static SB: bool = ((82 << 43) < (0 - ((-83) as i16)));
+fn main() -> i32 {
+  printf("SB={}\n", SB);
+  if (((82 << 43) < (0 - ((-83) as i16)))) {
+    printf("THEN\n");
+  } else {
+    printf("ELSE\n");
+  }
+  return 0;
+}

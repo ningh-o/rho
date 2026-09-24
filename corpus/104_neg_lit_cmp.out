@@ -1,0 +1,2 @@
+eq fold ok
+hits=6 neg=true min-ok=true

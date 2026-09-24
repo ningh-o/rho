@@ -1,0 +1,73 @@
+// exit: 0
+// 102 — managed make() on REUSED heap blocks: the release walk reads every
+// element of a make([]T, n) slice when it dies, and a recycled block used
+// to hand back junk (the allocator's zero_bytes half-stored through the
+// defaulted-i32 store_u64 — the 2026-09-23 "managed-make zeroing" entry
+// blamed make() itself; the store-width law was the real cure). Pinned:
+// churn pointer-carrying slices through the freelist, reallocate the same
+// classes, and every fresh slice must read as all-zero elements — then
+// die cleanly through the very walk that used to chase the junk.
+struct N {
+  v: i64,
+  next: *N,
+}
+
+fn drain(ns: []string) -> i64 {
+  let mut c: i64 = 0;
+  let mut i: usize = 0;
+  while i < len(ns) {
+    if ns[i] != "" {
+      c += 1;
+    }
+    i += 1;
+  }
+  return c;
+}
+
+fn main() -> i32 {
+  let mut rounds: i64 = 0;
+  let mut nonempty: i64 = 0;
+  let mut live_total: i64 = 0;
+  let mut i: i32 = 0;
+  while i < 400 {
+    // phase A: allocate pointer-carrying slices, let some die in-scope
+    let a: []*N = make([]*N, 32);
+    let b: []string = make([]string, 24);
+    nonempty += drain(b);
+    // fill a with real nodes, then overwrite the slice binding so the
+    // elements' rc drops hit the walk while the class block is hot
+    let mut k: usize = 0;
+    while k < len(a) {
+      a[k] = new N { v: k as i64, next: null };
+      k += 1;
+    }
+    live_total += (a[0].v + a[31].v) as i64;
+    // phase B: same classes again — these pulls come from the freelists
+    // phase A just fed; every element must read as zero/null
+    let c: []*N = make([]*N, 32);
+    let d: []string = make([]string, 24);
+    let mut zeros: i32 = 1;
+    let mut j: usize = 0;
+    while j < len(c) {
+      if c[j] != null {
+        zeros = 0;
+      }
+      j += 1;
+    }
+    if drain(d) != 0 {
+      zeros = 0;
+    }
+    if zeros == 0 {
+      printf("JUNK at round {}\n", i as i64);
+      return 1;
+    }
+    rounds += 1;
+    i += 1;
+  }
+  // keep a later-generation slice alive past the loop: its elements were
+  // written by real allocations, its neighbors died around it
+  let tail: []*N = make([]*N, 32);
+  tail[5] = new N { v: 55, next: null };
+  printf("rounds={} nonempty={} live={} tail5={}\n", rounds, nonempty, live_total, tail[5].v);
+  return 0;
+}

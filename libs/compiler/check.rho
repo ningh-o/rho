@@ -5204,8 +5204,12 @@ fn cc_signed(e: *parse.Expr) -> bool {
     return false;
   }
   let k: TypeKind = e.typed.kind;
+  // TyIntLit rides with the signed family: an untyped literal's default
+  // domain is i32 (the let-binding law), and folding `((-51) >= 24))`
+  // unsigned once judged it TRUE — the -51 wrapped as u64 (found by fuzz
+  // seed 153, pinned by corpus/104)
   if k == TypeKind.TyI8 || k == TypeKind.TyI16 || k == TypeKind.TyI32 ||
-     k == TypeKind.TyI64 || k == TypeKind.TyIsize {
+     k == TypeKind.TyI64 || k == TypeKind.TyIsize || k == TypeKind.TyIntLit {
     return true;
   }
   return false;

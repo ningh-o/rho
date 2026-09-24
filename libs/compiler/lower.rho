@@ -556,31 +556,64 @@ fn value_walk(c: *LCtx, t: *parse.Type, addr: *ir.IRVreg, retain: bool) {
   }
   if t.kind == check.TypeKind.TySlice || t.kind == check.TypeKind.TyStringK {
     if t.kind == check.TypeKind.TySlice && ty_is_managed(t.elem) {
-      // walk elements: buf at +8, elem stride at +8, count at +16
-      let ptr: *ir.IRVreg = v_load(c, v_addi(c, addr, 8), ir.IRType.ItPtr);
-      let n: *ir.IRVreg = v_load(c, v_addi(c, addr, 16), ir.IRType.ItUsize);
-      let esz: i64 = type_size(t.elem);
-      let islot: *ir.IRSlot = new_slot(c, 8, 8, "i");
-      v_store(c, v_slotaddr(c, islot), v_const(c, 0, ir.IRType.ItUsize));
-      let hdr: *ir.IRBlock = new_block(c);
-      let bodyb: *ir.IRBlock = new_block(c);
-      let done: *ir.IRBlock = new_block(c);
-      emit_br(c, hdr);
-      use_block(c, hdr);
-      let i: *ir.IRVreg = v_load(c, v_slotaddr(c, islot), ir.IRType.ItUsize);
-      let more: *ir.IRVreg = v_cmp(c, ir.IRCC.CcLt, i, n, false);
-      emit_cbr(c, more, bodyb, done, done);
-      use_block(c, bodyb);
-      let scaled: *ir.IRVreg = v_binop(c, ir.IROp.IrMul, i, v_const(c, esz, ir.IRType.ItUsize), ir.IRType.ItUsize, false);
-      let ep: *ir.IRVreg = v_binop(c, ir.IROp.IrAdd, ptr, scaled, ir.IRType.ItPtr, false);
-      let efnn: string = value_fn_for(t.elem, retain);
-      if efnn != "" {
-        rc_call1(c, efnn, ep);
+      // The container owns its elements: every element store carries its
+      // own +1 (the element-store protocol), so RETAIN is the buf count
+      // alone. RELEASE walks the elements only when this release is the
+      // container's LAST reference (rc == 1, not immortal) — binding a
+      // slice by value and then mutating the array through an alias
+      // cannot unbalance the walk (the map-rehash law: the rehash's
+      // re-put elements were never seen by the binding's retain, yet the
+      // unconditional walk released them).
+      // The header carries loop_header/loop_exit — the emitter only nests
+      // a wasm loop around a block marked as one (the StWhile law; the
+      // unmarked form made the walk dead code on wasm, a pure leak the
+      // output-equality gate could not see).
+      if !retain {
+        let bufz: *ir.IRVreg = v_load(c, addr, ir.IRType.ItPtr);
+        let isnull: *ir.IRVreg = v_cmp(c, ir.IRCC.CcEq, bufz, v_const(c, 0, ir.IRType.ItPtr), false);
+        let chk: *ir.IRBlock = new_block(c);
+        let tail: *ir.IRBlock = new_block(c);
+        emit_cbr(c, isnull, tail, chk, tail);
+        use_block(c, chk);
+        let rcv: *ir.IRVreg = v_load(c, bufz, ir.IRType.ItUsize);
+        let top: *ir.IRVreg = v_binop(c, ir.IROp.IrShr, rcv, v_const(c, 63, ir.IRType.ItUsize), ir.IRType.ItUsize, false);
+        let immortal: *ir.IRVreg = v_cmp(c, ir.IRCC.CcNe, top, v_const(c, 0, ir.IRType.ItUsize), false);
+        let lastref: *ir.IRBlock = new_block(c);
+        emit_cbr(c, immortal, tail, lastref, tail);
+        use_block(c, lastref);
+        let oneref: *ir.IRVreg = v_cmp(c, ir.IRCC.CcEq, rcv, v_const(c, 1, ir.IRType.ItUsize), false);
+        let walkb: *ir.IRBlock = new_block(c);
+        emit_cbr(c, oneref, walkb, tail, tail);
+        use_block(c, walkb);
+        let ptr: *ir.IRVreg = v_load(c, v_addi(c, addr, 8), ir.IRType.ItPtr);
+        let n: *ir.IRVreg = v_load(c, v_addi(c, addr, 16), ir.IRType.ItUsize);
+        let esz: i64 = type_size(t.elem);
+        let islot: *ir.IRSlot = new_slot(c, 8, 8, "i");
+        v_store(c, v_slotaddr(c, islot), v_const(c, 0, ir.IRType.ItUsize));
+        let hdr: *ir.IRBlock = new_block(c);
+        let bodyb: *ir.IRBlock = new_block(c);
+        let done: *ir.IRBlock = new_block(c);
+        hdr.loop_header = true;
+        hdr.loop_exit = done;
+        emit_br(c, hdr);
+        use_block(c, hdr);
+        let i: *ir.IRVreg = v_load(c, v_slotaddr(c, islot), ir.IRType.ItUsize);
+        let more: *ir.IRVreg = v_cmp(c, ir.IRCC.CcLt, i, n, false);
+        emit_cbr(c, more, bodyb, done, done);
+        use_block(c, bodyb);
+        let scaled: *ir.IRVreg = v_binop(c, ir.IROp.IrMul, i, v_const(c, esz, ir.IRType.ItUsize), ir.IRType.ItUsize, false);
+        let ep: *ir.IRVreg = v_binop(c, ir.IROp.IrAdd, ptr, scaled, ir.IRType.ItPtr, false);
+        let efnn: string = value_fn_for(t.elem, retain);
+        if efnn != "" {
+          rc_call1(c, efnn, ep);
+        }
+        let i2: *ir.IRVreg = v_binop(c, ir.IROp.IrAdd, i, v_const(c, 1, ir.IRType.ItUsize), ir.IRType.ItUsize, true);
+        v_store(c, v_slotaddr(c, islot), i2);
+        emit_br(c, hdr);
+        use_block(c, done);
+        emit_br(c, tail);
+        use_block(c, tail);
       }
-      let i2: *ir.IRVreg = v_binop(c, ir.IROp.IrAdd, i, v_const(c, 1, ir.IRType.ItUsize), ir.IRType.ItUsize, true);
-      v_store(c, v_slotaddr(c, islot), i2);
-      emit_br(c, hdr);
-      use_block(c, done);
     }
     let buf: *ir.IRVreg = v_load(c, addr, ir.IRType.ItPtr);
     if retain {
@@ -3982,7 +4015,21 @@ fn compute_call_value(c: *LCtx, e: *parse.Expr) -> *ir.IRVreg {
     if cli.streq(name, "store_u8") || cli.streq(name, "store_u32") ||
        cli.streq(name, "store_u64") || cli.streq(name, "store_i64") {
       let p: *ir.IRVreg = lv_expr(c, e.args.items[0]);
-      let v: *ir.IRVreg = lv_expr(c, e.args.items[1]);
+      let mut v: *ir.IRVreg = lv_expr(c, e.args.items[1]);
+      // the intrinsic's NAME fixes the store width — the argument's
+      // checked type must not shrink it: store_u64(p, 0) with the literal
+      // defaulted to i32 stored four bytes and left every zeroed qword's
+      // high half as recycled-block junk (wasm's fresh pages masked it;
+      // native's reused frames did not — the rc walkers chased the junk)
+      let mut want: ir.IRType = ir.IRType.ItU64;
+      if cli.streq(name, "store_u8") {
+        want = ir.IRType.ItU8;
+      } else if cli.streq(name, "store_u32") {
+        want = ir.IRType.ItU32;
+      }
+      if v.ty != want {
+        v = v_cast(c, v, want);
+      }
       v_store(c, p, v);
       return v_const(c, 0, ir.IRType.ItU8);
     }

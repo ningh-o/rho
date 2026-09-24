@@ -26,21 +26,37 @@ boot/src/prelude_data.c: $(CORE) boot/prelude/wasi.rho tools/embed.py
 	python3 tools/embed.py PRELUDE_SOURCE boot/src/prelude_data.c $(CORE) boot/prelude/wasi.rho
 
 # the served compiler asset is the self-hosted compiler in its WEB
-# configuration: the pinned seed (a wasm module — run it through wasmtime)
-# compiles the one package root (libs/compiler/cli.rho) with
-# `--set native=false`, and reachability drops the native backends the
-# browser cannot use — about a megabyte lighter than the default build.
+# configuration — built ONE GENERATION PAST the seed: the seed-built
+# mirror (build/gate/m.wasm) compiles the one package root with
+# `--set native=false`, so the shipped compiler's own frames follow the
+# mirror's fat-function memory-home emitter (w_memmode) — the seed's
+# spill-everything frames overflow the browser's ~1 MB wasm stack on
+# ordinary programs (a 50-term arithmetic chain was the smallest
+# witness). reachability drops the native backends the browser cannot
+# use. the deploy pass runs wasm-opt -Oz when available (roughly halves
+# the artifact again; verified behavior-identical by the site pipeline
+# tests) and falls back to the pure chain artifact.
 # wasi-sdk is retired: rho has always emitted wasm (and native images)
 # directly, in-process, and no C compiler takes part in any shipped
 # artifact anymore.
 MIRROR_SRC := libs/compiler/cli.rho $(wildcard libs/compiler/*.rho) $(wildcard libs/compiler/native/*.rho)
-site/assets/rho.wasm: $(MIRROR_SRC) boot/rho-seed.wasm
-	@mkdir -p site/assets
+build/gate/m.wasm: $(MIRROR_SRC) boot/rho-seed.wasm
+	@mkdir -p build/gate
 	wasmtime run --dir . boot/rho-seed.wasm \
+	  build libs/compiler/cli.rho --target wasm32-wasi -o $@
+build/gate/web-site.wasm: $(MIRROR_SRC) build/gate/m.wasm
+	wasmtime run --dir . build/gate/m.wasm \
 	  build libs/compiler/cli.rho --target wasm32-wasi --set native=false -o $@
+site/assets/rho.wasm: build/gate/web-site.wasm
+	@mkdir -p site/assets
+	if command -v wasm-opt >/dev/null 2>&1; then \
+	  wasm-opt --enable-bulk-memory -Oz build/gate/web-site.wasm -o $@; \
+	else \
+	  cp build/gate/web-site.wasm $@; \
+	fi
 
 # the same artifact at its historical path — the site tests, the LSP and
-# the vite plugin all read build/rho.wasm. A copy of the self-built asset,
+# the vite plugin all read build/rho.wasm. A copy of the shipped asset,
 # never a wasi-sdk product.
 build/rho.wasm: site/assets/rho.wasm
 	cp $< $@

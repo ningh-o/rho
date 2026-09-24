@@ -251,6 +251,33 @@ static void w_layout_data(void) {
     map_put(&W.global_addr, str_from(gl->symbol), (void *)(long)at);
     at += gl->size;
   }
+  // static string literals: lay the rodata block out and patch the
+  // global's first two words with the header/chars addresses — without
+  // this a static string reads {0, 0, len} and every use sees garbage
+  // (the native emitters always wrote the pair; wasm never did)
+  for (size_t g = 0; g < g_ir_globals.n; g++) {
+    IRGlobal *gl = g_ir_globals.items[g];
+    if (!gl->relocs)
+      continue;
+    IRLiteral *sl = gl->lits.n ? gl->lits.items[0] : NULL;
+    at = (at + 7) / 8 * 8;
+    map_put(&W.lit_addr, str_from(gl->relocs[0]), (void *)(long)at);
+    at += 24;
+    map_put(&W.lit_addr, str_from(gl->relocs[1]), (void *)(long)at);
+    at += sl ? (int64_t)sl->bytes.n : 0;
+  }
+  for (size_t g = 0; g < g_ir_globals.n; g++) {
+    IRGlobal *gl = g_ir_globals.items[g];
+    if (!gl->relocs || gl->init.n < 16)
+      continue;
+    int64_t h = (int64_t)(long)map_get(&W.lit_addr, str_from(gl->relocs[0]));
+    int64_t b = (int64_t)(long)map_get(&W.lit_addr, str_from(gl->relocs[1]));
+    for (int w = 0; w < 2; w++) {
+      int64_t v = w == 0 ? h : b;
+      for (int i = 0; i < 8; i++)
+        gl->init.items[w * 8 + i] = (void *)(long)((v >> (8 * i)) & 0xFF);
+    }
+  }
   for (size_t f = 0; f < g_ir_fns.n; f++) {
     IRFn *fn = g_ir_fns.items[f];
     for (size_t l = 0; l < fn->literals.n; l++) {
@@ -1565,6 +1592,8 @@ void emit_wasm(Target target, SB *out) {
       IRGlobal *gl = g_ir_globals.items[g];
       if (!gl->is_extern && gl->init.n)
         count++;
+      if (gl->relocs && gl->lits.n)
+        count++;
     }
     for (size_t f = 0; f < g_ir_fns.n; f++)
       count += ((IRFn *)g_ir_fns.items[f])->literals.n;
@@ -1579,6 +1608,24 @@ void emit_wasm(Target target, SB *out) {
       w8(&body, 0x0B);
       wuleb(&body, gl->init.n);
       wvec_bytes(&body, &gl->init);
+    }
+    // static string literals: the rodata block each static's {h, buf}
+    // words point at (laid out + patched by w_layout_data)
+    for (size_t g = 0; g < g_ir_globals.n; g++) {
+      IRGlobal *gl = g_ir_globals.items[g];
+      if (!gl->relocs || !gl->lits.n)
+        continue;
+      IRLiteral *lit = gl->lits.items[0];
+      wuleb(&body, 0);
+      w8(&body, 0x41);
+      wsleb(&body, (long)map_get(&W.lit_addr, str_from(gl->relocs[0])));
+      w8(&body, 0x0B);
+      wuleb(&body, 24 + lit->bytes.n);
+      for (int k = 0; k < 24; k++) {
+        unsigned char b = (k == 7) ? 0x80 : 0;
+        w8(&body, b);
+      }
+      wvec_bytes(&body, &lit->bytes);
     }
     for (size_t f = 0; f < g_ir_fns.n; f++) {
       IRFn *fn = g_ir_fns.items[f];

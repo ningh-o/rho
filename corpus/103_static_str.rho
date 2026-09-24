@@ -1,0 +1,40 @@
+// exit: 0
+// 103 — static string literals: the {h, buf, len} slice a `static S: string
+// = "..."` carries must reach every backend with its rodata pair resolved.
+// On wasm both compilers historically emitted the words as zero and never
+// laid the literal block out — every read saw garbage (the native emitters
+// always wrote the pair; wasm never did; found 2026-09-24, fixed both ends
+// the same day). Read, compare, pass, reassign through `static mut`, and
+// measure — the value must survive each hop.
+static A: string = "alpha-static";
+static B: string = "beta-static-value";
+static C: string = "gamma";
+static mut M: string = "mutable-start";
+
+fn quote(prefix: string, s: string) -> string {
+  return prefix + s;
+}
+
+fn main() -> i32 {
+  printf("{} {} {}\n", A, B, C);
+  printf("lens={} {} {}\n", len(A) as i64, len(B) as i64, len(C) as i64);
+  if A == B {
+    printf("AB EQ\n");
+  } else {
+    printf("AB NE\n");
+  }
+  if A == "alpha-static" {
+    printf("lit EQ\n");
+  }
+  printf("{}\n", quote("say:", C));
+  M = M + "-then-more";
+  printf("{} {}\n", M, len(M) as i64);
+  let mut k: i32 = 0;
+  let mut acc: i64 = 0;
+  while k < 3 {
+    acc += len(A) as i64;
+    k += 1;
+  }
+  printf("acc={}\n", acc);
+  return 0;
+}

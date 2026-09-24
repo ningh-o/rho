@@ -361,10 +361,30 @@ fn m_ins(e: *MCtx, i: *ir.IRIns) {
   }
   if i.op == ir.IROp.IrConst {
     let dof: i64 = m_vreg_off(e, i.dst);
-    if i.imm >= -2147483648 && i.imm <= 2147483647 {
-      emit_arm64.bs(e.out, "  movq $" + cli.itoa(i.imm) + ", " + cli.itoa(dof) + "(%rbp)\n");
+    // narrow SIGNED domains live sign-extended in the 8-byte spill slot
+    // (the arm64 const law, same reasoning): the fold keeps an i32 -1 as
+    // the u64 bit pattern 4294967295, and materializing that zero-extended
+    // made every `lit == -1` compare false on native
+    let mut im: i64 = i.imm;
+    if i.dst != null {
+      if i.dst.ty == ir.IRType.ItI32 {
+        if im >= 2147483648 && im <= 4294967295 {
+          im = im - 4294967296;
+        }
+      } else if i.dst.ty == ir.IRType.ItI16 {
+        if im >= 32768 && im <= 65535 {
+          im = im - 65536;
+        }
+      } else if i.dst.ty == ir.IRType.ItI8 {
+        if im >= 128 && im <= 255 {
+          im = im - 256;
+        }
+      }
+    }
+    if im >= -2147483648 && im <= 2147483647 {
+      emit_arm64.bs(e.out, "  movq $" + cli.itoa(im) + ", " + cli.itoa(dof) + "(%rbp)\n");
     } else {
-      emit_arm64.bs(e.out, "  movabsq $" + cli.itoa(i.imm) + ", %rax\n  movq %rax, " + cli.itoa(dof) + "(%rbp)\n");
+      emit_arm64.bs(e.out, "  movabsq $" + cli.itoa(im) + ", %rax\n  movq %rax, " + cli.itoa(dof) + "(%rbp)\n");
     }
     return;
   }
@@ -814,7 +834,7 @@ pub fn emit_amd64_text(target: i32) -> []u8 {
     }
     emit_arm64.bs(out, "  .p2align " + cli.itoa(emit_arm64.glob_p2align(g.align)) + "\n" + "" + "");
     emit_arm64.bs(out, m_sym(e, g.symbol) + ":\n" + "" + "" + "");
-    emit_arm64.emit_glob_data(out, g, m_globpre(e.is_mac));
+    emit_arm64.emit_glob_data(out, g, m_globpre(e.is_mac), m_sym(e, g.symbol));
     i += 1;
   }
   // C entry: call the root module's main

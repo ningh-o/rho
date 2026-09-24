@@ -34,6 +34,7 @@ _rho_rt_start:
   adrp x9, """ + heap + """@PAGE
   add x9, x9, """ + heap + """@PAGEOFF
   str x8, [x9]
+  bl _rho_statics_init
   bl _main
   mov x16, #1
   movk x16, #32, lsl 16
@@ -277,8 +278,8 @@ fn build_native_image(target: i32, text: []u8, out_path: string) -> i32 {
   }
   if target == 4 {
     // arm64-linux: raw syscalls, the asm-generic table (write=64, exit=93)
-    let full: string = rt_arm64_linux(heap_label(target)) + cli.bytes_as_string(text);
-    let r: *asm64.AResult = asm64.asm64_assemble(full, 0x400000 + ELF64_HDR, 0x1000, 0);
+    let r: *asm64.AResult = asm64.asm64_assemble2(rt_arm64_linux(heap_label(target)),
+                                     cli.bytes_as_string(text), 0x400000 + ELF64_HDR, 0x1000, 0);
     if !r.ok {
       return 1;
     }
@@ -292,8 +293,8 @@ fn build_native_image(target: i32, text: []u8, out_path: string) -> i32 {
     // arm64-mac: static Mach-O with an ad-hoc signature; image base
     // VM 0x100000000 + the fixed 856-byte load-command block; 16K pages —
     // Apple Silicon maps segments on 16K boundaries
-    let full: string = rt_arm64(heap_label(target)) + cli.bytes_as_string(text);
-    let r: *asm64.AResult = asm64.asm64_assemble(full, (0x100000000 as u64) + ARM64_MAC_HDR, 0x4000,
+    let r: *asm64.AResult = asm64.asm64_assemble2(rt_arm64(heap_label(target)),
+                                     cli.bytes_as_string(text), (0x100000000 as u64) + ARM64_MAC_HDR, 0x4000,
                                      (0x100000000 as u64) + 0x1000000);
     if !r.ok {
       return 1;

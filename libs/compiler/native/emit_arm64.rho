@@ -42,6 +42,7 @@ struct ACtx {
   fn_: *ir.IRFn,
   offs: []i64, // slot id -> negative offset from x29; vregs at slots.n + id
   frame: i64,
+  vregs_top: i64, // frame offset where the vreg cell region begins (after all slots)
   is_mac: bool, // mac images prefix every symbol with `_`; ELF uses the plain name
 }
 
@@ -55,6 +56,25 @@ fn ac_sym(e: *ACtx, s: string) -> string {
 }
 
 pub static mut g_label64: i32 = 0;
+
+// PIE statics: an arm64-mac image is PIE, and a `.quad <symbol>` in
+// __DATA is an absolute compile-time address no fixup ever rebases — the
+// kernel's ASLR slide turns it into a wild pointer on every run it moves
+// (the 2026-09-24 self-check crashes: rc_dec chasing an unslid string-pool
+// address, lldb's no-ASLR default masking it). For mac builds the word is
+// zeroed here and the (slot, target) pair collected; the init routine
+// emit_arm64_text emits (_rho_statics_init, called by the rt blob before
+// main) stores the real addresses through adrp — slide-proof by
+// construction. ELF targets are ET_EXEC at a fixed base and amd64-mac is
+// .s-only: their absolute words stay legal.
+pub struct StaticInit {
+  slot: string,   // the global's assembled symbol
+  word: i32,      // the relocated word's index (0..2 of the slice triple)
+  target: string, // the literal label the word must receive
+}
+pub static mut g_pie_statics: bool = false;
+pub static mut g_static_inits: *cli.Vec[*StaticInit] = 0 as *cli.Vec[*StaticInit];
+
 
 fn ac_slot_off(e: *ACtx, s: *ir.IRSlot) -> i64 {
   if s.id < len(e.offs) as i32 {
@@ -116,6 +136,7 @@ fn ac_layout(e: *ACtx) {
     i += 1;
   }
   let mut v: i32 = 0;
+  e.vregs_top = e.frame;
   while v < e.fn_.next_vreg {
     e.frame += 8;
     e.offs[len(e.fn_.slots) + v as usize] = -e.frame;
@@ -199,7 +220,9 @@ fn ac_cmp(e: *ACtx, i: *ir.IRIns) {
     bs(e.out, "  str x8, [x12]\n");
     return;
   }
-  let s64: bool = i.size == 8;
+  // the operand's own type carries the width (wasm's emit_cmp law): the
+  // compare's dst is a u8 bool, so i.size says nothing about the operands
+  let s64: bool = i.a.ty != ir.IRType.ItF32;
   let areg: string = ac_dreg(s64, true);
   let breg: string = ac_dreg(s64, false);
   ac_ld(e, ao, if s64 { 8 } else { 4 }, true, areg);
@@ -374,6 +397,19 @@ fn ac_call(e: *ACtx, i: *ir.IRIns) {
       ac_st(e, ac_vreg_off(e, i.dst), if i.dst.ty == ir.IRType.ItF32 { 4 } else { 8 }, true,
             ac_cvt_dreg(i.dst.ty == ir.IRType.ItF32));
     } else {
+      // a narrow SIGNED result must land in its 8-byte slot sign-extended:
+      // the callee's W-register write zeroed x0's upper half, and the
+      // spill would turn -1 into +4294967295 for every later 64-bit
+      // compare (the lexer's `digit_val(...) < 0` was the first witness)
+      if ir.ir_size_of(i.dst.ty) < 8 && lower.ty_is_signed_int(i.dst.ty) {
+      let mut mn: string = "sxtw x0, w0";
+        if ir.ir_size_of(i.dst.ty) == 1 {
+          mn = "sxtb x0, w0";
+        } else if ir.ir_size_of(i.dst.ty) == 2 {
+          mn = "sxth x0, w0";
+        }
+        bs(e.out, "  " + mn + "\n" + "" + "" + "");
+      }
       ac_st(e, ac_vreg_off(e, i.dst), 8, false, "x0");
     }
   }
@@ -416,7 +452,30 @@ fn ac_ins(e: *ACtx, i: *ir.IRIns) {
   }
   if i.op == ir.IROp.IrConst {
     let dof: i64 = ac_vreg_off(e, i.dst);
-    let v: u64 = i.imm as u64;
+    // narrow SIGNED domains live sign-extended in the 8-byte spill slot
+    // (the same law as narrow signed call results): the fold keeps an
+    // i32 -1 as the u64 bit pattern 4294967295, and materializing that
+    // zero-extended made every `lit == -1` compare false on native —
+    // the self-built compiler's own addrc-shape check was the witness
+    let mut v: u64 = i.imm as u64;
+    if i.dst != null {
+      if i.dst.ty == ir.IRType.ItI32 {
+        v = v & 4294967295;
+        if (v & 2147483648) != 0 {
+          v = v | 18446744069414584320;
+        }
+      } else if i.dst.ty == ir.IRType.ItI16 {
+        v = v & 65535;
+        if (v & 32768) != 0 {
+          v = v | 18446744073709486080;
+        }
+      } else if i.dst.ty == ir.IRType.ItI8 {
+        v = v & 255;
+        if (v & 128) != 0 {
+          v = v | 18446744073709551360;
+        }
+      }
+    }
     if v <= 65535 {
       bs(e.out, "  mov x8, #" + cli.utoa(v) + "\n" + "" + "" + "");
     } else {
@@ -486,7 +545,13 @@ fn ac_ins(e: *ACtx, i: *ir.IRIns) {
     ac_ld(e, ac_vreg_off(e, i.a), 8, false, "x8");
     ac_ld(e, ac_vreg_off(e, i.b), 8, false, "x9");
     let mn: string = ac_shmn(i.op, i.signed_ops);
-    bs(e.out, "  " + mn + " x8, x8, x9\n" + "" + "" + "");
+    // the count masks to the operand's lane (wasm's shift law): the W-form
+    // variable shifts mask mod 32 in hardware, the X-form mod 64
+    if ir.ir_size_of(i.a.ty) < 8 {
+      bs(e.out, "  " + mn + " w8, w8, w9\n" + "" + "" + "");
+    } else {
+      bs(e.out, "  " + mn + " x8, x8, x9\n" + "" + "" + "");
+    }
     if i.op == ir.IROp.IrShl {
       ac_canon(e, dof, i.a.ty);
     }
@@ -599,15 +664,24 @@ fn ac_ins(e: *ACtx, i: *ir.IRIns) {
       }
       ac_st(e, dof, if i.cast_to == ir.IRType.ItF32 { 4 } else { 8 }, true, dst);
     } else if i.cast == ir.IRCastKind.CastF2i {
-      // fcvtzs saturates (spec: out-of-range float→int saturates)
+      // saturating truncation, the trunc_sat law (spec: out-of-range
+      // saturates): the LANE follows the target width, the OPCODE its
+      // signedness — fcvtzs/fcvtzu saturate to their own lane's range
       let src: string = ac_cvt_dreg(i.cast_from == ir.IRType.ItF32);
       let sw: i64 = if i.cast_from == ir.IRType.ItF32 { 4 } else { 8 };
       ac_ld(e, sof, sw, true, src);
-      if i.cast_to == ir.IRType.ItI64 || i.cast_to == ir.IRType.ItU64 {
-        bs(e.out, "  fcvtzs x8, " + src + "\n" + "" + "" + "");
-      } else {
-        bs(e.out, "  fcvtzs w8, " + src + "\n" + "" + "" + "");
+      let sgn_to: bool = lower.ty_is_signed_int(i.cast_to);
+      let wide: bool = i.cast_to == ir.IRType.ItI64 || i.cast_to == ir.IRType.ItU64 ||
+                       i.cast_to == ir.IRType.ItUsize;
+      let mut mn: string = "fcvtzs";
+      if !sgn_to {
+        mn = "fcvtzu";
       }
+      let mut dreg: string = "w8";
+      if wide {
+        dreg = "x8";
+      }
+      bs(e.out, "  " + mn + " " + dreg + ", " + src + "\n" + "" + "" + "");
       ac_st(e, dof, 8, false, "x8");
     } else if i.cast == ir.IRCastKind.CastF32F64 {
       ac_ld(e, sof, 4, true, "s0");
@@ -754,6 +828,23 @@ fn ac_fn(e: *ACtx, fn_: *ir.IRFn) {
       left -= chunk;
     }
   }
+  // zero the whole frame (slots AND vregs), qword at a time: a value read
+  // (or released) on a path that never defined it must see 0, the
+  // wasm-local law — on native the cells are stale stack from earlier
+  // frames, and the rc walkers would chase those bytes as pointers
+  // (the compiler's own parse_file loop-locals were the first witness)
+  if e.frame > 0 {
+    let zlbl: i32 = g_label64;
+    g_label64 += 1;
+    let zname: string = "Lzv" + cli.itoa(zlbl as i64);
+    bs(e.out, "  mov x15, #0\n  mov x13, x29\n");
+    let bytes: u64 = (((e.frame / 8) * 8) as i64) as u64;
+    bs(e.out, "  mov x14, #" + cli.utoa(bytes & 65535) + "\n");
+    if bytes > 65535 {
+      bs(e.out, "  movk x14, #" + cli.utoa((bytes >> 16) & 65535) + ", lsl 16\n" + "" + "" + "");
+    }
+    bs(e.out, zname + ":\n  sub x13, x13, #8\n  str x15, [x13]\n  sub x14, x14, #8\n  cbnz x14, " + zname + "\n");
+  }
   let mut ri: i32 = 0;
   let mut fi: i32 = 0;
   if fn_.returns_aggregate {
@@ -803,7 +894,13 @@ fn ac_fn(e: *ACtx, fn_: *ir.IRFn) {
 pub fn emit_arm64_text(target: i32) -> []u8 {
   let out: *cli.Vec[u8] = new cli.Vec[u8] { items: make([]u8, 1024), n: 0 };
   let is_mac: bool = target == 2;
-  let e: *ACtx = new ACtx { out: out, fn_: null, offs: make([]i64, 0), frame: 0, is_mac: is_mac };
+  let e: *ACtx = new ACtx { out: out, fn_: null, offs: make([]i64, 0), frame: 0, vregs_top: 0, is_mac: is_mac };
+  // arm the PIE collector for mac only (see StaticInit's law above); the
+  // routine below consumes it once the globals have all been emitted
+  g_pie_statics = is_mac;
+  if is_mac && g_static_inits == null {
+    g_static_inits = new cli.Vec[*StaticInit] { items: make([]*StaticInit, 8), n: 0 };
+  }
   // mach-o carves the image into typed sections; ELF targets use the three
   // plain names the in-tree arm64 assembler maps (strings fold into text)
   if is_mac {
@@ -880,9 +977,33 @@ pub fn emit_arm64_text(target: i32) -> []u8 {
     }
     bs(out, "  .p2align " + cli.itoa(glob_p2align(g.align)) + "\n" + "" + "");
     bs(out, gs + ":\n" + "" + "" + "");
-    emit_glob_data(out, g, "L");
+    emit_glob_data(out, g, "L", gs);
     i += 1;
   }
+  if is_mac {
+    // the PIE statics' real initialization: one adrp pair per collected
+    // word, frame-wrapped like every other function. Empty collector =
+    // the bare frame; the rt blob's `bl _rho_statics_init` resolves
+    // either way.
+    bs(out, ".section __TEXT,__text,regular,pure_instructions\n");
+    bs(out, "\n  .p2align 2\n_rho_statics_init:\n");
+    bs(out, "  stp x29, x30, [sp, #-16]!\n  mov x29, sp\n");
+    let mut si: usize = 0;
+    while g_static_inits != null && si < g_static_inits.n {
+      let ent: *StaticInit = g_static_inits.items[si];
+      bs(out, "  adrp x8, " + ent.slot + "@PAGE\n  add x8, x8, " + ent.slot + "@PAGEOFF\n");
+      // the relocated word's own byte offset — the second word of a string
+      // triple must not overwrite the first (asm64 has no [xN, #imm])
+      if ent.word > 0 {
+        bs(out, "  add x8, x8, #" + cli.itoa((ent.word * 8) as i64) + "\n");
+      }
+      bs(out, "  adrp x9, " + ent.target + "@PAGE\n  add x9, x9, " + ent.target + "@PAGEOFF\n");
+      bs(out, "  str x9, [x8]\n");
+      si += 1;
+    }
+    bs(out, "  ldp x29, x30, [sp], #16\n  ret\n");
+  }
+  g_pie_statics = false;
   if ir.g_main_cell != null && ir.g_main_cell.items[0] != "" {
     if is_mac {
       bs(out, ".section __TEXT,__text,regular,pure_instructions\n");
@@ -907,15 +1028,21 @@ pub fn glob_p2align(align: i64) -> i64 {
 }
 
 // globals init data: three relocated words (string literals) or raw bytes;
-// lab_prefix is "L" (mach-o) or "." (elf)
-pub fn emit_glob_data(out: *cli.Vec[u8], g: *ir.IRGlobal, lab_prefix: string) {
+// lab_prefix is "L" (mach-o) or "." (elf); asm_slot is the global's own
+// assembled symbol (the PIE collector needs it to patch the word later)
+pub fn emit_glob_data(out: *cli.Vec[u8], g: *ir.IRGlobal, lab_prefix: string, asm_slot: string) {
   let mut word: usize = 0;
   if len(g.relocs) > 0 {
     let mut w: i32 = 0;
     while w < 3 {
       let wi: usize = w as usize;
       if wi < len(g.relocs) && g.relocs[wi] != "" {
-        bs(out, "  .quad " + lab_prefix + g.relocs[wi] + "\n");
+        if g_pie_statics && g_static_inits != null {
+          g_static_inits.push(new StaticInit { slot: asm_slot, word: w, target: lab_prefix + g.relocs[wi] });
+          bs(out, "  .quad 0\n");
+        } else {
+          bs(out, "  .quad " + lab_prefix + g.relocs[wi] + "\n");
+        }
       } else {
         let mut v: u64 = 0;
         let mut b: i32 = 0;

@@ -1,0 +1,7 @@
+alpha-static beta-static-value gamma
+lens=12 17 5
+AB NE
+lit EQ
+say:gamma
+mutable-start-then-more 23
+acc=36

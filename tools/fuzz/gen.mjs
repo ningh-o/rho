@@ -39,6 +39,11 @@
 // Usage:
 //   node tools/fuzz/gen.mjs --emit 42        print the program for seed 42
 //   node tools/fuzz/gen.mjs                  run the campaign, seeds 1..150
+//                                          (validated 1..400 as of 2026-09-24:
+//                                          389/390 identical — seed 46's
+//                                          shift-width fold family is the
+//                                          one recorded divergence, see
+//                                          docs/todo.md + tools/repro/)
 //   node tools/fuzz/gen.mjs --from 10 --to 20 --budget 60
 //
 // Campaign bounds (the ask): ≤40 lines per program, ≤10s per program (each

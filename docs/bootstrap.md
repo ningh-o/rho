@@ -24,10 +24,14 @@ boot/src (C seed)
                     │                         --set native=false (the web config)
                     └── build/gate/child.wasm     m.wasm compiles cli.rho again
                           └── build/gate/grandchild.wasm   child compiles cli.rho
-        └── site/assets/rho.wasm    the seed compiles cli.rho --set native=false
-              └── build/rho.wasm    (the web configuration — about a megabyte
-                                    lighter; a copy at the historical path, for
-                                    the tools that read it)
+        └── build/gate/web-site.wasm  m.wasm compiles cli.rho --set native=false
+              │                       (the web configuration, one generation
+              │                       past the seed — its own frames follow the
+              │                       mirror's fat-function memory-home law)
+              └── site/assets/rho.wasm  wasm-opt -Oz deploy pass (pure copy
+                    └── build/rho.wasm  when wasm-opt is absent; a copy at
+                                        the historical path, for the tools
+                                        that read it)
 ```
 
 - **boot** — `build/rho-boot`, plain C, built by `make build/rho-boot`. The
@@ -51,11 +55,15 @@ boot/src (C seed)
     drops the six backends from the artifact (measured: 3.6 MiB vs
     4.7 MiB); a native target refuses with the same clear-error law boot
     uses (exit 2), straight from the fold's `else` branch. `make site`
-    produces `site/assets/rho.wasm` this way (the pinned seed, run
-    through wasmtime, is the builder — boot cannot compile the merged
-    root's own fold); `build/rho.wasm` is a copy for the tools that read
-    the historical path (the site tests, the LSP, the vite plugin). No
-    wasi-sdk anywhere: rho emits its own wasm, in-process.
+    produces `site/assets/rho.wasm` from the chain's SECOND generation
+    (the seed-built mirror compiles the web configuration — one
+    generation past the seed, so the shipped compiler's own frames
+    follow `w_memmode` and the browser's ~1 MB wasm stack holds), then
+    a `wasm-opt -Oz` deploy pass shrinks it when the binary is on PATH
+    (pure copy otherwise; the chain artifacts themselves stay pure);
+    `build/rho.wasm` is a copy for the tools that read the historical
+    path (the site tests, the LSP, the vite plugin). No wasi-sdk
+    anywhere: rho emits its own wasm, in-process.
 - **child** — the mirror compiling itself: `m.wasm` builds
   `build/gate/child.wasm`.
 - **grandchild** — the child compiling itself: `child.wasm` builds
@@ -67,10 +75,11 @@ boot/src (C seed)
 ## The seed
 
 `boot/rho-seed.wasm` is a PINNED self-built compiler — the chain head of
-one era (pinned 2026-09-24, SHA-256 `84d30232…`, the merged-root build
-of the params round at the serial-internal-symbol frontier: every
-internal symbol compiles to the shortest serial name a..z, aa.. unless
-`-g` keeps the readable forms; the pin's own chain is told under
+one era (pinned 2026-09-24, SHA-256 `1a814a1a…`, the arm64-correctness
+build: the store-width law for the store intrinsics plus the native
+backend's encoding and calling-convention fixes; every internal symbol
+compiles to the shortest serial name a..z, aa.. unless `-g` keeps the
+readable forms; the pin's own chain is told under
 Provenance below). It exists so the mirror's sources may grow
 PAST boot's frozen feature set:
 
@@ -155,13 +164,170 @@ the fixpoint (`73dca867…` → `3242a7ee…` → `f3fe3f90…` → `01685bd9…
 `1a91cdb9…` → `84d30232…`); the seed compiles the mirror to itself,
 byte for byte.
 
-Provenance: `84d30232…` — seed-built from the merged root `cli.rho` at
+Provenance: `1a814a1a…` — seed-built at the 2026-09-24 browser-stack
+round: the wasm emitter gained the fat-function memory-home law
+(`w_memmode`, threshold 2048 vregs) — a function past the threshold
+keeps every vreg in an 8-byte linear-memory home and four scratch
+locals, the native backends' own discipline, because the
+spill-everything local map gave `check_expr` a frame taller than the
+browser's whole ~1 MB wasm stack (a 50-term arithmetic chain was the
+smallest witness; the cliff moved past depth 1600). The SITE asset now
+builds one generation past the seed (make site: m.wasm compiles
+`--set native=false`, then a wasm-opt -Oz deploy pass when available —
+2.47 MiB / gzip 748 kB, smaller than the old seed-built asset AND
+overflow-free), so the shipped compiler's own frames follow the new
+law; the chain artifacts stay pure.
+
+Older pin: `08277f23…` — the settled head after the 2026-09-24
+seed-46 experiment round-tripped and reverted: three comptime-eval
+cures were attempted (shift-rule i32 retype, value-lane mask with a
+lane-aware signed compare, count-lane mask). The retype and value/lane
+halves heal seed 46, but every combination that heals it turns seeds
+55/114 — the shift-COUNT lane: the evaluator's `y & 63` must become the
+runtime's per-lane hardware mask (mod-32 on 32-bit lanes), and with the
+count masked the if-condition and let-binding folds still disagreed on
+the same expression. The tree reverted clean (the pin reproduces
+08277f23 byte for byte); the recorded diagnosis in docs/todo.md now
+carries the three-part law for the next attempt.
+
+Older pin: `08277f23…` — seed-built at the 2026-09-24 native-ring round:
+two cures closed the FULL/native bootstrap ring. (1) The native const
+path materialized narrow SIGNED constants zero-extended (the fold keeps
+an i32 -1 as the u64 pattern 4294967295) — every `field == -1` on an
+i32 compared false, and the self-built compiler's own addrc lit==-1
+check was the witness; both native backends now sign-extend per the
+destination vreg's type (corpus/106). (2) The assembler split the full
+text into a per-line vector — a self-build's ~70 MiB of assembly
+allocated ~0.5 GiB of transients and blew the 1.75 GiB native heap
+ceiling mid-ring; the walk is now a cursor over the two source strings
+(the rt blob rides ahead without a concat). The ring: 9/9 under
+tools/native-ring.sh, and native-exec runs 21 programs wasm-vs-native
+identical on the machine.
+
+Older pin: `ecd9ff7e…` — seed-built at the 2026-09-24 container-ownership
+round: the managed-slice rc walkers let a by-value binding walk the
+array's CURRENT elements on release (the rehash's re-put elements were
+never seen by the binding's retain, and the unconditional release freed
+them — the native ring's map repro); retain is now the buf count alone
+and release walks elements only at the last-reference death check
+(rc == 1, not immortal). The same round marked the walker's synthesized
+loop `loop_header`/`loop_exit` (the StWhile law): unmarked, the wasm
+emitter's re-nesting emitted the back-edge as a function exit and every
+managed-slice walker on wasm was dead code — a pure leak the
+output-equality gate could not see. corpus/105 pins the cure.
+
+Older pin: `49c97f09…` — seed-built at the 2026-09-24 fuzz-widening
+find: the mirror's comptime compare fold judged untyped negative
+literals unsigned (`((-51) >= 24)` folded TRUE — the -51 wrapped as
+u64), because cc_signed skipped TyIntLit; the fix rides the let-binding
+law (an INT_LIT's default domain is i32) and healed 9 of the 10
+boot-vs-mirror divergences the widened differential campaign had just
+found (corpus/104 pins it; seed 46's shift-width family stays open).
+The pinned seed is the chain's m.wasm, byte for byte.
+
+Older pin: `4af1ffc3…` — seed-built at the 2026-09-24 PIE-and-statics
+round: the mirror moved (the arm64 wave's backend fixes below, then the
+PIE statics law — an arm64-mac image is PIE and a `.quad <symbol>` in
+__DATA is an absolute address no fixup rebases, so the emitter now
+zeroes those words and `_rho_statics_init` stores the real addresses
+through adrp before main — plus static string literals gaining their
+wasm rodata pair, which both compilers had silently never emitted). The
+pinned seed is the chain's m.wasm, byte for byte — the compiler
+reproduces itself exactly at this frontier.
+
+Older pin: `da7d3b1a…` — seed-built at the 2026-09-24 arm64
+correctness wave: the mirror's front half moved (the store-width law
+for the store intrinsics, the arm64 encoding/compare/shift/cast fixes,
+frame zeroing, the narrow-signed call-result extension), so the pin
+follows it — two pins to the fixpoint (`608c9c9a…`, built by the
+pre-fix seed, then this one: the fixes change the wasm emit, so a
+fixed compiler emits a different mirror than the old seed did). The
+pinned seed is the chain's m.wasm, byte for byte — the compiler
+reproduces itself exactly at this frontier.
+
+Older pin: `84d30232…` — seed-built from the merged root `cli.rho` at
 the 2026-09-24 build-parameters round (root consts as build parameters,
 `--set`, comptime fold, the roots merged, shortest-serial internal
 symbols with the `-g` full-name switch, blob heap labels and rc-helper
 classification through the naming site). The pinned seed is the chain's
 m.wasm, byte for byte — the compiler reproduces itself exactly at this
 frontier.
+
+## The arm64 correctness wave (2026-09-24)
+
+The native ring's first executor pass (a self-built arm64-mac `rho`)
+crashed on EVERY compile; bisecting it through program-level probes and
+a wasm-vs-native differential fuzzer run (40 seeded programs;
+`tools/fuzz/gen.mjs --emit N` regenerates any case) found nine real
+defects, all fixed in the mirror this round:
+
+- **asm64 encodings** — the single-precision forms systematically wrong
+  at the ftype bit: `fcvt s,d` (opcode 1100 vs 100), `fcvtzs`/`fcvtzu`
+  (source-width bit + the zu form absent), `scvtf`/`ucvtf` D-dest (bit
+  22; the old code cleared bit 31 instead), `fmov wd,sn` (read the D
+  register). Verified against clang-assembled ground truth.
+- **f64 compares** — `ac_cmp` keyed the operand width off an `i.size`
+  the lowerer never sets; it now follows the operand's type (the wasm
+  emit's own law). Every f64 comparison compared the low 32 bits as
+  f32s before.
+- **narrow variable shifts** — the count masks to the operand's lane
+  (wasm's shift law): 32-bit lanes now use the W-form variable shift,
+  whose hardware mod-32 is exactly that law.
+- **float→int casts** — the trunc_sat law (out-of-range saturates):
+  the lane follows the TARGET width and the opcode its signedness
+  (`fcvtzs` vs `fcvtzu`), matching the wasm saturating conversions.
+- **frame zeroing** — every arm64 prologue now zeroes the whole frame
+  (qword loop): a vreg or slot read — or RELEASED — on a path that
+  never defined it must see 0, the wasm-local law; native frames carry
+  stale bytes from earlier calls and the rc walkers chased them.
+- **the store-width law (lowerer, both backends)** — the store
+  intrinsics' NAMES fix the width: `store_u64(p, 0)` with the literal
+  defaulted to i32 stored FOUR bytes, leaving every "zeroed" qword's
+  high half as recycled-block junk — on wasm too, masked by fresh
+  pages. The allocator's own `zero_bytes` was the headline victim; the
+  fix forces the width from the name at the lowering site.
+- **narrow SIGNED call results** — a W-register write zeroes the upper
+  half of the 64-bit register, so an i32 `-1` spilled as `str x0`
+  became +4294967295 for every later 64-bit compare; the call result
+  now sign-extends (`sxtb/sxth/sxtw`) before the 8-byte spill.
+
+After the wave: the self-built native compiler passes `--version`,
+`fmt` (canonical output), and small parses; `check`/`build` at package
+scale remain flaky (~60% crash — see docs/todo.md's open section). The
+wasm gate stayed 8-green through every fix; the differential fuzzer
+went 40/40 on both targets.
+
+## The PIE-and-statics round (2026-09-24, same day)
+
+The wave's leftover — "check flaky, correlates with the initial stack
+layout, lldb clean" — bisected to a diagnosis nobody had on the list:
+**the arm64-mac image is PIE, and the static string initializers wrote
+`.quad <symbol>` words into __DATA — absolute compile-time addresses
+that no fixup ever rebases.** Every kernel slide turned them into wild
+pointers; rc_dec chased one into the read-only string pool and the
+write faulted (lldb's no-ASLR default is why it always exited clean
+there; the env-padding luck moved the slide). The fix is structural:
+`emit_glob_data` diverts those words for mac builds into a collector,
+emits `.quad 0`, and a new `_rho_statics_init` routine (called by the
+rt blob before `main`) stores the real addresses through adrp —
+slide-proof by construction. ELF targets stay ET_EXEC at a fixed base;
+their absolute words remain legal. After the fix the self-check went
+20/20 on the exact workload that crashed 18/20.
+
+The same round closed a hole the corpus had never covered: **static
+string literals on wasm never worked on EITHER compiler** — boot and
+mirror alike emitted the {h, buf} words as zero and never laid the
+rodata block into the data section, so every read saw garbage (the
+native emitters always wrote the pair). Both ends now lay the block
+out, patch the words, and emit it; `corpus/103_static_str` pins the
+law, and `corpus/101_f64_fields` / `corpus/102_make_zero` pin two
+wave-era cures the corpus had equally never covered (the f64-field
+deref-new shape; managed make() over recycled blocks).
+
+Still open from this round: one arm64 codegen defect (managed-map
+rehash losing entries — the compiler's own reachability pass runs on
+exactly that shape, which is what breaks a native-built self; see
+docs/todo.md's minimized repros).
 
 Previous pins, same round: `84a60281…` and `051f4b3b…` (the two
 short-symbol fixpoint steps), `33d386df…` (the merged root,
@@ -180,6 +346,16 @@ round.
 - `01685bd9…` — 2026-09-24, seed-built (supersedes `f3fe3f90…`)
 - `1a91cdb9…` — 2026-09-24, seed-built (supersedes `01685bd9…`)
 - `84d30232…` — 2026-09-24, seed-built (supersedes `1a91cdb9…`)
+- `608c9c9a…` — 2026-09-24, seed-built (supersedes `84d30232…`)
+- `da7d3b1a…` — 2026-09-24, seed-built (supersedes `608c9c9a…`)
+- `4af1ffc3…` — 2026-09-24, seed-built (supersedes `da7d3b1a…`)
+- `49c97f09…` — 2026-09-24, seed-built (supersedes `4af1ffc3…`)
+- `ecd9ff7e…` — 2026-09-24, seed-built (supersedes `49c97f09…`)
+- `08277f23…` — 2026-09-24, seed-built (supersedes `ecd9ff7e…`)
+- `08277f23…` — 2026-09-24, seed-built; the seed-46 experiment's
+  `328229a0…`/`65bde005…` pins lived one hour and reverted to this pin
+  byte for byte
+- `1a814a1a…` — 2026-09-24, seed-built (supersedes `08277f23…`)
 <!-- pin-ledger -->
 
 ## The feature subset law (two layers)
@@ -339,13 +515,16 @@ measurements:
 - **diagnostics are boot-identical** (gate leg 8), and the differential
   fuzzer's recorded verdicts stand.
 
-**Deferred, by the owner's explicit call** (next round's first item,
-see docs/todo.md): the FULL/native configuration bootstrap ring — a
-native-target-compiled compiler compiling the compiler again, static
-structure verification of the self-images, and a small native-exec pass
-of the self-built compiler. The pieces short of the ring are already
-graded (the crossings build and structure-check every native image);
-what is deferred is closing the RING through a native-hosted compiler.
+**The FULL/native ring CLOSED 2026-09-24**: `tools/native-ring.sh`
+runs 9/9 — the self-built arm64-mac `rho` builds the package root to a
+native image (structure-checked), reports its version, compiles+runs a
+wasm hello, compiles the root AGAIN through the native host (the ring
+child, structure-checked), and the child rebuilds six corpus programs
+to the goldens; `tools/native-exec.sh` runs 21 programs wasm-vs-native
+identical on the machine. The ring stays OUTSIDE the gate by law —
+executing a native image can wedge the kernel's page-hash check, so
+structure is the gate's evidence and execution is the separate,
+deliberate step the crossings unblock.
 
 ## The remaining surface
 
@@ -400,7 +579,7 @@ wasmtime run --dir . boot/rho-seed.wasm \
 wasmtime run --dir . build/gate/m.wasm \
   build libs/compiler/cli.rho --target wasm32-wasi --set native=false \
   -o build/gate/web.wasm                                   # the web configuration (~23% lighter)
-make site                                                  # the site asset (the seed builds the web configuration)
+make site                                                  # the site asset (m.wasm builds the web configuration; wasm-opt -Oz when available)
 make test                                                  # boot selftest (goldens + diag)
 sh tools/corpus-run.sh                                     # corpus vs goldens (boot-era via boot, seed-era via the web config)
 tools/reseed.sh                                            # the re-pinning ritual (idempotent; --check verifies the pin slot only)

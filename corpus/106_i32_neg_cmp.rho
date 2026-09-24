@@ -1,0 +1,23 @@
+// exit: 0
+// 106 — narrow SIGNED consts materialize sign-extended on native: the
+// fold stores an i32 -1 as the u64 bit pattern 4294967295, and the
+// native const path built it zero-extended — every `field == -1` on an
+// i32 compared false (the self-built compiler's own addrc lit==-1 check
+// was the witness; wasm was never wrong — its i32 ops truncate).
+struct A {
+  lit: i32,
+  n: i64,
+}
+fn f(a: *A) -> i64 {
+  if a.lit == -1 {
+    return 100;
+  }
+  return a.lit as i64;
+}
+fn main() -> i32 {
+  let a: *A = new A { lit: 0 - 1, n: 5 };
+  printf("{}\n", f(a));
+  let b: *A = new A { lit: 7, n: 6 };
+  printf("{}\n", f(b));
+  return 0;
+}

@@ -369,6 +369,42 @@ fn w_layout_data() {
     }
     g += 1;
   }
+  // static string literals: their {h, buf} reloc words must resolve —
+  // lay the rodata block out (the 24-byte immortal header + bytes, same
+  // shape as the fn literals below) and patch the global's first two
+  // words with the header/chars addresses. Without this a static string
+  // compiled to wasm reads {0, 0, len} and every use sees garbage (the
+  // native emitters always wrote the pair; wasm never did — pinned by
+  // corpus/103).
+  g = 0;
+  while g < ir.g_ir_globals.n {
+    let gl: *ir.IRGlobal = ir.g_ir_globals.items[g];
+    if gl.static_lit != null {
+      at = lower.round_up_i64(at, 8);
+      im_put(W.lit_addr, gl.static_lit.label, at);
+      at += 24 + len(gl.static_lit.bytes) as i64;
+    }
+    g += 1;
+  }
+  g = 0;
+  while g < ir.g_ir_globals.n {
+    let gl: *ir.IRGlobal = ir.g_ir_globals.items[g];
+    if gl.static_lit != null && len(gl.init) >= 16 {
+      let h: i64 = im_get(W.lit_addr, gl.static_lit.label);
+      let b: i64 = h + 24;
+      let mut w: i32 = 0;
+      while w < 2 {
+        let v: i64 = if w == 0 { h } else { b };
+        let mut bi: i32 = 0;
+        while bi < 8 {
+          gl.init[(w * 8 + bi) as usize] = ((v >> (8 * bi)) & 255) as u8;
+          bi += 1;
+        }
+        w += 1;
+      }
+    }
+    g += 1;
+  }
   let mut f: usize = 0;
   while f < ir.g_ir_fns.n {
     let fn_: *ir.IRFn = ir.g_ir_fns.items[f];
@@ -430,6 +466,8 @@ struct WFnCtx {
   hidden: i32,
   labels: []*WLabel,
   claims: []*WClaim,
+  mem: bool,       // fat-function mode: vregs live in memory homes, not locals
+  vhome: []i64,    // vreg id -> frame offset (-1 = not yet laid out)
 }
 
 fn push_claim(items: []*WClaim, c: *WClaim) -> []*WClaim {
@@ -480,12 +518,83 @@ fn vreg_local(c: *WFnCtx, v: *ir.IRVreg) -> i64 {
   return len(c.fn_.params) as i64 + c.hidden as i64 + 1 + v.id as i64;
 }
 
+// fat-function mode: past this many vregs the spill-everything local map
+// makes the frame taller than the host's whole wasm stack (check_expr at
+// ~2500 vregs overflows the browser's ~1 MB at recursion depth 50 — a
+// 50-term arithmetic chain was the smallest witness). Such functions keep
+// every vreg in an 8-byte linear-memory home and only 4 scratch locals,
+// the native backends' own discipline; the wasm stack frame collapses to
+// a constant and recursion depth stops mattering.
+fn w_memmode(fn_: *ir.IRFn) -> bool {
+  return fn_.next_vreg > 2048;
+}
+
+// scratch locals in mem mode: [$fb][i32][i64][f32][f64]
+fn w_scratch(c: *WFnCtx, t: ir.IRType) -> i64 {
+  let base: i64 = fb_local(c) + 1;
+  if t == ir.IRType.ItF64 { return base + 3; }
+  if t == ir.IRType.ItF32 { return base + 2; }
+  if t == ir.IRType.ItI64 || t == ir.IRType.ItU64 || t == ir.IRType.ItUsize { return base + 1; }
+  return base;
+}
+
+fn w_load_op(t: ir.IRType) -> u8 {
+  if t == ir.IRType.ItF64 { return 0x2B; }
+  if t == ir.IRType.ItF32 { return 0x2A; }
+  if t == ir.IRType.ItI64 || t == ir.IRType.ItU64 || t == ir.IRType.ItUsize { return 0x29; }
+  return 0x28;
+}
+
+fn w_store_op(t: ir.IRType) -> u8 {
+  if t == ir.IRType.ItF64 { return 0x39; }
+  if t == ir.IRType.ItF32 { return 0x38; }
+  if t == ir.IRType.ItI64 || t == ir.IRType.ItU64 || t == ir.IRType.ItUsize { return 0x37; }
+  return 0x36;
+}
+
+fn vreg_home(c: *WFnCtx, id: i32) -> i64 {
+  while len(c.vhome) <= id as usize {
+    c.vhome = lower.push_i64(c.vhome, -1);
+  }
+  let mut off: i64 = c.vhome[id];
+  if off >= 0 {
+    return off;
+  }
+  off = c.frame;
+  c.frame += 8;
+  c.vhome[id] = off;
+  return off;
+}
+
 fn lget(c: *WFnCtx, v: *ir.IRVreg) {
+  if c.mem {
+    let t: ir.IRType = vreg_type(c.fn_, v.id);
+    b8(c.body, 0x20);
+    buleb(c.body, fb_local(c) as u64);
+    b8(c.body, w_load_op(t));
+    buleb(c.body, 2);
+    buleb(c.body, vreg_home(c, v.id) as u64);
+    return;
+  }
   b8(c.body, 0x20);
   buleb(c.body, vreg_local(c, v) as u64);
 }
 
 fn lset(c: *WFnCtx, v: *ir.IRVreg) {
+  if c.mem {
+    let t: ir.IRType = vreg_type(c.fn_, v.id);
+    let scr: i64 = w_scratch(c, t);
+    b8(c.body, 0x21);
+    buleb(c.body, scr as u64);
+    b8(c.body, 0x20);
+    buleb(c.body, fb_local(c) as u64);
+    b8(c.body, 0x20);
+    buleb(c.body, scr as u64);
+    b8(c.body, w_store_op(t));
+    buleb(c.body, 2);
+    buleb(c.body, vreg_home(c, v.id) as u64);
+    return;
+  }
   b8(c.body, 0x21);
   buleb(c.body, vreg_local(c, v) as u64);
 }
@@ -1702,6 +1811,7 @@ fn emit_fn_body(wf: *WFn) -> *cli.Vec[u8] {
     fn_: fn_, body: new cli.Vec[u8] { items: make([]u8, 4096), n: 0 },
     slot_off: make([]i64, 0), frame: 0, hidden: 0,
     labels: make([]*WLabel, 0), claims: make([]*WClaim, 0),
+    mem: w_memmode(fn_), vhome: make([]i64, 0),
   };
   fb_ctx = c;
 
@@ -1710,6 +1820,15 @@ fn emit_fn_body(wf: *WFn) -> *cli.Vec[u8] {
   while i < len(fn_.slots) {
     slot_offset(c, fn_.slots[i]);
     i += 1;
+  }
+  // memory homes pre-lay before the prologue: c.frame must be final when
+  // the ret path emits the caller's stack base ($fb + frame)
+  if c.mem {
+    let mut hv: i32 = 0;
+    while hv < fn_.next_vreg {
+      vreg_home(c, hv);
+      hv += 1;
+    }
   }
 
   if fn_.returns_aggregate {
@@ -2024,14 +2143,29 @@ pub fn emit_wasm() -> []u8 {
       // the hidden out ptr FIRST for agg returns); this decl covers $fb
       // and the vregs only.
       let entry: *cli.Vec[u8] = new cli.Vec[u8] { items: make([]u8, 1024), n: 0 };
-      buleb(entry, (1 + fn_.next_vreg) as u64);
-      buleb(entry, 1);
-      b8(entry, 0x7F); // $fb
-      let mut v: i32 = 0;
-      while v < fn_.next_vreg {
+      if w_memmode(fn_) {
+        // mem mode: $fb + the four scratch locals; vregs live in homes
+        buleb(entry, 5);
         buleb(entry, 1);
-        b8(entry, w_vt(vreg_type(fn_, v)));
-        v += 1;
+        b8(entry, 0x7F); // $fb
+        buleb(entry, 1);
+        b8(entry, 0x7F); // scratch i32
+        buleb(entry, 1);
+        b8(entry, 0x7E); // scratch i64
+        buleb(entry, 1);
+        b8(entry, 0x7D); // scratch f32
+        buleb(entry, 1);
+        b8(entry, 0x7C); // scratch f64
+      } else {
+        buleb(entry, (1 + fn_.next_vreg) as u64);
+        buleb(entry, 1);
+        b8(entry, 0x7F); // $fb
+        let mut v: i32 = 0;
+        while v < fn_.next_vreg {
+          buleb(entry, 1);
+          b8(entry, w_vt(vreg_type(fn_, v)));
+          v += 1;
+        }
       }
       bappend(entry, code);
       buleb(body, entry.n as u64);
@@ -2085,6 +2219,9 @@ pub fn emit_wasm() -> []u8 {
       if !gl.is_extern && len(gl.init) > 0 {
         count += 1;
       }
+      if gl.static_lit != null {
+        count += 1;
+      }
       g += 1;
     }
     let mut f2: usize = 0;
@@ -2109,6 +2246,35 @@ pub fn emit_wasm() -> []u8 {
       while bi < len(gl.init) {
         b8(body, gl.init[bi]);
         bi += 1;
+      }
+      g += 1;
+    }
+    // static string literals: the rodata block each static's {h, buf}
+    // words point at (laid out by w_layout_data, patched there)
+    g = 0;
+    while g < ir.g_ir_globals.n {
+      let gl: *ir.IRGlobal = ir.g_ir_globals.items[g];
+      if gl.static_lit != null {
+        let lit: *ir.IRLit = gl.static_lit;
+        buleb(body, 0);
+        b8(body, 0x41);
+        bsleb(body, im_get(W.lit_addr, lit.label));
+        b8(body, 0x0B);
+        buleb(body, (24 + len(lit.bytes)) as u64);
+        let mut k4: i32 = 0;
+        while k4 < 24 {
+          if k4 == 7 {
+            b8(body, 0x80);
+          } else {
+            b8(body, 0);
+          }
+          k4 += 1;
+        }
+        let mut byi: usize = 0;
+        while byi < len(lit.bytes) {
+          b8(body, lit.bytes[byi]);
+          byi += 1;
+        }
       }
       g += 1;
     }

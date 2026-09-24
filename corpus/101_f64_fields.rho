@@ -1,0 +1,61 @@
+// exit: 0
+// 101 — f64/f32 struct fields through deref-new literals: the shape that
+// once emitted an invalid wasm module ("type mismatch: expected f64,
+// found f32") and a native SIGILL — a float field defaulted from a
+// literal inside `*new T{...}` must lower as the field's own width, in
+// every position: fresh, copied, compared, arithmetic, passed, and
+// returned through a struct-by-value tail.
+struct Pair {
+  a: f64,
+  b: f32,
+  tag: i32,
+}
+
+struct Holder {
+  p: Pair,
+  seed: f64,
+}
+
+fn scale(p: Pair, k: f64) -> Pair {
+  return *new Pair { a: p.a * k, b: p.b * 2.0, tag: p.tag };
+}
+
+fn sum(ps: []Pair) -> f64 {
+  let mut s: f64 = 0.0;
+  let mut i: usize = 0;
+  while i < len(ps) {
+    s = s + ps[i].a + (ps[i].b as f64);
+    i += 1;
+  }
+  return s;
+}
+
+fn main() -> i32 {
+  let h: *Holder = new Holder {
+    p: *new Pair { a: 0.25, b: 0.5, tag: 7 },
+    seed: 0.0,
+  };
+  printf("a={} b={} tag={} seed={}\n", h.p.a, h.p.b, h.p.tag as i64, h.seed);
+  let q: Pair = scale(h.p, 4.0);
+  printf("a={} b={}\n", q.a, q.b);
+  if q.a == 1.0 {
+    printf("eq64 ok\n");
+  }
+  if q.b != 1.0 {
+    printf("ne32 ok\n");
+  }
+  let ps: []Pair = make([]Pair, 3);
+  ps[0] = *new Pair { a: 1.5, b: 2.5, tag: 1 };
+  ps[1] = *new Pair { a: 0.25, b: 0.125, tag: 2 };
+  ps[2] = q;
+  printf("sum={}\n", sum(ps));
+  let neg: Pair = *new Pair { a: -0.75, b: -0.5, tag: 0 };
+  printf("neg={} negb={}\n", neg.a, neg.b);
+  let z: Pair = *new Pair { a: 0.0, b: 0.0, tag: 0 };
+  if z.a == 0.0 {
+    if z.b == 0.0 {
+      printf("zeros ok\n");
+    }
+  }
+  return 0;
+}

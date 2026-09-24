@@ -6,9 +6,12 @@ not now* with dependency order, and the staged plan. Companion to
 [language-service.md](language-service.md) (the compiler service API);
 one section there depends on this roadmap and is called out below (§5).
 
-Status: **design, not implemented** — except where noted as in flight.
-Every claim is grounded in a file cited as `path:line` or in a probe
-whose command and output are quoted.
+Status: **design** — except `libs/json` (parse + encode, `rho.toml`,
+corpus-style cases under `libs/json/tests/`, `sh libs/json/tests/run.sh`
+green), which landed 2026-09-24 as the first real Ring-2 package and is
+the reference shape for everything below. Every claim is grounded in a
+file cited as `path:line` or in a probe whose command and output are
+quoted.
 
 ## 1. What "stdlib" means here — the three rings
 
@@ -16,10 +19,11 @@ rho has no `std/` directory today. The closest things to a standard
 library are, in order of coupling to the compiler:
 
 - **Ring 0 — the prelude**, embedded in every compilation. A pure,
-  target-independent **core** (`boot/prelude/core.rho`, 622 lines) plus a
-  small per-target **tail** (`wasi.rho` 146 lines, `hosted.rho` 98,
-  `mac.rho` 97). The core must stay byte-identical across targets; every
-  target-specific fact lives in the tail
+  target-independent **core** (`boot/prelude/core.rho`) plus the one
+  wasm-side tail (`wasi.rho`; the hosted/mac tails were deleted in the
+  wasm-only freeze — native images carry their syscall shims in the rt
+  blob instead, `docs/bootstrap.md`). The core must stay byte-identical
+  across targets; every target-specific fact lives in the tail
   (`spec/module-system.md:41-55`). Prelude items are visible everywhere
   without import (`spec/module-system.md:17-19`).
 - **Ring 2 — packages**, today's only composition story: manifests,
@@ -144,11 +148,14 @@ minimal unsafe kernel: raw loads/stores by width, `memcpy`, `mem_set`,
 1. No growable collections (`Vec`, `Map`) — every consumer hand-rolls
    them; the self-hosted compiler carries its own private `Vec`
    (`libs/compiler/cli.rho`) as the existence proof.
-2. No JSON — the package tool parses a hand-rolled TOML subset instead
-   (§2.4); JSON is in flight in a parallel workstream this round (given
-   by the task assignment; no rho JSON file exists in-tree yet —
-   `find rho -iname '*json*'` shows only `bench/results.json` and
-   node package files).
+2. JSON — LANDED (2026-09-24) as the ecosystem's first real package:
+   `libs/json/` (encode + decode with the full escape set, a `rho.toml`
+   manifest, corpus-style cases under `libs/json/tests/` — `sh
+   libs/json/tests/run.sh` green, consumed through the rho-pkg
+   path-dependency workflow per its README). The placement question it
+   settles for Ring 1: a package that only needs the language, not new
+   hooks, ships fine as a vendored package today; `std/` remains for
+   what must ride with the toolchain.
 3. No path/args/fs wrappers over the hooks that already exist.
 4. No time, no random (both blocked on the import table).
 5. No sockets, therefore no http (blocked hardest; §5.3).

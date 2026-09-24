@@ -851,16 +851,29 @@ fn ar_asm_line(a: *ASMCtx, mn: string, ops: []string) {
     if rd.cls == RC_VD && rn.cls == RC_VS {
       a_emit32(a, 0x1E22C000 | ((rn.n as u32) << 5) | (rd.n as u32)); // S -> D
     } else if rd.cls == RC_VS && rn.cls == RC_VD {
-      a_emit32(a, 0x1E62C000 | ((rn.n as u32) << 5) | (rd.n as u32)); // D -> S
+      a_emit32(a, 0x1E624000 | ((rn.n as u32) << 5) | (rd.n as u32)); // D -> S (opcode 0100; 1100 would be a different FP1 op)
     } else {
       asm_err(a, "bad fcvt");
     }
     return;
   }
-  if cli.streq(mn, "fcvtzs") && nops == 2 {
+  if (cli.streq(mn, "fcvtzs") || cli.streq(mn, "fcvtzu")) && nops == 2 {
     let rd: *AReg = ar_parse_reg(ops[0]);
     let rn: *AReg = ar_parse_reg(ops[1]);
-    a_emit32(a, (if rd.cls == RC_X { 0x9E780000 } else { 0x1E780000 }) | ((rn.n as u32) << 5) | (rd.n as u32));
+    // sf = 64-bit integer dest, ftype bit 22 = the FLOAT SOURCE's width
+    // (a D source read as S — or the reverse — reads the wrong register);
+    // bit 16: zs vs zu (saturating signed vs unsigned)
+    let mut base: u32 = 0x1E380000;
+    if cli.streq(mn, "fcvtzu") {
+      base = base | 0x00010000;
+    }
+    if rd.cls == RC_X {
+      base = base | 0x80000000;
+    }
+    if rn.cls == RC_VD {
+      base = base | 0x00400000;
+    }
+    a_emit32(a, base | ((rn.n as u32) << 5) | (rd.n as u32));
     return;
   }
   if (cli.streq(mn, "scvtf") || cli.streq(mn, "ucvtf")) && nops == 2 {
@@ -871,12 +884,12 @@ fn ar_asm_line(a: *ASMCtx, mn: string, ops: []string) {
       asm_err(a, "bad " + mn + "" + "");
       return;
     }
-    let mut base: u32 = 0x9E220000;
+    let mut base: u32 = 0x9E620000;
     if cli.streq(mn, "ucvtf") {
-      base = 0x9E230000;
+      base = 0x9E630000;
     }
     if rd.cls == RC_VS {
-      base = base & 0x7FFFFFFF;
+      base = base & 0xFFBFFFFF;
     }
     a_emit32(a, base | ((rn.n as u32) << 5) | (rd.n as u32));
     return;
@@ -907,7 +920,7 @@ fn ar_asm_line(a: *ASMCtx, mn: string, ops: []string) {
     } else if rd.cls == RC_VS && rn.cls == RC_W {
       a_emit32(a, 0x1E270000 | ((rn.n as u32) << 5) | (rd.n as u32));
     } else if rd.cls == RC_W && rn.cls == RC_VS {
-      a_emit32(a, 0x1E660000 | ((rn.n as u32) << 5) | (rd.n as u32)); // fmov wd, sn — f32 bits
+      a_emit32(a, 0x1E260000 | ((rn.n as u32) << 5) | (rd.n as u32)); // fmov wd, sn — f32 bits
     } else {
       asm_err(a, "bad fmov");
     }
@@ -1143,14 +1156,55 @@ pub fn a_result_failed() -> *AResult {
 // vaddr (mac images carry the heap in a fixed trailing segment); 0 = lay
 // it out right after the data page.
 pub fn asm64_assemble(text: string, base: u64, page: u64, heap_override: u64) -> *AResult {
+  return asm64_assemble2("", text, base, page, heap_override);
+}
+
+// the streaming form: the rt blob rides ahead of the program text without
+// a concat (a full-config self-build's assembly is ~70 MiB of text — the
+// concat and the per-line split together allocated ~0.5 GiB of transient
+// heap and blew the 1.75 GiB native ceiling; the cursor walk keeps one
+// line live at a time)
+pub fn asm64_assemble2(rt: string, text: string, base: u64, page: u64, heap_override: u64) -> *AResult {
   let a: *ASMCtx = ac_new(base, true);
-  let lines: *cli.Vec[string] = asm_split_lines(text);
-  let mut li: usize = 0;
-  while li < lines.n {
-    let line: string = asm_prepare(lines.items[li]);
-    li += 1;
+  let r0: bool = asm_walk_lines(a, rt);
+  if r0 {
+    return a_result_failed();
+  }
+  let r1: bool = asm_walk_lines(a, text);
+  if r1 {
+    return a_result_failed();
+  }
+  let ly: *ALayout = a_layout(a, page, heap_override);
+  asm64_resolve(a, ly);
+  if a.errors > 0 {
+    return a_result_failed();
+  }
+  return new AResult { ok: true, text: a.out[0], strsec: a.out[1], data: a.out[2], str_va: ly.str_a, data_va: ly.data_a, heap_va: ly.heap_a };
+}
+
+fn asm_walk_lines(a: *ASMCtx, text: string) -> bool {
+  let n: usize = len(text);
+  let mut start: usize = 0;
+  let mut i: usize = 0;
+  while i <= n {
+    if i == n || text[i] == 10 {
+      if i > start {
+        let line: string = asm_prepare(text[start..i]);
+        if asm_one_line(a, line) {
+          return true;
+        }
+      }
+      start = i + 1;
+    }
+    i += 1;
+  }
+  return false;
+}
+
+fn asm_one_line(a: *ASMCtx, line0: string) -> bool {
+    let line: string = line0;
     if len(line) == 0 {
-      continue;
+      return false;
     }
     if line[0] == 46 { // '.'
       let sp_i: i64 = str_index_from(line, " ", 0);
@@ -1193,30 +1247,24 @@ pub fn asm64_assemble(text: string, base: u64, page: u64, heap_override: u64) ->
         // a_directive_data handles the data directives, the rest skip
         a_directive_data(a, rest, name);
       }
-      continue;
+      return false;
     }
     if str_ends_byte(line, 58) { // ':'
       let label: string = line[0..len(line) - 1];
       let s: *ASym = sym_get(a, label, true);
       if s.defined {
         asm_err(a, "duplicate label `" + label + "'" + "");
-        continue;
+        return false;
       }
       s.defined = true;
       s.sec = a.sec;
       s.off = a_cur(a).n as u64;
-      continue;
+      return false;
     }
     let ops: *cli.Vec[string] = asm_split_ops(line);
     if ops.n > 0 {
       let rest: []string = ops.items[1..ops.n];
       ar_asm_line(a, ops.items[0], rest);
     }
-  }
-  let ly: *ALayout = a_layout(a, page, heap_override);
-  asm64_resolve(a, ly);
-  if a.errors > 0 {
-    return a_result_failed();
-  }
-  return new AResult { ok: true, text: a.out[0], strsec: a.out[1], data: a.out[2], str_va: ly.str_a, data_va: ly.data_a, heap_va: ly.heap_a };
+    return false;
 }

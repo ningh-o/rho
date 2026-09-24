@@ -1,0 +1,89 @@
+struct Ent {
+  key: string,
+  val: i64,
+}
+struct M {
+  slots: []*Ent,
+  cap: usize,
+  n: usize,
+}
+fn hsh(s: string) -> usize {
+  let mut h: u64 = 1469598103934665603;
+  let mut i: usize = 0;
+  while i < len(s) {
+    h ^= s[i] as u64;
+    h *= 1099511628211;
+    i += 1;
+  }
+  return h as usize;
+}
+fn eq(a: string, b: string) -> bool {
+  if len(a) != len(b) {
+    return false;
+  }
+  let mut i: usize = 0;
+  while i < len(a) {
+    if a[i] != b[i] {
+      return false;
+    }
+    i += 1;
+  }
+  return true;
+}
+fn mput(m: *M, key: string, val: i64) {
+  if m.n * 10 >= m.cap * 7 {
+    let ncap: usize = if m.cap == 0 { 16 } else { m.cap * 2 };
+    let slots: []*Ent = make([]*Ent, ncap);
+    let old: []*Ent = m.slots;
+    let oldn: usize = m.cap;
+    m.slots = slots;
+    m.cap = ncap;
+    m.n = 0;
+    let mut i: usize = 0;
+    while i < oldn {
+      if old[i] != null {
+        mput(m, old[i].key, old[i].val);
+      }
+      i += 1;
+    }
+  }
+  let mut i: usize = hsh(key) & (m.cap - 1);
+  while m.slots[i] != null {
+    if eq(m.slots[i].key, key) {
+      m.slots[i].val = val;
+      return;
+    }
+    i = (i + 1) & (m.cap - 1);
+  }
+  m.slots[i] = new Ent { key: key, val: val };
+  m.n += 1;
+}
+fn main() -> i32 {
+  let m: *M = new M { slots: make([]*Ent, 0), cap: 0, n: 0 };
+  mput(m, "k0", 1);
+  mput(m, "k1", 2);
+  mput(m, "k2", 3);
+  mput(m, "k3", 4);
+  mput(m, "k4", 5);
+  mput(m, "k5", 6);
+  mput(m, "k6", 7);
+  mput(m, "k7", 8);
+  mput(m, "k8", 9);
+  mput(m, "k9", 10);
+  mput(m, "k10", 11);
+  mput(m, "k11", 12);
+  mput(m, "k12", 13);
+  mput(m, "k13", 14);
+  mput(m, "k14", 15);
+  mput(m, "k15", 16);
+  mput(m, "k16", 17);
+  mput(m, "k17", 18);
+  mput(m, "k18", 19);
+  mput(m, "k19", 20);
+  mput(m, "k20", 21);
+  mput(m, "k21", 22);
+  mput(m, "k22", 23);
+  mput(m, "k23", 24);
+  printf("n={} cap={}\n", m.n as i64, m.cap as i64);
+  return 0;
+}

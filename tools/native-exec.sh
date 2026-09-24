@@ -71,12 +71,17 @@ fi
 # carry a docs/todo.md entry with a minimal repro and diagnosis; they
 # are reported as KNOWN and don't fail the run — but if one starts
 # passing, the run fails: the list must not rot silently.
+# (corpus/081 lived here from 2026-09-23 to 2026-09-24 — the old
+# slide/link-constant diagnosis was wrong; the allocator's store_u64
+# half-store left half-zeroed blocks and the rc walkers chased the junk.
+# The store-width law closed it.)
 PROGS="corpus/001_hello corpus/002_arith corpus/004_branches corpus/007_slices \
 corpus/010_statics corpus/013_floats corpus/020_closures corpus/027_variadics \
 corpus/028_printf corpus/029_format corpus/042_divrem_signed corpus/060_cat_nest \
 corpus/064_escapes_basic corpus/081_generics_bounds corpus/100_empty_slice \
 tests/lang/eq/e01_slices tests/lang/eq/e02_nested tests/lang/eq/e03_structs \
-tests/lang/eq/e04_enum_ladder"
+tests/lang/eq/e04_enum_ladder \
+corpus/105_rehash_alias corpus/106_i32_neg_cmp"
 
 wr() {
   perl -e 'alarm shift; exec @ARGV or die "cannot exec $ARGV[0]\n"' "$@"
@@ -86,7 +91,7 @@ strip_dbg() {
   grep -v -e '^HEAP@' -e '^WE '
 }
 
-KNOWN="corpus/081_generics_bounds"
+KNOWN=""
 
 pass=0
 fail=0
