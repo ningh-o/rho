@@ -26,6 +26,7 @@ import {
   closeBracketsKeymap,
   autocompletion,
 } from '@codemirror/autocomplete';
+import { setDiagnostics, lintGutter } from '@codemirror/lint';
 import { tags as t, Tag } from '@lezer/highlight';
 import { wordBefore, scanSymbols, filterItems } from './completion-core.js';
 import { STATIC_ITEMS } from './completion-data.js';
@@ -156,10 +157,16 @@ function rhoCompletion(context) {
 
 const MONO = '"SF Mono", ui-monospace, "Cascadia Code", Menlo, Consolas, monospace';
 
+// The theme carries literal colors from the language's own palette — no
+// host CSS variables. This file is the single source for BOTH surfaces, and
+// the static site defines no stage tokens: a var() here silently degrades
+// to CodeMirror's default light chrome (white gutters, white tooltips).
+// Scrollbars follow the family law (monorepo docs/family.md): invisible
+// until hover or keyboard focus, never a track, width always reserved.
 const rhoTheme = EditorView.theme({
   '&': {
     background: 'transparent',
-    color: 'var(--color-stage-ink)',
+    color: '#e8e6e1',
     height: '100%',
     fontSize: '12.5px',
   },
@@ -168,36 +175,72 @@ const rhoTheme = EditorView.theme({
     fontFamily: MONO,
     lineHeight: '1.55',
     overflow: 'auto',
+    scrollbarWidth: 'thin',
+    scrollbarColor: 'transparent transparent',
   },
-  '.cm-content': { caretColor: 'var(--color-stage-gold)' },
-  '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--color-stage-gold)' },
-  '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection':
-    { backgroundColor: 'color-mix(in srgb, var(--color-stage-gold) 22%, transparent)' },
-  '.cm-activeLine': {
-    backgroundColor: 'color-mix(in srgb, var(--color-stage-gold) 7%, transparent)',
+  '.cm-scroller::-webkit-scrollbar': {
+    width: '10px',
+    height: '10px',
+    background: 'transparent',
   },
+  '.cm-scroller::-webkit-scrollbar-thumb': {
+    background: 'transparent',
+    borderRadius: '5px',
+  },
+  '.cm-scroller::-webkit-scrollbar-corner': { background: 'transparent' },
+  '&:hover .cm-scroller, &:focus-within .cm-scroller': {
+    scrollbarColor: '#3a3a42 transparent',
+  },
+  '&:hover .cm-scroller::-webkit-scrollbar-thumb, &:focus-within .cm-scroller::-webkit-scrollbar-thumb': {
+    background: '#3a3a42',
+  },
+  '.cm-content': { caretColor: '#e8a04c' },
+  '.cm-cursor, .cm-dropCursor': { borderLeftColor: '#e8a04c' },
+  '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection': {
+    backgroundColor: 'rgba(232, 160, 76, 0.22)',
+  },
+  '.cm-activeLine': { backgroundColor: 'rgba(232, 160, 76, 0.07)' },
+  '.cm-gutters': {
+    background: 'transparent',
+    color: '#6b6862',
+    border: 'none',
+  },
+  '.cm-activeLineGutter': { background: 'transparent', color: '#9b9890' },
+  '.cm-tooltip': {
+    background: '#17171b',
+    border: '1px solid #26262c',
+    borderRadius: '8px',
+    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.45)',
+    padding: '2px',
+    color: '#e8e6e1',
+    maxWidth: '440px',
+    overflow: 'hidden',
+  },
+  '.cm-tooltip-arrow': { display: 'none' },
   '.cm-tooltip.cm-tooltip-autocomplete > ul': {
     fontFamily: MONO,
-    background: 'var(--color-stage-2)',
-    border: '1px solid var(--color-stage-3)',
-    borderRadius: '8px',
+    background: 'transparent',
+    border: 'none',
+    borderRadius: '6px',
     padding: '4px',
     maxHeight: '240px',
   },
   '.cm-tooltip.cm-tooltip-autocomplete > ul > li': {
-    color: 'var(--color-stage-ink)',
+    color: '#e8e6e1',
     padding: '3px 8px',
     borderRadius: '5px',
   },
   '.cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected]': {
-    backgroundColor: 'color-mix(in srgb, var(--color-stage-gold) 16%, transparent)',
+    backgroundColor: 'rgba(232, 160, 76, 0.16)',
   },
-  '.cm-completionDetail': { color: 'var(--color-stage-soft)' },
+  '.cm-completionDetail': { color: '#9b9890' },
   '.cm-completionInfo': {
-    background: 'var(--color-stage-2)',
-    border: '1px solid var(--color-stage-3)',
-    color: 'var(--color-stage-soft)',
+    background: '#17171b',
+    border: '1px solid #26262c',
+    color: '#9b9890',
   },
+  '.cm-tooltip.cm-tooltip-lint': { fontFamily: MONO, fontSize: '12px', padding: '0' },
+  '.cm-diagnostic': { color: '#e8e6e1', padding: '6px 10px' },
 });
 
 
@@ -221,6 +264,7 @@ export function createRhoEditor(opts) {
         icons: false,
       }),
       highlightActiveLine(),
+      lintGutter(),
       EditorView.updateListener.of((u) => {
         if (u.docChanged) opts.onChange(u.state.doc.toString());
       }),
@@ -245,6 +289,24 @@ export function createRhoEditor(opts) {
       });
     },
     focus: () => view.focus(),
+    /** apply compiler diagnostics ({ line, col, severity, message }[]) */
+    setDiagnostics(diags) {
+      view.dispatch(
+        setDiagnostics(
+          view.state,
+          diags.map((d) => {
+            const l = view.state.doc.line(Math.min(Math.max(d.line, 1), view.state.doc.lines));
+            const from = Math.min(l.from + Math.max(0, d.col - 1), l.to);
+            return {
+              from,
+              to: Math.max(from + 1, Math.min(l.to, from + 64)),
+              severity: d.severity || 'error',
+              message: d.message,
+            };
+          }),
+        ),
+      );
+    },
     destroy: () => view.destroy(),
   };
 }

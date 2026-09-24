@@ -24,7 +24,7 @@
   <div class="wrap page-head">
     <h1>The tutorial</h1>
     <p>
-      Fourteen chapters from hello world to the memory model. Every example
+      Fifteen chapters from hello world to the memory model. Every example
       below is compiled and executed by the real compiler — the same binary
       the <a href="playground.html">playground</a> runs — so nothing here can
       quietly rot.
@@ -44,8 +44,9 @@
     <a href="#ch-closures"><span class="n">10</span>Closures</a>
     <a href="#ch-generics"><span class="n">11</span>Generics</a>
     <a href="#ch-defer"><span class="n">12</span>defer</a>
-    <a href="#ch-memory"><span class="n">13</span>Ownership you can hold</a>
-    <a href="#ch-toolchain"><span class="n">14</span>The toolchain</a>
+    <a href="#ch-input"><span class="n">13</span>Input: read_line</a>
+    <a href="#ch-memory"><span class="n">14</span>Ownership you can hold</a>
+    <a href="#ch-toolchain"><span class="n">15</span>The toolchain</a>
   </nav>
 
   <main class="wrap">
@@ -181,8 +182,19 @@
       <template data-example="defer"></template>
     </section>
 
+    <section class="chapter" id="ch-input">
+      <h2><span class="num">13</span>Input: read_line</h2>
+      <p>
+        <b>read_line()</b> pulls one line from stdin, newline stripped — an
+        empty string means end of input. Press <b>Run</b> and the example
+        suspends on its read: type a line into the terminal row that appears
+        and the program picks up right there.
+      </p>
+      <template data-example="greet"></template>
+    </section>
+
     <section class="chapter" id="ch-memory">
-      <h2><span class="num">13</span>Ownership you can hold</h2>
+      <h2><span class="num">14</span>Ownership you can hold</h2>
       <p>
         Every heap object carries <b>{rc, wrc, drop}</b>. The compiler inserts
         retain/release around each copy and destruction — the rule is uniform:
@@ -195,7 +207,7 @@
     </section>
 
     <section class="chapter" id="ch-toolchain">
-      <h2><span class="num">14</span>The toolchain</h2>
+      <h2><span class="num">15</span>The toolchain</h2>
       <p>
         One binary does everything:
       </p>

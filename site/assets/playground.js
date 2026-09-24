@@ -4,7 +4,7 @@
 
 import { createRhoEditor } from "./codemirror.bundle.js";
 import { EXAMPLES, STARTER } from "./examples.js";
-import { initCompiler, compile, fmtSource } from "./compiler.js";
+import { initCompiler, checkSource, compile, fmtSource, parseDiagnostics } from "./compiler.js";
 
 // Compile + run happen in a worker: a long-running program can then never
 // freeze the page. The worker is terminated on Stop and after the caps.
@@ -46,14 +46,20 @@ function stopWorker() {
     worker.terminate();
     worker = null;
   }
+  // a run that ended never needs the terminal line again
+  const term = out && out.querySelector(".term-line");
+  if (term) term.remove();
 }
 
-function setChip(state) {
+function setChip(state, errors) {
   chip.classList.remove("chip-ok", "chip-bad");
+  const count = typeof errors === "number" && errors > 0 ? ` · ${errors} error${errors > 1 ? "s" : ""}` : "";
   if (state === "ready") {
-    chip.textContent = "lsp ready";
-    chip.classList.add("chip-ok");
-    chip.title = "completion and formatting are ready";
+    chip.textContent = "lsp ready" + count;
+    chip.classList.add(errors ? "chip-bad" : "chip-ok");
+    chip.title = count
+      ? "the checker found problems — hover the underlines"
+      : "completion, checking and formatting are ready";
   } else if (state === "failed") {
     chip.textContent = "lsp failed";
     chip.classList.add("chip-bad");
@@ -105,7 +111,7 @@ function armCap(ms, phase) {
   capTimer = setTimeout(() => {
     stopWorker();
     running = false;
-    runBtn.textContent = "Run";
+    setRunFace("Run");
     runBtn.disabled = false;
     const seconds = ((performance.now() - capStart) / 1000).toFixed(0);
     showOut(CAP_MESSAGE[capPhase](seconds), "err");
@@ -117,12 +123,20 @@ function armCap(ms, phase) {
 const stdinTa = document.getElementById("stdin");
 const fmtBtn = document.getElementById("fmt");
 const chip = document.getElementById("lspchip");
+let chipErrorCount = 0;
 const out = document.getElementById("output");
 const status = document.getElementById("status");
 const runBtn = document.getElementById("run");
 const loadbar = document.getElementById("loadbar");
 const exampleSel = document.getElementById("example");
 const stats = document.getElementById("stats");
+
+// the run button's face: filled copper while it means Run, quiet outline
+// once it means Stop — the fill always names the go action
+function setRunFace(label) {
+  runBtn.textContent = label;
+  runBtn.classList.toggle("primary", label === "Run");
+}
 
 let ta = () => ed.view.state.doc.toString(); // the editor document
 let ed;
@@ -132,18 +146,19 @@ const LS_EX = "rho-playground-example";
 const LS_STDIN = "rho-playground-stdin";
 
 function codeFromHash() {
-  if (location.hash.startsWith("#code=")) {
-    try {
-      return decodeURIComponent(escape(atob(decodeURIComponent(location.hash.slice(6)))));
-    } catch {
-      return null;
+  if (!location.hash.startsWith("#code=")) return null;
+  try {
+    const params = new URLSearchParams(location.hash.slice(1));
+    const code = decodeURIComponent(escape(atob(decodeURIComponent(params.get("code")))));
+    const stdinB64 = params.get("stdin");
+    if (stdinB64) {
+      stdinTa.value = decodeURIComponent(escape(atob(decodeURIComponent(stdinB64))));
+      localStorage.setItem(LS_STDIN, stdinTa.value);
     }
+    return code;
+  } catch {
+    return null;
   }
-  return null;
-}
-
-function shareHash(code) {
-  return "#code=" + encodeURIComponent(btoa(unescape(encodeURIComponent(code))));
 }
 
 function setStatus(html) {
@@ -157,12 +172,51 @@ function showOut(text, cls) {
   out.appendChild(span);
 }
 
+// the program is reading and its stdin has run dry: offer a line, the
+// terminal way. The run cap pauses while the user thinks — the wall clock
+// must never kill a program that is simply waiting on its reader — and a
+// fresh budget arms once the line is handed over.
+function showTermLine(id) {
+  if (capTimer) {
+    clearTimeout(capTimer);
+    capTimer = null;
+  }
+  setStatus(`<span class="dim">waiting on stdin…</span>`);
+  const row = document.createElement("div");
+  row.className = "term-line";
+  row.innerHTML =
+    `<span class="term-glyph">❯</span>` +
+    `<input type="text" spellcheck="false" autocomplete="off" autocapitalize="off" ` +
+    `placeholder="stdin — type a line, Enter to send">` +
+    `<button class="term-eof" title="close stdin (Ctrl+D)">EOF</button>`;
+  out.appendChild(row);
+  out.scrollTop = out.scrollHeight;
+  const input = row.querySelector("input");
+  input.focus();
+  const send = (text) => {
+    if (!running) return;
+    row.remove();
+    if (text != null) {
+      showOut("❯ " + text, "dim"); // echo, the terminal way
+      worker.postMessage({ kind: "stdin-give", id, text });
+    } else {
+      worker.postMessage({ kind: "stdin-give", id }); // no text: EOF
+    }
+    armCap(RUN_CAP_MS, "run"); // a fresh budget per line
+  };
+  input.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") send(input.value);
+    else if (ev.key === "d" && ev.ctrlKey) send(null);
+  });
+  row.querySelector(".term-eof").addEventListener("click", () => send(null));
+}
+
 let running = false;
 
 function stopRun() {
   stopWorker();
   running = false;
-  runBtn.textContent = "Run";
+  setRunFace("Run");
   runBtn.disabled = false;
   showOut("stopped — the worker was terminated.", "err");
   setStatus(`<span class="bad">stopped</span> by hand`);
@@ -174,7 +228,7 @@ async function doRun() {
     return;
   }
   running = true;
-  runBtn.textContent = "Stop";
+  setRunFace("Stop");
   out.textContent = "";
   setStatus("loading the compiler…"); // honest: a cold click waits on the download first
   const id = ++workerId;
@@ -200,11 +254,11 @@ async function doRun() {
       `running… <span>·</span> compiled ${built.ms.toFixed(0)} ms <span>·</span> ${built.program.length.toLocaleString()} bytes`,
     );
     armCap(RUN_CAP_MS, "run");
-    worker.postMessage({ id, program: built.program, stdin: stdinTa.value });
+    worker.postMessage({ id, program: built.program, stdin: stdinTa.value, interactive: true });
   } catch (err) {
     stopWorker();
     running = false;
-    runBtn.textContent = "Run";
+    setRunFace("Run");
     showOut(String(err.message || err), "err");
     setStatus(`<span class="bad">compile error</span>`);
     return;
@@ -236,18 +290,18 @@ function hideProgress() {
 
 function onWorkerMessage(m) {
   if (m.kind === "progress") {
-    if (m.loaded === 888) {
-      // TEMP: stash the worker's second artifact for the probe to pull
-      const w = new Worker("assets/worker.js", { type: "module" }); // never started; placeholder no-op
-      w.terminate();
-      console.log("PROGRESS-BUF-STASHED:", !!self.__secondProg || true);
-    }
     showProgress(m.loaded, m.total, m.done);
     return;
   }
   if (m.kind === "ready") {
     hideProgress();
+    workerInteractive = !!m.interactive;
     setChip("ready");
+    // first diagnostics, no edit required: the worker's fetch has warmed
+    // the HTTP cache, so the checker's main-thread copy of the compiler
+    // costs nothing extra. A run started from a shared hash re-arms in
+    // scheduleCheck until the page is idle again.
+    scheduleCheck();
     if (!running) {
       setStatus(`<span class="dim">ready — press <kbd>⌘</kbd><kbd>↵</kbd> to run</span>`);
     }
@@ -264,10 +318,14 @@ function onWorkerMessage(m) {
   if (m.kind === "phase" && m.phase === "boot") {
     return; // the page drives compile-phase status itself
   }
+  if (m.kind === "stdin-need") {
+    showTermLine(m.id);
+    return;
+  }
   if (m.kind === "done") {
     stopWorker();
     running = false;
-    runBtn.textContent = "Run";
+    setRunFace("Run");
     if (!m.ok) {
       showOut(m.stderr, "err");
       setStatus(
@@ -290,7 +348,7 @@ function onWorkerMessage(m) {
 function onWorkerError(e) {
   stopWorker();
   running = false;
-  runBtn.textContent = "Run";
+  setRunFace("Run");
   showOut("runtime error: " + (e.message || "worker failed"), "err");
   setStatus(`<span class="bad">failed</span>`);
 }
@@ -355,12 +413,47 @@ ed = createRhoEditor({
   onChange: (v) => {
     localStorage.setItem(LS_KEY, v);
     localStorage.removeItem(LS_EX);
+    scheduleCheck();
   },
   onRun: doRun,
   onFormat: doFormat,
 });
 fmtBtn.addEventListener("click", doFormat);
 setChip("loading");
+
+// live diagnostics: on idle, run the compiler's check and paint what it
+// finds — squiggles + gutter markers through the editor's lint system
+let checkTimer = null;
+let checkSeq = 0;
+function scheduleCheck() {
+  if (checkTimer) clearTimeout(checkTimer);
+  checkTimer = setTimeout(async () => {
+    checkTimer = null;
+    if (running) {
+      // a live run owns the page; look again once it settles
+      scheduleCheck();
+      return;
+    }
+    const seq = ++checkSeq;
+    try {
+      const r = await checkSource(ta());
+      if (seq !== checkSeq) return;
+      const diags = parseDiagnostics(r.stderr);
+      ed.setDiagnostics(diags);
+      chipErrorCount = diags.length;
+      setChip("ready", chipErrorCount);
+    } catch (_) {
+      // a failed check run is silent: the next edit retries
+    }
+  }, 700);
+}
+
+// "/main.rho:3:20: error: malformed number" → { line, col, severity, message }
+// — parsing lives in compiler.js now (the tutorial reuses it).
+
+// the worker can suspend a run on an empty stdin read (JSPI); when it
+// cannot, reads past the provided stdin just see EOF
+let workerInteractive = false;
 // a CDP handle for the walkthrough probes (real-input editor drives)
 window.__rhoEditor = ed;
 if (initialEx) exampleSel.value = initialEx;

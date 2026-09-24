@@ -94,6 +94,23 @@ export async function compile(source) {
   };
 }
 
+// Typecheck rho source without emitting: the compiler's `check` — the
+// same diagnostics the LSP layer surfaces. Resolves { ok, stderr, ms }.
+export async function checkSource(source) {
+  await initCompiler();
+  const bytes = cachedBytes;
+  const fs = createFS();
+  fs.write("/main.rho", new TextEncoder().encode(source));
+  const t0 = performance.now();
+  const result = await runWasm(bytes, {
+    args: ["rho", "check", "/main.rho"],
+    fs,
+    module: cachedModule,
+  });
+  const ms = performance.now() - t0;
+  return { ok: result.exitCode === 0, stderr: result.stderr, ms };
+}
+
 // Format rho source with the compiler's own `fmt` (canonical form to
 // stdout; diagnostics to stderr, nonzero exit on syntax errors).
 // Resolves { ok, text, stderr, ms }.
@@ -118,10 +135,26 @@ export async function fmtSource(source) {
   };
 }
 
-// Run a compiled program. stdin (a string) feeds fd 0 line-by-line —
-// reads past its end see EOF. Returns { stdout, stderr, exitCode, ms }.
-export async function runProgram(program, stdin = null) {
+// "/main.rho:3:20: error: malformed number" → { line, col, severity, message }
+// — the shape the editor's lint layer consumes (both surfaces).
+export function parseDiagnostics(stderr) {
+  const diags = [];
+  for (const line of stderr.split("\n")) {
+    const m = /^\/?main\.rho:(\d+):(\d+): (error|warning): (.*)$/.exec(line);
+    if (m) {
+      diags.push({ line: +m[1], col: +m[2], severity: m[3], message: m[4] });
+    }
+  }
+  return diags;
+}
+
+// Run a compiled program. stdin (a string) feeds fd 0 line-by-line — reads
+// past its end see EOF, or, when stdinProvider is given and the browser
+// speaks JSPI, the run SUSPENDS there and the provider resolves the next
+// chunk (a typed line, or null for EOF). Returns { stdout, stderr,
+// exitCode, ms }.
+export async function runProgram(program, stdin = null, stdinProvider = null) {
   const t0 = performance.now();
-  const result = await runWasm(program, { stdin });
+  const result = await runWasm(program, { stdin, stdinProvider });
   return { ...result, ms: performance.now() - t0 };
 }

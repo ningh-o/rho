@@ -53,13 +53,24 @@ const ERRNO = {
 };
 
 // fd table: 0 stdin, 1 stdout, 2 stderr, 3+ = preopen ("/"), then open files
-export function createWasi({ args = [], fs = null, stdin = null, onStdout = null, onStderr = null, onExit = null, print = null }) {
+export function createWasi({ args = [], fs = null, stdin = null, stdinProvider = null, onStdout = null, onStderr = null, onExit = null, print = null }) {
   let exited = null;
   let outBuf = [];
   let errBuf = [];
-  // fd 0 serves the caller-supplied bytes; reads past the end see EOF
+  // fd 0 serves the caller-supplied bytes first; when they run dry and a
+  // stdinProvider is configured, each further read suspends (JSPI) until
+  // the provider hands over the next chunk — a line of typed stdin, or
+  // null for EOF. reads see one queue: static prefix, then given bytes.
   const stdinBytes = stdin ? new TextEncoder().encode(stdin) : new Uint8Array(0);
   let stdinPos = 0;
+  let given = new Uint8Array(0);
+  let givenPos = 0;
+  // suspending imports only work when the JSPI API is there to wrap them;
+  // without it a provider is silently ignored (reads see EOF past the
+  // static prefix) and every run stays fully synchronous
+  const interactive = !!stdinProvider &&
+    typeof WebAssembly.Suspending === "function" &&
+    typeof WebAssembly.promising === "function";
 
   function flushText(fd) {
     const buf = fd === 1 ? outBuf : errBuf;
@@ -95,6 +106,52 @@ export function createWasi({ args = [], fs = null, stdin = null, onStdout = null
 
   const openFiles = new Map(); // fd -> {path}
   let nextFd = 4;
+
+  // the suspending fd 0 read: drains the static prefix and the given bytes,
+  // and when both run dry awaits the provider — the wasm execution
+  // suspends there until the embedder resolves the next chunk (a typed
+  // line) or null (EOF). Only reached when `interactive` is true, so the
+  // returned promise is always wrapped in WebAssembly.Suspending by the
+  // embedder before instantiation.
+  const readStdinSuspending = async (iovsPtr, iovsLen, nreadPtr) => {
+    let total = 0;
+    for (let i = 0; i < iovsLen; i++) {
+      const ptr = view.getUint32(iovsPtr + i * 8, true);
+      const len = view.getUint32(iovsPtr + i * 8 + 4, true);
+      let n = 0;
+      while (n < len) {
+        if (stdinPos < stdinBytes.length) {
+          const take = Math.min(len - n, stdinBytes.length - stdinPos);
+          new Uint8Array(memory.buffer, ptr + n, take).set(stdinBytes.subarray(stdinPos, stdinPos + take));
+          stdinPos += take;
+          n += take;
+        } else if (givenPos < given.length) {
+          const take = Math.min(len - n, given.length - givenPos);
+          new Uint8Array(memory.buffer, ptr + n, take).set(given.subarray(givenPos, givenPos + take));
+          givenPos += take;
+          n += take;
+        } else if (stdinProvider) {
+          const chunk = await stdinProvider();
+          if (chunk && chunk.length) {
+            const tail = given.subarray(givenPos);
+            const next = new Uint8Array(tail.length + chunk.length);
+            next.set(tail);
+            next.set(chunk, tail.length);
+            given = next;
+            givenPos = 0;
+            continue;
+          }
+          break; // EOF
+        } else {
+          break;
+        }
+      }
+      total += n;
+      if (n < len) break; // stdin is at EOF for now: a short read
+    }
+    view.setUint32(nreadPtr, total, true);
+    return 0;
+  };
 
   const imports = {
     args_sizes_get(argcPtr, argvBufSizePtr) {
@@ -169,6 +226,7 @@ export function createWasi({ args = [], fs = null, stdin = null, onStdout = null
       checkView();
       view.setUint32(nreadPtr, 0, true);
       if (fd === 0) {
+        if (interactive) return readStdinSuspending(iovsPtr, iovsLen, nreadPtr);
         let total = 0;
         for (let i = 0; i < iovsLen && stdinPos < stdinBytes.length; i++) {
           const ptr = view.getUint32(iovsPtr + i * 8, true);
@@ -339,6 +397,9 @@ export function createWasi({ args = [], fs = null, stdin = null, onStdout = null
   return {
     wasi_snapshot_preview1: imports,
     setMemory,
+    get interactive() {
+      return interactive;
+    },
     get exitCode() {
       return exited;
     },
@@ -372,11 +433,22 @@ export async function runWasm(bytes, options) {
   const needsMemory = WebAssembly.Module.imports(module).some((i) => i.name === "memory" && i.module === "env");
   const imports = { wasi_snapshot_preview1: wasi.wasi_snapshot_preview1 };
   if (needsMemory) imports.env = { memory: options.memory };
+  // suspendable stdin (only when createWasi built the async fd_read, which
+  // requires both JSPI APIs): wrap it so a dry read suspends the program,
+  // and drive the entry through promising() so it can resume when the
+  // embedder hands over the next line
+  if (wasi.interactive) {
+    imports.wasi_snapshot_preview1.fd_read =
+      new WebAssembly.Suspending(imports.wasi_snapshot_preview1.fd_read);
+  }
   const instance = await WebAssembly.instantiate(module, imports);
   const mem = instance.exports.memory || options.memory;
   if (mem) wasi.setMemory(mem);
   try {
-    instance.exports._start();
+    const start = wasi.interactive
+      ? WebAssembly.promising(instance.exports._start)
+      : instance.exports._start;
+    await start();
   } catch (e) {
     if (!(e instanceof WasiExit)) throw e;
   }

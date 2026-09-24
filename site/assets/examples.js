@@ -6,8 +6,9 @@ export const EXAMPLES = [
   {
     id: "greet",
     title: "Input: read_line",
-    code: `// stdin rides the input box under the editor: one line per
-// read_line(), newline stripped, "" at EOF. Try typing a name!
+    code: `// run me: the program suspends on its read and a terminal row
+// appears — type a name, press Enter. An empty stdin reads as ""
+// (end of input), and the stranger greets you instead.
 fn main() -> i32 {
   let name: string = read_line();
   if name == "" {

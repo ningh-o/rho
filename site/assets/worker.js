@@ -6,10 +6,21 @@
 // inside a worker context — the STARTER program's artifact was rejected
 // by the worker's validator while the byte-identical main-thread artifact
 // validated everywhere.
+//
+// Interactive stdin: an {interactive: true} run whose program reads past
+// the provided stdin SUSPENDS here (JSPI suspending imports) and asks the
+// page — {kind: "stdin-need"} — which answers {kind: "stdin-give", text}
+// (a line; the newline is added here) or {kind: "stdin-give"} (no text:
+// EOF). A worker that cannot suspend never asks; reads see EOF.
 
 import { initCompiler, runProgram } from "./compiler.js";
 
-// the page warms the worker at load; runs queue behind it in message order
+const INTERACTIVE =
+  typeof WebAssembly.Suspending === "function" &&
+  typeof WebAssembly.promising === "function";
+
+let giveResolver = null;
+
 self.onmessage = async (e) => {
   const msg = e.data;
   const onProgress = (loaded, total, done) =>
@@ -18,16 +29,32 @@ self.onmessage = async (e) => {
     try {
       postMessage({ kind: "phase", phase: "boot" });
       await initCompiler(onProgress);
-      postMessage({ kind: "ready" });
+      postMessage({ kind: "ready", interactive: INTERACTIVE });
     } catch (err) {
       postMessage({ kind: "boot-error", stderr: String(err.message || err) });
     }
     return;
   }
-  const { id, program, stdin } = msg;
+  if (msg.kind === "stdin-give") {
+    if (giveResolver) {
+      const resolve = giveResolver;
+      giveResolver = null;
+      resolve(msg.text == null ? null : new TextEncoder().encode(msg.text + "\n"));
+    }
+    return;
+  }
+  const { id, program, stdin, interactive } = msg;
+  const stdinProvider =
+    INTERACTIVE && interactive
+      ? () =>
+          new Promise((resolve) => {
+            giveResolver = resolve;
+            postMessage({ kind: "stdin-need", id });
+          })
+      : null;
   try {
     const t0 = performance.now();
-    const run = await runProgram(program, stdin || null);
+    const run = await runProgram(program, stdin || null, stdinProvider);
     postMessage({
       kind: "done",
       id,

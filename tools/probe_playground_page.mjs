@@ -187,6 +187,19 @@ for (let i = 1; i <= 10; i++) {
 }
 if (!fmtOk) console.log('FMT CHECK: not applied in 5s');
 
+// live diagnostics: set a type-broken doc, expect squiggles/gutter markers
+const lintSet = await evaljs(`(function(){
+  window.__rhoEditor.setDoc(decodeURIComponent(escape(atob('Zm4gbWFpbigpIC0+IGkzMiB7CiAgbGV0IHg6IGkzMiA9ICJubyI7CiAgcmV0dXJuIDA7Cn0K'))));
+  return true;
+})()`);
+let lintSeen = false;
+for (let i = 1; i <= 12; i++) {
+  await new Promise((r) => setTimeout(r, 500));
+  const has = await evaljs(`!!document.querySelector('.cm-lintRange-error, .cm-lint-marker')`);
+  if (has) { lintSeen = true; console.log('lint markers at', i * 0.5, 's'); break; }
+}
+if (!lintSeen) console.log('LINT CHECK FAILED: no markers');
+
 // put hello world in the editor and click Run — the real controls
 const setup = await evaljs(`(function(){
   window.__rhoEditor.setDoc(decodeURIComponent(escape(atob('Zm4gbWFpbigpIC0+IGkzMiB7CiAgcHJpbnRmKCJoZWxsbywgd29ybGRcbiIpOwogIHJldHVybiAwOwp9Cg=='))));
