@@ -4,7 +4,7 @@
 
 import { createRhoEditor } from "./codemirror.bundle.js";
 import { EXAMPLES, STARTER } from "./examples.js";
-import { initCompiler, compile } from "./compiler.js";
+import { initCompiler, compile, fmtSource } from "./compiler.js";
 
 // Compile + run happen in a worker: a long-running program can then never
 // freeze the page. The worker is terminated on Stop and after the caps.
@@ -48,6 +48,46 @@ function stopWorker() {
   }
 }
 
+function setChip(state) {
+  chip.classList.remove("chip-ok", "chip-bad");
+  if (state === "ready") {
+    chip.textContent = "lsp ready";
+    chip.classList.add("chip-ok");
+    chip.title = "completion and formatting are ready";
+  } else if (state === "failed") {
+    chip.textContent = "lsp failed";
+    chip.classList.add("chip-bad");
+    chip.title = "the compiler failed to load — retry the page";
+  } else {
+    chip.textContent = "lsp loading";
+    chip.title = "the compiler is still downloading";
+  }
+}
+
+async function doFormat() {
+  if (running) return;
+  fmtBtn.disabled = true;
+  setStatus("formatting…");
+  try {
+    await initCompiler();
+    const r = await fmtSource(ta());
+    if (!r.ok) {
+      showOut(r.stderr || "formatting failed", "err");
+      setStatus(`<span class="bad">format error</span>`);
+      return;
+    }
+    ed.setDoc(r.text);
+    localStorage.setItem(LS_KEY, r.text);
+    localStorage.removeItem(LS_EX);
+    setStatus(`formatted <span>·</span> ${r.ms.toFixed(0)} ms`);
+  } catch (err) {
+    setStatus(`<span class="bad">format error</span>`);
+    showOut(String(err.message || err), "err");
+  } finally {
+    fmtBtn.disabled = false;
+  }
+}
+
 function spawnWorker() {
   worker = new Worker("assets/worker.js", { type: "module" });
   worker.onmessage = (e) => onWorkerMessage(e.data);
@@ -71,11 +111,12 @@ function armCap(ms, phase) {
     showOut(CAP_MESSAGE[capPhase](seconds), "err");
     const label = capPhase === "compile" ? "compile" : capPhase === "boot" ? "load" : "run";
     setStatus(`<span class="bad">stopped</span> at the ${label} cap`);
-    render();
   }, ms);
 }
 
 const stdinTa = document.getElementById("stdin");
+const fmtBtn = document.getElementById("fmt");
+const chip = document.getElementById("lspchip");
 const out = document.getElementById("output");
 const status = document.getElementById("status");
 const runBtn = document.getElementById("run");
@@ -206,6 +247,7 @@ function onWorkerMessage(m) {
   }
   if (m.kind === "ready") {
     hideProgress();
+    setChip("ready");
     if (!running) {
       setStatus(`<span class="dim">ready — press <kbd>⌘</kbd><kbd>↵</kbd> to run</span>`);
     }
@@ -213,6 +255,7 @@ function onWorkerMessage(m) {
   }
   if (m.kind === "boot-error") {
     hideProgress();
+    setChip("failed");
     setStatus(`<span class="bad">could not load the compiler</span>`);
     showOut(m.stderr, "err");
     return;
@@ -314,7 +357,10 @@ ed = createRhoEditor({
     localStorage.removeItem(LS_EX);
   },
   onRun: doRun,
+  onFormat: doFormat,
 });
+fmtBtn.addEventListener("click", doFormat);
+setChip("loading");
 // a CDP handle for the walkthrough probes (real-input editor drives)
 window.__rhoEditor = ed;
 if (initialEx) exampleSel.value = initialEx;

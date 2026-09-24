@@ -24,6 +24,7 @@
   <main class="play-main">
     <section class="pane">
       <div class="pane-head">
+        <span class="chip" id="lspchip" title="editor language features">lsp loading</span>
         <select id="example">
           <option value="">examples…</option>
         </select>
@@ -42,7 +43,8 @@
       <div class="pane-head">
         <span>output</span>
         <span class="grow"></span>
-        <button class="run" id="run" style="padding: 5px 18px;">Run</button>
+        <button class="run" id="fmt" style="padding: 5px 12px;">Format</button>
+          <button class="run" id="run" style="padding: 5px 18px;">Run</button>
       </div>
       <div class="output" id="output">
         <span class="hint">the output of your program appears here</span>

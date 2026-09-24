@@ -204,7 +204,7 @@ const rhoTheme = EditorView.theme({
 /**
  * Mount a rho CodeMirror editor. Returns { view, setDoc, focus, destroy }.
  * @param {{ parent: HTMLElement, value: string, onChange: (v: string) => void,
- *            onRun: () => void }} opts
+ *            onRun: () => void, onFormat?: () => void }} opts
  */
 export function createRhoEditor(opts) {
   const state = EditorState.create({
@@ -226,6 +226,7 @@ export function createRhoEditor(opts) {
       }),
       keymap.of([
         { key: 'Mod-Enter', run: () => { opts.onRun(); return true; } },
+        { key: 'Shift-Alt-f', run: () => { if (opts.onFormat) { opts.onFormat(); return true; } return false; } },
         { key: 'Enter', run: rhoNewLine },
         ...closeBracketsKeymap,
         ...historyKeymap,

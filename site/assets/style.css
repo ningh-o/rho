@@ -442,3 +442,21 @@ kbd {
 
 .spec-loading { color: var(--ink-faint); }
 .spec-foot { margin-top: 48px; font-size: 13px; color: var(--ink-faint); }
+
+/* the lsp chip: language-feature readiness at a glance */
+.chip {
+  font: 11px/1 var(--mono);
+  letter-spacing: 0.04em;
+  color: var(--ink-dim);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 10px;
+}
+.chip-ok {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 40%, var(--line));
+}
+.chip-bad {
+  color: var(--err);
+  border-color: color-mix(in srgb, var(--err) 40%, var(--line));
+}

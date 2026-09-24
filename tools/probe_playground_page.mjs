@@ -132,6 +132,7 @@ ws.onmessage = (e) => {
 await send("Page.navigate", { url: base + "/playground.html" });
 await new Promise((r) => setTimeout(r, process.env.SLOW_WASM_KBPS ? 1200 : 3000)); // slow mode: click while the download is still running
 
+  await new Promise((r) => setTimeout(r, 3000)); // let the page modules load
 // diagnose: compile the STARTER in-page (worker-free) and ship the bytes
 const diag = await evaljs(`(async () => {
   const { STARTER } = await import('./assets/examples.js');
@@ -164,11 +165,32 @@ console.log('starter diag: ok=' + d.ok + ' len=' + (d.len ?? d.stderr ?? ''));
 if (d.ok) {
   (await import('node:fs')).writeFileSync('build/probe/starter-page.wasm', Buffer.from(d.b64, 'base64'));
 }
+// fmt: click Format and verify the doc was rewritten (messy -> canonical)
+const fmtRes = await evaljs(`(function(){
+  const rhoKeys = Object.keys(window).filter(k => k.toLowerCase().includes('rho'));
+  return JSON.stringify({ has: typeof window.__rhoEditor, rhoKeys });
+})()`);
+console.log('handle check:', fmtRes);
+const fmtRes2 = await evaljs(`(function(){
+  const doc0 = window.__rhoEditor.view.state.doc.toString();
+  window.__rhoEditor.setDoc(decodeURIComponent(escape(atob('Zm4gbWFpbigpIC0+IGkzMiB7CmxldCB4PTE7CnJldHVybiAwOwp9Cg=='))));
+  return true;
+})()`);
+console.log('fmt setup:', fmtRes);
+  if (consoleLines.length) { console.log('PAGE EXCEPTIONS:'); consoleLines.forEach(c => console.log('  ', c.slice(0, 300))); }
+await evaljs(`document.getElementById('fmt').click(); true`);
+let fmtOk = false;
+for (let i = 1; i <= 10; i++) {
+  await new Promise((r) => setTimeout(r, 500));
+  const doc = await evaljs(`window.__rhoEditor.view.state.doc.toString()`);
+  if (typeof doc === 'string' && doc.includes('let x = 1;')) { fmtOk = true; console.log('fmt ok at', i * 0.5, 's:', JSON.stringify(doc.slice(0, 60))); break; }
+}
+if (!fmtOk) console.log('FMT CHECK: not applied in 5s');
+
 // put hello world in the editor and click Run — the real controls
 const setup = await evaljs(`(function(){
-  const ta = document.getElementById('input');
+  window.__rhoEditor.setDoc(decodeURIComponent(escape(atob('Zm4gbWFpbigpIC0+IGkzMiB7CiAgcHJpbnRmKCJoZWxsbywgd29ybGRcbiIpOwogIHJldHVybiAwOwp9Cg=='))));
   ta.value = 'fn main() -> i32 {\\n  printf("hello, world\\\\n");\\n  return 0;\\n}\\n';
-  ta.dispatchEvent(new Event('input'));
   return { hasRun: !!document.getElementById('run'), status: document.getElementById('status').textContent };
 })()`);
 console.log("setup:", JSON.stringify(setup));

@@ -94,6 +94,30 @@ export async function compile(source) {
   };
 }
 
+// Format rho source with the compiler's own `fmt` (canonical form to
+// stdout; diagnostics to stderr, nonzero exit on syntax errors).
+// Resolves { ok, text, stderr, ms }.
+export async function fmtSource(source) {
+  const bytes = await fetchCompiler();
+  const seq = ++compileSeq;
+  const fs = createFS();
+  fs.write("/main.rho", new TextEncoder().encode(source));
+  const t0 = performance.now();
+  const result = await runWasm(bytes, {
+    args: ["rho", "fmt", "/main.rho"],
+    fs,
+    module: cachedModule,
+  });
+  const ms = performance.now() - t0;
+  if (seq !== compileSeq) return { ok: false, stale: true, text: "", stderr: "", ms };
+  return {
+    ok: result.exitCode === 0,
+    text: result.stdout,
+    stderr: result.stderr.trim(),
+    ms,
+  };
+}
+
 // Run a compiled program. stdin (a string) feeds fd 0 line-by-line —
 // reads past its end see EOF. Returns { stdout, stderr, exitCode, ms }.
 export async function runProgram(program, stdin = null) {
