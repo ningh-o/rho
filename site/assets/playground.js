@@ -7,8 +7,27 @@ import { attachCompletion } from "./completion.js";
 
 // Compile + run happen in a worker: a long-running program can then never
 // freeze the page. The worker is terminated on Stop and after the caps.
-const COMPILE_CAP_MS = 20000; // cold fetch + compiling the compiler itself
+const BOOT_CAP_MS = 120000; // the cold download of the compiler — the network's budget, not rho's
+const COMPILE_CAP_MS = 20000; // armed only once the compiler is loaded: this cap measures rho
 const RUN_CAP_MS = 10000;
+
+// one honest message per phase
+const CAP_MESSAGE = {
+  boot: (seconds) =>
+    `stopped after ${seconds} s — the compiler is still downloading. ` +
+    `The network is the bottleneck, not rho: this page ships a ~2.5 MB ` +
+    `compiler, and a fresh worker restarts the download from zero. Try ` +
+    `again once the load bar has finished.`,
+  compile: (seconds) =>
+    `stopped after ${seconds} s — the program was still compiling and has ` +
+    `been terminated. A playground-sized program should never take this ` +
+    `long to compile; if you can reproduce this, the compiler wants the ` +
+    `bug report.`,
+  run: (seconds) =>
+    `stopped after ${seconds} s — the program was still running and has ` +
+    `been terminated. rho runs programs for as long as they take; if ` +
+    `this surprised you, look for runaway recursion or an unbounded loop.`,
+};
 
 let worker = null;
 let workerId = 0;
@@ -43,19 +62,14 @@ function armCap(ms, phase) {
   capPhase = phase;
   capStart = performance.now();
   capTimer = setTimeout(() => {
-    const phaseLabel = capPhase === "compile" ? "compiling" : "running";
     stopWorker();
     running = false;
     runBtn.textContent = "Run";
     runBtn.disabled = false;
     const seconds = ((performance.now() - capStart) / 1000).toFixed(0);
-    showOut(
-      `stopped after ${seconds} s — the program was still ${phaseLabel} and has ` +
-        `been terminated. rho runs programs for as long as they take; if ` +
-        `this surprised you, look for runaway recursion or an unbounded loop.`,
-      "err",
-    );
-    setStatus(`<span class="bad">stopped</span> at the ${phaseLabel === "compiling" ? "compile" : "run"} cap`);
+    showOut(CAP_MESSAGE[capPhase](seconds), "err");
+    const label = capPhase === "compile" ? "compile" : capPhase === "boot" ? "load" : "run";
+    setStatus(`<span class="bad">stopped</span> at the ${label} cap`);
     render();
   }, ms);
 }
@@ -131,10 +145,10 @@ async function doRun() {
   running = true;
   runBtn.textContent = "Stop";
   out.textContent = "";
-  setStatus("compiling…");
+  setStatus("loading the compiler…"); // honest: a cold click waits on the download first
   const id = ++workerId;
   if (!worker) spawnWorker();
-  armCap(COMPILE_CAP_MS, "compile");
+  armCap(BOOT_CAP_MS, "boot");
   // queues behind the boot warm in worker message order: even a cold first
   // click waits for the compiler, then compiles
   worker.postMessage({ id, source: ta.value });
@@ -170,7 +184,7 @@ function onWorkerMessage(m) {
   }
   if (m.kind === "ready") {
     hideProgress();
-    if (!running.current) {
+    if (!running) {
       setStatus(`<span class="dim">ready — press <kbd>⌘</kbd><kbd>↵</kbd> to run</span>`);
     }
     return;
@@ -184,6 +198,7 @@ function onWorkerMessage(m) {
   if (m.id !== workerId) return;
   if (m.kind === "phase" && (m.phase === "boot" || m.phase === "compile")) {
     hideProgress(); // the download is over; the rest is compute
+    if (m.phase === "compile") armCap(COMPILE_CAP_MS, "compile"); // re-arm: rho's budget, not the network's
     setStatus(m.phase === "boot" ? "loading the compiler…" : "compiling…");
     return;
   }

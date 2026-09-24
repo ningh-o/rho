@@ -60,13 +60,11 @@ self.onmessage = async (e) => {
     });
   } catch (err) {
     const raw = String((err && err.message) || err);
-    // a blown host call stack surfaces as a plain JS RangeError — say what
-    // it actually is and how to fix it, instead of leaking engine jargon
+    // a blown host call stack surfaces as a plain JS RangeError — the page
+    // already labels the stage (compile/run), so one honest word suffices
     const stderr = /maximum call stack|call stack exhausted/i.test(raw)
-      ? "stack overflow: recursion exceeded the host's call-stack limit " +
-        "(browsers give wasm about 1 MB). Shrink the recursion, or make it " +
-        "tail-recursive — rho turns tail calls into loops automatically."
-      : "runtime error: " + raw;
+      ? "stack overflow"
+      : raw;
     postMessage({
       kind: "done",
       id,

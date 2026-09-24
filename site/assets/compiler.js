@@ -4,6 +4,7 @@ import { runWasm, createFS } from "./wasi.js";
 
 let compilerBytesPromise = null;
 let cachedBytes = null;
+let cachedModule = null;
 
 function fetchCompiler(onProgress) {
   if (!compilerBytesPromise) {
@@ -45,16 +46,25 @@ function fetchCompiler(onProgress) {
       cachedBytes = out;
       return out;
     })();
+    // a failed download must not poison every later Run: drop the shared
+    // promise so the next click fetches again
+    compilerBytesPromise.catch(() => {
+      compilerBytesPromise = null;
+    });
   }
   return compilerBytesPromise;
 }
 
 export async function initCompiler(onProgress) {
-  if (cachedBytes) {
-    if (onProgress) onProgress(cachedBytes.length, cachedBytes.length, true);
+  if (cachedModule) {
+    if (onProgress) onProgress(1, 1, true);
     return;
   }
-  await fetchCompiler(onProgress);
+  const bytes = await fetchCompiler(onProgress);
+  // compile the WebAssembly.Module ONCE, at warm: every Run then reuses
+  // it and pays only instantiation — recompiling a ~2.5 MB module per
+  // click put the engine's compile time inside every run's cap
+  if (!cachedModule) cachedModule = await WebAssembly.compile(bytes);
 }
 
 let compileSeq = 0;
@@ -62,7 +72,8 @@ let compileSeq = 0;
 // Compile rho source to a wasm32-wasi program. Resolves with
 // { ok, program, stderr, ms }.
 export async function compile(source) {
-  const bytes = await fetchCompiler();
+  await initCompiler();
+  const bytes = cachedBytes;
   const seq = ++compileSeq;
   const fs = createFS();
   fs.write("/main.rho", new TextEncoder().encode(source));
@@ -70,6 +81,7 @@ export async function compile(source) {
   const result = await runWasm(bytes, {
     args: ["rho", "build", "/main.rho", "--target", "wasm32-wasi", "-o", "/out.wasm"],
     fs,
+    module: cachedModule,
   });
   const ms = performance.now() - t0;
   if (seq !== compileSeq) return { ok: false, stale: true, program: null, stderr: "", ms };

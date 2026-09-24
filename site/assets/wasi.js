@@ -351,7 +351,8 @@ export class WasiExit extends Error {
 // (wasi-sdk programs only call proc_exit for non-zero status).
 export async function runWasm(bytes, options) {
   const wasi = createWasi(options);
-  const module = await WebAssembly.compile(bytes);
+  // a pre-compiled module (the warmed compiler) skips the per-run compile
+  const module = options.module || await WebAssembly.compile(bytes);
   const needsMemory = WebAssembly.Module.imports(module).some((i) => i.name === "memory" && i.module === "env");
   const imports = { wasi_snapshot_preview1: wasi.wasi_snapshot_preview1 };
   if (needsMemory) imports.env = { memory: options.memory };
