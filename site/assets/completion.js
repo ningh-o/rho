@@ -233,6 +233,7 @@ export function attachCompletion(ta) {
 
   // ---- events -----------------------------------------------------------
 
+  measure();
   ta.addEventListener("input", schedule);
   ta.addEventListener("blur", dismiss);
   ta.addEventListener("scroll", dismiss);

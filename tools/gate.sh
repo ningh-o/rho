@@ -73,8 +73,10 @@ run_t() {
 # command name. Perl execs the real wasmtime binary, so the alarm sticks.
 wasmtime_run() {
   t=$1; shift
+  # stdin is /dev/null for every guest: corpus programs that read stdin
+  # (read_line) must see EOF, never an inherited tty that would block
   perl -e 'alarm shift; exec @ARGV or die "wasmtime_run: cannot exec $ARGV[0]: $!\n"' "$t" \
-    wasmtime run --dir . "$@"
+    sh -c 'wasmtime run --dir . "$@" </dev/null' run "$@"
 }
 
 # strip the temporary WE debug prints (scratch lines in boot/src:

@@ -273,6 +273,37 @@ select#example {
   flex: 1;
   min-height: 0;
 }
+.stdin-head {
+  border-top: 1px solid var(--line, #2a2a33);
+}
+textarea.code-edit {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 140px;
+  padding: 10px 12px;
+  background: var(--bg-code);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  outline: 0;
+  resize: vertical;
+  font: 12.5px/1.6 var(--mono);
+}
+textarea.stdin {
+  resize: none;
+  border: 0;
+  outline: 0;
+  min-height: 44px;
+  max-height: 96px;
+  padding: 8px 12px;
+  background: var(--bg-code);
+  color: var(--ink);
+  font: 12.5px/1.55 var(--mono);
+}
+textarea.stdin::placeholder {
+  color: var(--ink-faint);
+}
+
 .editor textarea,
 .editor pre.highlight {
   position: absolute;

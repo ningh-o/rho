@@ -77,6 +77,12 @@ export const PRIMITIVE_TYPES = [
 // by name at call sites, reserved, no import needed.
 export const BUILTINS = [
   {
+    label: "read_line",
+    kind: "fn",
+    detail: "read_line()",
+    doc: "one line from stdin, newline stripped; \"\" at EOF",
+  },
+  {
     label: "printf",
     kind: "fn",
     detail: "printf(fmt, …)",

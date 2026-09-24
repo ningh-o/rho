@@ -118,10 +118,10 @@ for src in $PROGS; do
   fi
   chmod +x "$nimg"
   # behavioral baseline first, then the native exec
-  wr 30 wasmtime run "$wout" 2>/dev/null | strip_dbg > "$G/$name.want"
+  wr 30 wasmtime run "$wout" 2>/dev/null </dev/null | strip_dbg > "$G/$name.want"
   wr 30 "$nimg" > "$G/$name.got" 2>"$G/$name.err"
   rc=$?
-  wr 10 wasmtime run "$wout" >/dev/null 2>&1
+  wr 10 wasmtime run "$wout" >/dev/null 2>&1 </dev/null
   wrc=$?
   ok=1
   cmp -s "$G/$name.want" "$G/$name.got" || ok=0

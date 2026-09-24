@@ -558,6 +558,33 @@ fn __read(fd: i32, buf: *u8, n: usize) -> isize {
   return nr.p as isize;
 }
 
+// one line from stdin, the newline stripped; "" at EOF. Byte-at-a-time so
+// the reader never consumes past the line — a following read_line continues
+// exactly where this one stopped
+fn read_line() -> string {
+  let mut buf: []u8 = make([]u8, 128);
+  let mut n: usize = 0;
+  loop {
+    if n + 1 >= len(buf) {
+      let grown: []u8 = make([]u8, len(buf) * 2);
+      let mut k: usize = 0;
+      while k < n {
+        grown[k] = buf[k];
+        k += 1;
+      }
+      buf = grown;
+    }
+    if __read(0, ((buf.ptr as usize) + n) as *u8, 1) <= 0 {
+      break;
+    }
+    if buf[n] == 10 {
+      break;
+    }
+    n += 1;
+  }
+  return intrinsics.slice_string(buf[0..n]);
+}
+
 fn __write(fd: i32, buf: *u8, n: usize) -> isize {
   let iov = new Iov { p: buf as usize as i32, l: n as i32 };
   let nw = new Iov { p: 0, l: 0 };

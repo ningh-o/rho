@@ -53,10 +53,13 @@ const ERRNO = {
 };
 
 // fd table: 0 stdin, 1 stdout, 2 stderr, 3+ = preopen ("/"), then open files
-export function createWasi({ args = [], fs = null, onStdout = null, onStderr = null, onExit = null, print = null }) {
+export function createWasi({ args = [], fs = null, stdin = null, onStdout = null, onStderr = null, onExit = null, print = null }) {
   let exited = null;
   let outBuf = [];
   let errBuf = [];
+  // fd 0 serves the caller-supplied bytes; reads past the end see EOF
+  const stdinBytes = stdin ? new TextEncoder().encode(stdin) : new Uint8Array(0);
+  let stdinPos = 0;
 
   function flushText(fd) {
     const buf = fd === 1 ? outBuf : errBuf;
@@ -165,6 +168,19 @@ export function createWasi({ args = [], fs = null, onStdout = null, onStderr = n
     fd_read(fd, iovsPtr, iovsLen, nreadPtr) {
       checkView();
       view.setUint32(nreadPtr, 0, true);
+      if (fd === 0) {
+        let total = 0;
+        for (let i = 0; i < iovsLen && stdinPos < stdinBytes.length; i++) {
+          const ptr = view.getUint32(iovsPtr + i * 8, true);
+          const len = view.getUint32(iovsPtr + i * 8 + 4, true);
+          const n = Math.min(len, stdinBytes.length - stdinPos);
+          new Uint8Array(memory.buffer, ptr, n).set(stdinBytes.subarray(stdinPos, stdinPos + n));
+          stdinPos += n;
+          total += n;
+        }
+        view.setUint32(nreadPtr, total, true);
+        return 0;
+      }
       const entry = openFiles.get(fd);
       if (!entry) return ERRNO.BADF;
       const bytes = fs.read(entry.path) || new Uint8Array(0);

@@ -137,11 +137,11 @@ minimal unsafe kernel: raw loads/stores by width, `memcpy`, `mem_set`,
   (`docs/package-manager.md:26-46`). That tool's stdin-only UI and
   hand-written TOML subset (`docs/package-manager.md:49-51, 83-88`) are
   the concrete price already being paid for the missing stdlib.
-- **Spec drift (read_line), spec side resolved**: the spec's claim that
-  a tail defines `read_line()` was amended away in the 2026-09-24 sweep
-  (no tail defines it — grep over the embedded sources in
-  `libs/compiler/prelude_src.rho`); a `read_line` helper still lands
-  with the fs item (§5.2).
+- **LANDED 2026-09-24: `read_line()`** — the wasi tail now defines it
+  (byte-at-a-time, newline stripped, `""` at EOF; corpus/107 pins the
+  EOF path, the site and app pipelines pin the fed-bytes path), and both
+  playgrounds ship a stdin input box that feeds fd 0. The §5.2 fs item
+  remains open around it.
 
 ### 2.5 The gaps, ranked by who feels them
 

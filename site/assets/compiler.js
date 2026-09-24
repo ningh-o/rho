@@ -94,9 +94,10 @@ export async function compile(source) {
   };
 }
 
-// Run a compiled program. Returns { stdout, stderr, exitCode, ms }.
-export async function runProgram(program) {
+// Run a compiled program. stdin (a string) feeds fd 0 line-by-line —
+// reads past its end see EOF. Returns { stdout, stderr, exitCode, ms }.
+export async function runProgram(program, stdin = null) {
   const t0 = performance.now();
-  const result = await runWasm(program, {});
+  const result = await runWasm(program, { stdin });
   return { ...result, ms: performance.now() - t0 };
 }

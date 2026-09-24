@@ -75,6 +75,7 @@ function armCap(ms, phase) {
 }
 
 const ta = document.getElementById("input");
+const stdinTa = document.getElementById("stdin");
 const hl = document.getElementById("highlight");
 const out = document.getElementById("output");
 const status = document.getElementById("status");
@@ -90,6 +91,7 @@ const suggest = attachCompletion(ta);
 
 const LS_KEY = "rho-playground-source";
 const LS_EX = "rho-playground-example";
+const LS_STDIN = "rho-playground-stdin";
 
 function codeFromHash() {
   if (location.hash.startsWith("#code=")) {
@@ -151,7 +153,7 @@ async function doRun() {
   armCap(BOOT_CAP_MS, "boot");
   // queues behind the boot warm in worker message order: even a cold first
   // click waits for the compiler, then compiles
-  worker.postMessage({ id, source: ta.value });
+  worker.postMessage({ id, source: ta.value, stdin: stdinTa.value });
 }
 
 function fmtBytes(n) {
@@ -272,6 +274,10 @@ ta.addEventListener("input", () => {
   render();
   localStorage.setItem(LS_KEY, ta.value);
   localStorage.removeItem(LS_EX);
+});
+stdinTa.value = localStorage.getItem(LS_STDIN) || "";
+stdinTa.addEventListener("input", () => {
+  localStorage.setItem(LS_STDIN, stdinTa.value);
 });
 ta.addEventListener("scroll", render);
 ta.addEventListener("keydown", (e) => {

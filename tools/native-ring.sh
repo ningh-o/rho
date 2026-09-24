@@ -81,7 +81,7 @@ fi
 rm -f "$G"/slice.hello.wasm
 if wr 60 "$SELF" build corpus/001_hello.rho --target wasm32-wasi \
     -o "$G"/slice.hello.wasm >/dev/null 2>&1 && [ -f "$G"/slice.hello.wasm ]; then
-  h=$(wr 15 wasmtime run "$G"/slice.hello.wasm 2>/dev/null)
+  h=$(wr 15 wasmtime run "$G"/slice.hello.wasm 2>/dev/null </dev/null)
   if [ "$h" = "hello, world" ]; then
     pass=$((pass+1))
   else
@@ -115,12 +115,12 @@ if [ -f "$RING" ]; then
       fail=$((fail+1))
       continue
     fi
-    out=$(wr 15 wasmtime run "$G/slice.$name.wasm" 2>/dev/null)
+    out=$(wr 15 wasmtime run "$G/slice.$name.wasm" 2>/dev/null </dev/null)
     want=$(cat "corpus/$name.out" 2>/dev/null)
     wantrc=$(sed -n 's|^// exit: ||p' "corpus/$name.rho" | head -1)
     [ -n "$wantrc" ] || wantrc=0
     rc=$?
-    wr 15 wasmtime run "$G/slice.$name.wasm" >/dev/null 2>&1
+    wr 15 wasmtime run "$G/slice.$name.wasm" >/dev/null 2>&1 </dev/null
     rc=$?
     if [ "$out" = "$want" ] && [ "$rc" = "$wantrc" ]; then
       pass=$((pass+1))

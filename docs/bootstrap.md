@@ -75,7 +75,7 @@ boot/src (C seed)
 ## The seed
 
 `boot/rho-seed.wasm` is a PINNED self-built compiler — the chain head of
-one era (pinned 2026-09-24, SHA-256 `1a814a1a…`, the arm64-correctness
+one era (pinned 2026-09-25, SHA-256 `103e9b1e…`, the arm64-correctness
 build: the store-width law for the store intrinsics plus the native
 backend's encoding and calling-convention fixes; every internal symbol
 compiles to the shortest serial name a..z, aa.. unless `-g` keeps the
@@ -164,7 +164,16 @@ the fixpoint (`73dca867…` → `3242a7ee…` → `f3fe3f90…` → `01685bd9…
 `1a91cdb9…` → `84d30232…`); the seed compiles the mirror to itself,
 byte for byte.
 
-Provenance: `1a814a1a…` — seed-built at the 2026-09-24 browser-stack
+Provenance: `103e9b1e…` — seed-built at the 2026-09-24 stdin round: the
+prelude gained its first user-facing input function, `read_line()`
+(wasi.rho, byte-at-a-time so a reader never consumes past the line;
+"" at EOF), synced into both compilers' embedded copies — programs can
+finally read input on every target. Every guest run in the tree's
+scripts now redirects stdin from /dev/null so the EOF path is the
+deterministic one (an inherited tty could block a corpus run); the real
+fed-bytes path is graded by the site and app pipelines.
+
+Older pin: `1a814a1a…` — seed-built at the 2026-09-24 browser-stack
 round: the wasm emitter gained the fat-function memory-home law
 (`w_memmode`, threshold 2048 vregs) — a function past the threshold
 keeps every vreg in an 8-byte linear-memory home and four scratch
@@ -356,6 +365,7 @@ round.
   `328229a0…`/`65bde005…` pins lived one hour and reverted to this pin
   byte for byte
 - `1a814a1a…` — 2026-09-24, seed-built (supersedes `08277f23…`)
+- `103e9b1e…` — 2026-09-25, seed-built (supersedes `1a814a1a…`)
 <!-- pin-ledger -->
 
 ## The feature subset law (two layers)

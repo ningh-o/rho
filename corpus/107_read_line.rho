@@ -1,0 +1,15 @@
+// exit: 0
+// 107 — read_line(): stdin reads are byte-at-a-time and stop at the
+// newline; at EOF (every runner here feeds closed stdin) it returns "".
+// The differential grades the EOF behavior; the real stdin path is
+// pinned by the site and app pipelines, which feed the shim bytes.
+fn main() -> i32 {
+  let a: string = read_line();
+  let b: string = read_line();
+  let mut mark: string = "empty";
+  if a != "" {
+    mark = "read";
+  }
+  printf("a-len={} b-len={} a-{}\n", len(a) as i64, len(b) as i64, mark);
+  return 0;
+}

@@ -46,7 +46,7 @@ self.onmessage = async (e) => {
       bytes: compiled.program.length,
     });
     stage = "run";
-    const run = await runProgram(compiled.program);
+    const run = await runProgram(compiled.program, msg.stdin || null);
     postMessage({
       kind: "done",
       id,

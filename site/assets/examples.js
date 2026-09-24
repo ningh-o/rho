@@ -4,6 +4,23 @@
 
 export const EXAMPLES = [
   {
+    id: "greet",
+    title: "Input: read_line",
+    code: `// stdin rides the input box under the editor: one line per
+// read_line(), newline stripped, "" at EOF. Try typing a name!
+fn main() -> i32 {
+  let name: string = read_line();
+  if name == "" {
+    printf("hello, stranger\\n");
+    return 0;
+  }
+  printf("hello, {}\\n", name);
+  return 0;
+}
+`,
+    expect: "hello, stranger\n",
+  },
+  {
     id: "tour",
     title: "A taste of rho",
     code: `// Algebraic data, exhaustively matched.

@@ -305,7 +305,7 @@ static int cmd_build_run_test(const char *cmd, int argc, char **argv) {
         continue;
       }
       SB run_cmd = {0};
-      sb_printf(&run_cmd, "%s > /tmp/rho_out_XXXX 2>/dev/null", built);
+      sb_printf(&run_cmd, "%s > /tmp/rho_out_XXXX 2>/dev/null < /dev/null", built);
       // use a fixed temp name for determinism
       const char *tmpout = arena_printf("/tmp/rho_out_%s", name);
       SB rc = {0};

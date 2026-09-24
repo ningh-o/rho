@@ -12,7 +12,11 @@ happen in a worker so a runaway loop can be stopped from the UI.
 | `index.html`     | landing page                                        |
 | `tutorial.html`  | the tutorial (examples shared with the playground)  |
 | `playground.html`| the editor + compiler playground                    |
-| `spec.html`      | spec reader over `spec/` markdown                   |
+
+The playground feeds the stdin box (under the editor) to the program's
+fd 0 — one `read_line()` per line, EOF past the end. The caps are
+phase-scoped: the load cap (120 s) covers the compiler download, the
+compile cap (20 s) and run cap (10 s) measure rho only.| `spec.html`      | spec reader over `spec/` markdown                   |
 
 ## Assets (`assets/`)
 

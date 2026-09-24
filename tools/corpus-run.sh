@@ -23,7 +23,7 @@ SELF=${SELF_WASM:-build/rho.wasm}
 
 wt() {
   perl -e 'alarm shift; exec @ARGV or die "cannot exec $ARGV[0]\n"' "$1" \
-    wasmtime run --dir . "${@:2}"
+    wasmtime run --dir . "${@:2}" </dev/null
 }
 
 strip_dbg() {
