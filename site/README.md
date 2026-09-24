@@ -14,9 +14,13 @@ happen in a worker so a runaway loop can be stopped from the UI.
 | `playground.html`| the editor + compiler playground                    |
 
 The playground feeds the stdin box (under the editor) to the program's
-fd 0 — one `read_line()` per line, EOF past the end. The caps are
-phase-scoped: the load cap (120 s) covers the compiler download, the
-compile cap (20 s) and run cap (10 s) measure rho only.| `spec.html`      | spec reader over `spec/` markdown                   |
+fd 0 — one `read_line()` per line, EOF past the end. The editor is
+CodeMirror 6 (auto-indent, bracket closing, completion over the shared
+fast tables), bundled once by `tools/bundle-codemirror.mjs`. The caps
+are phase-scoped: the load cap (120 s) covers the compiler download,
+the run cap (10 s) measures rho; compiling happens on the main thread
+(worker contexts miscompile — see docs/todo.md) so a runaway compile is
+bounded by the language itself, not a timer.| `spec.html`      | spec reader over `spec/` markdown                   |
 
 ## Assets (`assets/`)
 

@@ -1,13 +1,17 @@
-// Drive the real playground page with STDIN: set the input box, run the
-// greet example, and verify the program read the fed line — the end-to-end
-// grade for read_line + the shim's fd 0, in a real browser.
+// Drive the real playground with STDIN: feed the input box two lines and
+// verify read_line consumes them in order, then hits EOF. The program
+// source rides a base64 blob so the probe has no escaping pitfalls.
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
+const RHO_B64 = "Zm4gbWFpbigpIC0+IGkzMiB7CiAgbGV0IGE6IHN0cmluZyA9IHJlYWRfbGluZSgpOwogIGxldCBiOiBzdHJpbmcgPSByZWFkX2xpbmUoKTsKICBsZXQgYzogc3RyaW5nID0gcmVhZF9saW5lKCk7CiAgbGV0IG11dCBtYXJrOiBzdHJpbmcgPSAiZW9mIjsKICBpZiBjICE9ICIiIHsKICAgIG1hcmsgPSAicmVhZCI7CiAgfQogIHByaW50ZigiYT17fSBiPXt9IGM9e31cbiIsIGEsIGIsIG1hcmspOwogIHJldHVybiAwOwp9Cg==";
+
 const root = process.cwd();
-const chrome = process.env.CHROME_BIN || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const chrome =
+  process.env.CHROME_BIN ||
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const server = createServer(async (req, res) => {
   try {
     let p = req.url.split("?")[0];
@@ -25,12 +29,13 @@ const server = createServer(async (req, res) => {
 await new Promise((r) => server.listen(0, "127.0.0.1", r));
 const port = server.address().port;
 
-spawn(chrome, ["--headless=new", "--no-first-run", "--remote-debugging-port=9339",
-  "--user-data-dir=" + resolve("build/chrome-test/stdin-profile"), "about:blank"], { stdio: "ignore" });
+spawn(chrome, [
+  "--headless=new", "--no-first-run", "--remote-debugging-port=9345",
+  "--user-data-dir=" + resolve("build/chrome-test/stdin-profile"), "about:blank",
+], { stdio: "ignore" });
 await new Promise((r) => setTimeout(r, 2500));
-const list = await (await fetch("http://127.0.0.1:9339/json/list")).json();
-const page = list.find((t) => t.type === "page");
-const ws = new WebSocket(page.webSocketDebuggerUrl);
+const list = await (await fetch("http://127.0.0.1:9345/json/list")).json();
+const ws = new WebSocket(list.find((t) => t.type === "page").webSocketDebuggerUrl);
 await new Promise((r) => (ws.onopen = r));
 let id = 0;
 const pending = new Map();
@@ -55,14 +60,13 @@ await send("Page.enable");
 await send("Page.navigate", { url: `http://127.0.0.1:${port}/playground.html` });
 await new Promise((r) => setTimeout(r, 3000));
 
-await evaljs(`(function(){
+const setup = await evaljs(`(function(){
   document.getElementById('stdin').value = 'Ada\\nsecond line\\n';
   document.getElementById('stdin').dispatchEvent(new Event('input'));
-  const ta = document.getElementById('input');
-  ta.value = 'fn main() -> i32 {\\n  let a: string = read_line();\\n  let b: string = read_line();\\n  let c: string = read_line();\\n  printf("a={} b={} c-empty={}\\\\n", a, b, c == "");\\n  return 0;\\n}\\n';
-  ta.dispatchEvent(new Event('input'));
-  return true;
+  window.__rhoEditor.setDoc(decodeURIComponent(escape(atob('${RHO_B64}'))));
+  return window.__rhoEditor.view.state.doc.length;
 })()`);
+console.log("setDoc bytes:", setup);
 await evaljs(`document.getElementById('run').click(); true`);
 for (let i = 1; i <= 20; i++) {
   await new Promise((r) => setTimeout(r, 1000));
@@ -71,10 +75,12 @@ for (let i = 1; i <= 20; i++) {
     status: document.getElementById('status').textContent,
   })`);
   const s = JSON.parse(st);
-  if (s.out.trim() || /exit|error/i.test(s.status)) {
-    console.log(`t=${i}s out="${s.out.trim()}" status="${s.status}"`);
-    process.exit(s.out.includes("a=Ada b=second") && s.out.includes("c-empty=true") ? 0 : 1);
+  if (s.out.trim() && /exit/i.test(s.status)) {
+    console.log(`t=${i}s ${s.status} out="${s.out.trim()}"`);
+    const pass = s.out.includes("a=Ada b=second line c=eof");
+    console.log(pass ? "STDIN PASS" : "STDIN FAIL");
+    process.exit(pass ? 0 : 1);
   }
 }
-console.log("TIMEOUT: no output in 20s");
+console.log("TIMEOUT");
 process.exit(1);

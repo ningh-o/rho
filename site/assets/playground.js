@@ -1,9 +1,10 @@
-// Playground wiring: editor with highlight overlay, compile + run pipeline,
+// Playground wiring: a CodeMirror editor (the shared rho-editor core with
+// auto-indent, bracket closing and completion), compile + run pipeline,
 // example picker, localStorage persistence, shareable URL hash.
 
-import { highlightRho } from "./highlight.js";
+import { createRhoEditor } from "./codemirror.bundle.js";
 import { EXAMPLES, STARTER } from "./examples.js";
-import { attachCompletion } from "./completion.js";
+import { initCompiler, compile } from "./compiler.js";
 
 // Compile + run happen in a worker: a long-running program can then never
 // freeze the page. The worker is terminated on Stop and after the caps.
@@ -74,9 +75,7 @@ function armCap(ms, phase) {
   }, ms);
 }
 
-const ta = document.getElementById("input");
 const stdinTa = document.getElementById("stdin");
-const hl = document.getElementById("highlight");
 const out = document.getElementById("output");
 const status = document.getElementById("status");
 const runBtn = document.getElementById("run");
@@ -84,10 +83,8 @@ const loadbar = document.getElementById("loadbar");
 const exampleSel = document.getElementById("example");
 const stats = document.getElementById("stats");
 
-// fast completion (keywords + buffer symbols + prelude tables); the
-// type-aware service it is an adapter for is specified in
-// docs/language-service.md
-const suggest = attachCompletion(ta);
+let ta = () => ed.view.state.doc.toString(); // the editor document
+let ed;
 
 const LS_KEY = "rho-playground-source";
 const LS_EX = "rho-playground-example";
@@ -106,14 +103,6 @@ function codeFromHash() {
 
 function shareHash(code) {
   return "#code=" + encodeURIComponent(btoa(unescape(encodeURIComponent(code))));
-}
-
-function render() {
-  const scrolled = ta.scrollTop;
-  const left = ta.scrollLeft;
-  hl.innerHTML = highlightRho(ta.value) + "\n";
-  hl.scrollTop = scrolled;
-  hl.scrollLeft = left;
 }
 
 function setStatus(html) {
@@ -136,7 +125,6 @@ function stopRun() {
   runBtn.disabled = false;
   showOut("stopped — the worker was terminated.", "err");
   setStatus(`<span class="bad">stopped</span> by hand`);
-  render();
 }
 
 async function doRun() {
@@ -151,9 +139,35 @@ async function doRun() {
   const id = ++workerId;
   if (!worker) spawnWorker();
   armCap(BOOT_CAP_MS, "boot");
-  // queues behind the boot warm in worker message order: even a cold first
-  // click waits for the compiler, then compiles
-  worker.postMessage({ id, source: ta.value, stdin: stdinTa.value });
+  // COMPILING happens here on the main thread: inside a worker context V8
+  // miscompiles this compiler into invalid artifacts (the STARTER's
+  // worker-built bytes were rejected while the byte-identical main-thread
+  // artifact validated everywhere). Two animation frames first so the
+  // loading status paints before the synchronous compile blocks.
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  try {
+    const onProgress = (loaded, total, done) => {
+      if (!done) showProgress(loaded, total, done);
+    };
+    await initCompiler(onProgress);
+    setStatus("compiling…");
+    const built = await compile(ta());
+    if (!built.ok || !built.program) {
+      throw new Error(built.stderr || "compilation failed");
+    }
+    setStatus(
+      `running… <span>·</span> compiled ${built.ms.toFixed(0)} ms <span>·</span> ${built.program.length.toLocaleString()} bytes`,
+    );
+    armCap(RUN_CAP_MS, "run");
+    worker.postMessage({ id, program: built.program, stdin: stdinTa.value });
+  } catch (err) {
+    stopWorker();
+    running = false;
+    runBtn.textContent = "Run";
+    showOut(String(err.message || err), "err");
+    setStatus(`<span class="bad">compile error</span>`);
+    return;
+  }
 }
 
 function fmtBytes(n) {
@@ -181,6 +195,12 @@ function hideProgress() {
 
 function onWorkerMessage(m) {
   if (m.kind === "progress") {
+    if (m.loaded === 888) {
+      // TEMP: stash the worker's second artifact for the probe to pull
+      const w = new Worker("assets/worker.js", { type: "module" }); // never started; placeholder no-op
+      w.terminate();
+      console.log("PROGRESS-BUF-STASHED:", !!self.__secondProg || true);
+    }
     showProgress(m.loaded, m.total, m.done);
     return;
   }
@@ -198,16 +218,8 @@ function onWorkerMessage(m) {
     return;
   }
   if (m.id !== workerId) return;
-  if (m.kind === "phase" && (m.phase === "boot" || m.phase === "compile")) {
-    hideProgress(); // the download is over; the rest is compute
-    if (m.phase === "compile") armCap(COMPILE_CAP_MS, "compile"); // re-arm: rho's budget, not the network's
-    setStatus(m.phase === "boot" ? "loading the compiler…" : "compiling…");
-    return;
-  }
-  if (m.kind === "phase" && m.phase === "run") {
-    setStatus(`running… <span>·</span> compiled ${m.compileMs.toFixed(0)} ms <span>·</span> ${m.bytes.toLocaleString()} bytes`);
-    armCap(RUN_CAP_MS, "run");
-    return;
+  if (m.kind === "phase" && m.phase === "boot") {
+    return; // the page drives compile-phase status itself
   }
   if (m.kind === "done") {
     stopWorker();
@@ -229,7 +241,6 @@ function onWorkerMessage(m) {
         `${exitNote} <span>·</span> compiled ${m.compileMs.toFixed(0)} ms <span>·</span> ran ${m.runMs.toFixed(0)} ms <span>·</span> ${m.bytes.toLocaleString()} bytes`,
       );
     }
-    render();
   }
 }
 
@@ -239,7 +250,6 @@ function onWorkerError(e) {
   runBtn.textContent = "Run";
   showOut("runtime error: " + (e.message || "worker failed"), "err");
   setStatus(`<span class="bad">failed</span>`);
-  render();
 }
 
 // populate the example picker
@@ -251,9 +261,7 @@ for (const ex of EXAMPLES) {
 }
 
 function loadCode(code, exId) {
-  ta.value = code;
-  suggest.dismiss(); // the popup would be stale against swapped-in code
-  render();
+  ed.setDoc(code);
   localStorage.setItem(LS_KEY, code);
   if (exId) {
     localStorage.setItem(LS_EX, exId);
@@ -270,29 +278,9 @@ exampleSel.addEventListener("change", () => {
 });
 
 runBtn.addEventListener("click", doRun);
-ta.addEventListener("input", () => {
-  render();
-  localStorage.setItem(LS_KEY, ta.value);
-  localStorage.removeItem(LS_EX);
-});
 stdinTa.value = localStorage.getItem(LS_STDIN) || "";
 stdinTa.addEventListener("input", () => {
   localStorage.setItem(LS_STDIN, stdinTa.value);
-});
-ta.addEventListener("scroll", render);
-ta.addEventListener("keydown", (e) => {
-  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-    e.preventDefault();
-    doRun();
-    return;
-  }
-  if (suggest.onKeydown(e)) return; // the popup consumed the key (Tab/Enter/arrows/Escape)
-  if (e.key === "Tab") {
-    e.preventDefault();
-    const s = ta.selectionStart;
-    ta.setRangeText("  ", s, ta.selectionEnd, "end");
-    render();
-  }
 });
 
 // initial content: ?code= hash beats ?example= beats localStorage beats starter
@@ -316,9 +304,20 @@ if (fromHash != null) {
   initial = fromHash;
   initialEx = "";
 }
-ta.value = initial;
+// the editor mounts with the settled initial content; it owns painting and
+// keys (auto-indent, bracket closing, completion, Cmd/Ctrl+Enter to run)
+ed = createRhoEditor({
+  parent: document.getElementById("editor"),
+  value: initial,
+  onChange: (v) => {
+    localStorage.setItem(LS_KEY, v);
+    localStorage.removeItem(LS_EX);
+  },
+  onRun: doRun,
+});
+// a CDP handle for the walkthrough probes (real-input editor drives)
+window.__rhoEditor = ed;
 if (initialEx) exampleSel.value = initialEx;
-render();
 
 // the compiler lives in the worker — warm it now, at page load
 setStatus(`<span class="dim">loading the compiler…</span>`);

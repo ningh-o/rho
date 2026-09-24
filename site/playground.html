@@ -7,7 +7,6 @@
   <meta name="description" content="Write and run rho programs in your browser. The compiler itself runs as WebAssembly.">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="assets/style.css">
-  <link rel="stylesheet" href="assets/completion.css">
 </head>
 <body class="play">
   <header class="site">
@@ -31,10 +30,7 @@
         <span class="grow"></span>
         <span>main.rho</span>
       </div>
-      <div class="editor">
-        <pre class="highlight" id="highlight" aria-hidden="true"></pre>
-        <textarea id="input" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off"></textarea>
-      </div>
+      <div class="editor" id="editor"></div>
       <div class="pane-head stdin-head">
         <span>stdin — one line per read_line()</span>
       </div>

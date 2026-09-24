@@ -13,3 +13,5 @@ node_modules/
 tools/lsp/dist/
 # release staging: zips publish to GitHub Releases, never into the tree
 /release/
+node_modules/
+package-lock.json

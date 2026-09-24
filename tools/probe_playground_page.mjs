@@ -81,6 +81,36 @@ const evaljs = async (expr) => {
 
 await send("Page.enable");
 await send("Runtime.enable");
+await send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
+const workerSessions = [];
+const origOnmessage = ws.onmessage;
+ws.onmessage = (e) => {
+  const m = JSON.parse(e.data);
+  if (m.method === "Target.attachedToTarget") {
+    const sid = m.params.sessionId;
+    workerSessions.push(sid);
+    send("Runtime.enable", { sessionId: sid });
+    return;
+  }
+  if (m.method === "Runtime.consoleAPICalled" && workerSessions.includes(m.sessionId)) {
+    const vals = m.params.args.map(a => a.value ?? a.description ?? "");
+    if (vals.some(v => String(v).includes("second-bytes"))) {
+      const bufArg = m.params.args.find(a => a.objectId);
+      if (bufArg) consoleLines.push("WORKER-SECOND-BYTES-OBJ: " + bufArg.objectId);
+    }
+    consoleLines.push("WORKER-LOG: " + JSON.stringify(vals).slice(0, 300));
+    return;
+  }
+  if (false) {
+    consoleLines.push("WORKER-LOG: " + JSON.stringify(m.params.args.map(a => a.value ?? a.description ?? "")).slice(0, 300));
+    return;
+  }
+  if (m.method === "Runtime.exceptionThrown" && workerSessions.includes(m.sessionId)) {
+    consoleLines.push("WORKER-EXC: " + JSON.stringify(m.params.exceptionDetails.exception?.description || m.params.exceptionDetails.text).slice(0, 300));
+    return;
+  }
+  origOnmessage(e);
+};
 const consoleLines = [];
 ws.onmessage2 = null;
 // collect console + exceptions via a wrapper listener
@@ -95,13 +125,45 @@ ws.onmessage = (e) => {
   }
   if (m.method === "Runtime.consoleAPICalled" || m.method === "Runtime.exceptionThrown" || m.method === "Log.entryAdded") {
     const entry = m.params?.entry ?? m.params;
-    consoleLines.push((m.method + ": " + JSON.stringify(entry).slice(0, 220)));
+    consoleLines.push((m.method + ": " + JSON.stringify(entry).slice(0, 400)));
   }
 };
 
 await send("Page.navigate", { url: base + "/playground.html" });
 await new Promise((r) => setTimeout(r, process.env.SLOW_WASM_KBPS ? 1200 : 3000)); // slow mode: click while the download is still running
 
+// diagnose: compile the STARTER in-page (worker-free) and ship the bytes
+const diag = await evaljs(`(async () => {
+  const { STARTER } = await import('./assets/examples.js');
+  const { compile } = await import('./assets/compiler.js');
+  const r = await compile(STARTER);
+  if (!r.ok) return JSON.stringify({ ok: false, stderr: r.stderr.slice(0, 200) });
+  const b = new Uint8Array(r.program);
+  let bin = '';
+  for (let i = 0; i < b.length; i += 32768) bin += String.fromCharCode.apply(null, b.subarray(i, i + 32768));
+  return JSON.stringify({ ok: true, len: b.length, b64: btoa(bin) });
+})()`);
+const d = JSON.parse(diag);
+console.log('starter diag: ok=' + d.ok + ' len=' + (d.len ?? d.stderr ?? ''));
+  // full worker-flow replica on the main thread: does V8 reject the bytes?
+  const flow = await evaljs(`(async () => {
+    const { STARTER } = await import('./assets/examples.js');
+    const { initCompiler, compile, runProgram } = await import('./assets/compiler.js');
+    await initCompiler();
+    const r = await compile(STARTER);
+    if (!r.ok) return JSON.stringify({ stage: 'compile', stderr: r.stderr.slice(0, 150) });
+    try {
+      await WebAssembly.compile(r.program);
+    } catch (e) {
+      return JSON.stringify({ stage: 'validate', err: String(e).slice(0, 150) });
+    }
+    const run = await runProgram(r.program);
+    return JSON.stringify({ stage: 'ran', stdout: run.stdout.slice(0, 60), exit: run.exitCode });
+  })()`);
+  console.log('main-thread flow:', flow);
+if (d.ok) {
+  (await import('node:fs')).writeFileSync('build/probe/starter-page.wasm', Buffer.from(d.b64, 'base64'));
+}
 // put hello world in the editor and click Run — the real controls
 const setup = await evaljs(`(function(){
   const ta = document.getElementById('input');
@@ -119,7 +181,7 @@ for (let i = 1; i <= (process.env.SLOW_WASM_KBPS ? 60 : 35); i++) {
   const st = await evaljs(`(function(){
     return JSON.stringify({
       status: document.getElementById('status').textContent,
-      out: document.getElementById('output').textContent.slice(0, 200),
+      out: document.getElementById('output').textContent,
       btn: document.getElementById('run').textContent,
       disabled: document.getElementById('run').disabled,
     });

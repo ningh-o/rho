@@ -86,6 +86,23 @@ last-reference death check. corpus/105 pins it; the repros stay under
 - In-container corpus — the corpus differential re-run inside a Linux
   container, per native target.
 
+## Open observations
+
+- **V8 worker-context miscompile of this compiler (recorded 2026-09-24,
+  needs a minimal V8 bug report).** Running the self-hosted compiler
+  inside a Web Worker produces different, INVALID output for the same
+  input: the playground's STARTER compiled by the worker-built artifact
+  was 79,994 bytes and rejected by V8's own validator (`function #97:
+  not enough arguments on the stack for call (need 4, got 0)`), while
+  the byte-deterministic main-thread compile of the same source is
+  30,581 bytes and validates everywhere (wasmtime, node's V8,
+  wasmtime-run corpus). Both worker compiles are stable and identical
+  to each other, so the divergence is per-context, not random. The
+  playgrounds therefore compile on the main thread and ship only the
+  program bytes to the worker for execution (site/assets/worker.js and
+  the app's run-worker.ts carry the same law). A minimized module +
+  V8 version is the missing piece for the upstream report.
+
 ## Owner's call
 
 - GitHub release — and the zips carrying self-built native clients.
