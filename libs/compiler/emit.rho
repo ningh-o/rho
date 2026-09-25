@@ -1156,13 +1156,51 @@ fn en_vtag(prog: *Prog, ei: i64, vname: string) -> i64 {
   return 0 - 1;
 }
 
-// an enum box: [tag][payload slots...] sized by the widest variant
+// a variant's declared payload types, empty for the builtins and
+// unknown variants
+fn enum_variant_ptys(prog: *Prog, ename: string,
+                     vname: string) -> []string {
+  let ei: i64 = en_index(prog, ename);
+  if ei < 0 {
+    return make([]string, 0);
+  }
+  let vi: i64 = en_vtag(prog, ei, vname);
+  if vi < 0 {
+    return make([]string, 0);
+  }
+  let vb: usize = (vi as usize) * 8;
+  let mut vend: usize = vb;
+  while vend < len(prog.enums[ei as usize].vtpool) &&
+      vend < vb + 8 {
+    if len(prog.enums[ei as usize].vtpool[vend]) == 0 {
+      break;
+    }
+    vend = vend + 1;
+  }
+  return prog.enums[ei as usize].vtpool[vb..vend];
+}
+
+// an enum box: [tag][payload slots...] sized by the widest variant —
+// a string payload rides a pair, two slots
 fn en_nslots(prog: *Prog, ei: i64) -> i64 {
   let mut mx: i64 = 0;
   let mut k: usize = 0;
   while k < prog.enums[ei as usize].nv {
-    if prog.enums[ei as usize].vslots[k] > mx {
-      mx = prog.enums[ei as usize].vslots[k];
+    let ptys: []string = enum_variant_ptys(prog,
+        prog.enums[ei as usize].name,
+        prog.enums[ei as usize].vnames[k]);
+    let mut ns: i64 = 0;
+    let mut j: usize = 0;
+    while j < len(ptys) {
+      if ptys[j] == "string" {
+        ns = ns + 2;
+      } else {
+        ns = ns + 1;
+      }
+      j = j + 1;
+    }
+    if ns > mx {
+      mx = ns;
     }
     k = k + 1;
   }
@@ -1970,32 +2008,70 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
       Option.None => {},
     }
     // an enum constructor: Enum.Var / Enum.Var(args) / Option.* /
-    // Result.* (Ok rides tag 1, Err tag 2; a string payload parks
-    // its address)
+    // Result.* (Ok rides tag 1, Err tag 2); a string payload rides
+    // its pair — TWO box slots (addr, len), by the declared payload
+    // type for user enums, by the argument's own stringiness for the
+    // builtins (Result.Err's string is the corpus idiom)
     if recv.tag == parse.EX_VAR &&
         (en_index(prog, recv.name) >= 0 || recv.name == "Option" ||
          recv.name == "Result") {
       let mut tag: i64 = 0 - 1;
       let mut nsl: i64 = 0;
       let mut nbox: i64 = 1;
+      // the variant's declared payload types, when static
+      let ptys2: []string = enum_variant_ptys(prog, recv.name,
+                                              e.name);
       if recv.name == "Option" || recv.name == "Result" {
         if e.name == "Some" || e.name == "Ok" {
           tag = 1;
-          nsl = 1;
         } else {
-          nsl = 0;
           if recv.name == "Result" {
             tag = 2;
           } else {
             tag = 0;
           }
         }
-        nbox = 2;
+        nsl = len(e.args) as i64;
       } else {
         let ei: i64 = en_index(prog, recv.name);
         tag = en_vtag(prog, ei, e.name);
         nsl = en_vslots(prog, ei, e.name);
-        nbox = en_nslots(prog, ei);
+      }
+      // pass A: which payloads ride pairs (the box sizes by it)
+      let sflag: []bool = make([]bool, 8);
+      let mut ka: usize = 0;
+      while (ka as i64) < nsl && ka < len(e.args) && ka < 8 {
+        let mut sish: bool = false;
+        if ka < len(ptys2) && ptys2[ka] == "string" {
+          sish = true;
+        } else {
+          if len(ptys2) == 0 {
+            let spk = build_string_pair(e.args[ka], pool, env,
+                                        prog, nl);
+            sish = spk.ok;
+          }
+        }
+        sflag[ka] = sish;
+        ka = ka + 1;
+      }
+      nbox = 1;
+      let mut kb: usize = 0;
+      while (kb as i64) < nsl && kb < 8 {
+        if sflag[kb] {
+          nbox = nbox + 2;
+        } else {
+          nbox = nbox + 1;
+        }
+        kb = kb + 1;
+      }
+      if recv.name != "Option" && recv.name != "Result" {
+        // a user enum's box is the WIDEST variant's — equality and
+        // cross-variant reads size by it, so every construction
+        // allocates the full box
+        let eix: i64 = en_index(prog, recv.name);
+        if eix >= 0 {
+          nbox = en_nslots(prog, eix);
+        }
       }
       let a_slot: i64 = nl.v;
       nl.v = nl.v + 1;
@@ -2004,16 +2080,34 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
              "    (local.set " + a_slot.to_str() + ")\n" +
              "    (i64.store (i32.wrap_i64 (local.get " + a_slot.to_str() +
              ")) (i64.const " + tag.to_str() + "))\n";
+      // pass B: store, pair payloads taking two consecutive slots
+      let mut sl: i64 = 1;
       let mut k: usize = 0;
       while (k as i64) < nsl && k < len(e.args) {
-        let tv: i64 = nl.v;
-        nl.v = nl.v + 1;
-        out = out + emit_expr(pool, e.args[k], env, prog, nl);
-        out = out + "    (local.set " + tv.to_str() + ")\n" +
-               "    (i64.store (i32.add (i32.wrap_i64 (local.get " +
-               a_slot.to_str() + ")) (i32.const " +
-               ((k + 1) * 8).to_str() + ")) (local.get " + tv.to_str() +
-               "))\n";
+        if k < 8 && sflag[k] {
+          let spv = build_string_pair(e.args[k], pool, env, prog,
+                                      nl);
+          out = out + spv.text +
+                 "    (i64.store (i32.add (i32.wrap_i64 (local.get " +
+                 a_slot.to_str() + ")) (i32.const " +
+                 (sl * 8).to_str() + ")) (local.get " +
+                 spv.a.to_str() + "))\n" +
+                 "    (i64.store (i32.add (i32.wrap_i64 (local.get " +
+                 a_slot.to_str() + ")) (i32.const " +
+                 ((sl + 1) * 8).to_str() + ")) (local.get " +
+                 spv.l.to_str() + "))\n";
+          sl = sl + 2;
+        } else {
+          let tv: i64 = nl.v;
+          nl.v = nl.v + 1;
+          out = out + emit_expr(pool, e.args[k], env, prog, nl);
+          out = out + "    (local.set " + tv.to_str() + ")\n" +
+                 "    (i64.store (i32.add (i32.wrap_i64 (local.get " +
+                 a_slot.to_str() + ")) (i32.const " +
+                 (sl * 8).to_str() + ")) (local.get " + tv.to_str() +
+                 "))\n";
+          sl = sl + 1;
+        }
         k = k + 1;
       }
       out = out + "    (local.get " + a_slot.to_str() + ")\n";
@@ -2720,33 +2814,45 @@ fn match_chain_m(pool: *Pool, arms: []*MatchArm, i: usize, bx: i64,
   let mut ptys: []string = make([]string, 0);
   if a.pat.kind == 2 && a.pat.ename != "Option" &&
       a.pat.ename != "Result" {
-    let ei3: i64 = en_index(prog, a.pat.ename);
-    vi = en_vtag(prog, ei3, a.pat.vname);
-    if vi >= 0 {
-      let vb: usize = (vi as usize) * 8;
-      let mut vend: usize = vb;
-      while vend < len(prog.enums[ei3 as usize].vtpool) &&
-          vend < vb + 8 {
-        if len(prog.enums[ei3 as usize].vtpool[vend]) == 0 {
-          break;
-        }
-        vend = vend + 1;
-      }
-      ptys = prog.enums[ei3 as usize].vtpool[vb..vend];
-    }
+    ptys = enum_variant_ptys(prog, a.pat.ename, a.pat.vname);
+    vi = en_vtag(prog, en_index(prog, a.pat.ename), a.pat.vname);
   }
   let mut k: usize = 0;
+  let mut sl: i64 = 1; // the box slot cursor (slot 0 = the tag)
   while k < len(a.pat.binders) {
-    let bslot: i64 = nl.v;
-    nl.v = nl.v + 1;
-    armcode = armcode + "    (i64.load (i32.add (i32.wrap_i64 " +
-              "(local.get " + bx.to_str() + ")) (i32.const " +
-              ((k + 1) * 8).to_str() + ")))\n" +
-              "    (local.set " + bslot.to_str() + ")\n";
     let mut pty: string = "";
     if k < len(ptys) {
       pty = ptys[k];
     }
+    // a string payload binder reads the pair (two slots) and binds a
+    // runtime string; Result.Err's binder does too — the string error
+    // is the idiom its boxes carry
+    let sbind: bool = pty == "string" ||
+        (a.pat.ename == "Result" && a.pat.vname == "Err");
+    if sbind {
+      let ba: i64 = nl.v;
+      let bl: i64 = nl.v + 1;
+      nl.v = nl.v + 2;
+      armcode = armcode + "    (i64.load (i32.add (i32.wrap_i64 " +
+                "(local.get " + bx.to_str() + ")) (i32.const " +
+                (sl * 8).to_str() + ")))\n" +
+                "    (local.set " + ba.to_str() + ")\n" +
+                "    (i64.load (i32.add (i32.wrap_i64 " +
+                "(local.get " + bx.to_str() + ")) (i32.const " +
+                ((sl + 1) * 8).to_str() + ")))\n" +
+                "    (local.set " + bl.to_str() + ")\n";
+      env_str_bind_runtime(env, a.pat.binders[k], ba, bl, 1);
+      sl = sl + 2;
+      k = k + 1;
+      continue;
+    }
+    let bslot: i64 = nl.v;
+    nl.v = nl.v + 1;
+    armcode = armcode + "    (i64.load (i32.add (i32.wrap_i64 " +
+              "(local.get " + bx.to_str() + ")) (i32.const " +
+              (sl * 8).to_str() + ")))\n" +
+              "    (local.set " + bslot.to_str() + ")\n";
+    sl = sl + 1;
     let ptgt: string = type_ptr_target(pty);
     if len(ptgt) > 0 && st_index(prog, ptgt) >= 0 {
       env_bind_ptr(env, a.pat.binders[k], bslot, ptgt);
