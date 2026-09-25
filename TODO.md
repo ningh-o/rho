@@ -267,7 +267,11 @@ section — no placeholder stages. boot is the reference compiler.
       elimination, globals tree-shaking, tail-call→loop — with the
       language suites (opt/eq/params/modsys/strops/multiline) rebuilt
       for the new language. wasm emit only — **no native backends in
-      0.1.0.**
+      0.1.0.** The wave lands as one consolidation pass: after §17–§19
+      and T3.5–T3.8 are in, boot and the mirror get a refinement sweep
+      (structure, naming, dedup of the growths' accumulated patterns)
+      before the suites pin them — features first, polish second,
+      never interleaved.
 
 ## Phase 3 — gates and the trust root
 
@@ -345,6 +349,24 @@ section — no placeholder stages. boot is the reference compiler.
       Acceptance: dual-run byte-compare over the whole corpus, the
       wat→wasm→wat fixpoint leg (fmt's law, applied to assembly), and
       a readable decode diff for the T3.2 canary.
+- [ ] **T3.9** Match arm ergonomics (§19): variant resolution by
+      scrutinee (bare `Some`/`None`/`Ok`/`Err` and user-enum variants,
+      full paths stay legal, no scope fallback), or-patterns with the
+      identical-binder law, guards with the never-exhaustive rule.
+      Acceptance legs: bare prelude-variant and user-variant arms
+      (nested inner match resolves by its own scrutinee); full-path
+      cross-enum still legal; or-pattern union binder + binder-set
+      mismatch rejection; guard selects conditionally, guard
+      referencing bindings, guarded-only match demanding a fallback;
+      fmt round-trips all three forms. Boot implements; the self-host
+      mirrors.
+- [ ] **T3.10** Bare receiver in impl methods (§18): `self` = `*T`
+      read-only, `mut self` = writable — the type inferred from the
+      implemented type; fully-typed receivers stay legal; signature
+      match (impl vs trait) keeps the receiver mut form. Acceptance:
+      bare-self impl satisfies a trait, bare `mut self` writes through
+      with the §18 gates, typed and bare forms mix in one impl, fmt
+      round-trips.
 
 ## Phase 4 — kernel boundary and the std library
 
@@ -668,4 +690,24 @@ what you have). Methods distinguish `fn Rect.area(self: *Rect)` from
 the latter, and a value can never call a pointer-receiver method.
 Receiver `mut`-ness is not an overload axis and must match the
 trait's signature exactly at impl time. Declaring `mut` without ever
-writing through it is a hint (LSP), never an error.
+writing through it is a hint (LSP), never an error. In impl methods
+the receiver may be written bare — `self` or `mut self` — its type
+the implemented type's pointer, read-only or writable respectively;
+the fully-typed form stays legal.
+
+### 19. Match arm ergonomics
+
+Three sugars over match arms, each lowering to the existing arm
+rules. **Variant resolution by scrutinee**: an arm's variant name
+resolves against the scrutinee's enum type first — `match o {
+Some(v) => …, None => … }` needs no `Option.` prefix, for prelude
+and user enums alike. The arm may only match the scrutinee's
+variants (the type rule), so the resolution cannot be ambiguous;
+there is no scope fallback — a variant of any other enum takes its
+full path, in nested matches too (each match resolves by its own
+scrutinee). **Or-patterns**: `pattern | pattern => arm` matches when
+any alternative matches; every alternative must bind the identical
+set of names, else a compile error. **Guards**: `pattern if cond =>
+arm` — `cond` evaluates after the pattern matches, in scope of its
+bindings; a guarded arm never counts toward exhaustiveness, so a
+match whose arms are all guarded still requires a fallback.
