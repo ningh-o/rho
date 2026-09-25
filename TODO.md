@@ -256,13 +256,30 @@ section — no placeholder stages. boot is the reference compiler.
       honest bool holes (63); aggregate let completes — slice
       literals [a,b,c], string-valued ifs, and the make builtin
       demanding 'make([' so a user fn may own the name (64);
-      slice-returning fns ride the pair ABI. Remain: the
-      exact-decimal float to_str (the deep end — every
-      float-PRINTING program); string elements in slices and string
-      payloads in enums (two-slot elements, pair binders); string
-      statics; closures/traits/dyn/generics/variadics; overloads;
-      module loading; weak/rc; the set face in the differential
-      runner)*
+      slice-returning fns ride the pair ABI. The forty-fourth
+      through fifty-first cuts (2026-09-26, one session) close most
+      of that remainder: the exact-decimal float printer rides a
+      rho-source cluster the emitter compiles through itself
+      (FLOATSRC beside the program when a float hole prints — the
+      lexer's exponent-after-fraction bug fell out, and a MUT string
+      let materializes its pair so a never-entered growth loop keeps
+      its initializer); bool and string consts join every env and
+      every bool hole prints its word (the ! desugar's eq-0 included);
+      string payloads ride enum boxes as pairs (Err's text finally
+      travels; struct-payload patterns bind after the colon or by
+      their own bare name); string statics carry their pair in two
+      wasm globals; a let over a string/slice name aliases its
+      binding; generic fns monomorphize per type binding (bind, clone,
+      substitute, drain); overloads resolve exact-match-unique under
+      signature keys and values print through their type's to_str
+      (printf and format holes alike); variadic rest params
+      materialize at the call (a lone spread rides whole) and
+      []string slices store and read their pairs at a 16-byte stride.
+      81 of 108 behavioral, floor 81. Remain: closures (fn-literal
+      expressions, fn-typed params, call_indirect); traits/impl/dyn;
+      generic structs/enums/methods; module loading; weak/rc; the
+      mut law and usize lane (T3.6's mirror side); the set face in
+      the differential runner)*
 - [ ] **T2.x** Optimizer in the mirror: constant folding, dead-code
       elimination, globals tree-shaking, tail-call→loop — with the
       language suites (opt/eq/params/modsys/strops/multiline) rebuilt
