@@ -358,6 +358,9 @@ fn wat_op(op: i64) -> string {
   if op == 9 {
     return "i64.eq";
   }
+  if op == 11 {
+    return "i32.wrap_i64";
+  }
   return "i64.ne";
 }
 
@@ -451,6 +454,11 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog) -> string {
       out = out + emit_expr(pool, l, env, prog);
     },
     Option.None => {},
+  }
+  if e.op == 11 {
+    // 'as i32': wrap for the truncation, extend back to the i64 lane
+    out = out + "    i32.wrap_i64\n    i64.extend_i32_s\n";
+    return out;
   }
   match e.rhs {
     Option.Some(r) => {

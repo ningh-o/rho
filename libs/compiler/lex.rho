@@ -59,6 +59,9 @@ fn is_keyword(s: string) -> bool {
   if s == "if" || s == "else" || s == "while" {
     return true;
   }
+  if s == "as" || s == "i64" || s == "usize" {
+    return true;
+  }
   return false;
 }
 

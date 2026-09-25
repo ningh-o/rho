@@ -283,11 +283,25 @@ fn parse_primary(c: *PCur) -> *Expr {
   return lit(0);
 }
 
-// binary expressions by precedence climbing
+// binary expressions by precedence climbing; 'as T' is a postfix
+// that rides at every level (the skeleton is i64 throughout: as i64
+// is identity, as i32/i32-family wraps)
 fn parse_bin(c: *PCur, min_prec: i32) -> *Expr {
   let mut lhs: *Expr = parse_primary(c);
   while true {
     let t = tk(c);
+    if t.kind == lex.TK_KEYWORD && t.text == "as" {
+      tkadv(c);
+      let tt = tk(c);
+      let narrow: bool = tt.text == "i32" || tt.text == "i8" ||
+                          tt.text == "i16" || tt.text == "u8" ||
+                          tt.text == "u16" || tt.text == "u32";
+      tkadv(c);
+      if narrow {
+        lhs = bin(11, lhs, lit(0));
+      }
+      continue;
+    }
     if !is_binop(t) {
       break;
     }
