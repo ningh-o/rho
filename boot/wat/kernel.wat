@@ -74,9 +74,11 @@
           (then (call_indirect (type $dropfn) (local.get $p)
                                (local.get $drop)))))))
 
+  (type $dropfn (func (param i32)))
+  ;; EMITTER-OWNS-BEGIN (standalone-test table; stripped from the embed)
   (table 4 funcref)
   (elem (i32.const 0) $rho_nodrop $rho_nodrop $rho_nodrop $rho_nodrop)
-  (type $dropfn (func (param i32)))
+  ;; EMITTER-OWNS-END
   (func $rho_nodrop (param $p i32))
 
   ;; raw write to fd 1 with the scratch iov at 0

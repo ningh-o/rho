@@ -73,8 +73,6 @@ const char *kernel_wat_src(void) {
     "        (if (i32.ge_s (local.get $drop) (i32.const 0))\n"
     "          (then (call_indirect (type $dropfn) (local.get $p)\n"
     "                               (local.get $drop)))))))\n"
-    "  (table 4 funcref)\n"
-    "  (elem (i32.const 0) $rho_nodrop $rho_nodrop $rho_nodrop $rho_nodrop)\n"
     "  (type $dropfn (func (param i32)))\n"
     "  (func $rho_nodrop (param $p i32))\n"
     "  ;; raw write to fd 1 with the scratch iov at 0\n"

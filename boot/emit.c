@@ -561,9 +561,48 @@ static void emit_const_to(FnCx *cx, Node *e, Type *t, size_t dst) {
 }
 
 // register a struct type's drop fn (deterministic first-use order)
-__attribute__((unused)) static size_t dropfn_for(Type *t) {
-  (void)t;
-  return 0; // real drop-fn registry lands with boxed structs (T1.7b)
+// drop-fn registry: one walker per struct type that owns managed
+// fields; table index assigned at first use (deterministic)
+static size_t dropfn_for(Type *t) {
+  Em *em = em_cur;
+  for (size_t i = 0; i < VLEN(em->dropfns); i++)
+    if (*VAT(em->dropfns, Type *, i) == t)
+      return 4 + i;
+  *VPUSH(em->dropfns, Type *) = t;
+  return 4 + VLEN(em->dropfns) - 1;
+}
+
+// emit every registered drop walker + the funcref table
+static void emit_dropfns_and_table(Em *em) {
+  for (size_t i = 0; i < VLEN(em->dropfns); i++) {
+    Type *st = *VAT(em->dropfns, Type *, i);
+    // name deterministic from the struct + its module path order
+    const char *nm = aprintf(g_arena, "$drop_%s_%zu", st->sdef->name, i);
+    tprintf(&em->fnbuf, "  (func %s (param $p i32)\n", nm);
+    for (size_t f = 0; f < st->sdef->nfields; f++) {
+      Type *ft = inst_ty(st, st->sdef->fields[f].ty);
+      size_t off = field_offset(st, f);
+      if (!type_is_managed(ft))
+        continue;
+      if (ft->kind == TY_PTR || ft->kind == TY_STRING ||
+          ft->kind == TY_SLICE || ft->kind == TY_DYN)
+        tprintf(&em->fnbuf,
+                "    (call $rho_release (i32.load (i32.add (local.get $p) "
+                "(i32.const %zu))))\n", off);
+    }
+    tprintf(&em->fnbuf, "  )\n");
+  }
+  // table: 4 nodrop slots + one per registered walker
+  tprintf(&em->fnbuf, "  (table %zu funcref)\n",
+          4 + VLEN(em->dropfns));
+  tprintf(&em->fnbuf,
+          "  (elem (i32.const 0) $rho_nodrop $rho_nodrop $rho_nodrop "
+          "$rho_nodrop");
+  for (size_t i = 0; i < VLEN(em->dropfns); i++) {
+    Type *st = *VAT(em->dropfns, Type *, i);
+    tprintf(&em->fnbuf, " $drop_%s_%zu", st->sdef->name, i);
+  }
+  tprintf(&em->fnbuf, ")\n");
 }
 
 static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
@@ -1122,6 +1161,11 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
        sz);
     op(cx, "(local.set %zu (i32.add (local.get %zu) (i32.const 24)))\n",
        dst, dst);
+    { // the block's destructor (rc==0 walks owned fields, spec §1.4)
+      size_t di = dropfn_for(st);
+      op(cx, "(i32.store (i32.sub (local.get %zu) (i32.const 12)) "
+             "(i32.const %zu))\n", dst, di);
+    }
     RefList *inits = e->b != NO_REF ? node_get(e->b)->list : NULL;
     for (size_t i = 0; i < st->sdef->nfields; i++) {
       const char *fname = st->sdef->fields[i].name;
@@ -2356,13 +2400,20 @@ int emit_program(Program *p, bool debug, char **wat_out, size_t *wat_len) {
   tprintf(o, "      (local.set $i (i32.add (local.get $i) (i32.const 1))) "
              "(br $c)))\n");
   tprintf(o, "    (i32.const 1))\n");
-  // functions
+  // functions (user fns first — drop walkers registered during their
+  // emission — then the walkers + funcref table)
   for (size_t i = 0; i < VLEN(em.fns); i++) {
     EFn *f = VAT(em.fns, EFn, i);
     tneed(o, f->wat_len);
     memcpy(o->p + o->n, f->wat, f->wat_len);
     o->n += f->wat_len;
   }
+  // drop walkers + the funcref table (fnbuf), after all functions
+  emit_dropfns_and_table(&em);
+  tneed(o, em.fnbuf.n);
+  memcpy(o->p + o->n, em.fnbuf.p, em.fnbuf.n);
+  o->n += em.fnbuf.n;
+
   // data segments
   for (size_t i = 0; i < VLEN(em.data); i++) {
     DataEnt *d = VAT(em.data, DataEnt, i);
