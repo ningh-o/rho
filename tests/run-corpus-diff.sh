@@ -16,6 +16,12 @@ for f in corpus/*.rho; do
     fail=$((fail+1)); failed="$failed $name:build"; continue
   fi
   wasmtime /tmp/cdiff-c.wasm >/tmp/cdiff.wat 2>/dev/null
+  cr=$?
+  if [ $cr -gt 1 ]; then
+    # the compiler itself died mid-run — worse than any behavioral
+    # diff; the robustness bar is clean refusal or clean compile
+    fail=$((fail+1)); failed="$failed $name:PANIC"; continue
+  fi
   if ! wat2wasm /tmp/cdiff.wat -o /tmp/cdiff.self.wasm 2>/dev/null; then
     fail=$((fail+1)); failed="$failed $name:w2w"; continue
   fi
