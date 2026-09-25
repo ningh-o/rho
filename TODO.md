@@ -294,10 +294,29 @@ section — no placeholder stages. boot is the reference compiler.
       old boot-vs-mirror differential retired with the old code — the
       fuzz framework is the price of the clean slate; rebuild it before
       calling anything done.)
-- [ ] **T3.4** Suites: lang/modsys/opt/eq/params/multiline rebuilt for
-      the new language, incl. the fixes the design mandates (aggregate
-      let-position values are legal; `as` truncates constants like
-      variables; bitwise compound assignments verified end-to-end).
+- [ ] **T3.4** Suites: lang/modsys/opt/eq/params/multiline/strops/diag
+      rebuilt for the new language, incl. the fixes the design mandates
+      (aggregate let-position values are legal; `as` truncates constants
+      like variables; bitwise compound assignments verified end-to-end).
+      This is spec.md §11's conformance map made executable: the suite
+      lives in `tests/` under the map's directory names, every case is
+      a `*_test.rho` file in §17 form (`// out:` / `// exit:` /
+      `// set:`; a diagnostic carries `// expect:` substrings and must
+      fail check), and every file names its law in a
+      `// spec: <doc> §<n>` anchor — the §11 rule→test table generates
+      from the anchors, and a rule whose test does not exist is a rule
+      not implemented. Multi-file cases (packages, facades) are
+      directories with a `main.rho` entry carrying the same headers.
+      Two tiers: green files gate now; a case for law already ratified
+      but not yet implemented (§18 mut view, §19 match ergonomics,
+      T3.7 item imports, the T3.6 usize lane) carries
+      `// pending: T3.x` and runs as an expected-fail ledger,
+      promoting per case when its task lands. Until T3.5's verb
+      exists, `tests/run-suites.sh` implements the `rho test`
+      contract (paths, directory scan, golden headers, diagnostics,
+      pending ledger, honest zero-tests exit 1); when the verb lands
+      it takes the suite over unchanged. The existing tests/check
+      negatives stay put — no migration churn.
 - [ ] **T3.5** The test protocol (§17): boot grows the `test` block and
       the `rho test` verb — lex/parse/check/emit for the block form,
       the runner (paths, directory scan, golden headers, per-test
@@ -427,6 +446,17 @@ only when their listed dependencies close.
       lands; the §13 in-compiler optimizer's finish line includes
       retiring binaryen from the site pipeline once its effect is
       matched).
+- [ ] **T6.4** Corpus dissolution (after T6.3). corpus's historical
+      role — behavioral memory of the pre-rewrite language — expires at
+      the freeze; spec + suites own truth from there. Retire the
+      `corpus/` directory by the three-way split: cases the suites
+      already cover die; good teaching programs promote to `examples/`
+      (user-facing, still gated so they cannot rot); whole-program
+      interaction pins move to the suites' programs tier and the
+      differential re-points there. What never retires: the
+      whole-program integration layer, the differential base, byte
+      goldens, the examples — only corpus's unanchored positives-only
+      form retires.
 
 ## Phase 7 — after 0.1.0: native compilation, in the std library
 
