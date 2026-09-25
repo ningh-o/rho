@@ -81,6 +81,13 @@
     (drop (call $fd_write (i32.const 1) (i32.const 0)
                           (i32.const 1) (i32.const 16))))
 
+  ;; write to stderr
+  (func $eprint_mem (param $p i32) (param $n i32)
+    (i32.store (i32.const 0) (local.get $p))
+    (i32.store (i32.const 4) (local.get $n))
+    (drop (call $fd_write (i32.const 2) (i32.const 0)
+                          (i32.const 1) (i32.const 16))))
+
   ;; decimal u64 into the fmt buffer end [fmt_lo, fmt_hi)
   (func $fmt_u64 (param $v i64)
     (local $i i32)

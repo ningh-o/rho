@@ -508,25 +508,41 @@ static void emit_const_to(FnCx *cx, Node *e, Type *t, size_t dst) {
   case TY_I64: case TY_U64: {
     uint64_t v = 0;
     if (e->kind == NT_INT) v = e->ival;
-    else if (e->kind == NT_UNARY) v = (uint64_t)(0 - (int64_t)e->ival);
-    else if (e->kind == NT_FLOAT) v = (uint64_t)(int64_t)e->fval;
+    else if (e->kind == NT_UNARY) {
+      Node *op0 = node_get(e->a);
+      uint64_t base = op0->kind == NT_INT   ? op0->ival
+                      : op0->kind == NT_FLOAT ? (uint64_t)(int64_t)op0->fval
+                                              : 0;
+      v = (uint64_t)(0 - (int64_t)base);
+    } else if (e->kind == NT_FLOAT) v = (uint64_t)(int64_t)e->fval;
     op(cx, "(local.set %zu (i64.const %llu))\n", dst,
        (unsigned long long)v);
     break;
   }
-  case TY_F32:
-    op(cx, "(local.set %zu (f32.const %.9g))\n", dst,
-       e->kind == NT_FLOAT ? e->fval : (double)(int64_t)e->ival);
+  case TY_F32: {
+    double dv = e->kind == NT_FLOAT  ? e->fval
+                : e->kind == NT_UNARY ? -(double)(int64_t)node_get(e->a)->ival
+                                      : (double)(int64_t)e->ival;
+    op(cx, "(local.set %zu (f32.const %.9g))\n", dst, dv);
     break;
-  case TY_F64:
-    op(cx, "(local.set %zu (f64.const %.17g))\n", dst,
-       e->kind == NT_FLOAT ? e->fval : (double)(int64_t)e->ival);
+  }
+  case TY_F64: {
+    double dv = e->kind == NT_FLOAT  ? e->fval
+                : e->kind == NT_UNARY ? -(double)(int64_t)node_get(e->a)->ival
+                                      : (double)(int64_t)e->ival;
+    op(cx, "(local.set %zu (f64.const %.17g))\n", dst, dv);
     break;
+  }
   default: { // 32-bit ints (wrap into range)
     uint64_t v = 0;
     if (e->kind == NT_INT) v = e->ival;
-    else if (e->kind == NT_UNARY) v = (uint64_t)(0 - (int64_t)e->ival);
-    else if (e->kind == NT_FLOAT) v = (uint64_t)(int64_t)e->fval;
+    else if (e->kind == NT_UNARY) {
+      Node *op0 = node_get(e->a);
+      uint64_t base = op0->kind == NT_INT   ? op0->ival
+                      : op0->kind == NT_FLOAT ? (uint64_t)(int64_t)op0->fval
+                                              : 0;
+      v = (uint64_t)(0 - (int64_t)base);
+    } else if (e->kind == NT_FLOAT) v = (uint64_t)(int64_t)e->fval;
     truncate_after(cx, t, dst);
     op(cx, "(local.set %zu (i32.const %d))\n", dst, (int32_t)(uint32_t)v);
     truncate_after(cx, t, dst);
@@ -1152,8 +1168,26 @@ static void emit_match(FnCx *cx, NodeRef er, size_t dst) {
             var = &st->edef->variants[k];
         op(cx, "(if (i32.eq (local.get %zu) (i32.const %d)) (then\n", v,
            var ? var->tag : -1);
+      } else if (pat->kind == NT_PLIT) {
+        // literal arm: guard on the subject value
+        if (pat->op == 0) { // integer
+          op(cx, "(if (i32.eq (local.get %zu) (i32.const %d)) (then\n",
+             v, (int32_t)(uint32_t)pat->ival);
+          if (scalar_wty(st) == W_I64)
+            op(cx, ";; i64 literal arm refined below\n");
+        } else if (pat->op == 2) { // bool
+          op(cx, "(if (i32.eq (local.get %zu) (i32.const %d)) (then\n",
+             v, pat->bval ? 1 : 0);
+        } else if (pat->op == 3) { // string content
+          size_t at = data_intern(pat->sval.p, pat->sval.n);
+          op(cx, "(if (call $rho_streq (local.get %zu) (local.get %zu) "
+                 "(i32.const %zu) (i32.const %zu)) (then\n", v, v + 1,
+             at, pat->sval.n);
+        } else {
+          op(cx, ";; float literal arm (with the prelude to_str era)\n");
+          continue;
+        }
       } else {
-        op(cx, ";; literal arm (T1.7c cont)\n");
         continue;
       }
     }
@@ -1301,6 +1335,7 @@ size_t static_slot(Module *m, const char *name) {
 
 // printf/eprintf: literal chunks and per-hole to_str pushes, one write
 static void emit_printf(FnCx *cx, Node *call, bool err) {
+  const char *sink = err ? "$eprint_mem" : "$print_mem";
   Node *fmtn = node_get(node_get(reflist_at(call->list, 0))->a);
   Str fmt = fmtn->sval;
   size_t argi = 1;
@@ -1327,13 +1362,13 @@ static void emit_printf(FnCx *cx, Node *call, bool err) {
       case TY_BOOL: {
         size_t t1 = data_intern("true", 4);
         size_t t0 = data_intern("false", 5);
-        op(cx, "(if (local.get %zu) (then (call $print_mem (i32.const %zu)"
-               " (i32.const 4))) (else (call $print_mem (i32.const %zu)"
-               " (i32.const 5))))\n", v, t1, t0);
+        op(cx, "(if (local.get %zu) (then (call %s (i32.const %zu)"
+               " (i32.const 4))) (else (call %s (i32.const %zu)"
+               " (i32.const 5))))\n", v, sink, t1, sink, t0);
         break;
       }
       case TY_STRING:
-        op(cx, "(call $print_mem %s %s)\n", L(cx, v), L(cx, v + 1));
+        op(cx, "(call %s %s %s)\n", sink, L(cx, v), L(cx, v + 1));
         break;
       default: // 32-bit ints widen to i64 prints
         if (scalar_wty(at) == W_I64) {
@@ -1355,7 +1390,7 @@ static void emit_printf(FnCx *cx, Node *call, bool err) {
              !(j + 1 < fmt.n && fmt.p[j] == '{' && fmt.p[j + 1] == '}'))
         j++;
       size_t at = data_intern(fmt.p + i, j - i);
-      op(cx, "(call $print_mem (i32.const %zu) (i32.const %zu))\n", at,
+      op(cx, "(call %s (i32.const %zu) (i32.const %zu))\n", sink, at,
          j - i);
       i = j;
     }
@@ -1425,17 +1460,31 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
   }
 
   case NT_EXPRSTMT:
-    if (s->op == 3) { // block
+    if (s->op == 3) { // block: defers run LIFO, then vars release
       cx->scope++;
-      size_t base = VLEN(cx->vars);
+      size_t base_vars = VLEN(cx->vars);
+      size_t base_defers = VLEN(cx->defers);
       for (size_t i = 0; i < reflist_len(s->list); i++)
         emit_stmt(cx, reflist_at(s->list, i));
-      // scope exit: release this scope's managed vars (reverse)
-      for (size_t i = VLEN(cx->vars); i > base; i--) {
+      for (size_t i = VLEN(cx->defers); i > base_defers;) {
+        DeferEnt *d = VAT(cx->defers, DeferEnt, --i);
+        NodeRef act = node_get(d->stmt)->a;
+        Node *an = node_get(act);
+        if (an->kind == NT_ASSIGN)
+          emit_stmt(cx, act);
+        else {
+          Type *at2 = (Type *)an->sem;
+          size_t tv = cx_fresh(cx, at2 ? at2 : ty_unit);
+          emit_expr(cx, act, tv);
+          release(cx, at2, tv);
+        }
+      }
+      cx->defers.len = base_defers;
+      for (size_t i = VLEN(cx->vars); i > base_vars; i--) {
         VarInfo *v = VAT(cx->vars, VarInfo, i - 1);
         release(cx, v->ty, v->vreg);
       }
-      cx->vars.len = base;
+      cx->vars.len = base_vars;
       cx->scope--;
       return;
     }

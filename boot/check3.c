@@ -113,6 +113,17 @@ static CVal fold_as(CVal v, Type *to) {
 static CVal fold_binop(int op, CVal a, CVal b) {
   if (!cv_ok(a) || !cv_ok(b))
     return g_bad;
+  // canonicalize integer operands to the LEFT operand's width/signedness
+  // (the same domain the runtime uses — spec §4)
+  if (a.kind != CV_FLOAT && b.kind != CV_FLOAT && a.kind != CV_STR &&
+      type_is_int(a.ty)) {
+    uint64_t r = trunc_to(b.u, a.ty);
+    b.u = r;
+    b.i = (int64_t)r;
+    b.ty = a.ty;
+    a.u = trunc_to(a.u, a.ty);
+    a.i = (int64_t)a.u;
+  }
   // string concatenation folds
   if (op == OP_ADD && a.kind == CV_STR && b.kind == CV_STR) {
     CVal r;
@@ -207,6 +218,9 @@ static CVal fold_binop(int op, CVal a, CVal b) {
     int64_t sx = (int64_t)x, sy = (int64_t)y;
     // unsigned types compare unsigned
     bool uu = a.ty->kind >= TY_U8;
+    if (getenv("RHO_DEBUG_FOLD"))
+      fprintf(stderr, "[cmp] op=%d x=%llu y=%llu uu=%d\n", op,
+              (unsigned long long)x, (unsigned long long)y, (int)uu);
     bool bv;
     switch (op) {
     case OP_EQ: bv = x == y; break;
@@ -336,6 +350,10 @@ static bool fold_cond_modules(Module *m, NodeRef er, bool *out) {
   FoldEnv root = {g_entry_mod ? g_entry_mod->syms : NULL, NULL};
   FoldEnv env = {m ? m->syms : NULL, &root};
   CVal v = fold_expr(&env, er);
+  if (getenv("RHO_DEBUG_FOLD"))
+    fprintf(stderr, "[cond] kind=%d -> ok=%d kind=%d b=%d\n",
+            (int)node_get(er)->kind, (int)cv_ok(v), (int)v.kind,
+            v.b ? 1 : 0);
   if (!cv_ok(v) || v.kind != CV_BOOL)
     return false;
   *out = v.b;
@@ -544,8 +562,15 @@ void const_resolve_all(Program *p) {
 // which branch is live (1 then / 0 else, -1 none)
 bool fold_if_condition(Module *m, Node *ifnode, int *live) {
   bool b;
-  if (!fold_cond_modules(m, ifnode->a, &b))
+  if (!fold_cond_modules(m, ifnode->a, &b)) {
+    if (getenv("RHO_DEBUG_FOLD"))
+      fprintf(stderr, "[fold-fail] %s:%d kind=%d\n", m->path,
+              ifnode->line, (int)node_get(ifnode->a)->kind);
     return false;
+  }
+  if (getenv("RHO_DEBUG_FOLD"))
+    fprintf(stderr, "[fold] %s:%d -> %d\n", m->path, ifnode->line,
+            b ? 1 : 0);
   *live = b ? 1 : 0;
   return true;
 }
