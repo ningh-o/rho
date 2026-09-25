@@ -241,6 +241,20 @@ fn parse_primary(c: *PCur) -> *Expr {
     }
     return bin(1, lit(0), inner);
   }
+  if is_punct(t, 33) {
+    // !expr: logical not (the value is a 0/1 i64)
+    tkadv(c);
+    let inner = parse_primary(c);
+    return bin(12, lit(0), inner);
+  }
+  if t.kind == lex.TK_KEYWORD && t.text == "true" {
+    tkadv(c);
+    return lit(1);
+  }
+  if t.kind == lex.TK_KEYWORD && t.text == "false" {
+    tkadv(c);
+    return lit(0);
+  }
   if t.kind == lex.TK_INT {
     tkadv(c);
     return lit(t.ival);

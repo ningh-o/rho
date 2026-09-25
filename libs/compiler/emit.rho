@@ -361,6 +361,9 @@ fn wat_op(op: i64) -> string {
   if op == 11 {
     return "i32.wrap_i64";
   }
+  if op == 12 {
+    return "i64.eq";
+  }
   return "i64.ne";
 }
 
@@ -449,6 +452,17 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog) -> string {
   }
   // binary: operand code, then the operator
   let mut out: string = "";
+  if e.op == 12 {
+    // '!expr' is unary: the inner value, eqz, extended back
+    match e.rhs {
+      Option.Some(r) => {
+        out = out + emit_expr(pool, r, env, prog);
+      },
+      Option.None => {},
+    }
+    out = out + "    (i64.eqz)\n    (i64.extend_i32_s)\n";
+    return out;
+  }
   match e.lhs {
     Option.Some(l) => {
       out = out + emit_expr(pool, l, env, prog);
@@ -467,6 +481,10 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog) -> string {
     Option.None => {},
   }
   out = out + "    (" + wat_op(e.op) + ")\n";
+  // comparisons yield i32 in wasm: extend back to the i64 lane
+  if e.op >= 5 && e.op <= 10 {
+    out = out + "    (i64.extend_i32_s)\n";
+  }
   return out;
 }
 
@@ -588,7 +606,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
         Option.Some(cond) => {
           // flat if: the condition's stack code precedes the keyword
           body = body + emit_expr(pool, cond, env, prog);
-          body = body + "    if\n";
+          body = body + "    (i32.wrap_i64)\n    if\n";
           body = body + emit_stmts(st.body, pool, env, next_local, in_fn, ret_slot, prog);
           if len(st.body2) > 0 {
             body = body + "    else\n";
@@ -605,7 +623,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
         Option.Some(cond) => {
           body = body + "    (loop $w\n";
           body = body + emit_expr(pool, cond, env, prog);
-          body = body + "    if\n";
+          body = body + "    (i32.wrap_i64)\n    if\n";
           body = body + emit_stmts(st.body, pool, env, next_local, in_fn, ret_slot, prog);
           body = body + "      (br $w)\n";
           body = body + "    end\n";

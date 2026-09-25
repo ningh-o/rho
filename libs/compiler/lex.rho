@@ -62,6 +62,9 @@ fn is_keyword(s: string) -> bool {
   if s == "as" || s == "i64" || s == "usize" {
     return true;
   }
+  if s == "true" || s == "false" {
+    return true;
+  }
   return false;
 }
 
