@@ -423,11 +423,16 @@ fn oob_check(pool: *Pool, len_text: string) -> string {
 
 // one fd_write of nbytes at addr: the iovec cell pair at 64/68
 fn write_call(addr: i64, nbytes: i64) -> string {
+  return write_fd(addr, nbytes, 1);
+}
+
+fn write_fd(addr: i64, nbytes: i64, fd: i64) -> string {
   let out: string = "    (i32.store (i32.const 64) (i32.const " +
                     addr.to_str() + "))\n" +
                     "    (i32.store (i32.const 68) (i32.const " +
                     nbytes.to_str() + "))\n" +
-                    "    (drop (call $fd_write (i32.const 1) " +
+                    "    (drop (call $fd_write (i32.const " + fd.to_str() +
+                    ") " +
                     "(i32.const 64) (i32.const 1) (i32.const 96)))\n";
   return out;
 }
@@ -2073,6 +2078,34 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
                               true, false, optpt);
     return out;
   }
+  if e.tag == parse.EX_IF {
+    // if c { a } else { b } as an expression: the arms ride one i64
+    // (float arms ride bits — the lanes agree within one expression)
+    let mut out: string = "";
+    match e.lhs {
+      Option.Some(cond) => {
+        out = out + emit_expr(pool, cond, env, prog, nl);
+      },
+      Option.None => {
+        out = out + "    (i64.const 0)\n";
+      },
+    }
+    out = out + "    (i32.wrap_i64)\n    (if (result i64)\n" +
+           "      (then\n";
+    if len(e.args) > 0 {
+      out = out + emit_expr(pool, e.args[0], env, prog, nl);
+    } else {
+      out = out + "    (i64.const 0)\n";
+    }
+    out = out + "      )\n      (else\n";
+    if len(e.args) > 1 {
+      out = out + emit_expr(pool, e.args[1], env, prog, nl);
+    } else {
+      out = out + "    (i64.const 0)\n";
+    }
+    out = out + "      ))\n";
+    return out;
+  }
   if e.tag == parse.EX_FLIT {
     // the raw text rides into f64.const (wat2wasm does strtod); f32
     // literals round through demote for exact f32 values
@@ -2200,13 +2233,19 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
       }
     }
   }
-  if e.tag == parse.EX_CALL && e.name == "printf" &&
+  if (e.tag == parse.EX_CALL && e.name == "printf" ||
+       e.tag == parse.EX_CALL && e.name == "eprintf") &&
       len(e.args) >= 1 && e.args[0].tag == parse.EX_STR {
-    // printf riding an expression (an arm value): the writes happen,
-    // a zero rides the lane
+    // printf/eprintf riding an expression (an arm value): the writes
+    // happen, a zero rides the lane
     let rest: []*Expr = e.args[1..len(e.args)];
-    return emit_printf(pool, e.args[0].name, rest, env, prog, nl) +
-           "    (i64.const 0)\n";
+    let mut wtext: string = "";
+    if e.name == "printf" {
+      wtext = emit_printf(pool, e.args[0].name, rest, env, prog, nl);
+    } else {
+      wtext = emit_eprintf(pool, e.args[0].name, rest, env, prog, nl);
+    }
+    return wtext + "    (i64.const 0)\n";
   }
   if e.tag == parse.EX_CALL {
     let mut out: string = "";
@@ -3311,6 +3350,17 @@ fn emit_assert(pool: *Pool, call: *Expr, env: *Env,
 // the pieces intern and the holes render by kind
 fn emit_printf(pool: *Pool, fmt: string, args: []*Expr, env: *Env,
                prog: *Prog, nl: *NextLocal) -> string {
+  return emit_print_fd(pool, fmt, args, env, prog, nl, 1);
+}
+
+// the stderr twin (eprintf): the same walk, fd 2
+fn emit_eprintf(pool: *Pool, fmt: string, args: []*Expr, env: *Env,
+                prog: *Prog, nl: *NextLocal) -> string {
+  return emit_print_fd(pool, fmt, args, env, prog, nl, 2);
+}
+
+fn emit_print_fd(pool: *Pool, fmt: string, args: []*Expr, env: *Env,
+                 prog: *Prog, nl: *NextLocal, fd: i64) -> string {
   let pieces: []string = parse.fmt_pieces(fmt);
   // pass 1: evaluate each hole into temps (folded strings skip the
   // temps — their pool consts are side-effect free)
@@ -3345,7 +3395,9 @@ fn emit_printf(pool: *Pool, fmt: string, args: []*Expr, env: *Env,
                ((arg.op >= 5 && arg.op <= 10) || arg.op == 13 ||
                 arg.op == 14)) ||
               (arg.tag == parse.EX_VAR &&
-               env_bool_is(env, arg.name)) {
+               env_bool_is(env, arg.name)) ||
+              (arg.tag == parse.EX_LIT &&
+               (arg.name == "true" || arg.name == "false")) {
             // a comparison or logical — or a var bound from one —
             // prints its spelled word
             pre = pre + emit_expr(pool, arg, env, prog, nl);
@@ -3396,12 +3448,12 @@ fn emit_printf(pool: *Pool, fmt: string, args: []*Expr, env: *Env,
   while pi < len(pieces) {
     if len(pieces[pi]) > 0 {
       let addr: i64 = pool_intern(pool, pieces[pi]);
-      out = out + write_call(addr, pool_len(pool, pieces[pi]));
+      out = out + write_fd(addr, pool_len(pool, pieces[pi]), fd);
     }
     if pi + 1 < len(pieces) && pi < nhol {
       let h: usize = pi;
       if kinds[h] == 3 {
-        out = out + write_call(t_a[h], t_l[h]);
+        out = out + write_fd(t_a[h], t_l[h], fd);
       } else {
         if kinds[h] == 4 {
           out = out + "    (local.get " + t_a[h].to_str() +
@@ -3410,19 +3462,32 @@ fn emit_printf(pool: *Pool, fmt: string, args: []*Expr, env: *Env,
                  ")\n    (i32.wrap_i64)\n    (local.set $l)\n" +
                  "    (i32.store (i32.const 64) (local.get $a))\n" +
                  "    (i32.store (i32.const 68) (local.get $l))\n" +
-                 "    (drop (call $fd_write (i32.const 1) " +
+                 "    (drop (call $fd_write (i32.const " + fd.to_str() +
+                 ") " +
                  "(i32.const 64) (i32.const 1) (i32.const 96)))\n";
         } else {
           if kinds[h] == 2 {
             out = out + "    (local.get " + t_a[h].to_str() +
-                   ")\n" + write_bool_top();
+                   ")\n    call $w_bool\n" +
+                   "    (local.set $l)\n    (local.set $a)\n" +
+                   "    (i32.store (i32.const 64) (local.get $a))\n" +
+                   "    (i32.store (i32.const 68) (local.get $l))\n" +
+                   "    (drop (call $fd_write (i32.const " +
+                   fd.to_str() + ") " +
+                   "(i32.const 64) (i32.const 1) (i32.const 96)))\n";
           } else {
             out = out + "    (local.get " + t_a[h].to_str() + ")\n";
             if kinds[h] == 1 {
-              out = out + write_uint();
+              out = out + "    call $w_u64\n";
             } else {
-              out = out + write_int();
+              out = out + "    call $w_i64\n";
             }
+            out = out + "    (local.set $l)\n    (local.set $a)\n" +
+                   "    (i32.store (i32.const 64) (local.get $a))\n" +
+                   "    (i32.store (i32.const 68) (local.get $l))\n" +
+                   "    (drop (call $fd_write (i32.const " +
+                   fd.to_str() + ") " +
+                   "(i32.const 64) (i32.const 1) (i32.const 96)))\n";
           }
         }
       }

@@ -15,6 +15,8 @@ pub const EX_IDX: i32 = 6;   // base[idx]: lhs = base, rhs = index
 pub const EX_SLICE2: i32 = 7; // base[a..b]: lhs = base, args = lo/hi;
                               // op bit0 = lo present, bit1 = hi present
 pub const EX_Q: i32 = 13;    // e? — the propagate-and-unwrap
+pub const EX_IF: i32 = 15;   // if c { a } else { b } as an expression:
+                             // lhs = cond, args[0]/args[1] = the arms
 pub const EX_FLIT: i32 = 14; // a float literal; the raw decimal text
                              // rides the name (f64.const parses it)
 pub const EX_MATCH: i32 = 12; // match scrut { arms }: scrut rides
@@ -278,6 +280,16 @@ pub fn field_expr(base: *Expr, fname: string) -> *Expr {
   return new Expr { tag: EX_FIELD, lit: 0, name: fname, op: 0,
                     lhs: Option.Some(base), rhs: Option.None,
                     args: make([]*Expr, 0), fnames: make([]string, 0),
+                    marms: make([]*MatchArm, 0) };
+}
+
+pub fn if_expr(cond: *Expr, thenv: *Expr, elsev: *Expr) -> *Expr {
+  let args: []*Expr = make([]*Expr, 2);
+  args[0] = thenv;
+  args[1] = elsev;
+  return new Expr { tag: EX_IF, lit: 0, name: "", op: 0,
+                    lhs: Option.Some(cond), rhs: Option.None,
+                    args: args, fnames: make([]string, 0),
                     marms: make([]*MatchArm, 0) };
 }
 
@@ -699,6 +711,30 @@ fn parse_atom(c: *PCur) -> *Expr {
     tkadv(c);
     let inner = parse_primary(c);
     return bin(17, lit(0 - 1), inner);
+  }
+  if t.kind == lex.TK_KEYWORD && t.text == "if" {
+    // the if EXPRESSION: both arms are braced expressions (else-if
+    // chains nest); requires else (§9 — same-type arms)
+    tkadv(c);
+    let cond = parse_bin(c, 0);
+    let mut thenv: *Expr = lit(0);
+    if eat_punct(c, 123) {
+      thenv = parse_bin(c, 0);
+      eat_punct(c, 125);
+    }
+    let mut elsev: *Expr = lit(0);
+    if tk(c).kind == lex.TK_KEYWORD && tk(c).text == "else" {
+      tkadv(c);
+      if tk(c).kind == lex.TK_KEYWORD && tk(c).text == "if" {
+        elsev = parse_primary(c);
+      } else {
+        if eat_punct(c, 123) {
+          elsev = parse_bin(c, 0);
+          eat_punct(c, 125);
+        }
+      }
+    }
+    return if_expr(cond, thenv, elsev);
   }
   if t.kind == lex.TK_KEYWORD && t.text == "true" {
     tkadv(c);
