@@ -97,14 +97,17 @@
     (drop (call $fd_write (i32.const 2) (i32.const 0)
                           (i32.const 1) (i32.const 16))))
 
-  ;; format-build scratch: [64, 2048); overflow = defined panic
+  ;; format-build scratch: [64, 4096); overflow = defined panic
+  ;; (grew from 2048: the self-hosted compiler prints program-sized
+  ;; WAT through it — the data literals start at 4096, so the scratch
+  ;; fills the gap exactly)
   (global $fb (mut i32) (i32.const 64))
   (func $fb_reset
     (global.set $fb (i32.const 64)))
   (func $fb_push (param $p i32) (param $n i32)
     (local $i i32)
     (if (i32.gt_u (i32.add (global.get $fb) (local.get $n))
-                  (i32.const 2048))
+                  (i32.const 4096))
       (then (call $rho_panic (i32.const 2048) (i32.const 7))))
     (local.set $i (i32.const 0))
     (block $d (loop $c
