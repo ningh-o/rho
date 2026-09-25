@@ -66,7 +66,7 @@ to wasm → gate green → 0.1.0. Native compilation is **not** part of
       version policy says: 0.1.0 = the wasm self-hosting bootstrap, or
       nothing). Add a conformance map: every design rule → the test that
       will hold it.
-- [ ] **T0.4 Corpus plan.** Decide the corpus rebuild from the archive:
+- [x] **T0.4 Corpus plan.** Decide the corpus rebuild from the archive:
       which of the 105 old programs adapt to the new language and in
       what order, which new programs the new features need (overloads,
       `?T`, labels, inner shadowing, build-parameter widening). Goldens
