@@ -4470,7 +4470,8 @@ pub fn emit(prog: *Prog) -> string {
   out = out + "    (global.set $w_none_box (i64.extend_i32_u " +
               "(call $w_alloc (i32.const 2))))\n";
   out = out + body;
-  out = out + "    (call $proc_exit (local.get 2))\n";
+  out = out + "    (call $proc_exit (i32.and (local.get 2) " +
+              "(i32.const 255)))\n";
   out = out + "  )\n";
   out = out + "  (data (i32.const 4030) \"truefalse\")\n";
   let mut d: usize = 0;
