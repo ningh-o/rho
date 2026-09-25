@@ -21,6 +21,20 @@ but a facade ambiguity (§4) always is.
 The first segment `std` is reserved: it resolves against the reserved
 in-repo `std/` directory (see §7) and never against the two bases.
 
+**Module or item.** The final segment resolves as a module first (file
+or directory); only when no module matches may it resolve to a
+**public item** of the module it lands in — the binding is then the
+item itself, used unqualified, under its own name or the `as` name
+(`use lex.a as b;` binds lex's item `a` as `b`). A final segment that
+matches both a module and an item is an ambiguity error naming both
+(§3's rule, across kinds). An import binding that collides with a
+local declaration — or two import bindings of one name — is a compile
+error naming both. Item bindings never cross a package boundary: a
+package's items are reachable from outside only qualified through its
+facade (§4); `use geom.norm;` from outside `geom/` is an error.
+`use geom.{a, b as c};` is pure sugar: it expands to `use geom.a;`
+and `use geom.b as c;`, each resolved by the rules above.
+
 ## 3. Exactly one real body
 
 A module name must have exactly one real body. If both `lib.rho` and
@@ -47,6 +61,10 @@ A **package** is a directory behind a `lib.rho` facade.
 - A plain file module inside a package directory is imported by its
   dotted path from within the package (`use web.strs;` — a file
   `strs.rho` in `web/`).
+- Plain item-level imports (§2) stop at the facade: from outside, a
+  package's items are reachable only qualified through the facade
+  binding. This is what keeps the facade the package's whole public
+  surface.
 
 ## 5. Visibility
 

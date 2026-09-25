@@ -448,6 +448,8 @@ struct Env {
   slots: []i64,
   vwidths: []i64, // per local: 0 lane-wide, else ±8/±16/±32 (neg = unsigned)
   sptr: []string, // the struct name where the binding holds a *T
+  sval: []string, // the struct name where the binding holds a VALUE
+  vbases: []i64,  // the value frame's base local slot
   n: usize,
   snames: []string,
   saddrs: []i64,
@@ -482,6 +484,8 @@ fn env_new(cap: usize) -> *Env {
   return new Env { names: make([]string, cap), slots: make([]i64, cap),
                    vwidths: make([]i64, cap),
                    sptr: make([]string, cap),
+                   sval: make([]string, cap),
+                   vbases: make([]i64, cap),
                    n: 0, snames: make([]string, cap),
                    saddrs: make([]i64, cap), slens: make([]i64, cap),
                    sraws: make([]string, cap),
@@ -538,7 +542,43 @@ fn write_runtime(a_slot: i64, l_slot: i64) -> string {
 
 // push a string expression's {addr, len} pair onto the i64 stack:
 // folded literals become constants; runtime vars local.get the pair
-fn push_string(pool: *Pool, e: *Expr, env: *Env) -> string {
+fn push_string(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
+                nl: *NextLocal) -> string {
+  // a string FIELD: the pair rides the value frame or the heap
+  if e.tag == parse.EX_FIELD {
+    let mut base: *Expr = parse.lit(0);
+    match e.lhs {
+      Option.Some(b) => {
+        base = b;
+      },
+      Option.None => {},
+    }
+    let bt: string = field_base_type(base, env, prog);
+    if len(bt) > 0 {
+      let si: i64 = st_index(prog, bt);
+      let fi: i64 = st_field_index(prog, si, e.name);
+      if fi >= 0 &&
+          type_kind(prog.structs[si as usize].types[fi as usize]) == 1 {
+        let off: i64 = st_field_off(prog, si, fi) * 8;
+        if base.tag == parse.EX_VAR && len(env_val_of(env, base.name)) > 0 {
+          let b0: i64 = env_val_base(env, base.name);
+          return "    (local.get " + (b0 + off / 8).to_str() + ")\n" +
+                 "    (local.get " + (b0 + off / 8 + 1).to_str() + ")\n";
+        }
+        let t0: i64 = nl.v;
+        nl.v = nl.v + 1;
+        let mut out: string = emit_expr(pool, base, env, prog, nl);
+        out = out + "    (local.set " + t0.to_str() + ")\n";
+        out = out + "    (i64.load (i32.add (i32.wrap_i64 (local.get " +
+               t0.to_str() + ")) (i32.const " + off.to_str() + ")))\n";
+        out = out + "    (i64.load (i32.add (i32.wrap_i64 (local.get " +
+               t0.to_str() + ")) (i32.const " + (off + 8).to_str() +
+               ")))\n";
+        return out;
+      }
+    }
+    return "    (i64.const 0)\n    (i64.const 0)\n";
+  }
   match fold_string(e, env) {
     Option.Some(raw) => {
       let saddr: i64 = pool_intern(pool, raw);
@@ -565,10 +605,10 @@ fn push_string(pool: *Pool, e: *Expr, env: *Env) -> string {
 fn emit_arg(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
              nl: *NextLocal) -> string {
   if e.tag == parse.EX_STR {
-    return push_string(pool, e, env);
+    return push_string(pool, e, env, prog, nl);
   }
   if e.tag == parse.EX_VAR && env_kind_of(env, e.name) >= 0 {
-    return push_string(pool, e, env);
+    return push_string(pool, e, env, prog, nl);
   }
   if e.tag == parse.EX_BIN && e.op == 0 {
     match fold_string(e, env) {
@@ -682,6 +722,19 @@ fn env_bind(e: *Env, name: string, slot: i64) {
   e.slots[e.n] = slot;
   e.vwidths[e.n] = 0;
   e.sptr[e.n] = "";
+  e.sval[e.n] = "";
+  e.vbases[e.n] = 0;
+  e.n = e.n + 1;
+}
+
+// a value binding: the fields live in a consecutive local frame
+fn env_bind_val(e: *Env, name: string, base: i64, sname: string) {
+  e.names[e.n] = name;
+  e.slots[e.n] = base;
+  e.vwidths[e.n] = 0;
+  e.sptr[e.n] = "";
+  e.sval[e.n] = sname;
+  e.vbases[e.n] = base;
   e.n = e.n + 1;
 }
 
@@ -690,6 +743,8 @@ fn env_bind_w(e: *Env, name: string, slot: i64, w: i64) {
   e.slots[e.n] = slot;
   e.vwidths[e.n] = w;
   e.sptr[e.n] = "";
+  e.sval[e.n] = "";
+  e.vbases[e.n] = 0;
   e.n = e.n + 1;
 }
 
@@ -699,7 +754,31 @@ fn env_bind_ptr(e: *Env, name: string, slot: i64, sname: string) {
   e.slots[e.n] = slot;
   e.vwidths[e.n] = 0;
   e.sptr[e.n] = sname;
+  e.sval[e.n] = "";
+  e.vbases[e.n] = 0;
   e.n = e.n + 1;
+}
+
+fn env_val_of(e: *Env, name: string) -> string {
+  let mut i: usize = 0;
+  while i < e.n {
+    if e.names[i] == name {
+      return e.sval[i];
+    }
+    i = i + 1;
+  }
+  return "";
+}
+
+fn env_val_base(e: *Env, name: string) -> i64 {
+  let mut i: usize = 0;
+  while i < e.n {
+    if e.names[i] == name {
+      return e.vbases[i];
+    }
+    i = i + 1;
+  }
+  return 0 - 1;
 }
 
 fn env_ptr_of(e: *Env, name: string) -> string {
@@ -909,6 +988,19 @@ fn fn_rtype_of(prog: *Prog, name: string) -> string {
   return "";
 }
 
+// the struct owning a field access: a pointer receiver by its
+// target, a value receiver by its frame
+fn field_base_type(e: *Expr, env: *Env, prog: *Prog) -> string {
+  if e.tag == parse.EX_VAR {
+    let vt: string = env_val_of(env, e.name);
+    if len(vt) > 0 {
+      return vt;
+    }
+    return env_ptr_of(env, e.name);
+  }
+  return expr_ptr_type(e, env, prog);
+}
+
 // the struct a pointer-valued expression references, "" when none:
 // vars by their binding, new by its name, calls and methods by the
 // written return type, fields by the field's own type
@@ -947,7 +1039,7 @@ fn expr_ptr_type(e: *Expr, env: *Env, prog: *Prog) -> string {
       },
       Option.None => {},
     }
-    let bt: string = expr_ptr_type(base, env, prog);
+    let bt: string = field_base_type(base, env, prog);
     if len(bt) > 0 {
       let si: i64 = st_index(prog, bt);
       let fi: i64 = st_field_index(prog, si, e.name);
@@ -1144,7 +1236,7 @@ fn fold_string(e: *Expr, env: *Env) -> ?string {
   return Option.None;
 }
 
-fn is_stringy(e: *Expr, env: *Env) -> bool {
+fn is_stringy(e: *Expr, env: *Env, prog: *Prog) -> bool {
   if e.tag == parse.EX_STR {
     return true;
   }
@@ -1152,14 +1244,32 @@ fn is_stringy(e: *Expr, env: *Env) -> bool {
     return env_str_is_runtime(env, e.name) &&
            env_kind_of(env, e.name) == 1;
   }
+  if e.tag == parse.EX_FIELD {
+    let mut base: *Expr = parse.lit(0);
+    match e.lhs {
+      Option.Some(b) => {
+        base = b;
+      },
+      Option.None => {},
+    }
+    let bt: string = field_base_type(base, env, prog);
+    if len(bt) > 0 {
+      let si: i64 = st_index(prog, bt);
+      let fi: i64 = st_field_index(prog, si, e.name);
+      if fi >= 0 {
+        return type_kind(prog.structs[si as usize].types[fi as usize]) == 1;
+      }
+    }
+    return false;
+  }
   return false;
 }
 
-fn both_stringy(e: *Expr, env: *Env) -> bool {
+fn both_stringy(e: *Expr, env: *Env, prog: *Prog) -> bool {
   let mut l: bool = false;
   match e.lhs {
     Option.Some(x) => {
-      l = is_stringy(x, env);
+      l = is_stringy(x, env, prog);
     },
     Option.None => {},
   }
@@ -1168,7 +1278,7 @@ fn both_stringy(e: *Expr, env: *Env) -> bool {
   }
   match e.rhs {
     Option.Some(y) => {
-      return is_stringy(y, env);
+      return is_stringy(y, env, prog);
     },
     Option.None => {
       return false;
@@ -1316,6 +1426,57 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
              "                     (i32.wrap_i64 (local.get $t)))))\n";
       return out;
     }
+    if base.tag == parse.EX_FIELD {
+      // a slice field: the pair rides the value frame or the heap
+      // (the OWNER's type resolves the field, not the field's own
+      // pointer target)
+      let mut owner: *Expr = parse.lit(0);
+      match base.lhs {
+        Option.Some(o) => {
+          owner = o;
+        },
+        Option.None => {},
+      }
+      let bt: string = field_base_type(owner, env, prog);
+      if len(bt) > 0 {
+        let si: i64 = st_index(prog, bt);
+        let fi: i64 = st_field_index(prog, si, base.name);
+        if fi >= 0 &&
+            type_kind(prog.structs[si as usize].types[fi as usize]) == 2 {
+          let off: i64 = st_field_off(prog, si, fi) * 8;
+          let mut vb: *Expr = owner;
+          if vb.tag == parse.EX_VAR &&
+              len(env_val_of(env, vb.name)) > 0 {
+            let b0: i64 = env_val_base(env, vb.name);
+            out = out + oob_check(pool, "(local.get " +
+                   (b0 + off / 8 + 1).to_str() + ")");
+            out = out + "    (i64.load (i32.add (i32.wrap_i64 (local.get " +
+                   (b0 + off / 8).to_str() + "))\n" +
+                   "                     (i32.mul (i32.wrap_i64 " +
+                   "(local.get $t)) (i32.const 8))))\n";
+            return out;
+          }
+          // the heap pair: the owner's address parks in a temp
+          let t0: i64 = nl.v;
+          nl.v = nl.v + 1;
+          out = out + emit_expr(pool, vb, env, prog, nl);
+          out = out + "    (local.set " + t0.to_str() + ")\n";
+          out = out + oob_check(pool, "(i64.load (i32.add (i32.wrap_i64 " +
+                 "(local.get " + t0.to_str() + ")) (i32.const " +
+                 (off + 8).to_str() + ")))");
+          // the element rides INSIDE the pair's storage: load the
+          // stored address first, then index
+          out = out + "    (i64.load (i32.add (i32.wrap_i64 (i64.load " +
+                 "(i32.add (i32.wrap_i64 " +
+                 "(local.get " + t0.to_str() + ")) (i32.const " +
+                 off.to_str() + ")))\n" +
+                 "                     )\n" +
+                 "                     (i32.mul (i32.wrap_i64 " +
+                 "(local.get $t)) (i32.const 8))))\n";
+          return out;
+        }
+      }
+    }
     return "    (i64.const 0)\n";
   }
   if e.tag == parse.EX_FIELD {
@@ -1329,7 +1490,7 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
       },
       Option.None => {},
     }
-    let bt: string = expr_ptr_type(base, env, prog);
+    let bt: string = field_base_type(base, env, prog);
     if len(bt) == 0 {
       return "    (i64.const 0)\n";
     }
@@ -1338,12 +1499,18 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
     if fi < 0 {
       return "    (i64.const 0)\n";
     }
+    let fty: string = prog.structs[si as usize].types[fi as usize];
+    let off: i64 = st_field_off(prog, si, fi);
+    if base.tag == parse.EX_VAR && len(env_val_of(env, base.name)) > 0 {
+      // the value frame: scalar and pointer fields are one local
+      return "    (local.get " + (env_val_base(env, base.name) + off).to_str() +
+             ")\n" + wrap_snippet(type_width(fty));
+    }
     let mut out: string = emit_expr(pool, base, env, prog, nl);
-    let off: i64 = st_field_off(prog, si, fi) * 8;
-    out = out + "    (i32.add (i32.wrap_i64) (i32.const " + off.to_str() +
+    out = out + "    (i32.add (i32.wrap_i64) (i32.const " + (off * 8).to_str() +
            "))\n";
     out = out + "    (i64.load)\n";
-    out = out + wrap_snippet(type_width(prog.structs[si as usize].types[fi as usize]));
+    out = out + wrap_snippet(type_width(fty));
     return out;
   }
   if e.tag == parse.EX_MCALL {
@@ -1399,7 +1566,20 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
           let ta: i64 = nl.v;
           let tl: i64 = nl.v + 1;
           nl.v = nl.v + 2;
-          out = out + push_string(pool, e.args[k], env);
+          if e.args[k].tag == parse.EX_MAKE {
+            // a fresh slice rides straight into the field's pair
+            let mut cnt0: *Expr = parse.lit(0);
+            if len(e.args[k].args) > 0 {
+              cnt0 = e.args[k].args[0];
+            }
+            out = out + emit_expr(pool, cnt0, env, prog, nl);
+            out = out + "    (local.set $t)\n";
+            out = out + "    (i64.extend_i32_u (call $w_alloc " +
+                   "(i32.wrap_i64 (local.get $t))))\n";
+            out = out + "    (local.get $t)\n";
+          } else {
+            out = out + push_string(pool, e.args[k], env, prog, nl);
+          }
           out = out + "    (local.set " + tl.to_str() + ")\n" +
                  "    (local.set " + ta.to_str() + ")\n" +
                  "    (i64.store (i32.add (i32.wrap_i64 (local.get " +
@@ -1447,17 +1627,17 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
     return out;
   }
   // string equality routes through $w_streq over the pairs
-  if (e.op == 9 || e.op == 10) && both_stringy(e, env) {
+  if (e.op == 9 || e.op == 10) && both_stringy(e, env, prog) {
     let mut out: string = "";
     match e.lhs {
       Option.Some(l) => {
-        out = out + push_string(pool, l, env);
+        out = out + push_string(pool, l, env, prog, nl);
       },
       Option.None => {},
     }
     match e.rhs {
       Option.Some(r) => {
-        out = out + push_string(pool, r, env);
+        out = out + push_string(pool, r, env, prog, nl);
       },
       Option.None => {},
     }
@@ -2371,9 +2551,10 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
             }
             if !folded && arg.tag == parse.EX_BIN &&
                 ((arg.op >= 5 && arg.op <= 10) || arg.op == 13 ||
-                 arg.op == 14) && !both_stringy(arg, env) {
+                 arg.op == 14) {
               // a comparison or logical in hole position prints as
-              // true/false, not 0/1
+              // true/false, not 0/1 — string equality included (its
+              // $w_streq leaves the same 0/1 i64)
               body = body + emit_expr(pool, arg, env, prog, nl);
               body = body + write_bool_top();
               folded = true;
@@ -2509,6 +2690,97 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
                                pool_len(pool, raw), raw);
                 },
                 Option.None => {
+                  if e.tag == parse.EX_DEREF && len(st.fmt) > 0 &&
+                      st_index(prog, st.fmt) >= 0 {
+                    // (*p) under a struct annotation: the heap block
+                    // copies into a fresh local frame (shallow — pair
+                    // fields copy their slots, so writes through the
+                    // copy's slices alias the same storage)
+                    let vsi: i64 = st_index(prog, st.fmt);
+                    let vn: i64 = st_nslots(prog, vsi);
+                    let vbase: i64 = nl.v;
+                    nl.v = nl.v + vn;
+                    let tsrc: i64 = nl.v;
+                    nl.v = nl.v + 1;
+                    match e.lhs {
+                      Option.Some(src) => {
+                        body = body + emit_expr(pool, src, env, prog, nl);
+                      },
+                      Option.None => {
+                        body = body + "    (i64.const 0)\n";
+                      },
+                    }
+                    body = body + "    (local.set " + tsrc.to_str() + ")\n";
+                    let mut vj: i64 = 0;
+                    while vj < vn {
+                      body = body + "    (i64.load (i32.add (i32.wrap_i64 " +
+                             "(local.get " + tsrc.to_str() +
+                             ")) (i32.const " + (vj * 8).to_str() + ")))\n" +
+                             "    (local.set " + (vbase + vj).to_str() +
+                             ")\n";
+                      vj = vj + 1;
+                    }
+                    env_bind_val(env, st.name, vbase, st.fmt);
+                  } else {
+                  // a pair field read (b.xs, st.name) binds its live
+                  // pair from the frame or the heap — resolved first so
+                  // every other shape still reaches the lanes below
+                  let mut fbase: *Expr = parse.lit(0);
+                  let mut fki: i64 = 0 - 1;
+                  let mut fsi: i64 = 0 - 1;
+                  let mut ffi: i64 = 0 - 1;
+                  if e.tag == parse.EX_FIELD {
+                    match e.lhs {
+                      Option.Some(fb) => {
+                        fbase = fb;
+                      },
+                      Option.None => {},
+                    }
+                    let fbt: string = field_base_type(fbase, env, prog);
+                    if len(fbt) > 0 {
+                      fsi = st_index(prog, fbt);
+                      ffi = st_field_index(prog, fsi, e.name);
+                      if ffi >= 0 {
+                        fki = type_kind(
+                          prog.structs[fsi as usize].types[ffi as usize]);
+                      }
+                    }
+                  }
+                  if ffi >= 0 && (fki == 1 || fki == 2) {
+                      let foff: i64 = st_field_off(prog, fsi, ffi);
+                      let pa: i64 = nl.v;
+                      let pl: i64 = nl.v + 1;
+                      nl.v = nl.v + 2;
+                      if fbase.tag == parse.EX_VAR &&
+                          len(env_val_of(env, fbase.name)) > 0 {
+                        let fb0: i64 = env_val_base(env, fbase.name);
+                        body = body + "    (local.get " +
+                               (fb0 + foff).to_str() + ")\n" +
+                               "    (local.set " + pa.to_str() + ")\n" +
+                               "    (local.get " +
+                               (fb0 + foff + 1).to_str() + ")\n" +
+                               "    (local.set " + pl.to_str() + ")\n";
+                      } else {
+                        let ft0: i64 = nl.v;
+                        nl.v = nl.v + 1;
+                        body = body + emit_expr(pool, fbase, env, prog, nl);
+                        body = body + "    (local.set " + ft0.to_str() +
+                               ")\n";
+                        body = body + "    (i64.load (i32.add " +
+                               "(i32.wrap_i64 (local.get " + ft0.to_str() +
+                               ")) (i32.const " + (foff * 8).to_str() +
+                               ")))\n";
+                        body = body + "    (local.set " + pa.to_str() +
+                               ")\n";
+                        body = body + "    (i64.load (i32.add " +
+                               "(i32.wrap_i64 (local.get " + ft0.to_str() +
+                               ")) (i32.const " + (foff * 8 + 8).to_str() +
+                               ")))\n";
+                        body = body + "    (local.set " + pl.to_str() +
+                               ")\n";
+                      }
+                      env_str_bind_runtime(env, st.name, pa, pl, fki);
+                    } else {
                   // a pointer-typed init binds as a *T (the written
                   // annotation wins, else the init's own type)
                   let mut ps: string = type_ptr_target(st.fmt);
@@ -2542,6 +2814,8 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
                       env_bool_bind(env, st.name);
                     }
                     nl.v = nl.v + 1;
+                  }
+                  }
                   }
                   }
                 },
@@ -2583,6 +2857,106 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
     if st.tag == parse.ST_FSTORE {
       // base.f... = e — walk the field path to the slot, then store
       // (an indexed final field stores through the slice's pair)
+      let vbt: string = env_val_of(env, st.name);
+      if len(vbt) > 0 && len(st.path) > 0 {
+        // a value base: the walk starts in the local frame and steps
+        // onto the heap at the first pointer field
+        let vsi: i64 = st_index(prog, vbt);
+        if vsi >= 0 {
+          let b0: i64 = env_val_base(env, st.name);
+          let a_slot: i64 = nl.v;
+          nl.v = nl.v + 1;
+          let mut inframe: bool = true;
+          let mut csi: i64 = vsi;
+          let mut j: usize = 0;
+          while j + 1 < len(st.path) {
+            let fi: i64 = st_field_index(prog, csi, st.path[j]);
+            if fi < 0 {
+              break;
+            }
+            let off: i64 = st_field_off(prog, csi, fi) * 8;
+            if inframe {
+              body = body + "    (local.get " +
+                     (b0 + off / 8).to_str() + ")\n" +
+                     "    (local.set " + a_slot.to_str() + ")\n";
+              inframe = false;
+            } else {
+              body = body + "    (i32.add (i32.wrap_i64 (local.get " +
+                     a_slot.to_str() + ")) (i32.const " + off.to_str() +
+                     "))\n";
+              body = body + "    (i64.load)\n    (local.set " +
+                     a_slot.to_str() + ")\n";
+            }
+            csi = st_index(prog, type_ptr_target(
+                   prog.structs[csi as usize].types[fi as usize]));
+            j = j + 1;
+          }
+          let fi: i64 = st_field_index(prog, csi, st.path[j]);
+          if fi >= 0 {
+            let fty: string = prog.structs[csi as usize].types[fi as usize];
+            let foff: i64 = st_field_off(prog, csi, fi);
+            if inframe && len(st.args) == 0 {
+              // a direct frame write
+              match st.val {
+                Option.Some(e) => {
+                  body = body + emit_expr(pool, e, env, prog, nl);
+                  body = body + wrap_snippet(type_width(fty));
+                },
+                Option.None => {},
+              }
+              body = body + "    (local.set " + (b0 + foff).to_str() +
+                     ")\n";
+            } else {
+              if inframe {
+                // indexed through a frame pair
+                let idx0: *Expr = st.args[0];
+                body = body + emit_expr(pool, idx0, env, prog, nl);
+                body = body + "    (local.set $t)\n";
+                body = body + oob_check(pool, "(local.get " +
+                       (b0 + foff + 1).to_str() + ")");
+                body = body + "    (i32.add (i32.wrap_i64 (local.get " +
+                       (b0 + foff).to_str() + "))\n" +
+                       "                     (i32.mul (i32.wrap_i64 " +
+                       "(local.get $t)) (i32.const 8)))\n";
+                body = body + "    (local.set $a)\n";
+              } else {
+                let off: i64 = foff * 8;
+                if len(st.args) > 0 {
+                  // indexed through a heap pair
+                  let idx0: *Expr = st.args[0];
+                  body = body + emit_expr(pool, idx0, env, prog, nl);
+                  body = body + "    (local.set $t)\n";
+                  body = body + "    (i64.load (i32.add (i32.wrap_i64 " +
+                         "(local.get " + a_slot.to_str() + ")) (i32.const " +
+                         (off + 8).to_str() + ")))\n";
+                  body = body + "    (local.set $r)\n";
+                  body = body + oob_check(pool, "(local.get $r)");
+                  body = body + "    (i64.load (i32.add (i32.wrap_i64 " +
+                         "(local.get " + a_slot.to_str() + ")) (i32.const " +
+                         off.to_str() + ")))\n";
+                  body = body + "    (i32.add (i32.wrap_i64) (i32.mul " +
+                         "(i32.wrap_i64 (local.get $t)) (i32.const 8)))\n";
+                  body = body + "    (local.set $a)\n";
+                } else {
+                  body = body + "    (i32.add (i32.wrap_i64 (local.get " +
+                         a_slot.to_str() + ")) (i32.const " + off.to_str() +
+                         "))\n";
+                  body = body + "    (local.set $a)\n";
+                }
+              }
+              match st.val {
+                Option.Some(e) => {
+                  body = body + emit_expr(pool, e, env, prog, nl);
+                  body = body + wrap_snippet(type_width(fty));
+                },
+                Option.None => {},
+              }
+              body = body + "    (local.set $t)\n";
+              body = body + "    (i64.store (local.get $a) (local.get $t))\n";
+            }
+          }
+        }
+      } else {
       let bt: string = env_ptr_of(env, st.name);
       if len(bt) > 0 {
         let mut si: i64 = st_index(prog, bt);
@@ -2656,6 +3030,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
             }
           }
         }
+      }
       }
     }
     if st.tag == parse.ST_SET {
