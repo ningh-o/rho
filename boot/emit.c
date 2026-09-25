@@ -1090,6 +1090,26 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       op(cx, "(local.set %zu (global.get $cat_len))\n", dst + 1);
       return;
     }
+    if ((e->op == OP_EQ || e->op == OP_NE) && lt->kind == TY_ENUM) {
+      // the == law: tag, then payload element-wise (spec T10)
+      size_t res = cx_fresh(cx, ty_bool);
+      op(cx, "(local.set %zu (i32.eq %s %s))\n", res, L(cx, a),
+         L(cx, b));
+      size_t n = shape_nlocals(lt);
+      for (size_t i = 1; i < n; i++) {
+        WTy w = local_wty(lt, i);
+        const char *eqop = w == W_I64   ? "i64.eq"
+                           : w == W_F32 ? "f32.eq"
+                           : w == W_F64 ? "f64.eq"
+                                        : "i32.eq";
+        op(cx, "(if %s (then (local.set %zu (%s %s %s))))\n",
+           L(cx, res), res, eqop, L(cx, a + i), L(cx, b + i));
+      }
+      if (e->op == OP_NE)
+        op(cx, "(local.set %zu (i32.eqz %s))\n", res, L(cx, res));
+      op(cx, "(local.set %zu %s)\n", dst, L(cx, res));
+      return;
+    }
     if ((e->op == OP_EQ || e->op == OP_NE) && lt->kind == TY_STRING) {
       op(cx, "(local.set %zu (call $rho_streq (local.get %zu) "
              "(local.get %zu) (local.get %zu) (local.get %zu)))\n", dst,
@@ -1719,6 +1739,18 @@ static void emit_match(FnCx *cx, NodeRef er, size_t dst) {
   emit_expr(cx, m->a, v);
   bool is_enum = st->kind == TY_ENUM;
   (void)is_enum;
+  // a wildcard arm runs only when no guarded arm matched (arms are
+  // exclusive; the if-chain accumulates a matched flag)
+  size_t matched = NO_REF;
+  bool has_wild = false;
+  for (size_t i = 0; i < reflist_len(m->list); i++)
+    if (node_get(reflist_at(m->list, i))->a != NO_REF &&
+        node_get(node_get(reflist_at(m->list, i))->a)->kind == NT_PWILD)
+      has_wild = true;
+  if (has_wild) {
+    matched = cx_fresh(cx, ty_bool);
+    op(cx, "(local.set %zu (i32.const 0))\n", matched);
+  }
   for (size_t i = 0; i < reflist_len(m->list); i++) {
     Node *arm = node_get(reflist_at(m->list, i));
     Node *pat = node_get(arm->a);
@@ -1730,8 +1762,13 @@ static void emit_match(FnCx *cx, NodeRef er, size_t dst) {
           if (strcmp(st->edef->variants[k].name,
                      strchr(pat->name, '.') + 1) == 0)
             var = &st->edef->variants[k];
-        op(cx, "(if (i32.eq (local.get %zu) (i32.const %d)) (then\n", v,
-           var ? var->tag : -1);
+        if (has_wild)
+          op(cx, "(if (i32.and (i32.eq (local.get %zu) (i32.const %d)) "
+                 "(i32.eqz %s)) (then\n", v, var ? var->tag : -1,
+             L(cx, matched));
+        else
+          op(cx, "(if (i32.eq (local.get %zu) (i32.const %d)) (then\n",
+             v, var ? var->tag : -1);
       } else if (pat->kind == NT_PLIT) {
         // literal arm: guard on the subject value
         if (pat->op == 0) { // integer
@@ -1755,6 +1792,8 @@ static void emit_match(FnCx *cx, NodeRef er, size_t dst) {
         continue;
       }
     }
+    if (!wildcard && has_wild)
+      op(cx, "(local.set %zu (i32.const 1))\n", matched);
     // bind pattern locals from the payload run
     cx->scope++;
     size_t slot = v + 1;
@@ -1776,6 +1815,8 @@ static void emit_match(FnCx *cx, NodeRef er, size_t dst) {
     }
     cx->scope--;
     if (!wildcard)
+      op(cx, "))\n");
+    else if (has_wild)
       op(cx, "))\n");
   }
 }
