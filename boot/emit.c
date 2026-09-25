@@ -2653,7 +2653,67 @@ static void emit_start(Em *em) {
   ef->wat_len = b.n;
 }
 
+// deterministic pre-pass: register every struct type that gets boxed
+// so later table entries (closures, trampolines) take stable indices
+static void prereg_drop_walkers_stmt(Node *s);
+static void prereg_drop_walkers_expr(Node *e2) {
+  if (!e2)
+    return;
+  if (e2->kind == NT_NEW && e2->sem) {
+    Type *pt = (Type *)e2->sem;
+    if (pt->kind == TY_PTR && pt->base->kind == TY_STRUCT)
+      dropfn_for(pt->base);
+  }
+  // walk children
+  NodeRef kids[4] = {e2->a, e2->b, e2->c, e2->d};
+  for (int i = 0; i < 4; i++)
+    if (kids[i] != NO_REF)
+      prereg_drop_walkers_expr(node_get(kids[i]));
+  if (e2->list)
+    for (size_t i = 0; i < reflist_len(e2->list); i++) {
+      Node *ch = node_get(reflist_at(e2->list, i));
+      if (ch->kind == NT_FIELDINIT || ch->kind == NT_POSARG) {
+        if (ch->a != NO_REF)
+          prereg_drop_walkers_expr(node_get(ch->a));
+      } else if (ch->kind == NT_ARM) {
+        if (ch->b != NO_REF)
+          prereg_drop_walkers_expr(node_get(ch->b));
+      } else {
+        prereg_drop_walkers_expr(ch);
+      }
+    }
+}
+
+static void prereg_drop_walkers_stmt(Node *s) {
+  if (!s)
+    return;
+  prereg_drop_walkers_expr(s);
+  if (s->list && s->kind == NT_EXPRSTMT)
+    for (size_t i = 0; i < reflist_len(s->list); i++)
+      prereg_drop_walkers_stmt(node_get(reflist_at(s->list, i)));
+  if (s->kind == NT_IF || s->kind == NT_WHILE) {
+    if (s->b != NO_REF)
+      prereg_drop_walkers_stmt(node_get(s->b));
+    if (s->c != NO_REF)
+      prereg_drop_walkers_stmt(node_get(s->c));
+  }
+  if (s->kind == NT_LOOP && s->b != NO_REF)
+    prereg_drop_walkers_stmt(node_get(s->b));
+}
+
 static void emit_all_fns(Em *em) {
+  // the pre-pass walks modules × symbol order (the emission order)
+  for (Module *m = em->p->modules; m; m = m->next) {
+    if (!m->syms)
+      continue;
+    for (Sym *s = m->syms->order_head; s; s = s->order_next) {
+      if (s->kind != SYM_FN)
+        continue;
+      for (FnDef *f = s->u.fns; f; f = f->next_overload)
+        if (f->body != NO_REF)
+          prereg_drop_walkers_stmt(node_get(f->body));
+    }
+  }
   // deterministic: module load order, then symbol creation order
   for (Module *m = em->p->modules; m; m = m->next) {
     if (!m->syms)
