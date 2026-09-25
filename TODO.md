@@ -310,6 +310,16 @@ section — no placeholder stages. boot is the reference compiler.
       method. The usize lane comes home to the address width (u32 on
       wasm32; syntax.md §3): len, indexing, alloc counts included.
       The self-host mirrors both when it grows the matching surface.
+      Acceptance legs (each gate above is a leg, same commit):
+      rejections — store through non-mut binding, mut-method on
+      non-mut binding, marker missing where required, marker where
+      not allowed, marker on non-mut root binding, `mut` on a value
+      parameter, value receiver on pointer method; behavior — mut
+      binding stores, `let mut p = p;` rebind idiom, handle copied
+      out of read-only is writable by its own binding, compound
+      assign through a mut view; match — impl/trait receiver-mut
+      mismatch, dual `mut self` overload ambiguity; fmt — the
+      argument marker round-trips.
 - [ ] **T3.7** Module item imports (module-system.md §2/§4/§6,
       syntax.md §4.4): the final use-segment binds a public item
       unqualified (`use lex.a as b;`), the brace form expands one
