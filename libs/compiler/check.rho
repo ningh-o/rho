@@ -19,6 +19,53 @@ pub fn name_known(prog: *Prog, name: string) -> bool {
   return false;
 }
 
+pub fn struct_known(prog: *Prog, name: string) -> bool {
+  let mut i: usize = 0;
+  while i < prog.nstructs {
+    if prog.structs[i].name == name {
+      return true;
+    }
+    i = i + 1;
+  }
+  return false;
+}
+
+fn fn_named(prog: *Prog, name: string) -> bool {
+  let mut i: usize = 0;
+  while i < len(prog.fns) {
+    if prog.fns[i].name == name {
+      return true;
+    }
+    i = i + 1;
+  }
+  return false;
+}
+
+// some Type.method exists (the receiver's own type is beyond the
+// name-level checker — suffix match keeps the refusal honest)
+fn method_known(prog: *Prog, mname: string) -> bool {
+  let mut i: usize = 0;
+  while i < len(prog.fns) {
+    let n: string = prog.fns[i].name;
+    if len(n) > len(mname) + 1 &&
+       n[len(n) - len(mname) - 1] == 46 {
+      let mut k: usize = 0;
+      let mut hit: bool = true;
+      while k < len(mname) {
+        if n[len(n) - len(mname) + k] != mname[k] {
+          hit = false;
+        }
+        k = k + 1;
+      }
+      if hit {
+        return true;
+      }
+    }
+    i = i + 1;
+  }
+  return false;
+}
+
 fn expr_walk(e: *Expr, prog: *Prog, bound: []string, nb: usize,
              errs: *ErrBox) {
   if e.tag == parse.EX_MAKE {
@@ -48,6 +95,56 @@ fn expr_walk(e: *Expr, prog: *Prog, bound: []string, nb: usize,
     match e.lhs {
       Option.Some(b) => {
         expr_walk(b, prog, bound, nb, errs);
+      },
+      Option.None => {},
+    }
+    let mut k: usize = 0;
+    while k < len(e.args) {
+      expr_walk(e.args[k], prog, bound, nb, errs);
+      k = k + 1;
+    }
+    return;
+  }
+  if e.tag == parse.EX_NEW {
+    if !struct_known(prog, e.name) {
+      eprintf("check: unknown struct '{}'\n", e.name);
+      errs.n = errs.n + 1;
+    }
+    let mut k: usize = 0;
+    while k < len(e.args) {
+      expr_walk(e.args[k], prog, bound, nb, errs);
+      k = k + 1;
+    }
+    return;
+  }
+  if e.tag == parse.EX_FIELD || e.tag == parse.EX_DEREF {
+    match e.lhs {
+      Option.Some(b) => {
+        expr_walk(b, prog, bound, nb, errs);
+      },
+      Option.None => {},
+    }
+    return;
+  }
+  if e.tag == parse.EX_MCALL {
+    let mut assoc: bool = false;
+    match e.lhs {
+      Option.Some(r) => {
+        if r.tag == parse.EX_VAR && struct_known(prog, r.name) {
+          // Type.name(args) — the associated-fn call; the type itself
+          // is not a variable reference
+          assoc = true;
+          if !fn_named(prog, r.name + "." + e.name) {
+            eprintf("check: unknown fn '{}.{}'\n", r.name, e.name);
+            errs.n = errs.n + 1;
+          }
+        } else {
+          expr_walk(r, prog, bound, nb, errs);
+          if !method_known(prog, e.name) {
+            eprintf("check: unknown method '{}'\n", e.name);
+            errs.n = errs.n + 1;
+          }
+        }
       },
       Option.None => {},
     }
@@ -126,7 +223,8 @@ fn stmts_walk(nodes: []*Stmt, prog: *Prog, bound: []string,
   while i < len(nodes) {
     let st = nodes[i];
     if st.tag == parse.ST_LET || st.tag == parse.ST_SET ||
-        st.tag == parse.ST_CALL || st.tag == parse.ST_RET {
+        st.tag == parse.ST_CALL || st.tag == parse.ST_RET ||
+        st.tag == parse.ST_FSTORE {
       match st.val {
         Option.Some(e) => {
           expr_walk(e, prog, bound, nb, errs);
@@ -137,6 +235,27 @@ fn stmts_walk(nodes: []*Stmt, prog: *Prog, bound: []string,
         if nb < len(bound) {
           bound[nb] = st.name;
           nb = nb + 1;
+        }
+      }
+      if st.tag == parse.ST_FSTORE {
+        // the base must be a bound name; a named jump must not have
+        // eaten it (dotted statements never carry labels)
+        let mut hit: bool = false;
+        let mut k: usize = 0;
+        while k < nb {
+          if bound[k] == st.name {
+            hit = true;
+          }
+          k = k + 1;
+        }
+        if !hit {
+          eprintf("check: unknown name '{}'\n", st.name);
+          errs.n = errs.n + 1;
+        }
+        let mut q: usize = 0;
+        while q < len(st.args) {
+          expr_walk(st.args[q], prog, bound, nb, errs);
+          q = q + 1;
         }
       }
     }

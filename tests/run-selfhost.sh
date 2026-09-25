@@ -70,6 +70,8 @@ run_one strret 'fn join3(a: string, b: string, c: string) -> string { return a +
 run_one verbatim 'fn main() -> i32 { let v: string = """ab""cd"""; printf("[{}] {}\n", v, len(v)); let multi: string = """
 line1
 line2"""; printf("[{}]\n", multi); printf("len={}\n", len(multi)); let rawslash: string = """x\ty\nz"""; printf("[{}] {}\n", rawslash, len(rawslash)); return 0; }' $'[ab""cd] 6\n[\nline1\nline2]\nlen=12\n[x\\ty\\nz] 7'
+run_one struct1 'struct Rect { w: i32, h: i32, } fn Rect.area(self: *Rect) -> i32 { return self.w * self.h; } fn Rect.grow(self: *Rect, by: i32) { self.w += by; self.h += by; } fn Rect.square(n: i32) -> *Rect { return new Rect { w: n, h: n }; } fn main() -> i32 { let r = Rect.square(3); r.grow(1); let a: i32 = r.area(); printf("area={} w={} h={}\n", a, r.w, r.h); return a - 10; }' $'area=16 w=4 h=4' 6
+run_one struct2 'struct A { lit: i32, n: i64, } fn f(a: *A) -> i64 { if a.lit == -1 { return 100; } return a.lit as i64; } fn main() -> i32 { let a: *A = new A { lit: 0 - 1, n: 5 }; printf("{}\n", f(a)); let b: *A = new A { lit: 7, n: 6 }; printf("{} {} {}\n", f(b), b.n, b.lit); return 0; }' $'100\n7 6 7'
 # the checker rejects unknown names with diagnostics and exit 1
 "$RHO" build libs/compiler/main.rho -o /tmp/rhoc-bad.wasm \
   --set 'SRC=fn main() -> i32 { let x = mystery(1); return 0; }' >/dev/null 2>&1

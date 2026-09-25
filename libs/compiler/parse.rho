@@ -14,6 +14,11 @@ pub const EX_MAKE: i32 = 5;  // make([]T, n): args[0] = the count
 pub const EX_IDX: i32 = 6;   // base[idx]: lhs = base, rhs = index
 pub const EX_SLICE2: i32 = 7; // base[a..b]: lhs = base, args = lo/hi;
                               // op bit0 = lo present, bit1 = hi present
+pub const EX_FIELD: i32 = 8;  // base.name: lhs = base (a *T receiver)
+pub const EX_MCALL: i32 = 9;  // base.name(args): lhs = receiver
+pub const EX_DEREF: i32 = 10; // (*e): lhs = the inner
+pub const EX_NEW: i32 = 11;   // new T { f: e, ... }: name = T, the
+                              // field names ride fnames
 
 pub struct Expr {
   tag: i32,      // EX_*
@@ -23,6 +28,7 @@ pub struct Expr {
   lhs: ?*Expr,
   rhs: ?*Expr,
   args: []*Expr, // call arguments
+  fnames: []string, // new T {..}: the field names, in order
 }
 
 pub const ST_PF: i32 = 0;
@@ -37,6 +43,9 @@ pub const ST_BREAK: i32 = 8;
 pub const ST_CONT: i32 = 9;
 pub const ST_ISTORE: i32 = 10; // xs[i] = e: name = base, args[0] = idx
 pub const ST_DEFER: i32 = 11;  // defer stmt; — the inner rides sub
+pub const ST_FSTORE: i32 = 12; // base.f... = e: name = base, path =
+                               // the field names, args[0] = idx when
+                               // the store rides a slice field
 
 pub struct Stmt {
   tag: i32,        // ST_*
@@ -48,31 +57,32 @@ pub struct Stmt {
   body: []*Stmt,   // if/while: the statements
   body2: []*Stmt,  // if: the else statements
   sub: ?*Stmt,     // defer: the deferred statement
+  path: []string,  // fstore: the dotted field path
 }
 
 fn mk_stmt(tag: i32) -> *Stmt {
   return new Stmt { tag: tag, fmt: "", args: make([]*Expr, 0),
                     name: "", val: Option.None, ret: 0,
                     body: make([]*Stmt, 0), body2: make([]*Stmt, 0),
-                    sub: Option.None };
+                    sub: Option.None, path: make([]string, 0) };
 }
 
 pub fn lit(v: i64) -> *Expr {
   return new Expr { tag: EX_LIT, lit: v, name: "", op: 0,
                      lhs: Option.None, rhs: Option.None ,
-                     args: make([]*Expr, 0) };
+                     args: make([]*Expr, 0), fnames: make([]string, 0) };
 }
 
 pub fn var(name: string) -> *Expr {
   return new Expr { tag: EX_VAR, lit: 0, name: name, op: 0,
                      lhs: Option.None, rhs: Option.None ,
-                     args: make([]*Expr, 0) };
+                     args: make([]*Expr, 0), fnames: make([]string, 0) };
 }
 
 pub fn strlit(text: string) -> *Expr {
   return new Expr { tag: EX_STR, lit: 0, name: text, op: 0,
                      lhs: Option.None, rhs: Option.None ,
-                     args: make([]*Expr, 0) };
+                     args: make([]*Expr, 0), fnames: make([]string, 0) };
 }
 
 // operator codes: 0=+ 1=- 2=* 3=/ 4=% 5=< 6=> 7=<= 8=>= 9=== 10=!=
@@ -142,7 +152,7 @@ pub fn op_code(t: *Tok) -> i64 {
 pub fn bin(op: i64, lhs: *Expr, rhs: *Expr) -> *Expr {
   return new Expr { tag: EX_BIN, lit: 0, name: "", op: op,
                      lhs: Option.Some(lhs), rhs: Option.Some(rhs) ,
-                     args: make([]*Expr, 0) };
+                     args: make([]*Expr, 0), fnames: make([]string, 0) };
 }
 
 pub struct FnDef {
@@ -165,19 +175,22 @@ pub struct Prog {
   cmuts: []bool,    // static mut vs bare static
   cexprs: []*Expr,  // their init expressions (fmt prints them raw)
   nconsts: usize,
+  structs: []*StructDef,
+  nstructs: usize,
 }
 
 pub fn make_expr(count: *Expr) -> *Expr {
   let args: []*Expr = make([]*Expr, 1);
   args[0] = count;
   return new Expr { tag: EX_MAKE, lit: 0, name: "", op: 0,
-                    lhs: Option.None, rhs: Option.None, args: args };
+                    lhs: Option.None, rhs: Option.None, args: args,
+                    fnames: make([]string, 0) };
 }
 
 pub fn idx_expr(base: *Expr, index: *Expr) -> *Expr {
   return new Expr { tag: EX_IDX, lit: 0, name: "", op: 0,
                     lhs: Option.Some(base), rhs: Option.Some(index),
-                    args: make([]*Expr, 0) };
+                    args: make([]*Expr, 0), fnames: make([]string, 0) };
 }
 
 // op bit0 = explicit lo, bit1 = explicit hi
@@ -194,13 +207,45 @@ pub fn slice_expr(base: *Expr, lo: *Expr, hi: *Expr,
     flags = flags | 2;
   }
   return new Expr { tag: EX_SLICE2, lit: 0, name: "", op: flags,
-                    lhs: Option.Some(base), rhs: Option.None, args: args };
+                    lhs: Option.Some(base), rhs: Option.None, args: args,
+                    fnames: make([]string, 0) };
 }
 
 pub fn call(name: string, args: []*Expr) -> *Expr {
   return new Expr { tag: EX_CALL, lit: 0, name: name, op: 0,
                      lhs: Option.None, rhs: Option.None,
-                     args: args };
+                     args: args, fnames: make([]string, 0) };
+}
+
+pub fn field_expr(base: *Expr, fname: string) -> *Expr {
+  return new Expr { tag: EX_FIELD, lit: 0, name: fname, op: 0,
+                    lhs: Option.Some(base), rhs: Option.None,
+                    args: make([]*Expr, 0), fnames: make([]string, 0) };
+}
+
+pub fn mcall_expr(recv: *Expr, name: string, args: []*Expr) -> *Expr {
+  return new Expr { tag: EX_MCALL, lit: 0, name: name, op: 0,
+                    lhs: Option.Some(recv), rhs: Option.None,
+                    args: args, fnames: make([]string, 0) };
+}
+
+pub fn deref_expr(inner: *Expr) -> *Expr {
+  return new Expr { tag: EX_DEREF, lit: 0, name: "", op: 0,
+                    lhs: Option.Some(inner), rhs: Option.None,
+                    args: make([]*Expr, 0), fnames: make([]string, 0) };
+}
+
+pub fn new_expr(sname: string, fnames: []string,
+                args: []*Expr) -> *Expr {
+  return new Expr { tag: EX_NEW, lit: 0, name: sname, op: 0,
+                    lhs: Option.None, rhs: Option.None, args: args,
+                    fnames: fnames };
+}
+
+pub struct StructDef {
+  name: string,
+  fields: []string,
+  types: []string,
 }
 
 struct PCur {
@@ -243,6 +288,59 @@ fn eat_slice_type(c: *PCur) -> bool {
     tkadv(c); // the element type name
   }
   return true;
+}
+
+// a written type, composed: ?*T, *T, []T (recursively), weak[T],
+// Option[T]/Result[T], or a bare name; "" when nothing eatable sits
+// at the cursor
+fn eat_type(c: *PCur) -> string {
+  let mut pre: string = "";
+  if is_punct(tk(c), 63) {
+    tkadv(c); // ?
+    pre = "?";
+  }
+  if is_punct(tk(c), 42) {
+    tkadv(c); // *
+    return pre + "*" + eat_type(c);
+  }
+  if is_punct(tk(c), 91) {
+    tkadv(c); // [
+    eat_punct(c, 93); // ]
+    return pre + "[]" + eat_type(c);
+  }
+  let t = tk(c);
+  if t.kind == lex.TK_IDENT || t.kind == lex.TK_KEYWORD {
+    let name: string = t.text;
+    tkadv(c);
+    if (name == "weak" || name == "Option" || name == "Result") &&
+       is_punct(tk(c), 91) {
+      tkadv(c); // [
+      let inner: string = eat_type(c);
+      eat_punct(c, 93); // ]
+      return pre + name + "[" + inner + "]";
+    }
+    return pre + name;
+  }
+  return pre;
+}
+
+// ( args… ) — the shared call-argument list
+fn parse_args(c: *PCur) -> []*Expr {
+  let args: []*Expr = make([]*Expr, 8);
+  let mut na: usize = 0;
+  while true {
+    if is_punct(tk(c), 41) {
+      tkadv(c);
+      break;
+    }
+    args[na] = parse_bin(c, 0);
+    na = na + 1;
+    if !eat_punct(c, 44) {
+      eat_punct(c, 41);
+      break;
+    }
+  }
+  return args[0..na];
 }
 
 // precedence, loose to tight (spec §6.1's C ladder):
@@ -362,43 +460,65 @@ pub fn fmt_pieces(s: string) -> []string {
   return split_fmt(s);
 }
 
-// postfix: [e] indexes, [a..b] slices (either end open) — binds
-// tighter than every binary level
+// postfix: [e] indexes, [a..b] slices (either end open), .name reads
+// a field, .name(args) calls a method — all bind tighter than every
+// binary level
 fn parse_postfix(c: *PCur, e0: *Expr) -> *Expr {
   let mut e: *Expr = e0;
-  while is_punct(tk(c), 91) {
-    tkadv(c); // [
-    if is_punct(tk(c), 46) {
-      // [.. — open lo
-      tkadv(c);
-      eat_punct(c, 46);
-      let mut hi: *Expr = lit(0);
-      let mut has_hi: bool = false;
-      if !is_punct(tk(c), 93) {
-        hi = parse_bin(c, 0);
-        has_hi = true;
+  while true {
+    if is_punct(tk(c), 91) {
+      tkadv(c); // [
+      if is_punct(tk(c), 46) {
+        // [.. — open lo
+        tkadv(c);
+        eat_punct(c, 46);
+        let mut hi: *Expr = lit(0);
+        let mut has_hi: bool = false;
+        if !is_punct(tk(c), 93) {
+          hi = parse_bin(c, 0);
+          has_hi = true;
+        }
+        eat_punct(c, 93);
+        e = slice_expr(e, lit(0), hi, false, has_hi);
+        continue;
+      }
+      let inner = parse_bin(c, 0);
+      if is_punct(tk(c), 46) {
+        // [a.. — slice with explicit lo
+        tkadv(c);
+        eat_punct(c, 46);
+        let mut hi: *Expr = lit(0);
+        let mut has_hi: bool = false;
+        if !is_punct(tk(c), 93) {
+          hi = parse_bin(c, 0);
+          has_hi = true;
+        }
+        eat_punct(c, 93);
+        e = slice_expr(e, inner, hi, true, has_hi);
+        continue;
       }
       eat_punct(c, 93);
-      e = slice_expr(e, lit(0), hi, false, has_hi);
+      e = idx_expr(e, inner);
       continue;
     }
-    let inner = parse_bin(c, 0);
-    if is_punct(tk(c), 46) {
-      // [a.. — slice with explicit lo
+    if is_punct(tk(c), 46) && !(c.pos + 1 < len(c.toks) &&
+        is_punct(c.toks[c.pos + 1], 46)) {
+      // .name — a field read, or a method call when '(' follows
+      // (a following '.' means this is a range's '..' — never a field)
+      tkadv(c); // .
+      let ft = tk(c);
+      let fname: string = ft.text;
       tkadv(c);
-      eat_punct(c, 46);
-      let mut hi: *Expr = lit(0);
-      let mut has_hi: bool = false;
-      if !is_punct(tk(c), 93) {
-        hi = parse_bin(c, 0);
-        has_hi = true;
+      if is_punct(tk(c), 40) {
+        tkadv(c); // (
+        let args = parse_args(c);
+        e = mcall_expr(e, fname, args);
+      } else {
+        e = field_expr(e, fname);
       }
-      eat_punct(c, 93);
-      e = slice_expr(e, inner, hi, true, has_hi);
       continue;
     }
-    eat_punct(c, 93);
-    e = idx_expr(e, inner);
+    break;
   }
   return e;
 }
@@ -419,6 +539,15 @@ fn parse_atom(c: *PCur) -> *Expr {
       return lit(0 - inner.lit);
     }
     return bin(1, lit(0), inner);
+  }
+  if is_punct(t, 40) && c.pos + 1 < len(c.toks) &&
+      is_punct(c.toks[c.pos + 1], 42) {
+    // (*e) — the deref read ('*' never opens a parenthesized binary)
+    tkadv(c); // (
+    tkadv(c); // *
+    let inner = parse_primary(c);
+    eat_punct(c, 41);
+    return parse_postfix(c, deref_expr(inner));
   }
   if is_punct(t, 33) {
     // !expr: logical not (the value is a 0/1 i64)
@@ -477,24 +606,46 @@ fn parse_atom(c: *PCur) -> *Expr {
       m.name = elem;
       return m;
     }
+    if t.text == "new" && c.pos < len(c.toks) &&
+        (tk(c).kind == lex.TK_IDENT ||
+         tk(c).kind == lex.TK_KEYWORD) {
+      // new T { field: expr, ... } — the zeroed allocation ('new'
+      // already rode the branch-top advance; the cursor sits on T)
+      let st = tk(c);
+      let sname: string = st.text;
+      tkadv(c);
+      let fnames: []string = make([]string, 8);
+      let fargs: []*Expr = make([]*Expr, 8);
+      let mut nf: usize = 0;
+      if eat_punct(c, 123) {
+        while tk(c).kind != lex.TK_EOF {
+          if is_punct(tk(c), 125) {
+            tkadv(c);
+            break;
+          }
+          let ft = tk(c);
+          if ft.kind == lex.TK_IDENT || ft.kind == lex.TK_KEYWORD {
+            fnames[nf] = ft.text;
+            tkadv(c);
+            eat_punct(c, 58); // :
+            fargs[nf] = parse_bin(c, 0);
+            nf = nf + 1;
+          } else {
+            tkadv(c);
+          }
+          if !eat_punct(c, 44) {
+            eat_punct(c, 125);
+            break;
+          }
+        }
+      }
+      return new_expr(sname, fnames[0..nf], fargs[0..nf]);
+    }
     // name(args…) — a call
     if is_punct(tk(c), 40) {
       tkadv(c);
-      let args: []*Expr = make([]*Expr, 8);
-      let mut na: usize = 0;
-      while true {
-        if is_punct(tk(c), 41) {
-          tkadv(c);
-          break;
-        }
-        args[na] = parse_bin(c, 0);
-        na = na + 1;
-        if !eat_punct(c, 44) {
-          eat_punct(c, 41);
-          break;
-        }
-      }
-      return call(t.text, args[0..na]);
+      let args = parse_args(c);
+      return call(t.text, args);
     }
     return var(t.text);
   }
@@ -593,16 +744,7 @@ fn parse_stmt(c: *PCur) -> *Stmt {
     let mut tyname: string = "";
     if is_punct(tk(c), 58) {
       tkadv(c);
-      if is_punct(tk(c), 91) {
-        tkadv(c);
-        eat_punct(c, 93);
-        tyname = "[]" + tk(c).text; // e.g. []i32
-        tkadv(c);
-      } else {
-        let tt = tk(c);
-        tyname = tt.text;
-        tkadv(c);
-      }
+      tyname = eat_type(c);
     }
     if !eat_punct(c, 61) {
       let bad = mk_stmt(ST_RET);
@@ -740,6 +882,109 @@ fn parse_stmt(c: *PCur) -> *Stmt {
     st.val = Option.Some(bin(code, var(t.text), rhs));
     return st;
   }
+  if t.kind == lex.TK_IDENT && c.pos + 1 < len(c.toks) &&
+      is_punct(c.toks[c.pos + 1], 46) {
+    // a dotted statement: base.f.g = e / OP= e / base.f[i] = e, or a
+    // method-call statement base.m(args);
+    let base: string = t.text;
+    tkadv(c); // the base
+    tkadv(c); // .
+    let names: []string = make([]string, 8);
+    let mut nn: usize = 1;
+    names[0] = tk(c).text;
+    tkadv(c);
+    while is_punct(tk(c), 46) {
+      tkadv(c);
+      names[nn] = tk(c).text;
+      nn = nn + 1;
+      tkadv(c);
+    }
+    if is_punct(tk(c), 40) {
+      // base.m(args); — the method-call statement, result discarded
+      tkadv(c); // (
+      let args = parse_args(c);
+      eat_punct(c, 59);
+      let st = mk_stmt(ST_CALL);
+      st.val = Option.Some(mcall_expr(var(base), names[0], args));
+      return st;
+    }
+    let mut indexed: bool = false;
+    let mut idx: *Expr = lit(0);
+    if is_punct(tk(c), 91) {
+      tkadv(c); // [
+      indexed = true;
+      idx = parse_bin(c, 0);
+      eat_punct(c, 93); // ]
+    }
+    // '=' or a compound operator (the shift compounds are 3 tokens)
+    let mut opspell: string = "";
+    let mut code: i64 = 0 - 1;
+    if is_punct(tk(c), 61) {
+      tkadv(c);
+    } else {
+      if c.pos + 1 < len(c.toks) && tk(c).kind == lex.TK_PUNCT &&
+          len(tk(c).text) == 2 && tk(c).text[1] == 61 &&
+          tk(c).text[0] != 60 && tk(c).text[0] != 62 {
+        let opt: u8 = tk(c).text[0];
+        opspell = tk(c).text;
+        code = match opt {
+          43 => 0,
+          45 => 1,
+          42 => 2,
+          47 => 3,
+          38 => 15,
+          124 => 16,
+          94 => 17,
+          _ => 4,
+        };
+        tkadv(c); // the compound operator is ONE two-char token
+      } else {
+        if c.pos + 2 < len(c.toks) && tk(c).kind == lex.TK_PUNCT &&
+            (tk(c).text == "<<" || tk(c).text == ">>") &&
+            is_punct(c.toks[c.pos + 1], 61) {
+          code = match tk(c).text[0] {
+            60 => 18,
+            _ => 19,
+          };
+          opspell = tk(c).text + "=";
+          tkadv(c);
+          tkadv(c);
+          tkadv(c);
+        } else {
+          let bad = mk_stmt(ST_RET);
+          bad.ret = 0 - 24;
+          return bad;
+        }
+      }
+    }
+    let rhs = parse_bin(c, 0);
+    eat_punct(c, 59);
+    let st = mk_stmt(ST_FSTORE);
+    st.name = base;
+    st.path = names[0..nn];
+    if indexed {
+      let a: []*Expr = make([]*Expr, 1);
+      a[0] = idx;
+      st.args = a;
+    }
+    if code >= 0 {
+      // compound desugars to base.f = base.f OP rhs
+      st.fmt = opspell;
+      let mut cur: *Expr = var(base);
+      let mut j: usize = 0;
+      while j < nn {
+        cur = field_expr(cur, names[j]);
+        j = j + 1;
+      }
+      if indexed {
+        cur = idx_expr(cur, idx);
+      }
+      st.val = Option.Some(bin(code, cur, rhs));
+    } else {
+      st.val = Option.Some(rhs);
+    }
+    return st;
+  }
   if t.kind == lex.TK_KEYWORD && t.text == "if" {
     tkadv(c);
     let st = mk_stmt(ST_IF);
@@ -846,23 +1091,19 @@ fn parse_params2(c: *PCur, pstr: []bool, pslc: []bool,
       pslc[n] = false;
       n = n + 1;
       tkadv(c);
-      // optional : type ([]T rides the pair ABI like string)
+      // optional : type ([]T and *T ride composed text; string and
+      // the slice forms take the pair ABI, pointers the plain lane)
       if is_punct(tk(c), 58) {
         tkadv(c);
-        if is_punct(tk(c), 91) {
-          tkadv(c);
-          eat_punct(c, 93);
+        let ty: string = eat_type(c);
+        ptypes[n - 1] = ty;
+        if len(ty) >= 2 && ty[0] == 91 && ty[1] == 93 {
           pstr[n - 1] = true;
           pslc[n - 1] = true;
-          ptypes[n - 1] = "[]" + tk(c).text;
-          tkadv(c);
         } else {
-          let tt = tk(c);
-          ptypes[n - 1] = tt.text;
-          if tt.kind == lex.TK_KEYWORD && tt.text == "string" {
+          if ty == "string" {
             pstr[n - 1] = true;
           }
-          tkadv(c);
         }
       }
     } else {
@@ -876,14 +1117,12 @@ fn parse_params2(c: *PCur, pstr: []bool, pslc: []bool,
   return names[0..n];
 }
 
-// the optional '-> type' tail; returns the type's text or ""
+// the optional '-> type' tail; returns the composed type text or ""
 fn eat_arrow_typed(c: *PCur) -> string {
   if is_punct(tk(c), 45) {
     tkadv(c);          // -
     eat_punct(c, 62);  // > (the arrow is two tokens)
-    let rname: string = tk(c).text;
-    tkadv(c);          // the return type
-    return rname;
+    return eat_type(c);
   }
   return "";
 }
@@ -952,8 +1191,50 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
   let cmuts: []bool = make([]bool, 64);
   let cexprs: []*Expr = make([]*Expr, 64);
   let mut nc: usize = 0;
+  let structs: []*StructDef = make([]*StructDef, 32);
+  let mut ns: usize = 0;
   while tk(c).kind != lex.TK_EOF {
     let t = tk(c);
+    if t.kind == lex.TK_IDENT && t.text == "struct" &&
+       c.pos + 1 < len(c.toks) &&
+       (c.toks[c.pos + 1].kind == lex.TK_IDENT ||
+        c.toks[c.pos + 1].kind == lex.TK_KEYWORD) {
+      // struct Name { field: type, ... }
+      tkadv(c); // struct
+      let nt = tk(c);
+      let sname: string = nt.text;
+      tkadv(c);
+      let fnames: []string = make([]string, 16);
+      let ftypes: []string = make([]string, 16);
+      let mut nfl: usize = 0;
+      if eat_punct(c, 123) {
+        while tk(c).kind != lex.TK_EOF {
+          if is_punct(tk(c), 125) {
+            tkadv(c);
+            break;
+          }
+          let ft = tk(c);
+          if ft.kind == lex.TK_IDENT || ft.kind == lex.TK_KEYWORD {
+            fnames[nfl] = ft.text;
+            tkadv(c);
+            eat_punct(c, 58); // :
+            ftypes[nfl] = eat_type(c);
+            nfl = nfl + 1;
+          } else {
+            tkadv(c);
+          }
+          if !eat_punct(c, 44) {
+            eat_punct(c, 125);
+            break;
+          }
+        }
+      }
+      let sd = new StructDef { name: sname, fields: fnames[0..nfl],
+                               types: ftypes[0..nfl] };
+      structs[ns] = sd;
+      ns = ns + 1;
+      continue;
+    }
     if (t.kind == lex.TK_KEYWORD && t.text == "const") ||
        (t.kind == lex.TK_KEYWORD && t.text == "static") {
       let is_static: bool = t.text == "static";
@@ -1006,7 +1287,17 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
       if nm.kind == lex.TK_KEYWORD || nm.kind == lex.TK_IDENT {
         tkadv(c);
       }
-      if nm.text == "main" {
+      // fn Type.name — a method (or associated fn) of that type
+      let mut fname: string = nm.text;
+      if is_punct(tk(c), 46) {
+        tkadv(c); // .
+        let mt = tk(c);
+        if mt.kind == lex.TK_IDENT || mt.kind == lex.TK_KEYWORD {
+          fname = nm.text + "." + mt.text;
+          tkadv(c);
+        }
+      }
+      if fname == "main" {
         eat_punct(c, 40);
         eat_punct(c, 41);
         eat_arrow(c);
@@ -1042,7 +1333,7 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
         }
         body = bstmts[0..bn];
       }
-      let fd = new FnDef { name: nm.text, params: params,
+      let fd = new FnDef { name: fname, params: params,
                            pstr: pstr[0..len(params)],
                            pslc: pslc[0..len(params)],
                            ptypes: ptypes[0..len(params)],
@@ -1057,6 +1348,7 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
                         consts: cnames[0..nc], cvals: cvals[0..nc],
                         cstatic: cstatic[0..nc], ctypes: ctypes[0..nc],
                         cmuts: cmuts[0..nc], cexprs: cexprs[0..nc],
-                        nconsts: nc };
+                        nconsts: nc, structs: structs[0..ns],
+                        nstructs: ns };
   return prog;
 }
