@@ -162,6 +162,18 @@ fn write_call(addr: i64, nbytes: i64) -> string {
   return out;
 }
 
+// a 0/1 i64 rides the stack: route it through $w_bool and write the
+// spelled word (true/false) — the same capture pair write_int uses
+fn write_bool_top() -> string {
+  return "    call $w_bool\n" +
+         "    (local.set $l)\n" +
+         "    (local.set $a)\n" +
+         "    (i32.store (i32.const 64) (local.get $a))\n" +
+         "    (i32.store (i32.const 68) (local.get $l))\n" +
+         "    (drop (call $fd_write (i32.const 1) " +
+         "(i32.const 64) (i32.const 1) (i32.const 96)))\n";
+}
+
 // one fd_write of a runtime-formatted integer: $w_i64 leaves
 // {addr, len} on the stack; the locals capture the pair
 fn write_int() -> string {
@@ -417,6 +429,21 @@ fn wat_op(op: i64) -> string {
   }
   if op == 12 {
     return "i64.eq";
+  }
+  if op == 15 {
+    return "i64.and";
+  }
+  if op == 16 {
+    return "i64.or";
+  }
+  if op == 17 {
+    return "i64.xor";
+  }
+  if op == 18 {
+    return "i64.shl";
+  }
+  if op == 19 {
+    return "i64.shr_s";
   }
   return "i64.ne";
 }
@@ -751,6 +778,15 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
                 },
                 Option.None => {},
               }
+            }
+            if !folded && arg.tag == parse.EX_BIN &&
+                ((arg.op >= 5 && arg.op <= 10) || arg.op == 13 ||
+                 arg.op == 14) && !both_stringy(arg, env) {
+              // a comparison or logical in hole position prints as
+              // true/false, not 0/1
+              body = body + emit_expr(pool, arg, env, prog);
+              body = body + write_bool_top();
+              folded = true;
             }
             if !folded {
               body = body + emit_expr(pool, arg, env, prog);

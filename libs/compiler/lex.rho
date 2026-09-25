@@ -214,14 +214,15 @@ pub fn lex(src: string) -> []*Tok {
     if c.pos + 1 < len(src) {
       let nx: u8 = src[c.pos + 1];
       if nx == 61 {
-        // == != <= >= and the += -= *= /= %= family
+        // == != <= >= and the += -= *= /= %= &= |= ^= family
         if b2 == 61 || b2 == 33 || b2 == 60 || b2 == 62 || b2 == 43 ||
-            b2 == 45 || b2 == 42 || b2 == 47 || b2 == 37 {
+            b2 == 45 || b2 == 42 || b2 == 47 || b2 == 37 || b2 == 38 ||
+            b2 == 124 || b2 == 94 {
           two = true;
         }
       }
-      if nx == b2 && (b2 == 38 || b2 == 124) {
-        two = true; // && ||
+      if nx == b2 && (b2 == 38 || b2 == 124 || b2 == 60 || b2 == 62) {
+        two = true; // && || << >>
       }
     }
     adv(c);

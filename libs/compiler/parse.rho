@@ -68,7 +68,7 @@ pub fn strlit(text: string) -> *Expr {
 }
 
 // operator codes: 0=+ 1=- 2=* 3=/ 4=% 5=< 6=> 7=<= 8=>= 9=== 10=!=
-// 13=&& 14=||
+// 13=&& 14=|| 15=& 16=| 17=^ 18=<< 19=>>
 pub fn op_code(t: *Tok) -> i64 {
   let a: u8 = t.text[0];
   if len(t.text) == 2 {
@@ -85,7 +85,16 @@ pub fn op_code(t: *Tok) -> i64 {
       return 10;
     }
     if a == 60 {
-      return 7;
+      if t.text[1] == 61 {
+        return 7;
+      }
+      return 18; // <<
+    }
+    if a == 62 {
+      if t.text[1] == 61 {
+        return 8;
+      }
+      return 19; // >>
     }
     return 8;
   }
@@ -106,6 +115,18 @@ pub fn op_code(t: *Tok) -> i64 {
   }
   if a == 60 {
     return 5;
+  }
+  if a == 62 {
+    return 6;
+  }
+  if a == 38 {
+    return 15;
+  }
+  if a == 124 {
+    return 16;
+  }
+  if a == 94 {
+    return 17;
   }
   return 6;
 }
@@ -160,27 +181,42 @@ fn is_punct(t: *Tok, ch: u8) -> bool {
   return t.kind == lex.TK_PUNCT && len(t.text) == 1 && t.text[0] == ch;
 }
 
-// precedence: 0 = ||, 1 = &&, 2 = comparisons, 3 = + -, 4 = * / %
-// (&& binds tighter than ||, C-style; both sit below comparisons)
+// precedence, loose to tight (spec §6.1's C ladder):
+// 0=|| 1=&& 2=| 3=^ 4=& 5===/!= 6=relational 7=<< >> 8=+ - 9=* / %
 fn prec_of(t: *Tok) -> i32 {
   if len(t.text) == 2 {
     let a: u8 = t.text[0];
     if a == 38 {
-      return 1;
+      return 1; // &&
     }
     if a == 124 {
-      return 0;
+      return 0; // ||
     }
-    return 2;
+    if a == 61 || a == 33 {
+      return 5; // == !=
+    }
+    if a == 60 || a == 62 {
+      return 7; // << >>
+    }
+    return 6; // <= >=
   }
   let b: u8 = t.text[0];
   if b == 60 || b == 62 {
+    return 6;
+  }
+  if b == 38 {
+    return 4;
+  }
+  if b == 94 {
+    return 3;
+  }
+  if b == 124 {
     return 2;
   }
   if b == 43 || b == 45 {
-    return 3;
+    return 8;
   }
-  return 4;
+  return 9;
 }
 
 fn is_binop(t: *Tok) -> bool {
@@ -188,10 +224,10 @@ fn is_binop(t: *Tok) -> bool {
     return false;
   }
   if len(t.text) == 2 {
-    // == != <= >= && ||
+    // == != <= >= && || << >>
     let a: u8 = t.text[0];
     let b: u8 = t.text[1];
-    if a == b && (a == 38 || a == 124) {
+    if a == b && (a == 38 || a == 124 || a == 60 || a == 62) {
       return true;
     }
     return b == 61 && (a == 61 || a == 33 || a == 60 || a == 62);
@@ -201,7 +237,7 @@ fn is_binop(t: *Tok) -> bool {
   }
   let b: u8 = t.text[0];
   return b == 43 || b == 45 || b == 42 || b == 47 || b == 37 ||
-         b == 60 || b == 62;
+         b == 60 || b == 62 || b == 38 || b == 124 || b == 94;
 }
 
 // the wasm compare for an operator pair (spelling, is_eq_family)
@@ -267,6 +303,12 @@ fn parse_primary(c: *PCur) -> *Expr {
     tkadv(c);
     let inner = parse_primary(c);
     return bin(12, lit(0), inner);
+  }
+  if is_punct(t, 126) {
+    // ~expr: integer bitwise-not = -1 ^ x
+    tkadv(c);
+    let inner = parse_primary(c);
+    return bin(17, lit(0 - 1), inner);
   }
   if t.kind == lex.TK_KEYWORD && t.text == "true" {
     tkadv(c);
@@ -466,8 +508,10 @@ fn parse_stmt(c: *PCur) -> *Stmt {
   if t.kind == lex.TK_IDENT && c.pos + 1 < len(c.toks) &&
       c.toks[c.pos + 1].kind == lex.TK_PUNCT &&
       len(c.toks[c.pos + 1].text) == 2 &&
-      c.toks[c.pos + 1].text[1] == 61 {
-    // name OP= expr; — desugars to name = name OP expr
+      c.toks[c.pos + 1].text[1] == 61 &&
+      c.toks[c.pos + 1].text[0] != 60 && c.toks[c.pos + 1].text[0] != 62 {
+    // name OP= expr; — desugars to name = name OP expr (the last two
+    // exclusions keep <= >= out: they compare, they never assign)
     let opt: u8 = c.toks[c.pos + 1].text[0];
     tkadv(c); // the name
     tkadv(c); // the operator
@@ -480,8 +524,32 @@ fn parse_stmt(c: *PCur) -> *Stmt {
       45 => 1,
       42 => 2,
       47 => 3,
+      38 => 15,
+      124 => 16,
+      94 => 17,
       _ => 4,
     };
+    st.val = Option.Some(bin(code, var(t.text), rhs));
+    return st;
+  }
+  if t.kind == lex.TK_IDENT && c.pos + 2 < len(c.toks) &&
+      c.toks[c.pos + 1].kind == lex.TK_PUNCT &&
+      len(c.toks[c.pos + 1].text) == 2 &&
+      (c.toks[c.pos + 1].text == "<<" || c.toks[c.pos + 1].text == ">>") &&
+      is_punct(c.toks[c.pos + 2], 61) {
+    // name <<= expr; / name >>= expr; — the shift compounds (three
+    // tokens: the lexer has no three-char operators)
+    let code: i64 = match c.toks[c.pos + 1].text[0] {
+      60 => 18,
+      _ => 19,
+    };
+    tkadv(c); // the name
+    tkadv(c); // << or >>
+    tkadv(c); // '='
+    let rhs = parse_bin(c, 0);
+    eat_punct(c, 59);
+    let st = mk_stmt(ST_SET);
+    st.name = t.text;
     st.val = Option.Some(bin(code, var(t.text), rhs));
     return st;
   }
