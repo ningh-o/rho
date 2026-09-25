@@ -12,7 +12,7 @@ const SRC: string = "fn main() -> i32 { printf(\"hello, self\\n\"); return 0; }"
 
 fn main() -> i32 {
   let toks: []*Tok = lex.lex(SRC);
-  let nodes: []Node = parse.parse(toks, SRC);
+  let nodes: []*Stmt = parse.parse(toks, SRC);
   let wat: string = emit.emit(nodes);
   printf("{}", wat);
   return 0;

@@ -31,6 +31,8 @@ FAILED=0
 run_one hello 'fn main() -> i32 { printf("hello, self\n"); return 0; }' 'hello, self'
 run_one pieces 'fn main() -> i32 { printf("a{}b{}c\n", "XY", "Z"); return 0; }' 'aXYbZc'
 run_one ints 'fn main() -> i32 { printf("n={} and {}\n", 42, 7); return 0; }' 'n=42 and 7'
+run_one exprs 'fn main() -> i32 { let x = 6 * 7; let y = x - 2; printf("x={} y={} sum={}\n", x, y, x + y); return 0; }' 'x=42 y=40 sum=82'
+run_one prec 'fn main() -> i32 { printf("{} {}\n", 2 + 3 * 4, (2 + 3) * 4); return 0; }' '14 20'
 if [ "$FAILED" -eq 0 ]; then
   echo "selfhost: ok (boot → rho compiler → program → run)"
 else

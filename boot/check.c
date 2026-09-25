@@ -352,6 +352,56 @@ static int resolve_under_base(Arena *a, const char *base, RefList *segs,
   return 0;
 }
 
+static Type *resolve_type(Module *m, NodeRef tr, GScope *g);
+
+static bool gscope_has(GScope *g, const char *name);
+static Program *g_program_for_load;
+
+// does the type expression mention a named type this module cannot
+// see YET (its module loads later in the BFS)?
+static bool type_needs_defer(Module *m, NodeRef tr, GScope *g) {
+  if (tr == NO_REF)
+    return false;
+  Node *t = node_get(tr);
+  switch (t->kind) {
+  case NT_PTR:
+  case NT_OPT:
+  case NT_SLICE:
+    return type_needs_defer(m, t->a, g);
+  case NT_APP: {
+    if (strcmp(t->name, "weak") == 0)
+      return false;
+    if (gscope_has(g, t->name))
+      return false;
+    if (m->syms && symtab_get(m->syms, t->name))
+      return false;
+    if (g_prelude_mod && g_prelude_mod->syms &&
+        symtab_get(g_prelude_mod->syms, t->name))
+      return false;
+    // already-loaded foreign modules may hold it — only defer names
+    // NO loaded module exposes publicly
+    for (Module *mod = g_program_for_load->modules; mod; mod = mod->next) {
+      Sym *s = mod->syms ? symtab_get(mod->syms, t->name) : NULL;
+      if (s && (s->pub || mod == m))
+        return false;
+    }
+    return true;
+  }
+  default:
+    return false;
+  }
+}
+
+// deferred field types: cross-module names whose module loads later
+// in the BFS retry once the graph is complete
+typedef struct DeferredTy {
+  Module *m;
+  NodeRef tr;     // the type node
+  Type **slot;    // where the resolved type lands
+  Node *at;       // for the diagnostic if it never resolves
+} DeferredTy;
+static Vec g_deferred_tys; // of DeferredTy
+
 // Load (or find) the module a use-declaration names. Applies the two
 // lookup bases in order, then std, and enforces the facade law.
 static Module *resolve_use(Program *p, Module *importer, NodeRef use_r,
@@ -554,6 +604,18 @@ bool program_load_graph(Program *p, const char *entry_path) {
   }
   // facades re-export now — every target is loaded and prepared
   expand_pub_uses(p);
+  // deferred field types resolve against the complete graph
+  for (size_t i = 0; i < VLEN(g_deferred_tys); i++) {
+    DeferredTy *dt = VAT(g_deferred_tys, DeferredTy, i);
+    GScope g2 = {0};
+    Type *t = resolve_type(dt->m, dt->tr, &g2);
+    if (t == ty_i32 && g_had_error == false) {
+      Node *tn = node_get(dt->tr);
+      diag_at(DIAG_ERROR, dt->m->path, dt->at->line, dt->at->col,
+              "unknown type '%s'", tn->kind == NT_APP ? tn->name : "?");
+    }
+    *dt->slot = t;
+  }
   return !g_had_error;
 }
 
@@ -835,6 +897,17 @@ static void collect_module(Program *p, Module *m) {
         Node *f = node_get(reflist_at(d->list, j));
         sd->fields[j].name = f->name;
         sd->fields[j].decl = reflist_at(d->list, j);
+        if (type_needs_defer(m, f->a, &g)) {
+          if (!g_deferred_tys.data)
+            vec_init(&g_deferred_tys, sizeof(DeferredTy));
+          DeferredTy *dt = VPUSH(g_deferred_tys, DeferredTy);
+          dt->m = m;
+          dt->tr = f->a;
+          dt->slot = &sd->fields[j].ty;
+          dt->at = f;
+          sd->fields[j].ty = ty_i32; // placeholder until the retry
+          continue;
+        }
         sd->fields[j].ty = resolve_type(m, f->a, &g);
       }
     } else if (d->kind == NT_ENUM) {

@@ -1,19 +1,60 @@
-// parse.rho — the self-hosted compiler's parser (T2.1 skeleton).
+// parse.rho — the self-hosted compiler's parser (T2.2 growth).
 // Grammar: fn main ( ) (-> i32)? { stmt* } where a statement is a
-// printf call (a literal format string plus string-literal holes) or
-// a return. The AST is three node kinds — enough for hello-world and
-// its first neighbors; the tree grows module by module (T2.2+).
+// printf call, a let binding, or a return; expressions are integer
+// literals, variables, and + - * / % with parentheses. The AST is a
+// tagged struct per node — boxes make the tree recursive.
 use lex;
 
-pub enum Node {
-  PrintFmt(string, []string), // format text + one string per hole
-  Ret(i64),
+pub const EX_LIT: i32 = 0;
+pub const EX_VAR: i32 = 1;
+pub const EX_BIN: i32 = 2;
+pub const EX_STR: i32 = 3;
+
+pub struct Expr {
+  tag: i32,      // EX_*
+  lit: i64,      // literal value
+  name: string,  // variable name
+  op: u8,        // binary operator byte
+  lhs: ?*Expr,
+  rhs: ?*Expr,
+}
+
+pub const ST_PF: i32 = 0;
+pub const ST_LET: i32 = 1;
+pub const ST_RET: i32 = 2;
+
+pub struct Stmt {
+  tag: i32,      // ST_*
+  fmt: string,   // printf: the format text
+  args: []*Expr, // printf: one expr per hole
+  name: string,  // let: the bound name
+  val: ?*Expr,   // let: the bound expr
+  ret: i64,      // return: the value
+}
+
+pub fn lit(v: i64) -> *Expr {
+  return new Expr { tag: EX_LIT, lit: v, name: "", op: 0,
+                     lhs: Option.None, rhs: Option.None };
+}
+
+pub fn var(name: string) -> *Expr {
+  return new Expr { tag: EX_VAR, lit: 0, name: name, op: 0,
+                     lhs: Option.None, rhs: Option.None };
+}
+
+pub fn strlit(text: string) -> *Expr {
+  return new Expr { tag: EX_STR, lit: 0, name: text, op: 0,
+                     lhs: Option.None, rhs: Option.None };
+}
+
+pub fn bin(op: u8, lhs: *Expr, rhs: *Expr) -> *Expr {
+  return new Expr { tag: EX_BIN, lit: 0, name: "", op: op,
+                     lhs: Option.Some(lhs), rhs: Option.Some(rhs) };
 }
 
 struct PCur {
   toks: []*Tok,
   pos: usize,
-  src: string,
 }
 
 fn tk(c: *PCur) -> *Tok {
@@ -33,8 +74,27 @@ fn eat_punct(c: *PCur, ch: u8) -> bool {
   return false;
 }
 
-// split a format literal into its text pieces around {} holes; the
-// pieces and the holes alternate starting with a piece
+fn is_punct(t: *Tok, ch: u8) -> bool {
+  return t.kind == lex.TK_PUNCT && len(t.text) == 1 && t.text[0] == ch;
+}
+
+// precedence: 1 = + -, 2 = * / %
+fn prec(op: u8) -> i32 {
+  if op == 43 || op == 45 {
+    return 1;
+  }
+  return 2;
+}
+
+fn is_binop(t: *Tok) -> bool {
+  if t.kind != lex.TK_PUNCT || len(t.text) != 1 {
+    return false;
+  }
+  let b: u8 = t.text[0];
+  return b == 43 || b == 45 || b == 42 || b == 47 || b == 37;
+}
+
+// split a format literal into its text pieces around {} holes
 fn split_fmt(s: string) -> []string {
   let parts: []string = make([]string, len(s) + 2);
   let mut n: usize = 0;
@@ -55,8 +115,58 @@ fn split_fmt(s: string) -> []string {
   return parts[0..n];
 }
 
-// one statement: printf(..); or return ..;
-fn parse_stmt(c: *PCur) -> Node {
+pub fn fmt_pieces(s: string) -> []string {
+  return split_fmt(s);
+}
+
+// primary: INT | STRING | IDENT | ( expr )
+fn parse_primary(c: *PCur) -> *Expr {
+  let t = tk(c);
+  if t.kind == lex.TK_INT {
+    tkadv(c);
+    return lit(t.ival);
+  }
+  if t.kind == lex.TK_STR {
+    tkadv(c);
+    return strlit(t.text);
+  }
+  if t.kind == lex.TK_IDENT {
+    tkadv(c);
+    return var(t.text);
+  }
+  if is_punct(t, 40) {
+    tkadv(c);
+    let inner = parse_bin(c, 1);
+    eat_punct(c, 41);
+    return inner;
+  }
+  // unusable primary: a zero literal keeps the walk alive
+  tkadv(c);
+  return lit(0);
+}
+
+// binary expressions by precedence climbing
+fn parse_bin(c: *PCur, min_prec: i32) -> *Expr {
+  let mut lhs: *Expr = parse_primary(c);
+  while true {
+    let t = tk(c);
+    if !is_binop(t) {
+      break;
+    }
+    let p: i32 = prec(t.text[0]);
+    if p < min_prec {
+      break;
+    }
+    let op: u8 = t.text[0];
+    tkadv(c);
+    let rhs: *Expr = parse_bin(c, p + 1);
+    lhs = bin(op, lhs, rhs);
+  }
+  return lhs;
+}
+
+// one statement: printf(..); | let name = expr; | return expr?;
+fn parse_stmt(c: *PCur) -> *Stmt {
   let t = tk(c);
   if t.kind == lex.TK_KEYWORD && t.text == "return" {
     tkadv(c);
@@ -66,53 +176,66 @@ fn parse_stmt(c: *PCur) -> Node {
       v = t2.ival;
       tkadv(c);
     }
-    if !eat_punct(c, 59) {
-      return Node.Ret(0 - 1);
-    }
-    return Node.Ret(v);
+    eat_punct(c, 59);
+    return new Stmt { tag: ST_RET, fmt: "", args: make([]*Expr, 0),
+                      name: "", val: Option.None, ret: v };
   }
-  if (t.kind == lex.TK_KEYWORD || t.kind == lex.TK_IDENT) &&
+  if t.kind == lex.TK_KEYWORD && t.text == "let" {
+    tkadv(c);
+    let nt = tk(c);
+    let mut nm: string = "_";
+    if nt.kind == lex.TK_IDENT || nt.kind == lex.TK_KEYWORD {
+      nm = nt.text;
+      tkadv(c);
+    }
+    // optional : type
+    if is_punct(tk(c), 58) {
+      tkadv(c);
+      tkadv(c);
+    }
+    if !eat_punct(c, 61) {
+      return new Stmt { tag: ST_RET, fmt: "", args: make([]*Expr, 0),
+                        name: "", val: Option.None, ret: 0 - 21 };
+    }
+    let e = parse_bin(c, 1);
+    eat_punct(c, 59);
+    return new Stmt { tag: ST_LET, fmt: "", args: make([]*Expr, 0),
+                      name: nm, val: Option.Some(e), ret: 0 };
+  }
+  if (t.kind == lex.TK_IDENT || t.kind == lex.TK_KEYWORD) &&
       t.text == "printf" {
     tkadv(c);
     if !eat_punct(c, 40) {
-      return Node.Ret(0 - 2);
+      return new Stmt { tag: ST_RET, fmt: "", args: make([]*Expr, 0),
+                        name: "", val: Option.None, ret: 0 - 22 };
     }
-    // the literal format string
     let ft = tk(c);
     if ft.kind != lex.TK_STR {
-      return Node.Ret(0 - 3);
+      return new Stmt { tag: ST_RET, fmt: "", args: make([]*Expr, 0),
+                        name: "", val: Option.None, ret: 0 - 23 };
     }
     tkadv(c);
-    // zero or more string-literal arguments
-    let args: []string = make([]string, 8);
+    let args: []*Expr = make([]*Expr, 8);
     let mut na: usize = 0;
     while eat_punct(c, 44) {
-      let at = tk(c);
-      if at.kind != lex.TK_STR {
-        break;
-      }
-      args[na] = at.text;
+      args[na] = parse_bin(c, 1);
       na = na + 1;
-      tkadv(c);
     }
-    if !eat_punct(c, 41) {
-      return Node.Ret(0 - 4);
-    }
-    if !eat_punct(c, 59) {
-      return Node.Ret(0 - 5);
-    }
-    return Node.PrintFmt(ft.text, args[0..na]);
+    eat_punct(c, 41);
+    eat_punct(c, 59);
+    return new Stmt { tag: ST_PF, fmt: ft.text, args: args[0..na],
+                      name: "", val: Option.None, ret: 0 };
   }
   // unknown statement: skip a token so the walk makes progress
   tkadv(c);
-  return Node.Ret(0 - 100);
+  return new Stmt { tag: ST_RET, fmt: "", args: make([]*Expr, 0),
+                    name: "", val: Option.None, ret: 0 - 100 };
 }
 
-pub fn parse(toks: []*Tok, src: string) -> []Node {
-  let nodes: []Node = make([]Node, len(src) + 4);
+pub fn parse(toks: []*Tok, src: string) -> []*Stmt {
+  let nodes: []*Stmt = make([]*Stmt, len(src) + 4);
   let mut n: usize = 0;
-  let c = new PCur { toks: toks, pos: 0, src: src };
-  // walk to 'fn main' then its block
+  let c = new PCur { toks: toks, pos: 0 };
   while tk(c).kind != lex.TK_EOF {
     let t = tk(c);
     if t.kind == lex.TK_KEYWORD && t.text == "fn" {
@@ -125,17 +248,14 @@ pub fn parse(toks: []*Tok, src: string) -> []Node {
         eat_punct(c, 40);
         eat_punct(c, 41);
         // optional -> i32 (three tokens: '-', '>', the type word)
-        let t2 = tk(c);
-        if t2.kind == lex.TK_PUNCT && len(t2.text) == 1 && t2.text[0] == 45 {
+        if is_punct(tk(c), 45) {
           tkadv(c);
           tkadv(c);
           tkadv(c);
         }
         if eat_punct(c, 123) {
           while tk(c).kind != lex.TK_EOF {
-            let t3 = tk(c);
-            if t3.kind == lex.TK_PUNCT && len(t3.text) == 1 &&
-                t3.text[0] == 125 {
+            if is_punct(tk(c), 125) {
               tkadv(c);
               break;
             }
@@ -149,10 +269,10 @@ pub fn parse(toks: []*Tok, src: string) -> []Node {
       let mut depth: i32 = 0;
       while tk(c).kind != lex.TK_EOF {
         let t4 = tk(c);
-        if t4.kind == lex.TK_PUNCT && len(t4.text) == 1 && t4.text[0] == 123 {
+        if is_punct(t4, 123) {
           depth = depth + 1;
         }
-        if t4.kind == lex.TK_PUNCT && len(t4.text) == 1 && t4.text[0] == 125 {
+        if is_punct(t4, 125) {
           depth = depth - 1;
           tkadv(c);
           if depth <= 0 {
@@ -167,8 +287,4 @@ pub fn parse(toks: []*Tok, src: string) -> []Node {
     tkadv(c);
   }
   return nodes[0..n];
-}
-
-pub fn fmt_pieces(s: string) -> []string {
-  return split_fmt(s);
 }

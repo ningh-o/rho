@@ -1,9 +1,7 @@
-// emit.rho — the self-hosted compiler's wasm emitter (T2.1 skeleton).
-// The output is a self-contained wasm32-wasi module: one memory, the
-// program's string pieces as data segments (escape-decoded from the
-// token's raw span), and an _start that writes the pieces in order
-// through fd_write. Int formatting and the fuller kernel arrive with
-// the parity work (T2.2+).
+// emit.rho — the self-hosted compiler's wasm emitter (T2.2 growth).
+// Statements: printf pieces ride a string pool, integer expressions
+// compile to i64 stack code into _start locals (let bindings get one
+// local each), and the generated module carries the decimal runtime.
 use parse;
 
 pub struct Pool {
@@ -12,6 +10,11 @@ pub struct Pool {
   addrs: []i64,
   n: usize,
   next: i64,
+}
+
+pub fn new_pool() -> *Pool {
+  return new Pool { segs: make([]string, 64), lens: make([]i64, 64),
+                    addrs: make([]i64, 64), n: 0, next: 1024 };
 }
 
 // decoded byte count of a raw span
@@ -27,11 +30,6 @@ fn decoded_len(raw: string) -> i64 {
     n = n + 1;
   }
   return n;
-}
-
-pub fn new_pool() -> *Pool {
-  return new Pool { segs: make([]string, 64), lens: make([]i64, 64),
-                    addrs: make([]i64, 64), n: 0, next: 1024 };
 }
 
 pub fn pool_intern(p: *Pool, raw: string) -> i64 {
@@ -96,6 +94,32 @@ pub fn wat_data_body(raw: string) -> string {
   return out;
 }
 
+// the decimal runtime the generated module carries: $w_i64 writes
+// |v|'s digits backward into [2048, 4096) and returns {addr, len}
+const RUNTIME: string = "  (global $w_top (mut i32) (i32.const 4096))\n"
+  + "  (func $w_i64 (param $v i64) (result i32) (result i32)\n"
+  + "    (local $p i32) (local $neg i32) (local $u i64)\n"
+  + "    (local.set $p (i32.const 4096))\n"
+  + "    (local.set $neg (i64.lt_s (local.get $v) (i64.const 0)))\n"
+  + "    (local.set $u\n"
+  + "      (if (result i64) (local.get $neg)\n"
+  + "        (then (i64.sub (i64.const 0) (local.get $v)))\n"
+  + "        (else (local.get $v))))\n"
+  + "    (loop $d\n"
+  + "      (local.set $p (i32.sub (local.get $p) (i32.const 1)))\n"
+  + "      (i32.store8 (local.get $p)\n"
+  + "        (i32.wrap_i64 (i64.add (i64.rem_u (local.get $u)\n"
+  + "                             (i64.const 10)) (i64.const 48))))\n"
+  + "      (local.set $u (i64.div_u (local.get $u) (i64.const 10)))\n"
+  + "      (br_if $d (i64.ne (local.get $u) (i64.const 0)))\n"
+  + "    )\n"
+  + "    (if (local.get $neg)\n"
+  + "      (then (local.set $p (i32.sub (local.get $p) (i32.const 1)))\n"
+  + "            (i32.store8 (local.get $p) (i32.const 45))))\n"
+  + "    (local.get $p)\n"
+  + "    (i32.sub (global.get $w_top) (local.get $p))\n"
+  + "  )\n";
+
 // one fd_write of nbytes at addr: the iovec cell pair at 64/68
 fn write_call(addr: i64, nbytes: i64) -> string {
   let out: string = "    (i32.store (i32.const 64) (i32.const " +
@@ -107,38 +131,143 @@ fn write_call(addr: i64, nbytes: i64) -> string {
   return out;
 }
 
-pub fn emit(nodes: []Node) -> string {
-  let pool = new_pool();
-  let body: []string = make([]string, 256);
-  let mut nb: usize = 0;
+// one fd_write of a runtime-formatted integer: $w_i64 leaves
+// {addr, len} on the stack; the locals capture the pair
+fn write_int() -> string {
+  // flat call: the expression's i64 rides the stack below it
+  let out: string = "    call $w_i64\n" +
+                    "    (local.set $l)\n" +
+                    "    (local.set $a)\n" +
+                    "    (i32.store (i32.const 64) (local.get $a))\n" +
+                    "    (i32.store (i32.const 68) (local.get $l))\n" +
+                    "    (drop (call $fd_write (i32.const 1) " +
+                    "(i32.const 64) (i32.const 1) (i32.const 96)))\n";
+  return out;
+}
+
+// the let environment: names to _start local slots
+struct Env {
+  names: []string,
+  slots: []i64,
+  n: usize,
+}
+
+fn env_new(cap: usize) -> *Env {
+  return new Env { names: make([]string, cap), slots: make([]i64, cap),
+                   n: 0 };
+}
+
+fn env_look(e: *Env, name: string) -> i64 {
   let mut i: usize = 0;
-  while i < len(nodes) {
-    match nodes[i] {
-      Node.PrintFmt(fmt, args) => {
-        let pieces: []string = parse.fmt_pieces(fmt);
-        let mut pi: usize = 0;
-        let mut ai: usize = 0;
-        while pi < len(pieces) {
-          if len(pieces[pi]) > 0 {
-            let addr: i64 = pool_intern(pool, pieces[pi]);
-            body[nb] = write_call(addr, pool_len(pool, pieces[pi]));
-            nb = nb + 1;
-          }
-          if pi + 1 < len(pieces) {
-            if ai < len(args) {
-              let haddr: i64 = pool_intern(pool, args[ai]);
-              body[nb] = write_call(haddr, pool_len(pool, args[ai]));
-              nb = nb + 1;
-              ai = ai + 1;
-            }
-          }
-          pi = pi + 1;
-        }
-      },
-      Node.Ret(_) => {},
+  while i < e.n {
+    if e.names[i] == name {
+      return e.slots[i];
     }
     i = i + 1;
   }
+  return 0 - 1;
+}
+
+fn env_bind(e: *Env, name: string, slot: i64) {
+  e.names[e.n] = name;
+  e.slots[e.n] = slot;
+  e.n = e.n + 1;
+}
+
+// the wat operator for an expression's op byte
+fn wat_op(op: u8) -> string {
+  if op == 43 {
+    return "i64.add";
+  }
+  if op == 45 {
+    return "i64.sub";
+  }
+  if op == 42 {
+    return "i64.mul";
+  }
+  if op == 47 {
+    return "i64.div_s";
+  }
+  return "i64.rem_s";
+}
+
+// compile an expression: lines that leave one i64 on the stack
+fn emit_expr(pool: *Pool, e: *Expr, env: *Env) -> string {
+  if e.tag == parse.EX_LIT {
+    return "    (i64.const " + e.lit.to_str() + ")\n";
+  }
+  if e.tag == parse.EX_VAR {
+    let slot: i64 = env_look(env, e.name);
+    if slot < 0 {
+      return "    (i64.const 0)\n";
+    }
+    return "    (local.get " + slot.to_str() + ")\n";
+  }
+  // binary: operand code, then the operator
+  let mut out: string = "";
+  match e.lhs {
+    Option.Some(l) => {
+      out = out + emit_expr(pool, l, env);
+    },
+    Option.None => {},
+  }
+  match e.rhs {
+    Option.Some(r) => {
+      out = out + emit_expr(pool, r, env);
+    },
+    Option.None => {},
+  }
+  out = out + "    (" + wat_op(e.op) + ")\n";
+  return out;
+}
+
+pub fn emit(nodes: []*Stmt) -> string {
+  let pool = new_pool();
+  let env = env_new(64);
+  let mut next_local: i64 = 2; // 0/1 are the $a/$l capture pair
+  let mut body: string = "";
+  let mut i: usize = 0;
+  while i < len(nodes) {
+    let st = nodes[i];
+    if st.tag == parse.ST_PF {
+      let pieces: []string = parse.fmt_pieces(st.fmt);
+      let mut pi: usize = 0;
+      let mut ai: usize = 0;
+      while pi < len(pieces) {
+        if len(pieces[pi]) > 0 {
+          let addr: i64 = pool_intern(pool, pieces[pi]);
+          body = body + write_call(addr, pool_len(pool, pieces[pi]));
+        }
+        if pi + 1 < len(pieces) {
+          if ai < len(st.args) {
+            let arg = st.args[ai];
+            if arg.tag == parse.EX_STR {
+              let saddr: i64 = pool_intern(pool, arg.name);
+              body = body + write_call(saddr, pool_len(pool, arg.name));
+            } else {
+              body = body + emit_expr(pool, arg, env);
+              body = body + write_int();
+            }
+            ai = ai + 1;
+          }
+        }
+        pi = pi + 1;
+      }
+    }
+    if st.tag == parse.ST_LET {
+      match st.val {
+        Option.Some(e) => {
+          body = body + emit_expr(pool, e, env);
+          body = body + "    (local.set " + next_local.to_str() + ")\n";
+          env_bind(env, st.name, next_local);
+          next_local = next_local + 1;
+        },
+        Option.None => {},
+      }
+    }
+    i = i + 1;
+  }
+  // assemble: header, memory, runtime, _start with the let locals
   let mut out: string = "";
   out = out + "(module\n";
   out = out + "  (import \"wasi_snapshot_preview1\" \"fd_write\"\n";
@@ -148,13 +277,15 @@ pub fn emit(nodes: []Node) -> string {
   out = out + "    (func $proc_exit (param i32)))\n";
   out = out + "  (memory 1)\n";
   out = out + "  (export \"memory\" (memory 0))\n";
+  out = out + RUNTIME;
   out = out + "  (export \"_start\" (func $_start))\n";
-  out = out + "  (func $_start\n";
-  let mut w: usize = 0;
-  while w < nb {
-    out = out + body[w];
-    w = w + 1;
+  out = out + "  (func $_start (local $a i32) (local $l i32)\n";
+  let mut li: i64 = 0;
+  while li < next_local {
+    out = out + "    (local $v" + li.to_str() + " i64)\n";
+    li = li + 1;
   }
+  out = out + body;
   out = out + "    (call $proc_exit (i32.const 0))\n";
   out = out + "  )\n";
   let mut d: usize = 0;
