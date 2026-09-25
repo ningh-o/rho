@@ -1563,20 +1563,69 @@ static void emit_printf(FnCx *cx, Node *call, bool err) {
 // arrive with T1.7b
 static void emit_call_args(FnCx *cx, FnDef *f, RefList *args) {
   size_t nfixed = f->sig->nparams;
-  size_t argregs[16];
-  size_t nregs = 0;
-  for (size_t i = 0; i < nfixed; i++) {
+  bool variadic = nfixed > 0 && f->sig->params[nfixed - 1].variadic;
+  size_t nfixedp = variadic ? nfixed - 1 : nfixed;
+  size_t argregs_run[16];
+  for (size_t i = 0; i < nfixedp; i++) {
     Type *pt = f->sig->params[i].ty;
     Node *aw = i < reflist_len(args) ? node_get(reflist_at(args, i)) : NULL;
     size_t v = cx_fresh(cx, pt);
-    argregs[nregs++] = v;
+    argregs_run[i] = v;
     if (aw && aw->kind == NT_POSARG)
       emit_expr(cx, aw->a, v);
-    // leave zeroed on arity mismatch (checker already reported)
   }
-  // push all argument locals in order, then the caller emits (call …)
-  for (size_t i = 0; i < nregs; i++)
-    op(cx, "%s", L(cx, argregs[i]));
+  if (variadic) {
+    // materialize the trailing args as a fresh slice (spec §12)
+    Type *et = f->sig->params[nfixed - 1].ty->base;
+    size_t esz = type_size(et);
+    size_t extra = reflist_len(args) > nfixedp ? reflist_len(args) - nfixedp
+                                               : 0;
+    // spread: one trailing arg already a slice passes through
+    if (extra == 1 &&
+        node_get(reflist_at(args, nfixedp))->kind == NT_POSARG &&
+        node_get(reflist_at(args, nfixedp))->bval) {
+      Type *st = f->sig->params[nfixed - 1].ty;
+      size_t v = cx_fresh(cx, st);
+      argregs_run[nfixedp] = v;
+      emit_expr(cx, node_get(reflist_at(args, nfixedp))->a, v);
+    } else {
+      Type *st = type_slice(et);
+      size_t v = cx_fresh(cx, st);
+      size_t blk = cx_fresh(cx, ty_i32);
+      op(cx, "(local.set %zu (call $rho_alloc (i32.const %zu)))\n", blk,
+         extra * esz);
+      op(cx, "(local.set %zu (i32.add (local.get %zu) (i32.const 24)))\n",
+         v, blk);
+      op(cx, "(local.set %zu (i32.const %zu))\n", v + 1, extra);
+      for (size_t j = 0; j < extra; j++) {
+        Node *aw = node_get(reflist_at(args, nfixedp + j));
+        Type *at = (Type *)node_get(aw->a)->sem;
+        size_t ev = cx_fresh(cx, at);
+        emit_expr(cx, aw->a, ev);
+        size_t nl = shape_nlocals(et);
+        for (size_t k = 0; k < nl; k++) {
+          WTy w = local_wty(et, k);
+          const char *strop = w == W_I64   ? "i64.store"
+                              : w == W_F32 ? "f32.store"
+                              : w == W_F64 ? "f64.store"
+                                           : "i32.store";
+          op(cx, "(%s (i32.add %s (i32.const %zu)) %s)\n", strop,
+             L(cx, v), j * esz + k * 4, L(cx, ev + k));
+        }
+      }
+      argregs_run[nfixedp] = v;
+    }
+  }
+  // push every argument local in order (fat values own runs)
+  for (size_t i = 0; i < nfixedp; i++) {
+    size_t n = shape_nlocals(f->sig->params[i].ty);
+    for (size_t k = 0; k < n; k++)
+      op(cx, "%s", L(cx, argregs_run[i] + k));
+  }
+  if (variadic) {
+    op(cx, "%s", L(cx, argregs_run[nfixedp]));
+    op(cx, "%s", L(cx, argregs_run[nfixedp] + 1));
+  }
 }
 
 // ============================================================ statements

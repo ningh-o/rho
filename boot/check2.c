@@ -284,8 +284,11 @@ static bool sig_matches(FnCtx *c, FnSig *sig, NodeRef call_r,
     return false;
   }
   for (size_t i = 0; i < napplied; i++) {
-    Type *pt = i < nfixed ? sig->params[i + first].ty
-                          : sig->params[nfixed].ty; // element type
+    Type *vt = i < nfixed ? sig->params[i + first].ty
+                          : sig->params[nfixed].ty;
+    Type *pt = vt; // fixed: the param type; variadic: the ELEMENT type
+    if (i >= nfixed && vt && vt->kind == TY_SLICE)
+      pt = vt->base;
     Node *a = node_get(reflist_at(args, i + first));
     if (a->kind != NT_POSARG)
       return false; // named args only valid on constructors
@@ -652,9 +655,11 @@ static Type *check_call(FnCtx *c, NodeRef er, Type *expected) {
       size_t fixed = f->sig->nparams;
       bool variadic = fixed > 0 && f->sig->params[fixed - 1].variadic;
       Type *pt;
-      if (variadic && i >= fixed - 1)
+      if (variadic && i >= fixed - 1) {
         pt = f->sig->params[fixed - 1].ty;
-      else if (i < fixed)
+        if (pt && pt->kind == TY_SLICE)
+          pt = pt->base; // element face for the trailing args
+      } else if (i < fixed)
         pt = f->sig->params[i].ty;
       else
         pt = NULL;

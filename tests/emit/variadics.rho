@@ -1,0 +1,23 @@
+// out: 10 4
+fn sum(ns: i64...) -> i64 {
+  let mut total: i64 = 0;
+  let mut i: usize = 0;
+  while i < len(ns) {
+    total += ns[i] as i64;
+    i += 1;
+  }
+  return total;
+}
+fn max_of(first: i64, rest: i64...) -> i64 {
+  let mut best: i64 = first;
+  let mut i: usize = 0;
+  while i < len(rest) {
+    if rest[i] > best { best = rest[i]; }
+    i += 1;
+  }
+  return best;
+}
+fn main() -> i32 {
+  printf("{} {}\n", sum(1, 2, 3, 4), max_of(3, 1, 4, 1));
+  return 0;
+}
