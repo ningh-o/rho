@@ -598,8 +598,54 @@ size_t clofn_type_idx(FnCx *cx, FnSig *sig) {
       return i;
   CloTy *ct = VPUSH(g_clotypes, CloTy);
   ct->sig = sig;
-  ct->tname = aprintf(g_arena, "$clo_%zu", VLEN(g_clotypes) - 1);
+  ct->tname = aprintf(g_arena, "$cloty_%zu", VLEN(g_clotypes) - 1);
   return VLEN(g_clotypes) - 1;
+}
+
+// trampoline for passing a plain fn where a closure value is expected
+typedef struct FnWrap {
+  FnDef *fn;
+  const char *tname;
+} FnWrap;
+static Vec g_fnwraps;
+
+size_t fnvalue_wrap(FnCx *cx, FnDef *pf) {
+  if (!g_fnwraps.data)
+    vec_init(&g_fnwraps, sizeof(FnWrap));
+  for (size_t i = 0; i < VLEN(g_fnwraps); i++)
+    if (VAT(g_fnwraps, FnWrap, i)->fn == pf)
+      return 4 + VLEN(cx->em->dropfns) + VLEN(cx->em->closures) + i;
+  FnWrap *w = VPUSH(g_fnwraps, FnWrap);
+  w->fn = pf;
+  w->tname = aprintf(g_arena, "$tramp_%zu", VLEN(g_fnwraps) - 1);
+  // the trampoline body: params..., capt -> call f(params...)
+  Buf b;
+  buf_init(&b);
+  tprintf(&b, "  (func %s", w->tname);
+  for (size_t i = 0; i < pf->sig->nparams; i++) {
+    size_t n = shape_nlocals(pf->sig->params[i].ty);
+    for (size_t k = 0; k < n; k++)
+      tprintf(&b, " (param %s)", wty_s(local_wty(pf->sig->params[i].ty, k)));
+  }
+  tprintf(&b, " (param i32)");
+  if (pf->sig->ret->kind != TY_UNIT) {
+    size_t n = shape_nlocals(pf->sig->ret);
+    for (size_t k = 0; k < n; k++)
+      tprintf(&b, " (result %s)", wty_s(local_wty(pf->sig->ret, k)));
+  }
+  tprintf(&b, "\n");
+  size_t base = 0;
+  for (size_t i = 0; i < pf->sig->nparams; i++) {
+    size_t n = shape_nlocals(pf->sig->params[i].ty);
+    for (size_t k = 0; k < n; k++)
+      tprintf(&b, " (local.get %zu)\n", base + k);
+    base += n;
+  }
+  tprintf(&b, " (call $%s)\n", pf->name);
+  tprintf(&b, "  )\n");
+  em_queue_text(cx->em, aprintf(g_arena, "%.*s", (int)b.n, b.p));
+  return 4 + VLEN(cx->em->dropfns) + VLEN(cx->em->closures) +
+         VLEN(g_fnwraps) - 1;
 }
 
 size_t closure_table_idx(Em *em, const char *cname) {
@@ -702,7 +748,7 @@ static void emit_dropfns_and_table(Em *em) {
   }
   // table: 4 nodrop slots + one per registered walker
   tprintf(&em->fnbuf, "  (table %zu funcref)\n",
-          4 + VLEN(em->dropfns) + VLEN(em->closures));
+          4 + VLEN(em->dropfns) + VLEN(em->closures) + VLEN(g_fnwraps));
   tprintf(&em->fnbuf,
           "  (elem (i32.const 0) $rho_nodrop $rho_nodrop $rho_nodrop "
           "$rho_nodrop");
@@ -712,6 +758,8 @@ static void emit_dropfns_and_table(Em *em) {
   }
   for (size_t i = 0; i < VLEN(em->closures); i++)
     tprintf(&em->fnbuf, " %s", *VAT(em->closures, const char *, i));
+  for (size_t i = 0; i < VLEN(g_fnwraps); i++)
+    tprintf(&em->fnbuf, " %s", VAT(g_fnwraps, FnWrap, i)->tname);
   tprintf(&em->fnbuf, ")\n");
   (void)dropfn_for;
 }
@@ -789,6 +837,19 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
         op(cx, "(local.set %zu (i32.load (i32.const %zu)))\n", dst + i,
            slot + i * 4);
       return;
+    }
+    // a plain fn referenced as a value (spec: non-variadic fns are
+    // first-class): wrap it — trampoline takes the trailing capt param
+    if (s && s->kind == SYM_FN && !s->u.fns->next_overload) {
+      FnDef *pf = s->u.fns;
+      Type *ft = (Type *)e->sem;
+      if (ft && ft->kind == TY_FN) {
+        extern size_t fnvalue_wrap(FnCx * cx, FnDef * pf);
+        size_t ti = fnvalue_wrap(cx, pf);
+        op(cx, "(local.set %zu (i32.const %zu))\n", dst, ti);
+        op(cx, "(local.set %zu (i32.const 0))\n", dst + 1); // no captures
+        return;
+      }
     }
     // unknown here: the checker has already errored
     return;
@@ -895,7 +956,7 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       }
       op(cx, "%s\n", L(cx, fvv->vreg + 1)); // capture ptr
       extern size_t clofn_type_idx(FnCx * cx, FnSig * sig);
-      op(cx, "(call_indirect (type $clo_%zu) %s)\n",
+      op(cx, "(call_indirect (type $cloty_%zu) %s)\n",
          clofn_type_idx(cx, sig), L(cx, fvv->vreg));
       if (sig->ret->kind != TY_UNIT) {
         size_t n = shape_nlocals(sig->ret);
@@ -1493,7 +1554,7 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
     }
     // synthesize the closure fn: params + trailing capture ptr
     size_t cid = cx->em->closure_n++;
-    const char *cname = aprintf(g_arena, "$clo_%zu", cid);
+    const char *cname = aprintf(g_arena, "$clofn_%zu", cid);
     {
       Buf b2;
       buf_init(&b2);
