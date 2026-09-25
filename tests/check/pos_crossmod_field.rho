@@ -1,0 +1,9 @@
+// cross-module struct fields: the using module's struct names a type
+// from a module that loads later in the BFS (deferred resolution)
+use mods.shapes;
+
+fn main() -> i32 {
+  let r = shapes.mksquare(3);
+  printf("{} {}\n", r.w, r.h);
+  return 0;
+}

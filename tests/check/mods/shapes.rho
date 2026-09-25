@@ -1,0 +1,8 @@
+pub struct Sq {
+  w: i64,
+  h: i64,
+}
+
+pub fn mksquare(n: i64) -> *Sq {
+  return new Sq { w: n, h: n };
+}

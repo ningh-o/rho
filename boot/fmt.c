@@ -541,6 +541,8 @@ void fmt_program(FILE *out, Program *p) {
   for (Module *m = p->modules; m; m = m->next) {
     if (m == g_prelude_mod) // the embedded prelude never prints
       continue;
+    if (m != p->entry) // one file in, one file out: imports stay put
+      continue;
     for (size_t i = 0; i < reflist_len(m->decls); i++) {
       Node *d = NG(reflist_at(m->decls, i));
       switch (d->kind) {
