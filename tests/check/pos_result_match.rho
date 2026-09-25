@@ -1,0 +1,14 @@
+fn parse(n: i32) -> Result[i32, string] {
+  if n < 0 {
+    return Result.Err("negative");
+  }
+  return Result.Ok(n);
+}
+
+fn main() -> i32 {
+  match parse((0 - 5)) {
+    Result.Ok(v) => printf("ok={}\n", v),
+    Result.Err(e) => printf("err={}\n", e),
+  }
+  return 0;
+}

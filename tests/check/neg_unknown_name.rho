@@ -1,0 +1,2 @@
+// expect: unknown name 'nope'
+fn main() -> i32 { return nope; }

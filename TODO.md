@@ -88,13 +88,13 @@ section — no placeholder stages. boot is the reference compiler.
       struct, enum, trait, impl, const/static/extern, use/as/pub use),
       overloads (same name, many signatures), patterns, labels on
       `while`/`loop`.
-- [ ] **T1.4** Checker I — names: locals → module → root build params →
+- [x] **T1.4** Checker I — names: locals → module → root build params →
       prelude; **inner shadowing allowed** (same-scope rebind is still an
       error); two visibility tiers + package facades; method candidate
       sets = native methods (with their type) ∪ methods of modules in the
       use closure; same-signature ambiguity = compile error naming both
       modules.
-- [ ] **T1.5** Checker II — types: the eleven type-system rules
+- [x] **T1.5** Checker II — types: the eleven type-system rules
       (consumer-typed literals with fixed defaults; const inference with
       optional builtin annotations; `as`-only conversions with unified
       truncating semantics on constants and variables; overload

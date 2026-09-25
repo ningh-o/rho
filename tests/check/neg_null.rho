@@ -1,0 +1,2 @@
+// expect: pointers are non-null
+fn main() -> i32 { let x = null; return 0; }

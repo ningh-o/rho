@@ -930,6 +930,13 @@ static NodeRef parse_stmt(Parser *p) {
       if (aop >= 0) {
         NodeRef asg = nnew(p, NT_ASSIGN);
         node_get(asg)->op = aop;
+        NodeRef lhs = nnew(p, NT_PATH);
+        Token *id = cur(p);
+        node_get(lhs)->name = intern(id->text.p, id->text.n);
+        node_get(lhs)->file = id->file;
+        node_get(lhs)->line = id->line;
+        node_get(lhs)->col = id->col;
+        node_get(asg)->a = lhs;
         eat(p); // ident
         eat(p); // op
         node_get(asg)->b = parse_expr(p);
@@ -1013,6 +1020,13 @@ static NodeRef parse_stmt(Parser *p) {
         is2(p, T_SHLEQ, 1) || is2(p, T_SHREQ, 1)) {
       NodeRef r = nnew(p, NT_ASSIGN);
       node_get(r)->op = assign_op_of(at(p, 1)->kind);
+      NodeRef lhs = nnew(p, NT_PATH);
+      Token *id = cur(p);
+      node_get(lhs)->name = intern(id->text.p, id->text.n);
+      node_get(lhs)->file = id->file;
+      node_get(lhs)->line = id->line;
+      node_get(lhs)->col = id->col;
+      node_get(r)->a = lhs;
       eat(p); // ident
       eat(p); // op
       node_get(r)->b = parse_expr(p);
@@ -1408,6 +1422,7 @@ Module *module_parse_src(const char *path, const char *src) {
   Lexer *lx = lex_file(g_arena, path, src);
   m->toks = lex_tokens(lx, &m->ntoks);
   m->decls = reflist();
+  vec_init(&m->uses, sizeof(UseBind));
 
   Parser p = {m, 0};
   while (!is(&p, T_EOF)) {

@@ -1,0 +1,6 @@
+// expect: not exhaustive
+enum E { A, B }
+fn f(e: E) -> i32 {
+  return match e { E.A => 1 };
+}
+fn main() -> i32 { return 0; }

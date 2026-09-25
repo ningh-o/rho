@@ -295,7 +295,7 @@ void dump_node(FILE *out, Node *n) {
     return;
   case NT_LOOP:
     fprintf(out, "(loop%s ", n->name ? n->name : "");
-    dump_opt_node(out, n->a);
+    dump_opt_node(out, n->b);
     fputc(')', out);
     return;
   case NT_MATCH:

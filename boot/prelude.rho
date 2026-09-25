@@ -1,0 +1,33 @@
+// prelude.rho — the kernel, part 1 (grows to its full form in T1.8).
+// Loaded before every program; its public names are the prelude.
+// printf/eprintf/format/len/panic/assert are compiler-intrinsic call
+// targets: their signatures here anchor checking, the emitter
+// implements them (format desugar per spec §5, panic per spec §2).
+
+pub enum Option[T] {
+  Some(T),
+  None,
+}
+
+pub enum Result[T, E] {
+  Ok(T),
+  Err(E),
+}
+
+pub fn printf(fmt: string) {}
+
+pub fn eprintf(fmt: string) {}
+
+pub fn format(fmt: string) -> string {
+  return fmt;
+}
+
+pub fn len(s: string) -> usize {
+  return 0 as usize;
+}
+
+pub fn panic(msg: string) {}
+
+pub fn assert(cond: bool, msg: string) {}
+
+pub fn exit(code: i32) {}

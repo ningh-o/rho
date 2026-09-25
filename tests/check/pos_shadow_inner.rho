@@ -1,0 +1,10 @@
+// inner shadowing is legal
+fn main() -> i32 {
+  let x: i32 = 1;
+  if true {
+    let x: i64 = 2;
+    printf("{}\n", x);
+  }
+  printf("{}\n", x);
+  return 0;
+}

@@ -207,6 +207,14 @@ const char *op_spell(int op);
 
 // ---------------------------------------------------------------- modules
 
+typedef struct SymTab SymTab; // sem.h completes it
+
+typedef struct UseBind {
+  const char *alias; // binding name in the importing module
+  struct Module *target;
+  NodeRef decl;      // NT_USE
+} UseBind;
+
 typedef struct Module {
   const char *name; // file stem
   const char *path; // as opened
@@ -215,10 +223,35 @@ typedef struct Module {
   size_t ntoks;
   RefList *decls;
   struct Module *next;
+  bool is_package; // loaded via a lib.rho facade
+  struct Module *importer; // first module that pulled this in
+  SymTab *syms;    // collected symbols (sem.h Sym)
+  Vec uses;        // of UseBind — the module's use closure, use order
+  bool checked;
 } Module;
 
 Module *module_load(Arena *a, const char *path);       // read + lex + parse
 Module *module_parse_src(const char *path, const char *src); // lex + parse
+
+// ---------------------------------------------------------------- program
+
+typedef struct SetOverride {
+  const char *name;
+  const char *value; // text form, parsed against the const's type
+} SetOverride;
+
+typedef struct Program {
+  Module *entry;   // the root file
+  Module *modules; // every loaded module, load order, linked by ->next
+  size_t nmodules;
+  Vec sets;        // of SetOverride
+} Program;
+
+Program *program_new(void);
+bool check_program(Program *p); // full front half: collect + bodies
+// Loads the entry module and (transitively) every use-reachable module.
+// Reports and returns false on resolution errors.
+bool program_load_graph(Program *p, const char *entry_path);
 
 // ---------------------------------------------------------------- dump
 

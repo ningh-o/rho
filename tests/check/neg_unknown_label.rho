@@ -1,0 +1,5 @@
+// expect: unknown label
+fn main() -> i32 {
+  while true { break nope; }
+  return 0;
+}

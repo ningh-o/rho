@@ -1,0 +1,23 @@
+struct Rect {
+  w: i32,
+  h: i32,
+}
+
+fn Rect.area(self: *Rect) -> i32 {
+  return self.w * self.h;
+}
+
+fn get() -> Result[i32, string] {
+  return Result.Ok(5);
+}
+
+fn main() -> i32 {
+  let r = new Rect { w: 3, h: 4 };
+  let a: i32 = r.area();
+  if a == 12 { printf("twelve\n"); } else { printf("other\n"); }
+  let m: i32 = match get() {
+    Result.Ok(v) => v,
+    Result.Err(_) => 0,
+  };
+  return a + m - 17;
+}

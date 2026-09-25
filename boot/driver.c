@@ -31,10 +31,23 @@ int cmd_fmt(int argc, char **argv) {
 }
 
 int cmd_check(int argc, char **argv) {
-  (void)argc;
-  (void)argv;
-  fprintf(stderr, "rho check: not implemented yet (Phase 1, T1.6+)\n");
-  return EXIT_USAGE;
+  if (argc < 1) {
+    fprintf(stderr, "rho check <file.rho> [--set name=value]...\n");
+    return EXIT_USAGE;
+  }
+  const char *path = argv[0];
+  Program *p = program_new();
+  if (!program_load_graph(p, path)) {
+    diags_print(stderr);
+    return EXIT_COMPILE;
+  }
+  bool ok = check_program(p);
+  if (!ok) {
+    diags_print(stderr);
+    return EXIT_COMPILE;
+  }
+  printf("ok\n");
+  return 0;
 }
 
 int cmd_dump_ast(const char *path) {
