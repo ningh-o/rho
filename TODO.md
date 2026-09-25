@@ -218,11 +218,7 @@ section — no placeholder stages. boot is the reference compiler.
       fmt needs (mut, types, compound spellings, init exprs). The
       growths also fixed a real boot bug: --set overrides now land
       before the load-time dead-branch fold (they used to fold against
-      the declared value while printing the override). Remain, by the
-      failing-corpus clusters: enums/match/Option/?; structs/new/rc;
-      closures/traits/dyn/generics/variadics; floats (the f64 lane);
-      runtime string concat/format/to_str; module loading; the set
-      face in the differential runner. Later growths: the assert
+      the declared value while printing the override). Later growths: the assert
       builtin (eqz-gated panic; assert_eq compares strings content-wise
       with a user's same-name fn winning), runtime string concat
       ($w_cat + build_string_pair over literal/var/slice/call leaves,
@@ -232,7 +228,24 @@ section — no placeholder stages. boot is the reference compiler.
       (bounds-checked, hi - lo, no view built). fmt parity breadth:
       31 of the 46 compile-passing corpus files also format
       byte-identically; the other 15 mark the parse-retention gaps
-      (escape spellings, shapes) the subset fmt has yet to learn)*
+      (escape spellings, shapes) the subset fmt has yet to learn).
+      The thirty-fifth through thirty-eighth cuts (2026-09-26) land the
+      aggregate half of the language: structs (declarations over
+      composed types, new with named fields, pointer/value bindings —
+      (*p) copies into a local frame whose writes alias the shared
+      storage, fn Type.name methods and associated fns), enums and
+      match (heap-box values riding the i64 lane, unit/tuple/struct
+      payloads, literal/variant/wildcard patterns over scalars or
+      tags, block arms, string-valued matches as pair chains, enum
+      equality through a $w_enuq runtime, as-T = the tag), and the
+      Option/Result layer (the ? unwrap-and-return with defers, the
+      shared zeroed None box filling fresh ?T slices, payload-typed
+      binders, printf in expression position). The names-table
+      lookups scan backward now — match binders shadow across arms.
+      55 of 108 behavioral, floor 55. Remain: floats (the f64 lane);
+      string elements and string payloads in enums; closures/traits/
+      dyn/generics/variadics; overloads; module loading; weak/rc;
+      the set face in the differential runner)*
 - [ ] **T2.x** Optimizer in the mirror: constant folding, dead-code
       elimination, globals tree-shaking, tail-call→loop — with the
       language suites (opt/eq/params/modsys/strops/multiline) rebuilt
