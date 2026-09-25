@@ -6,7 +6,7 @@
 use parse;
 
 pub fn name_known(prog: *Prog, name: string) -> bool {
-  if name == "len" || name == "assert" || name == "format" {
+  if name == "len" || name == "assert" || name == "format" || name == "assert_eq" {
     return true;
   }
   let mut i: usize = 0;
