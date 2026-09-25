@@ -11,11 +11,30 @@ pub struct Pool {
   addrs: []i64,
   n: usize,
   next: i64,
+  gi: *GenInsts, // the generic-instantiation worklist (set by emit)
+}
+
+// generic instantiation registry: each distinct (fn, type key) pair
+// clones the fn with its type parameters bound; the worklist drains
+// after the user's fns (an instantiation may call more generics)
+struct GenInsts {
+  bases: []string, // the generic fn's name
+  keys: []string,  // the mangled type key
+  sufs: []string,  // the wasm suffix riding the fn name
+  fds: []*FnDef,   // the substituted clones
+  n: usize,
+}
+
+fn ginsts_new() -> *GenInsts {
+  return new GenInsts { bases: make([]string, 32), keys: make([]string, 32),
+                        sufs: make([]string, 32), fds: make([]*FnDef, 32),
+                        n: 0 };
 }
 
 pub fn new_pool() -> *Pool {
   return new Pool { segs: make([]string, 64), lens: make([]i64, 64),
-                    addrs: make([]i64, 64), n: 0, next: 1024 };
+                    addrs: make([]i64, 64), n: 0, next: 1024,
+                    gi: ginsts_new() };
 }
 
 // a hex digit's value, -1 when not hex
@@ -2498,7 +2517,8 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
       out = out + emit_arg(pool, e.args[k], env, prog, nl);
       k = k + 1;
     }
-    out = out + "    call $u_" + sym_name(e.name) + "\n";
+    out = out + "    call " + ginst_call_name(pool, prog, e, env) +
+           "\n";
     return out;
   }
   // enum equality: tag then payload, element-wise over the boxes
@@ -3791,6 +3811,330 @@ fn hole_boolish(arg: *Expr, env: *Env, prog: *Prog) -> bool {
     return true;
   }
   return false;
+}
+
+// ---- generic instantiation: bind T, clone the body ----
+
+// a width value's type name (type_width's inverse for the scalars)
+fn width_name(w: i64) -> string {
+  if w == 8 {
+    return "i8";
+  }
+  if w == 16 {
+    return "i16";
+  }
+  if w == 32 {
+    return "i32";
+  }
+  if w == 64 {
+    return "i64";
+  }
+  if w == 0 - 8 {
+    return "u8";
+  }
+  if w == 0 - 16 {
+    return "u16";
+  }
+  if w == 0 - 32 {
+    return "u32";
+  }
+  if w == 0 - 64 {
+    return "u64";
+  }
+  return "i64";
+}
+
+// a type text's identifier-safe spelling for wasm names
+fn mangle_type(t: string) -> string {
+  if len(t) >= 1 && t[0] == 42 {
+    return "p" + mangle_type(t[1..len(t)]);
+  }
+  if len(t) >= 2 && t[0] == 91 && t[1] == 93 {
+    return "s" + mangle_type(t[2..len(t)]);
+  }
+  if len(t) >= 1 && t[0] == 63 {
+    return "o" + mangle_type(t[1..len(t)]);
+  }
+  return t;
+}
+
+fn is_tparam(t: string, tps: []string) -> bool {
+  let mut k: usize = 0;
+  while k < len(tps) {
+    if tps[k] == t {
+      return true;
+    }
+    k = k + 1;
+  }
+  return false;
+}
+
+fn tsub_type(t: string, tps: []string, tys: []string) -> string {
+  if is_tparam(t, tps) {
+    let mut k: usize = 0;
+    while k < len(tps) {
+      if tps[k] == t {
+        if k < len(tys) {
+          return tys[k];
+        }
+      }
+      k = k + 1;
+    }
+  }
+  return t;
+}
+
+// an expression's canonical type (best effort, exactly what binding
+// T needs): the scalar names, string, bool, the float kinds, pointers
+// as *T, enums by name, calls by their written return
+fn expr_type(e: *Expr, env: *Env, prog: *Prog) -> string {
+  if e.tag == parse.EX_STR {
+    return "string";
+  }
+  if e.tag == parse.EX_FLIT {
+    return "f64";
+  }
+  if e.tag == parse.EX_LIT {
+    if e.name == "true" || e.name == "false" {
+      return "bool";
+    }
+    return "i32";
+  }
+  if e.tag == parse.EX_VAR {
+    if str_static_is(prog, e.name) {
+      return "string";
+    }
+    let vt: string = env_val_of(env, e.name);
+    if len(vt) > 0 {
+      return vt;
+    }
+    let pt: string = env_ptr_of(env, e.name);
+    if len(pt) > 0 {
+      return "*" + pt;
+    }
+    let en2: string = env_enum_of(env, e.name);
+    if len(en2) > 0 {
+      return en2;
+    }
+    let sk: i64 = env_kind_of(env, e.name);
+    if sk == 1 {
+      return "string";
+    }
+    if env_fkind_of(env, e.name) == 1 {
+      return "f64";
+    }
+    if env_fkind_of(env, e.name) == 2 {
+      return "f32";
+    }
+    let mut g: usize = 0;
+    while g < prog.nconsts {
+      if prog.consts[g] == e.name {
+        return prog.ctypes[g];
+      }
+      g = g + 1;
+    }
+    return width_name(env_width_of(env, e.name));
+  }
+  if e.tag == parse.EX_BIN && e.op == 11 {
+    return e.name;
+  }
+  if e.tag == parse.EX_NEW {
+    return "*" + e.name;
+  }
+  if e.tag == parse.EX_CALL {
+    return fn_rtype_of(prog, e.name);
+  }
+  if e.tag == parse.EX_BIN {
+    if e.op >= 5 && e.op <= 14 {
+      return "bool";
+    }
+    let mut lt: string = "";
+    match e.lhs {
+      Option.Some(l10) => {
+        lt = expr_type(l10, env, prog);
+      },
+      Option.None => {},
+    }
+    if len(lt) > 0 {
+      return lt;
+    }
+    match e.rhs {
+      Option.Some(r10) => {
+        return expr_type(r10, env, prog);
+      },
+      Option.None => {},
+    }
+  }
+  return "";
+}
+
+// substitute type texts over a verbatim deep clone (the walkers
+// mutate in place; parse owns the constructors)
+fn subst_expr(e: *Expr, tps: []string, tys: []string) -> *Expr {
+  let out = parse.clone_expr(e);
+  subst_in_expr(out, tps, tys);
+  return out;
+}
+
+fn subst_in_expr(e: *Expr, tps: []string, tys: []string) {
+  if e.tag == parse.EX_BIN && e.op == 11 {
+    e.name = tsub_type(e.name, tps, tys);
+  }
+  match e.lhs {
+    Option.Some(l11) => {
+      subst_in_expr(l11, tps, tys);
+    },
+    Option.None => {},
+  }
+  match e.rhs {
+    Option.Some(r11) => {
+      subst_in_expr(r11, tps, tys);
+    },
+    Option.None => {},
+  }
+  let mut k: usize = 0;
+  while k < len(e.args) {
+    subst_in_expr(e.args[k], tps, tys);
+    k = k + 1;
+  }
+  let mut m: usize = 0;
+  while m < len(e.marms) {
+    let arm = e.marms[m];
+    let mut q: usize = 0;
+    while q < len(arm.body) {
+      subst_in_stmt(arm.body[q], tps, tys);
+      q = q + 1;
+    }
+    match arm.val {
+      Option.Some(av) => {
+        subst_in_expr(av, tps, tys);
+      },
+      Option.None => {},
+    }
+    m = m + 1;
+  }
+}
+
+fn subst_stmt(st: *Stmt, tps: []string, tys: []string) -> *Stmt {
+  let out = parse.clone_stmt(st);
+  out.fmt = tsub_type(st.fmt, tps, tys);
+  subst_in_stmt(out, tps, tys);
+  return out;
+}
+
+fn subst_in_stmt(st: *Stmt, tps: []string, tys: []string) {
+  st.fmt = tsub_type(st.fmt, tps, tys);
+  let mut k: usize = 0;
+  while k < len(st.args) {
+    subst_in_expr(st.args[k], tps, tys);
+    k = k + 1;
+  }
+  match st.val {
+    Option.Some(v11) => {
+      subst_in_expr(v11, tps, tys);
+    },
+    Option.None => {},
+  }
+  match st.sub {
+    Option.Some(s11) => {
+      subst_in_stmt(s11, tps, tys);
+    },
+    Option.None => {},
+  }
+  let mut b: usize = 0;
+  while b < len(st.body) {
+    subst_in_stmt(st.body[b], tps, tys);
+    b = b + 1;
+  }
+  let mut b2: usize = 0;
+  while b2 < len(st.body2) {
+    subst_in_stmt(st.body2[b2], tps, tys);
+    b2 = b2 + 1;
+  }
+}
+
+fn fn_def_of(prog: *Prog, name: string) -> *FnDef {
+  let mut i: usize = 0;
+  while i < len(prog.fns) {
+    if prog.fns[i].name == name {
+      return prog.fns[i];
+    }
+    i = i + 1;
+  }
+  return prog.fns[0];
+}
+
+// the wasm callee for a call: a plain user fn emits under its own
+// name; a generic fn instantiates per distinct type binding (the
+// argument types bind T in declaration order) and emits the clone
+fn ginst_call_name(pool: *Pool, prog: *Prog, e: *Expr,
+                   env: *Env) -> string {
+  if !user_fn_exists(prog, e.name) {
+    return "$u_" + sym_name(e.name);
+  }
+  let fd: *FnDef = fn_def_of(prog, e.name);
+  let nt: usize = len(fd.tparams);
+  if nt == 0 {
+    return "$u_" + sym_name(e.name);
+  }
+  // bind each T from the param whose written type names it
+  let tys: []string = make([]string, nt);
+  let mut ti: usize = 0;
+  while ti < nt {
+    let want: string = fd.tparams[ti];
+    let mut pk: usize = 0;
+    let mut got: string = "i64";
+    while pk < len(fd.params) {
+      if pk < len(fd.ptypes) && fd.ptypes[pk] == want &&
+          pk < len(e.args) {
+        let at: string = expr_type(e.args[pk], env, prog);
+        if len(at) > 0 {
+          got = at;
+        }
+      }
+      pk = pk + 1;
+    }
+    tys[ti] = got;
+    ti = ti + 1;
+  }
+  let mut key: string = "";
+  let mut ki: usize = 0;
+  while ki < nt {
+    key = key + "_" + mangle_type(tys[ki]);
+    ki = ki + 1;
+  }
+  let mut i: usize = 0;
+  while i < pool.gi.n {
+    if pool.gi.bases[i] == e.name && pool.gi.keys[i] == key {
+      return "$u_" + sym_name(e.name) + pool.gi.sufs[i];
+    }
+    i = i + 1;
+  }
+  // clone with the binding and enqueue
+  let clone = parse.clone_fndef(fd);
+  clone.name = e.name + key;
+  let npt: usize = len(fd.ptypes);
+  let ntypes: []string = make([]string, npt);
+  let mut pi: usize = 0;
+  while pi < npt {
+    ntypes[pi] = tsub_type(fd.ptypes[pi], fd.tparams, tys);
+    pi = pi + 1;
+  }
+  clone.ptypes = ntypes;
+  clone.rtype = tsub_type(fd.rtype, fd.tparams, tys);
+  clone.tparams = fd.tparams[0..0];
+  let nb2: usize = len(clone.body);
+  let mut ci: usize = 0;
+  while ci < nb2 {
+    subst_in_stmt(clone.body[ci], fd.tparams, tys);
+    ci = ci + 1;
+  }
+  pool.gi.bases[pool.gi.n] = e.name;
+  pool.gi.keys[pool.gi.n] = key;
+  pool.gi.sufs[pool.gi.n] = key;
+  pool.gi.fds[pool.gi.n] = clone;
+  pool.gi.n = pool.gi.n + 1;
+  return "$u_" + sym_name(e.name) + key;
 }
 
 fn emit_print_fd(pool: *Pool, fmt: string, args: []*Expr, env: *Env,
@@ -5402,8 +5746,17 @@ pub fn emit(prog: *Prog) -> string {
   let mut fntext: string = "";
   let mut fi: usize = 0;
   while fi < len(prog.fns) {
-    fntext = fntext + emit_fn(prog.fns[fi], pool, prog);
+    if len(prog.fns[fi].tparams) == 0 {
+      fntext = fntext + emit_fn(prog.fns[fi], pool, prog);
+    }
     fi = fi + 1;
+  }
+  // the generic worklist drains until stable — an instantiation's
+  // body may call more generics, appending as it emits
+  let mut gdone: usize = 0;
+  while gdone < pool.gi.n {
+    fntext = fntext + emit_fn(pool.gi.fds[gdone], pool, prog);
+    gdone = gdone + 1;
   }
   // assemble: header, memory, runtime, _start with the let locals
   let mut out: string = "";

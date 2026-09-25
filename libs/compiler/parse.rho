@@ -100,6 +100,104 @@ fn mk_stmt(tag: i32) -> *Stmt {
                     marms: make([]*MatchArm, 0) };
 }
 
+// verbatim deep clones (other modules rebind type texts over them)
+pub fn clone_expr(e: *Expr) -> *Expr {
+  let out = new Expr { tag: e.tag, lit: e.lit, name: e.name, op: e.op,
+                       lhs: Option.None, rhs: Option.None,
+                       args: make([]*Expr, len(e.args)),
+                       fnames: e.fnames,
+                       marms: make([]*MatchArm, len(e.marms)) };
+  match e.lhs {
+    Option.Some(l12) => {
+      out.lhs = Option.Some(clone_expr(l12));
+    },
+    Option.None => {},
+  }
+  match e.rhs {
+    Option.Some(r12) => {
+      out.rhs = Option.Some(clone_expr(r12));
+    },
+    Option.None => {},
+  }
+  let mut k: usize = 0;
+  while k < len(e.args) {
+    out.args[k] = clone_expr(e.args[k]);
+    k = k + 1;
+  }
+  let mut m: usize = 0;
+  while m < len(e.marms) {
+    let src = e.marms[m];
+    let nab = make([]*Stmt, len(src.body));
+    let mut q: usize = 0;
+    while q < len(src.body) {
+      nab[q] = clone_stmt(src.body[q]);
+      q = q + 1;
+    }
+    let arm = new MatchArm { pat: src.pat, body: nab,
+                             val: src.val };
+    match src.val {
+      Option.Some(v13) => {
+        arm.val = Option.Some(clone_expr(v13));
+      },
+      Option.None => {},
+    }
+    out.marms[m] = arm;
+    m = m + 1;
+  }
+  return out;
+}
+
+pub fn clone_stmt(st: *Stmt) -> *Stmt {
+  let out = new Stmt { tag: st.tag, fmt: st.fmt,
+                       args: make([]*Expr, len(st.args)),
+                       name: st.name, val: Option.None, ret: st.ret,
+                       body: make([]*Stmt, len(st.body)),
+                       body2: make([]*Stmt, len(st.body2)),
+                       sub: st.sub, path: st.path,
+                       marms: st.marms };
+  let mut k: usize = 0;
+  while k < len(st.args) {
+    out.args[k] = clone_expr(st.args[k]);
+    k = k + 1;
+  }
+  match st.val {
+    Option.Some(v12) => {
+      out.val = Option.Some(clone_expr(v12));
+    },
+    Option.None => {},
+  }
+  match st.sub {
+    Option.Some(s12) => {
+      out.sub = Option.Some(clone_stmt(s12));
+    },
+    Option.None => {},
+  }
+  let mut b: usize = 0;
+  while b < len(st.body) {
+    out.body[b] = clone_stmt(st.body[b]);
+    b = b + 1;
+  }
+  let mut b2: usize = 0;
+  while b2 < len(st.body2) {
+    out.body2[b2] = clone_stmt(st.body2[b2]);
+    b2 = b2 + 1;
+  }
+  return out;
+}
+
+pub fn clone_fndef(fd: *FnDef) -> *FnDef {
+  let nbody: []*Stmt = make([]*Stmt, len(fd.body));
+  let mut bi: usize = 0;
+  while bi < len(fd.body) {
+    nbody[bi] = clone_stmt(fd.body[bi]);
+    bi = bi + 1;
+  }
+  return new FnDef { name: fd.name, params: fd.params,
+                     pstr: fd.pstr, pslc: fd.pslc,
+                     ptypes: fd.ptypes, rtype: fd.rtype,
+                     tparams: fd.tparams, body: nbody };
+}
+
 pub fn lit(v: i64) -> *Expr {
   return new Expr { tag: EX_LIT, lit: v, name: "", op: 0,
                      lhs: Option.None, rhs: Option.None ,
@@ -216,6 +314,7 @@ pub struct FnDef {
   pslc: []bool, // true where that pair is a slice (vs a string)
   ptypes: []string, // each param's written type ("" when absent)
   rtype: string,    // the written return type ("" when absent)
+  tparams: []string, // the [T]/[T: Bound] type parameters (names only)
   body: []*Stmt,
 }
 
@@ -1782,6 +1881,43 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
         }
         continue;
       }
+      // fn name[T] / [T: Bound] — the type parameters (bounds ride
+      // unparsed; trait satisfaction is boot's checker surface)
+      let tparams: []string = make([]string, 4);
+      let mut ntp: usize = 0;
+      if is_punct(tk(c), 91) {
+        tkadv(c); // [
+        while tk(c).kind != lex.TK_EOF && !is_punct(tk(c), 93) {
+          let tt = tk(c);
+          if tt.kind == lex.TK_IDENT || tt.kind == lex.TK_KEYWORD {
+            if ntp < 4 {
+              tparams[ntp] = tt.text;
+              ntp = ntp + 1;
+            }
+            tkadv(c);
+            while eat_punct(c, 58) {
+              let bt0 = tk(c);
+              if bt0.kind == lex.TK_IDENT ||
+                  bt0.kind == lex.TK_KEYWORD {
+                tkadv(c);
+              }
+              while eat_punct(c, 43) {
+                let bt1 = tk(c);
+                if bt1.kind == lex.TK_IDENT ||
+                    bt1.kind == lex.TK_KEYWORD {
+                  tkadv(c);
+                }
+              }
+            }
+          } else {
+            tkadv(c);
+          }
+          if !eat_punct(c, 44) {
+            eat_punct(c, 93);
+            break;
+          }
+        }
+      }
       // a user fn: params, arrow, body
       let pstr: []bool = make([]bool, 8);
       let pslc: []bool = make([]bool, 8);
@@ -1806,7 +1942,9 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
                            pstr: pstr[0..len(params)],
                            pslc: pslc[0..len(params)],
                            ptypes: ptypes[0..len(params)],
-                           rtype: rtype, body: body };
+                           rtype: rtype,
+                           tparams: tparams[0..ntp],
+                           body: body };
       if nf == len(fns) {
         // the fn table grows on demand (the float cluster alone rides
         // 19 fns through this parser)
