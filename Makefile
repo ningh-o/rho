@@ -17,6 +17,8 @@ selftest: $(BIN)
 	./$(BIN) selftest
 
 test: selftest
+	./tests/run-check-tests.sh
+	./tests/run-emit-tests.sh
 
 clean:
 	rm -rf build
