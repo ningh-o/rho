@@ -938,7 +938,8 @@ fn loops_cont(l: *Loops, name: string) -> string {
 
 fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
                next_local: *NextLocal, in_fn: bool, ret_slot: i64,
-               prog: *Prog, loops: *Loops, dstack: *DStack) -> string {
+               prog: *Prog, loops: *Loops, dstack: *DStack,
+               tfd: ?*FnDef) -> string {
   dpush(dstack);
   let mut body: string = "";
   let mut i: usize = 0;
@@ -946,19 +947,68 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
     let st = nodes[i];
     if st.tag == parse.ST_RET && in_fn {
       // a fn's return: the value parks in $r while the open scopes'
-      // defers unwind (LIFO), then rides home
-      match st.val {
-        Option.Some(rv) => {
-          body = body + emit_expr(pool, rv, env, prog);
-          body = body + "    (local.set $r)\n";
-          body = body + dunwind_emit(dstack);
-          body = body + "    (local.get $r)\n";
-          body = body + "    return\n";
+      // defers unwind (LIFO), then rides home — unless the value is a
+      // direct self tail call, which becomes the loop rewrite (args
+      // land in the param slots, br re-enters the fn-top loop)
+      let mut is_tail: bool = false;
+      match tfd {
+        Option.Some(fdef) => {
+          match st.val {
+            Option.Some(rv) => {
+              if rv.tag == parse.EX_CALL && rv.name == fdef.name {
+                is_tail = true;
+              }
+            },
+            Option.None => {},
+          }
         },
-        Option.None => {
-          body = body + dunwind_emit(dstack);
-          body = body + "    (i64.const 0)\n";
-        },
+        Option.None => {},
+      }
+      if is_tail {
+        match st.val {
+          Option.Some(rv) => {
+            let mut k: usize = 0;
+            while k < len(rv.args) {
+              body = body + emit_arg(pool, rv.args[k], env, prog);
+              k = k + 1;
+            }
+            // pop into the param slots, last arg first (a pair param
+            // takes two consecutive sets)
+            match tfd {
+              Option.Some(fdef) => {
+                let mut j: usize = len(fdef.params);
+                while j > 0 {
+                  let q: i64 = (j as i64) - 1;
+                  if j - 1 < len(fdef.pstr) && fdef.pstr[j - 1] {
+                    body = body + "    (local.set " + (q + 1).to_str() +
+                           ")\n";
+                    body = body + "    (local.set " + q.to_str() + ")\n";
+                  } else {
+                    body = body + "    (local.set " + q.to_str() + ")\n";
+                  }
+                  j = j - 1;
+                }
+              },
+              Option.None => {},
+            }
+            body = body + "    (br $t)\n";
+          },
+          Option.None => {},
+        }
+      } else {
+        match st.val {
+          Option.Some(rv) => {
+            body = body + emit_expr(pool, rv, env, prog);
+            body = body + "    (local.set $r)\n";
+            body = body + dunwind_emit(dstack);
+            body = body + "    (local.get $r)\n";
+            body = body + "    return\n";
+          },
+          Option.None => {
+            body = body + dunwind_emit(dstack);
+            body = body + "    (i64.const 0)\n";
+          },
+        }
       }
     }
     if st.tag == parse.ST_RET && !in_fn {
@@ -1223,11 +1273,11 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
           // flat if: the condition's stack code precedes the keyword
           body = body + emit_expr(pool, cond, env, prog);
           body = body + "    (i32.wrap_i64)\n    if\n";
-          body = body + emit_stmts(st.body, pool, env, next_local, in_fn, ret_slot, prog, loops, dstack);
+          body = body + emit_stmts(st.body, pool, env, next_local, in_fn, ret_slot, prog, loops, dstack, tfd);
           if len(st.body2) > 0 {
             body = body + "    else\n";
             body = body + emit_stmts(st.body2, pool, env, next_local,
- in_fn, ret_slot, prog, loops, dstack);
+ in_fn, ret_slot, prog, loops, dstack, tfd);
           }
           body = body + "    end\n";
         },
@@ -1240,7 +1290,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
           let one: []*Stmt = make([]*Stmt, 1);
           one[0] = inner;
           dstack.texts[dstack.cursor] = emit_stmts(one, pool, env,
-              next_local, in_fn, ret_slot, prog, loops, dstack);
+              next_local, in_fn, ret_slot, prog, loops, dstack, tfd);
           dstack.cursor = dstack.cursor + 1;
         },
         Option.None => {},
@@ -1261,7 +1311,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
       loops_push_with(loops, st.name, bk, w);
       body = body + "    (block " + bk + "\n";
       body = body + "    (loop " + w + "\n";
-      body = body + emit_stmts(st.body, pool, env, next_local, in_fn, ret_slot, prog, loops, dstack);
+      body = body + emit_stmts(st.body, pool, env, next_local, in_fn, ret_slot, prog, loops, dstack, tfd);
       body = body + "      (br " + w + ")\n";
       body = body + "    )\n";
       body = body + "    )\n";
@@ -1278,7 +1328,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
           body = body + "    (loop " + w + "\n";
           body = body + emit_expr(pool, cond, env, prog);
           body = body + "    (i32.wrap_i64)\n    if\n";
-          body = body + emit_stmts(st.body, pool, env, next_local, in_fn, ret_slot, prog, loops, dstack);
+          body = body + emit_stmts(st.body, pool, env, next_local, in_fn, ret_slot, prog, loops, dstack, tfd);
           body = body + "      (br " + w + ")\n";
           body = body + "    end\n";
           body = body + "    )\n";
@@ -1350,7 +1400,8 @@ fn emit_fn(fd: *FnDef, pool: *Pool, prog: *Prog) -> string {
   let loops = loops_new();
   let dstack = dstack_new();
   let body: string = emit_stmts(fd.body, pool, env, next_local, true,
-                                0 - 1, prog, loops, dstack);
+                                0 - 1, prog, loops, dstack,
+                                Option.Some(fd));
   let mut out: string = "  (func $u_" + fd.name;
   // signature: every param slot is an i64 (a string param is a pair)
   let np: i64 = capture_at_after(fd);
@@ -1367,8 +1418,9 @@ fn emit_fn(fd: *FnDef, pool: *Pool, prog: *Prog) -> string {
     out = out + "    (local i64)\n";
     q = q + 1;
   }
+  out = out + "    (loop $t (result i64)\n";
   out = out + body;
-  out = out + "    (i64.const 0)\n  )\n";
+  out = out + "    (i64.const 0)\n    )\n  )\n";
   return out;
 }
 
@@ -1379,7 +1431,8 @@ pub fn emit(prog: *Prog) -> string {
   let loops = loops_new();
   let dstack = dstack_new();
   let body: string = emit_stmts(prog.main, pool, env, next_local, false,
-                                2, prog, loops, dstack); // slot 2: exit
+                                2, prog, loops, dstack,
+                                Option.None); // slot 2: exit
   let next_local_n: i64 = next_local.v;
   let mut fntext: string = "";
   let mut fi: usize = 0;
