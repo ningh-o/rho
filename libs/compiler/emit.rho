@@ -1750,7 +1750,7 @@ fn build_string_pair(e: *Expr, pool: *Pool, env: *Env, prog: *Prog,
 // assert_eq(a, b): same-type equality, refusal panics — strings
 // compare content, ints/bools compare values
 fn emit_assert_eq(pool: *Pool, call: *Expr, env: *Env,
-                  prog: *Prog) -> string {
+                  prog: *Prog, next_local: *NextLocal) -> string {
   let mut a: *Expr = parse.lit(0);
   let mut b: *Expr = parse.lit(0);
   if len(call.args) > 0 {
@@ -1760,11 +1760,17 @@ fn emit_assert_eq(pool: *Pool, call: *Expr, env: *Env,
     b = call.args[1];
   }
   let mut out: string = "";
-  let a_str: bool = is_stringy(a, env);
-  let b_str: bool = is_stringy(b, env);
-  if a_str && b_str {
-    out = out + push_string(pool, a, env);
-    out = out + push_string(pool, b, env);
+  // any string-buildable operands (literals, vars, slices, concats,
+  // format calls) compare content-wise
+  let pa = build_string_pair(a, pool, env, prog, next_local);
+  let pb = build_string_pair(b, pool, env, prog, next_local);
+  if pa.ok && pb.ok {
+    out = out + pa.text;
+    out = out + "    (local.get " + pa.a.to_str() + ")\n" +
+           "    (local.get " + pa.l.to_str() + ")\n";
+    out = out + pb.text;
+    out = out + "    (local.get " + pb.a.to_str() + ")\n" +
+           "    (local.get " + pb.l.to_str() + ")\n";
     out = out + "    call $w_streq\n";
     out = out + "    (i32.wrap_i64)\n";
   } else {
@@ -2258,7 +2264,8 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
           } else {
           if e.tag == parse.EX_CALL && e.name == "assert_eq" &&
               !user_fn_exists(prog, "assert_eq") {
-            body = body + emit_assert_eq(pool, e, env, prog);
+            body = body + emit_assert_eq(pool, e, env, prog,
+                                         next_local);
           } else {
             body = body + emit_expr(pool, e, env, prog);
             body = body + "    drop\n";
