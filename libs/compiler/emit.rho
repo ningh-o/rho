@@ -4241,6 +4241,16 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
                   }
                 },
                 Option.None => {
+                  if e.tag == parse.EX_VAR &&
+                      env_kind_of(env, e.name) >= 0 {
+                    // a let over another string/slice name SHARES its
+                    // binding — a slice copy is the same fat view, and
+                    // a string copy the same live pair
+                    env_str_bind_runtime(env, st.name,
+                        (0 - env_str_look(env, e.name)) - 1,
+                        env_str_len_slot(env, e.name),
+                        env_kind_of(env, e.name));
+                  } else {
                   if e.tag == parse.EX_ARR {
                     let aa: i64 = nl.v;
                     let al: i64 = nl.v + 1;
@@ -4423,6 +4433,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
                       env_bool_bind(env, st.name);
                     }
                     nl.v = nl.v + 1;
+                  }
                   }
                   }
                   }
