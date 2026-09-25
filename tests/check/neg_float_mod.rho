@@ -1,0 +1,5 @@
+// expect: % needs integers
+fn main() -> i32 {
+  let x: f64 = 1.5 % 0.5;
+  return 0;
+}

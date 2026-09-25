@@ -1,0 +1,17 @@
+// exit: 7
+fn main() -> i32 {
+  let a: f64 = 2.5;
+  let b: f64 = 4.0;
+  let mut r: i32 = 0;
+  if a * b == 10.0 {
+    r += 1;
+  }
+  if b / a == 1.6 {
+    r += 2;
+  }
+  let c: f32 = 1.5;
+  if c as f64 + a == 4.0 {
+    r += 4;
+  }
+  return r;
+}

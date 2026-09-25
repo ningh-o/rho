@@ -1,0 +1,6 @@
+// expect: intrinsics.f64_bits takes f64
+fn main() -> i32 {
+  let n: i32 = 7;
+  let b: u64 = intrinsics.f64_bits(n);
+  return 0;
+}

@@ -33,3 +33,349 @@ pub fn panic(msg: string) {}
 pub fn assert(cond: bool, msg: string) {}
 
 pub fn exit(code: i32) {}
+
+// ------------------------------------------------------------ floats
+//
+// Exact decimal text for f32/f64 (the to_str family, kernel-private):
+// the value is m·2^e; a base-1e9 limb vector expands it exactly
+// (multiplying by 5^-e when e<0, so the value is N/10^sc in integers),
+// then rounds half-to-even to the round-trip digit count (17 f64,
+// 9 f32) and prints positionally or scientifically. Pure integer
+// arithmetic — the only bit access is the intrinsics window (§2).
+
+struct Dec {
+  limbs: []u32,
+  used: usize,
+}
+
+fn dec_new() -> *Dec {
+  return new Dec { limbs: make([]u32, 96), used: 1 };
+}
+
+fn dec_trim(d: *Dec) {
+  while d.used > 1 && d.limbs[d.used - 1] == 0 {
+    d.used = d.used - 1;
+  }
+  return;
+}
+
+fn dec_set(d: *Dec, v: u64) {
+  d.limbs[0] = (v % 1000000000) as u32;
+  d.limbs[1] = ((v / 1000000000) % 1000000000) as u32;
+  d.limbs[2] = (v / 1000000000000000000) as u32;
+  d.used = 3;
+  dec_trim(d);
+  return;
+}
+
+fn dec_mul_small(d: *Dec, m: u32) {
+  let mut carry: u64 = 0;
+  let mut i: usize = 0;
+  while i < d.used {
+    let cur: u64 = (d.limbs[i] as u64) * (m as u64) + carry;
+    d.limbs[i] = (cur % 1000000000) as u32;
+    carry = cur / 1000000000;
+    i = i + 1;
+  }
+  while carry > 0 {
+    d.limbs[d.used] = (carry % 1000000000) as u32;
+    carry = carry / 1000000000;
+    d.used = d.used + 1;
+  }
+  return;
+}
+
+fn dec_to_u64(d: *Dec) -> u64 {
+  let mut v: u64 = 0;
+  let mut i: usize = d.used;
+  while i > 0 {
+    i = i - 1;
+    v = v * 1000000000 + (d.limbs[i] as u64);
+  }
+  return v;
+}
+
+fn dec_bump(d: *Dec) {
+  let mut i: usize = 0;
+  loop {
+    if i >= d.used {
+      d.limbs[i] = 1;
+      d.used = d.used + 1;
+      return;
+    }
+    if d.limbs[i] + 1 < 1000000000 {
+      d.limbs[i] = d.limbs[i] + 1;
+      return;
+    }
+    d.limbs[i] = 0;
+    i = i + 1;
+  }
+}
+
+fn dec_cmp(a: *Dec, b: *Dec) -> i32 {
+  if a.used != b.used {
+    if a.used < b.used {
+      return -1;
+    }
+    return 1;
+  }
+  let mut i: usize = a.used;
+  while i > 0 {
+    i = i - 1;
+    if a.limbs[i] != b.limbs[i] {
+      if a.limbs[i] < b.limbs[i] {
+        return -1;
+      }
+      return 1;
+    }
+  }
+  return 0;
+}
+
+fn pow10_u64(r: usize) -> u64 {
+  let mut v: u64 = 1;
+  let mut i: usize = 0;
+  while i < r {
+    v = v * 10;
+    i = i + 1;
+  }
+  return v;
+}
+
+fn pow2_small(k: i32) -> u32 {
+  let mut v: u32 = 1;
+  let mut i: i32 = 0;
+  while i < k {
+    v = v * 2;
+    i = i + 1;
+  }
+  return v;
+}
+
+fn pow5_small(k: i32) -> u32 {
+  let mut v: u32 = 1;
+  let mut i: i32 = 0;
+  while i < k {
+    v = v * 5;
+    i = i + 1;
+  }
+  return v;
+}
+
+fn dec_top_digits(d: *Dec) -> i32 {
+  let mut x: u32 = d.limbs[d.used - 1];
+  let mut n: i32 = 1;
+  while x >= 10 {
+    x = x / 10;
+    n = n + 1;
+  }
+  return n;
+}
+
+// 5·10^(cut-1): half of the divisor 10^cut
+fn dec_half_of(cut: usize) -> *Dec {
+  let h: *Dec = dec_new();
+  let pos: usize = cut - 1;
+  let l: usize = pos / 9;
+  let r: usize = pos % 9;
+  h.limbs[l] = (5 * pow10_u64(r)) as u32;
+  h.used = l + 1;
+  return h;
+}
+
+// q = d div 10^cut (returned); d keeps d mod 10^cut
+fn dec_split(d: *Dec, cut: usize) -> *Dec {
+  let l: usize = cut / 9;
+  let r: usize = cut % 9;
+  let q: *Dec = dec_new();
+  if d.used <= l {
+    return q;
+  }
+  let qn: usize = d.used - l;
+  let p: u64 = pow10_u64(r);
+  let mut rem: u64 = 0;
+  let mut i: usize = qn;
+  while i > 0 {
+    i = i - 1;
+    let cur: u64 = rem * 1000000000 + (d.limbs[l + i] as u64);
+    q.limbs[i] = (cur / p) as u32;
+    rem = cur % p;
+  }
+  q.used = qn;
+  dec_trim(q);
+  if r > 0 {
+    d.limbs[l] = rem as u32;
+    d.used = l + 1;
+  } else {
+    d.used = l;
+  }
+  if d.used == 0 {
+    d.limbs[0] = 0;
+    d.used = 1;
+  }
+  dec_trim(d);
+  return q;
+}
+
+fn drop_zeros(s: string) -> string {
+  let mut k: usize = len(s);
+  while k > 0 && s[k - 1] == 48 {
+    k = k - 1;
+  }
+  return s[0..k];
+}
+
+fn signed(neg: bool, body: string) -> string {
+  if neg {
+    return "-" + body;
+  }
+  return body;
+}
+
+fn dec_text(x: f64, prec: i32) -> string {
+  let bits: u64 = intrinsics.f64_bits(x);
+  // NaN prints canonically unsigned (its sign bit is hardware-defined)
+  let neg: bool = (bits >> 63) == 1;
+  let mag: u64 = bits & 9223372036854775807;
+  let biased: u64 = (mag >> 52) & 2047;
+  if biased == 2047 {
+    if (mag & 4503599627370495) == 0 {
+      return signed(neg, "inf");
+    }
+    return "nan";
+  }
+  if (mag << 1) == 0 {
+    return signed(neg, "0.0");
+  }
+  let mut m: u64 = 0;
+  let mut e: i64 = 0;
+  if biased == 0 {
+    m = mag & 4503599627370495;
+    e = -1074;
+  } else {
+    m = (mag & 4503599627370495) | 4503599627370496;
+    e = (biased as i64) - 1075;
+  }
+  // exact digits: x == N / 10^sc
+  let d: *Dec = dec_new();
+  dec_set(d, m);
+  let mut sc: i64 = 0;
+  if e >= 0 {
+    let mut k: i64 = e;
+    while k >= 29 {
+      dec_mul_small(d, 536870912);
+      k = k - 29;
+    }
+    if k > 0 {
+      dec_mul_small(d, pow2_small(k as i32));
+    }
+  } else {
+    let mut k: i64 = -e;
+    while k >= 12 {
+      dec_mul_small(d, 244140625);
+      sc = sc + 12;
+      k = k - 12;
+    }
+    if k > 0 {
+      dec_mul_small(d, pow5_small(k as i32));
+      sc = sc + k;
+    }
+  }
+  // n: x == 0.<digits> × 10^n; keep prec significant digits
+  let topd: i32 = dec_top_digits(d);
+  let mut n: i64 = ((d.used as i64) - 1) * 9 + (topd as i64) - sc;
+  let cut: i64 = sc + n - (prec as i64);
+  let mut qv: u64 = 0;
+  if cut > 0 {
+    let q: *Dec = dec_split(d, cut as usize);
+    let c: i32 = dec_cmp(d, dec_half_of(cut as usize));
+    if c > 0 || (c == 0 && (q.limbs[0] & 1) == 1) {
+      dec_bump(q);
+    }
+    qv = dec_to_u64(q);
+  } else {
+    if cut == 0 {
+      qv = dec_to_u64(d);
+    } else {
+      let mut k: i64 = -cut;
+      while k >= 9 {
+        dec_mul_small(d, 1000000000);
+        k = k - 9;
+      }
+      if k > 0 {
+        dec_mul_small(d, pow10_u64(k as usize) as u32);
+      }
+      qv = dec_to_u64(d);
+    }
+  }
+  let mut ds: string = format("{}", qv);
+  if qv >= pow10_u64(prec as usize) {
+    // carry: 99…9.7 rounded up grew a digit
+    qv = qv / 10;
+    n = n + 1;
+    ds = format("{}", qv);
+  }
+  let e10: i64 = n - 1;
+  if e10 >= -4 && e10 < (prec as i64) {
+    if e10 >= 0 {
+      let ip: usize = (e10 as usize) + 1;
+      let frac: string = drop_zeros(ds[ip..prec as usize]);
+      if len(frac) == 0 {
+        return signed(neg, ds[0..ip]);
+      }
+      return signed(neg, ds[0..ip] + "." + frac);
+    }
+    let all: string = drop_zeros(ds);
+    if len(all) == 0 {
+      return signed(neg, "0");
+    }
+    let mut pre: string = "0.";
+    let mut j: i64 = (-e10) - 1;
+    while j > 0 {
+      pre = pre + "0";
+      j = j - 1;
+    }
+    return signed(neg, pre + all);
+  }
+  let mut out: string = ds[0..1];
+  let frac: string = drop_zeros(ds[1..prec as usize]);
+  if len(frac) > 0 {
+    out = out + "." + frac;
+  }
+  let mut ae: i64 = e10;
+  if ae < 0 {
+    ae = -ae;
+  }
+  let mut es: string = format("{}", ae);
+  if ae < 10 {
+    es = "0" + es;
+  }
+  if e10 < 0 {
+    return signed(neg, out + "e-" + es);
+  }
+  return signed(neg, out + "e+" + es);
+}
+
+// integral floats keep a visible fraction ("4" reads as "4.0")
+fn with_frac(s: string) -> string {
+  if s == "inf" || s == "nan" || s == "-inf" {
+    return s;
+  }
+  let mut i: usize = 0;
+  while i < len(s) {
+    if s[i] == 46 || s[i] == 101 {
+      return s;
+    }
+    i = i + 1;
+  }
+  return s + ".0";
+}
+
+fn __f64_text(x: f64) -> string {
+  return with_frac(dec_text(x, 17));
+}
+
+fn __f32_text(x: f32) -> string {
+  // f32 values are exact in f64; 9 significant digits round-trip f32
+  return with_frac(dec_text(x as f64, 9));
+}

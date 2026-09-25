@@ -1,0 +1,47 @@
+// exact decimal float text: printf/format ride the prelude to_str
+// family (17 significant digits f64, 9 f32, half-to-even, positional
+// vs scientific by exponent, integral values keep ".0")
+// out: 1.5 0.25 100.0
+// out: -0.5 10000000000.0 -9.9999999999999995e-08 0.0
+// out: 0.33333333333333331
+// out: 0.10000000000000001
+// out: 2.5|0.001|123456.789
+// out: 1.0000000000000001e+300
+// out: 4.9406564584124654e-324
+// out: -2.75 100000.0 5.0000000000000004e-06
+// out: -0.0
+// out: inf -inf nan
+// out: x=1.5 y=-0.5
+// out: f32: 0.100000001 1.5 -0.25 3.14159012 1e+10
+// out: bits=4602678819172646912
+fn main() -> i32 {
+  printf("{} {} {}\n", 1.5, 0.25, 100.0);
+  printf("{} {} {} {}\n", -0.5, 1e10, -1e-7, 0.0);
+  let third: f64 = 1.0 / 3.0;
+  printf("{}\n", third);
+  let tenth: f64 = 0.1;
+  printf("{}\n", tenth);
+  let s: string = format("{}|{}|{}", 2.5, 0.001, 123456.789);
+  printf("{}\n", s);
+  printf("{}\n", 1e300);
+  printf("{}\n", 5e-324);
+  printf("{} {} {}\n", -2.75, 100000.0, 0.5e-5);
+  let nz: f64 = -0.0;
+  printf("{}\n", nz);
+  let inf: f64 = 1.0 / 0.0;
+  let ninf: f64 = -1.0 / 0.0;
+  let nan: f64 = 0.0 / 0.0;
+  printf("{} {} {}\n", inf, ninf, nan);
+  let x: f64 = 1.5;
+  let y: f64 = -0.5;
+  printf("x={} y={}\n", x, y);
+  let a: f32 = 0.1;
+  let b: f32 = 1.5;
+  let c: f32 = -0.25;
+  let d: f32 = 3.14159;
+  let e: f32 = 1e10;
+  printf("f32: {} {} {} {} {}\n", a, b, c, d, e);
+  let bits: u64 = intrinsics.f64_bits(0.5);
+  printf("bits={}\n", bits);
+  return 0;
+}

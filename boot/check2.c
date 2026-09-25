@@ -136,10 +136,11 @@ static bool lookup(FnCtx *c, const char *name, Look *out) {
       return true;
     }
   }
-  // prelude last
+  // prelude last — only its PUBLIC names are the prelude (§14);
+  // private helpers stay invisible to programs
   if (g_prelude_mod) {
     Sym *ps = symtab_get(g_prelude_mod->syms, name);
-    if (ps) {
+    if (ps && ps->pub) {
       switch (ps->kind) {
       case SYM_FN:
         out->kind = LOOK_FN;
@@ -750,6 +751,30 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
     err_at(c, m, "weak.from takes exactly one pointer");
     return ty_unit;
   }
+  // intrinsics.*: the unsafe window (spec §2). f64_bits is the float
+  // formatter's only bit access; the namespace never resolves as a
+  // module, so a user module named `intrinsics` wins
+  if (recv0->kind == NT_PATH && strcmp(recv0->name, "intrinsics") == 0 &&
+      !lookup(c, "intrinsics", &((Look){0}))) {
+    if (strcmp(m->name, "f64_bits") == 0) {
+      if (reflist_len(m->list) == 1 &&
+          node_get(reflist_at(m->list, 0))->kind == NT_POSARG) {
+        Type *pt = check_expr(c, node_get(reflist_at(m->list, 0))->a,
+                              ty_f64);
+        if (pt->kind != TY_F64) {
+          err_at(c, m, "intrinsics.f64_bits takes f64, got %s",
+                 type_name(pt));
+          return ty_unit;
+        }
+        node_get(er)->op = 4; // intrinsic marker for the emitter
+        return ty_u64;
+      }
+      err_at(c, m, "intrinsics.f64_bits takes exactly one f64");
+      return ty_unit;
+    }
+    err_at(c, m, "unknown intrinsic '%s'", m->name);
+    return ty_unit;
+  }
   // Enum.Variant construction and module calls: recv is a bare name
   // that resolves to an enum or a use binding — checked before the
   // recv is typed as an expression
@@ -1193,6 +1218,11 @@ static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
     default: {
       if (op == OP_ADD && lt->kind == TY_STRING)
         return ty_string; // + concatenates strings
+      if (op == OP_MOD && type_is_float(lt)) {
+        err_at(c, e, "%% needs integers (floats are IEEE: no remainder "
+               "op, §11)");
+        return lt;
+      }
       if (!(op == OP_BAND || op == OP_BOR || op == OP_BXOR ||
             op == OP_SHL || op == OP_SHR)) {
         if (!type_is_num(lt))

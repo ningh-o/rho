@@ -1,0 +1,5 @@
+// expect: unknown intrinsic
+fn main() -> i32 {
+  let b: u64 = intrinsics.frob(1.5);
+  return 0;
+}

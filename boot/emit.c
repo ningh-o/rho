@@ -500,6 +500,12 @@ static void truncate_after(FnCx *cx, Type *t, size_t v) {
 // panic per spec §4)
 __attribute__((unused)) static void emit_div(FnCx *cx, int opkind, Type *t, size_t out, size_t a,
                      size_t b) {
+  if (type_is_float(t)) {
+    // IEEE: /0.0 = inf, no panic path for floats (§11)
+    op(cx, "(local.set %zu (%s.div (local.get %zu) (local.get %zu)))\n",
+       out, t->kind == TY_F32 ? "f32" : "f64", a, b);
+    return;
+  }
   bool is64 = scalar_wty(t) == W_I64;
   const char *w = is64 ? "i64" : "i32";
   bool uns = t->kind >= TY_U8;
@@ -612,16 +618,32 @@ static void emit_const_to(FnCx *cx, Node *e, Type *t, size_t dst) {
     break;
   }
   case TY_F32: {
-    double dv = e->kind == NT_FLOAT  ? e->fval
-                : e->kind == NT_UNARY ? -(double)(int64_t)node_get(e->a)->ival
-                                      : (double)(int64_t)e->ival;
+    double dv = 0;
+    if (e->kind == NT_FLOAT)
+      dv = e->fval;
+    else if (e->kind == NT_UNARY) {
+      // -literal: the operand's value lives in fval for floats,
+      // ival for ints (reading ival of a float node yields -0.0)
+      Node *op0 = node_get(e->a);
+      dv = op0->kind == NT_FLOAT ? -op0->fval
+           : op0->kind == NT_INT ? -(double)(int64_t)op0->ival
+                                 : 0.0;
+    } else
+      dv = (double)(int64_t)e->ival;
     op(cx, "(local.set %zu (f32.const %.9g))\n", dst, dv);
     break;
   }
   case TY_F64: {
-    double dv = e->kind == NT_FLOAT  ? e->fval
-                : e->kind == NT_UNARY ? -(double)(int64_t)node_get(e->a)->ival
-                                      : (double)(int64_t)e->ival;
+    double dv = 0;
+    if (e->kind == NT_FLOAT)
+      dv = e->fval;
+    else if (e->kind == NT_UNARY) {
+      Node *op0 = node_get(e->a);
+      dv = op0->kind == NT_FLOAT ? -op0->fval
+           : op0->kind == NT_INT ? -(double)(int64_t)op0->ival
+                                 : 0.0;
+    } else
+      dv = (double)(int64_t)e->ival;
     op(cx, "(local.set %zu (f64.const %.17g))\n", dst, dv);
     break;
   }
@@ -1384,6 +1406,22 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
           emit_expr(cx, aw->a, pv);
         op(cx, "(local.set %zu (call $rho_weak_from %s))\n", dst,
            L(cx, pv));
+        return;
+      }
+    }
+    // intrinsics.f64_bits: reinterpret (the unsafe window, spec §2)
+    {
+      Node *recvi = node_get(e->a);
+      if (recvi->kind == NT_PATH &&
+          strcmp(recvi->name, "intrinsics") == 0 && e->op == 4) {
+        Node *aw = reflist_len(e->list)
+                       ? node_get(reflist_at(e->list, 0))
+                       : NULL;
+        size_t fv = cx_fresh(cx, ty_f64);
+        if (aw && aw->kind == NT_POSARG)
+          emit_expr(cx, aw->a, fv);
+        op(cx, "(local.set %zu (i64.reinterpret_f64 %s))\n", dst,
+           L(cx, fv));
         return;
       }
     }
@@ -2154,6 +2192,19 @@ static void emit_format_build(FnCx *cx, Node *call) {
   for (size_t i = 0; i < nvals; i++) {
     Node *aw = node_get(reflist_at(call->list, i + 1));
     Type *at = (Type *)node_get(aw->a)->sem;
+    if (at->kind == TY_F32 || at->kind == TY_F64) {
+      // floats print via the prelude's exact-decimal text fn — the
+      // call lands here in phase 1, so the nested format inside it
+      // finishes before the outer reset (two-phase law)
+      valregs[i] = cx_fresh(cx, ty_string);
+      size_t fv = cx_fresh(cx, at);
+      emit_expr(cx, aw->a, fv);
+      op(cx, "(call $%s %s)\n",
+         at->kind == TY_F64 ? "__f64_text" : "__f32_text", L(cx, fv));
+      op(cx, "(local.set %zu)\n", valregs[i] + 1); // len (2nd result)
+      op(cx, "(local.set %zu)\n", valregs[i]);     // ptr (1st result)
+      continue;
+    }
     valregs[i] = cx_fresh(cx, at);
     emit_expr(cx, aw->a, valregs[i]);
   }
@@ -2167,7 +2218,10 @@ static void emit_format_build(FnCx *cx, Node *call) {
                      node_get(reflist_at(call->list, argi + 1))->a)->sem;
       size_t v = valregs[argi];
       argi++;
-      if (at->kind == TY_I64) {
+      if (at->kind == TY_F32 || at->kind == TY_F64) {
+        // converted to text back in phase 1; push the string block
+        op(cx, "(call $fb_push %s %s)\n", L(cx, v), L(cx, v + 1));
+      } else if (at->kind == TY_I64) {
         op(cx, "(call $fb_i64 %s)\n", L(cx, v));
       } else if (at->kind == TY_U64 || at->kind == TY_USIZE) {
         op(cx, "(call $fb_u64 %s)\n", L(cx, v));
