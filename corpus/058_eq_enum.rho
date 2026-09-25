@@ -1,0 +1,56 @@
+// exit: 0
+// ==/!= on enums compare tag first, then payload recursively (spec/
+// type-system.md "enums compare tag then payload, compiler-generated,
+// recursive"). Boot, frozen, compares payloads for the FIRST payload-
+// bearing variant only — later variants with payloads compare equal on
+// a matching tag alone. The mirror's emitter learned half-diamonds
+// (2026-09-23) and compares every rung, so the two compilers DISAGREE
+// there by design; the lines that pinned the quirk moved to
+// tests/lang/eq/e04_enum_ladder.rho, and this record keeps only the
+// comparisons both compilers still answer identically.
+struct Node {
+  v: i32,
+}
+
+enum Op {
+  Add(i32, i32),
+  Neg(i32),
+  Zero,
+}
+
+enum Shape {
+  Circle(f64),
+  Rect { w: i64, h: i64 },
+  Point,
+}
+
+enum Holder {
+  Empty,
+  Holds(*Node),
+}
+
+fn main() -> i32 {
+  printf("unit: eq={} ne={}\n", (Op.Zero == Op.Zero), (Op.Zero != Op.Zero));
+  let a1: Op = Op.Add(3, 4);
+  let a2: Op = Op.Add(3, 4);
+  let a3: Op = Op.Add(3, 5);
+  printf("tuple payload: eq={} ne={}\n", (a1 == a2), (a1 != a2));
+  printf("tuple differs: eq={} ne={}\n", (a1 == a3), (a1 != a3));
+  printf("cross variant: eq={} ne={}\n", (a1 == Op.Neg(3)), (a1 != Op.Neg(3)));
+  let r1: Shape = Shape.Rect(w: 2, h: 5);
+  let r2: Shape = Shape.Rect(w: 2, h: 5);
+  printf("struct payload: eq={} ne={}\n", (r1 == r2), (r1 != r2));
+  printf("struct vs unit: eq={} ne={}\n", (r1 == Shape.Point), (r1 != Shape.Point));
+  printf("float payload: eq={} ne={}\n", (Shape.Circle(1.5) == Shape.Circle(1.5)), (Shape.Circle(1.5) != Shape.Circle(1.5)));
+  printf("float differs: eq={}\n", (Shape.Circle(1.5) == Shape.Circle(2.5)));
+  printf("zero vs add: eq={} ne={}\n", (Op.Zero == Op.Add(0, 0)), (Op.Zero != Op.Add(0, 0)));
+  let p: *Node = new Node { v: 1 };
+  let q: *Node = new Node { v: 1 };
+  let h1: Holder = Holder.Holds(p);
+  let h2: Holder = Holder.Holds(p);
+  let h3: Holder = Holder.Holds(q);
+  printf("ptr payload same obj: eq={} ne={}\n", (h1 == h2), (h1 != h2));
+  printf("ptr payload twin obj: eq={} ne={}\n", (h1 == h3), (h1 != h3));
+  printf("ptr payload vs empty: eq={} ne={}\n", (h1 == Holder.Empty), (h1 != Holder.Empty));
+  return 0;
+}

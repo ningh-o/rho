@@ -12,12 +12,12 @@ for f in "$CORPUS"/*.rho; do
   [ -z "$want_exit" ] && want_exit=0
   want_out=""
   [ -f "$CORPUS/$name.out" ] && want_out=$(cat "$CORPUS/$name.out")
-  got=$("$RHO" run "$f" 2>/dev/null)
-  rc=$?
-  if [ "$rc" -eq 1 ] || [ "$rc" -eq 2 ]; then
+  if ! "$RHO" check "$f" >/dev/null 2>&1; then
     skip=$((skip+1))   # compile error: not yet supported surface
     continue
   fi
+  got=$("$RHO" run "$f" 2>/dev/null)
+  rc=$?
   if [ "$rc" -eq "$want_exit" ] && [ "$got" = "$want_out" ]; then
     pass=$((pass+1))
   else

@@ -378,6 +378,25 @@ static void resolve_module_consts(Module *m, bool report) {
   for (Sym *s = m->syms->order_head; s; s = s->order_next)
     if (s->kind == SYM_CONST)
       total++;
+  // static mut initializers are folded too (acyclic constants, §6):
+  // _start seeds the slot from the cval; unfolded = starts zeroed
+  for (Sym *s = m->syms->order_head; s; s = s->order_next) {
+    if (s->kind != SYM_STATIC || s->u.konst->cval)
+      continue;
+    ConstDef *cd = s->u.konst;
+    FoldEnv root = {g_entry_mod && g_entry_mod != m
+                        ? g_entry_mod->syms
+                        : NULL, NULL};
+    FoldEnv env = {m->syms, &root};
+    CVal v = fold_expr(&env, cd->init);
+    if (!cv_ok(v))
+      continue;
+    CVal *slot = arena_alloc(g_arena, sizeof(CVal), 8);
+    *slot = v;
+    cd->cval = slot;
+    if (!cd->ty)
+      cd->ty = v.ty;
+  }
   while (progress && resolved < total) {
     progress = false;
     for (Sym *s = m->syms->order_head; s; s = s->order_next) {

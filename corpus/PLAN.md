@@ -42,7 +42,7 @@ Number semantics block (040–059), all unchanged:
 | 031_multiline | triple-quoted now fully verbatim: expected bytes change; add a case where `\n` stays two bytes |
 | 032_pkg | use-form unchanged; verify ambiguity + facade cases still hold |
 | 107_read_line | moves to std.io tests (Phase 4); not in the core corpus |
-| 075_defer_loops | golden changes under the new law: defer fires on continue/break exits too (design §4: every exit except panic) |
+| 075_defer_loops | adapted: golden regenerated — defer fires on continue/break exits too (design §4: every exit except panic) |
 
 Remaining programs adapt unchanged into tranche 2 alongside the above:
 060–094, 096–106 minus listed exceptions (strings/cats/escapes/match/

@@ -1,0 +1,41 @@
+// exit: 87
+// adapted: golden regenerated from the seed (the archive kept no .out; the exit header is the arbiter)
+enum Op {
+  Add(i32, i32),
+  Neg(i32),
+  Zero,
+}
+
+enum Shape {
+  Circle(f64),
+  Rect { w: i64, h: i64 },
+  Point,
+}
+
+fn main() -> i32 {
+  let a: Op = Op.Add(3, 4);
+  let b: Op = Op.Add(3, 4);
+  let c: Op = Op.Add(3, 5);
+  let z: Op = Op.Zero;
+  let s1: Shape = Shape.Rect(w: 2, h: 5);
+  let s2: Shape = Shape.Rect(w: 2, h: 5);
+  let mut score: i32 = 0;
+  if a == b {
+    score += 1;
+  }
+  if a != c {
+    score += 10;
+  }
+  if a != z {
+    score += 100;
+  }
+  if s1 == s2 {
+    score += 1000;
+  }
+  if s1 != Shape.Point {
+    score += 0;
+  } else {
+    score += 10000;
+  }
+  return score; // 1111, wrapped to 87 through the exit code
+}

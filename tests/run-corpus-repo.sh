@@ -12,6 +12,10 @@ for f in corpus/*.rho; do
   [ -z "$want_exit" ] && want_exit=0
   want_out=""
   [ -f "corpus/$name.out" ] && want_out=$(cat "corpus/$name.out")
+  if ! "$RHO" check "$f" >/dev/null 2>&1; then
+    fail=$((fail+1)); echo "FAIL $name: compile error"
+    continue
+  fi
   got=$("$RHO" run "$f" 2>/dev/null)
   rc=$?
   if [ "$rc" -eq "$want_exit" ] && [ "$got" = "$want_out" ]; then

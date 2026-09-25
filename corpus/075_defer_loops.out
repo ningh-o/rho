@@ -1,0 +1,10 @@
+  pass-1 body
+  pass-1 defer
+  pass-2 body
+  pass-2 defer
+  pass-3 body
+  pass-3 defer
+done i=3
+  loop-1 defer
+  loop-2 defer
+done s=2

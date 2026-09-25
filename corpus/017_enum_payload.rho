@@ -1,0 +1,39 @@
+// exit: 61
+// adapted: golden regenerated from the seed (the archive kept no .out; the exit header is the arbiter)
+enum Shape {
+  Circle(f64),
+  Rect { w: i64, h: i64 },
+  Point,
+}
+
+enum Op {
+  Add(i32, i32),
+  Neg(i32),
+  Zero,
+}
+
+fn area(s: Shape) -> i64 {
+  return match s {
+    Shape.Circle(r) => r as i64,
+    Shape.Rect { w, h } => w * h,
+    Shape.Point => 0,
+  };
+}
+
+fn apply(o: Op) -> i32 {
+  return match o {
+    Op.Add(a, b) => a + b,
+    Op.Neg(v) => 0 - v,
+    Op.Zero => 0,
+  };
+}
+
+fn main() -> i32 {
+  let a: i64 = area(Shape.Circle(6.5));
+  let b: i64 = area(Shape.Rect(w: 7, h: 3));
+  let c: i64 = area(Shape.Point);
+  let x: i32 = apply(Op.Add(30, 9));
+  let y: i32 = apply(Op.Neg(5));
+  let z: i32 = apply(Op.Zero);
+  return ((a + b + c) as i32) + x + y + z;
+}

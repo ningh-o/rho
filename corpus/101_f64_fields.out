@@ -1,0 +1,6 @@
+a=0.25 b=0.5 tag=7 seed=0.0
+a=1.0 b=1.0
+eq64 ok
+sum=6.375
+neg=-0.75 negb=-0.5
+zeros ok

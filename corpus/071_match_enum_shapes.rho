@@ -1,0 +1,33 @@
+// exit: 0
+// every enum pattern shape: unit, tuple(1), tuple(2), struct variant,
+// payload `_` placeholders, exhaustive with no wildcard arm
+enum Tok {
+  End,
+  Num(i64),
+  Add(i64, i64),
+  Pair { k: i32, v: i32 },
+}
+
+fn name(t: Tok) -> string {
+  return match t {
+    Tok.End => "end",
+    Tok.Num(_) => "num",
+    Tok.Add(_, _) => "add",
+    Tok.Pair { k: k, v: v } => "pair",
+  };
+}
+
+fn size(t: Tok) -> i64 {
+  return match t {
+    Tok.End => 0,
+    Tok.Num(n) => n,
+    Tok.Add(a, b) => (a + b),
+    Tok.Pair { k: k, v: v } => (k + v) as i64,
+  };
+}
+
+fn main() -> i32 {
+  printf("{} {} {} {}\n", name(Tok.End), name(Tok.Num(9)), name(Tok.Add(3, 4)), name(Tok.Pair(k: 2, v: 5)));
+  printf("{} {} {} {}\n", size(Tok.End), size(Tok.Num(9)), size(Tok.Add(3, 4)), size(Tok.Pair(k: 2, v: 5)));
+  return 0;
+}

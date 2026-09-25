@@ -135,6 +135,32 @@ static size_t shape_nlocals(Type *t) {
   }
 }
 
+static WTy local_wty(Type *t, size_t j);
+
+// canonical enum payload slot type at position pos: a position held
+// by an 8-byte scalar (i64/u64/f64) in ANY variant is an i64 slot —
+// floats live bit-reinterpreted; everything else is i32
+static WTy enum_slot_wty(Type *t, size_t pos) {
+  bool wide = false;
+  for (size_t i = 0; i < t->edef->nvariants; i++) {
+    size_t k = 0;
+    for (size_t f = 0; f < t->edef->variants[i].nfields; f++) {
+      Type *ft = inst_ty(t, t->edef->variants[i].fields[f].ty);
+      size_t n = shape_nlocals(ft);
+      if (pos >= k && pos < k + n) {
+        WTy w = local_wty(ft, pos - k);
+        if (w == W_I64 || w == W_F64)
+          wide = true;
+        break; // this variant's word on pos has been heard
+      }
+      k += n;
+    }
+    if (wide)
+      break;
+  }
+  return wide ? W_I64 : W_I32;
+}
+
 static WTy local_wty_rec(Type *t, size_t j, size_t *base) {
   switch (t->kind) {
   case TY_STRUCT:
@@ -144,14 +170,12 @@ static WTy local_wty_rec(Type *t, size_t j, size_t *base) {
     }
     return W_I32;
   case TY_ENUM: {
-    if (j == *base) { (*base)++; return W_I32; }
-    (*base)++;
-    for (size_t i = 0; i < t->edef->nvariants; i++)
-      for (size_t k = 0; k < t->edef->variants[i].nfields; k++) {
-        WTy w = local_wty_rec(inst_ty(t, t->edef->variants[i].fields[k].ty),
-                              j, base);
-        if (*base > j) return w;
-      }
+    size_t b0 = *base;
+    *base += shape_nlocals(t); // tag + max payload slots
+    if (j == b0)
+      return W_I32; // the tag slot
+    if (j > b0)
+      return enum_slot_wty(t, j - b0 - 1); // canonical payload slot
     return W_I32;
   }
   default:
@@ -312,6 +336,14 @@ static void cx_init(FnCx *cx, Em *em, FnDef *fn, const char *wname) {
   cx->ret = fn ? fn->sig->ret : ty_unit;
 }
 
+// a pointer-typed scratch (one i32 slot) for deref intermediates
+static Type *ty_ptr_scratch(void) {
+  static Type p;
+  memset(&p, 0, sizeof p);
+  p.kind = TY_PTR;
+  return &p;
+}
+
 static size_t cx_fresh(FnCx *cx, Type *t) {
   size_t n = shape_nlocals(t);
   size_t at = VLEN(cx->localtypes);
@@ -357,6 +389,44 @@ static const char *L(FnCx *cx, size_t v) {
   snprintf(bufs[alt], sizeof bufs[alt], "(local.get %zu)", v);
   return bufs[alt];
 }
+// payload slot moves between a field's own representation and its
+// canonical slot: floats bit-reinterpret, ints extend/narrow (the
+// i32 round trip through an i64 slot is lossless either way)
+static void slot_store(FnCx *cx, Type *ft, size_t k, size_t dst,
+                       size_t src) {
+  WTy fw = local_wty(ft, k);
+  WTy csw = W_I64; // the only widening that exists
+  if (fw == csw) {
+    op(cx, "(local.set %zu %s)\n", dst, L(cx, src));
+    return;
+  }
+  if (fw == W_F64)
+    op(cx, "(local.set %zu (i64.reinterpret_f64 %s))\n", dst,
+       L(cx, src));
+  else if (fw == W_F32)
+    op(cx, "(local.set %zu (i64.extend_i32_u (i32.reinterpret_f32 "
+           "%s)))\n", dst, L(cx, src));
+  else // i32-family into an i64 slot: sign-extend (wrap restores)
+    op(cx, "(local.set %zu (i64.extend_i32_s %s))\n", dst, L(cx, src));
+}
+
+static void slot_load(FnCx *cx, Type *ft, size_t k, size_t dst,
+                      size_t src) {
+  WTy fw = local_wty(ft, k);
+  if (fw == W_I64) {
+    op(cx, "(local.set %zu %s)\n", dst, L(cx, src));
+    return;
+  }
+  if (fw == W_F64)
+    op(cx, "(local.set %zu (f64.reinterpret_i64 %s))\n", dst,
+       L(cx, src));
+  else if (fw == W_F32)
+    op(cx, "(local.set %zu (f32.reinterpret_i32 (i32.wrap_i64 "
+           "%s)))\n", dst, L(cx, src));
+  else
+    op(cx, "(local.set %zu (i32.wrap_i64 %s))\n", dst, L(cx, src));
+}
+
 
 // ============================================================ emit exprs
 
@@ -368,7 +438,8 @@ static void enum_payload_rc(FnCx *cx, Type *t, size_t vreg, bool do_retain);
 static void emit_call_args(FnCx *cx, FnDef *f, RefList *args);
 static void pass_arg_own(FnCx *cx, NodeRef arg, Type *pt, size_t v);
 static void emit_match(FnCx *cx, NodeRef er, size_t dst);
-static void bind_pattern(FnCx *cx, Node *pat, Type *st, size_t *slot);
+static void bind_pattern(FnCx *cx, Node *pat, Type *st, size_t *slot,
+                          size_t base);
 static void register_pattern_binders(FnCx *cx, Node *pat, Type *st);
 #define MATCH_DISCARD ((size_t)-1)
 static void emit_stmt(FnCx *cx, NodeRef sr);
@@ -543,47 +614,25 @@ typedef struct Layout {
 
 static size_t align_up(size_t v, size_t a) { return (v + a - 1) & ~(a - 1); }
 
-static size_t type_align(Type *t) {
-  switch (t->kind) {
-  case TY_I64: case TY_U64: case TY_F64: return 8;
-  case TY_STRUCT: {
-    size_t a = 4;
-    for (size_t i = 0; i < t->sdef->nfields; i++) {
-      size_t fa = type_align(t->sdef->fields[i].ty);
-      if (fa > a) a = fa;
-    }
-    return a;
+static size_t type_align(Type *t) { // dense layout: always 4
+  (void)t;
+  return 4;
+}
+
+// byte offset of vreg slot i — the memory layout of every value is
+// its shape, densely packed (8 bytes per i64 slot, 4 otherwise);
+// wasm loads/stores are defined unaligned, so no padding is needed
+static size_t shape_slot_off(Type *t, size_t i) {
+  size_t off = 0;
+  for (size_t q = 0; q < i; q++) {
+    WTy w = local_wty(t, q);
+    off += (w == W_I64 || w == W_F64) ? 8 : 4;
   }
-  default: return 4;
-  }
+  return off;
 }
 
 static size_t type_size(Type *t) {
-  switch (t->kind) {
-  case TY_I8: case TY_U8: case TY_I16: case TY_U16: case TY_I32:
-  case TY_U32: case TY_USIZE: case TY_BOOL: case TY_F32:
-  case TY_PTR: return 4;
-  case TY_I64: case TY_U64: case TY_F64: return 8;
-  case TY_SLICE: return 12; // {owner, data, len}
-  case TY_STRING: case TY_DYN: case TY_FN: return 8;
-  case TY_STRUCT: {
-    size_t off = 0;
-    for (size_t i = 0; i < t->sdef->nfields; i++) {
-      off = align_up(off, type_align(t->sdef->fields[i].ty));
-      off += type_size(t->sdef->fields[i].ty);
-    }
-    return align_up(off ? off : 4, type_align(t));
-  }
-  case TY_ENUM: {
-    size_t off = 4; // tag
-    size_t max = 0;
-    for (size_t i = 0; i < t->edef->nvariants; i++)
-      for (size_t k = 0; k < t->edef->variants[i].nfields; k++)
-        max += type_size(t->edef->variants[i].fields[k].ty);
-    return off + max;
-  }
-  default: return 4;
-  }
+  return shape_slot_off(t, shape_nlocals(t));
 }
 
 __attribute__((unused)) static size_t field_offset(Type *st, size_t idx) {
@@ -934,9 +983,15 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
     if (s && s->kind == SYM_STATIC) {
       size_t slot = static_slot(m, e->name);
       size_t n = shape_nlocals(t);
-      for (size_t i = 0; i < n; i++)
-        op(cx, "(local.set %zu (i32.load (i32.const %zu)))\n", dst + i,
-           slot + i * 4);
+      for (size_t i = 0; i < n; i++) {
+        WTy w = local_wty(t, i);
+        const char *ld = w == W_I64   ? "i64.load"
+                         : w == W_F32 ? "f32.load"
+                         : w == W_F64 ? "f64.load"
+                                      : "i32.load";
+        op(cx, "(local.set %zu (%s (i32.const %zu)))\n", dst + i, ld,
+           slot + shape_slot_off(t, i));
+      }
       return;
     }
     // a plain fn referenced as a value (spec: non-variadic fns are
@@ -1131,7 +1186,10 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       emit_const_to(cx, e, t, dst); // -literal folds at emit
       return;
     }
-    size_t v = cx_fresh(cx, t);
+    // DEREF's intermediate carries a pointer; every other unary takes
+    // the operand at its own type
+    size_t v = e->op == OP_DEREF ? cx_fresh(cx, ty_ptr_scratch())
+                        : cx_fresh(cx, t);
     emit_expr(cx, e->a, v);
     switch (e->op) {
     case OP_NEG:
@@ -1170,7 +1228,7 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
                          : w == W_F64 ? "f64.load"
                                       : "i32.load";
         op(cx, "(local.set %zu (%s (i32.add %s (i32.const %zu))))\n",
-           dst + i, ld, L(cx, v), i * 4);
+           dst + i, ld, L(cx, v), shape_slot_off(t, i));
       }
       return;
     }
@@ -1216,19 +1274,49 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       return;
     }
     if ((e->op == OP_EQ || e->op == OP_NE) && lt->kind == TY_ENUM) {
-      // the == law: tag, then payload element-wise (spec T10)
+      // the == law: tag, then payload element-wise with each field's
+      // OWN type (floats compare by IEEE eq — NaN != NaN — so raw
+      // canonical-slot bit compares would be wrong)
       size_t res = cx_fresh(cx, ty_bool);
       op(cx, "(local.set %zu (i32.eq %s %s))\n", res, L(cx, a),
          L(cx, b));
-      size_t n = shape_nlocals(lt);
-      for (size_t i = 1; i < n; i++) {
-        WTy w = local_wty(lt, i);
-        const char *eqop = w == W_I64   ? "i64.eq"
-                           : w == W_F32 ? "f32.eq"
-                           : w == W_F64 ? "f64.eq"
-                                        : "i32.eq";
-        op(cx, "(if %s (then (local.set %zu (%s %s %s))))\n",
-           L(cx, res), res, eqop, L(cx, a + i), L(cx, b + i));
+      for (size_t vi = 0; vi < lt->edef->nvariants; vi++) {
+        EnumVariant *var = &lt->edef->variants[vi];
+        if (var->nfields == 0)
+          continue;
+        size_t cand = cx_fresh(cx, ty_bool);
+        op(cx, "(local.set %zu (i32.const 1))\n", cand);
+        size_t abs = 1; // past the tag slot
+        for (size_t f = 0; f < var->nfields; f++) {
+          Type *ft = inst_ty(lt, var->fields[f].ty);
+          size_t n = shape_nlocals(ft);
+          for (size_t k = 0; k < n; k++) {
+            size_t eq = cx_fresh(cx, ty_bool);
+            WTy w = local_wty(ft, k);
+            const char *eqop = w == W_I64   ? "i64.eq"
+                               : w == W_F32 ? "f32.eq"
+                               : w == W_F64 ? "f64.eq"
+                                            : "i32.eq";
+            if (local_wty(lt, abs) == W_I64 && w != W_I64) {
+              // widen-extract both sides back to the field's type
+              size_t fa = cx_fresh(cx, ft);
+              size_t fb = cx_fresh(cx, ft);
+              slot_load(cx, ft, k, fa, a + abs);
+              slot_load(cx, ft, k, fb, b + abs);
+              op(cx, "(local.set %zu (%s %s %s))\n", eq, eqop,
+                 L(cx, fa), L(cx, fb));
+            } else {
+              op(cx, "(local.set %zu (%s %s %s))\n", eq, eqop,
+                 L(cx, a + abs), L(cx, b + abs));
+            }
+            op(cx, "(local.set %zu (i32.and %s %s))\n", cand,
+               L(cx, cand), L(cx, eq));
+            abs++;
+          }
+        }
+        op(cx, "(if (i32.eq %s (i32.const %d)) (then\n", L(cx, a),
+           var->tag);
+        op(cx, "  (local.set %zu %s)))\n", res, L(cx, cand));
       }
       if (e->op == OP_NE)
         op(cx, "(local.set %zu (i32.eqz %s))\n", res, L(cx, res));
@@ -1429,36 +1517,43 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
     // non-NULL sem2 is a variant constructor
     EnumVariant *var = e->op == 2 ? NULL : (EnumVariant *)e->sem2;
     if (var) {
-      // Enum.Variant(…) construction: tag + payload slots
+      // Enum.Variant(…) construction: tag + payload in canonical
+      // slots (wide slots take reinterpreted/extended field bits)
       op(cx, "(local.set %zu (i32.const %d))\n", dst, var->tag);
       size_t slot = dst + 1;
+      size_t abs = 1; // slot index within the enum shape
+      size_t next_field = 0; // positional args consume fields in order
       for (size_t i = 0; i < reflist_len(e->list); i++) {
         Node *aw = node_get(reflist_at(e->list, i));
-        Type *ft = NULL;
-        // positional or named — both map by field order
-        const char *want = NULL;
-        if (aw->kind == NT_FIELDINIT)
-          want = aw->name;
-        for (size_t k = 0; k < var->nfields; k++) {
-          if (want && strcmp(var->fields[k].name, want) != 0)
-            continue;
-          extern Type *variant_field_ty(EnumVariant *, Type *, size_t);
-          ft = variant_field_ty(var, t, k);
-          if (aw->kind == NT_FIELDINIT) {
-            size_t tmp = cx_fresh(cx, ft);
-            emit_expr(cx, aw->a, tmp);
-            size_t n = shape_nlocals(ft);
-            for (size_t j = 0; j < n; j++)
-              op(cx, "(local.set %zu %s)\n", slot + j, L(cx, tmp + j));
-          } else {
-            size_t n = shape_nlocals(ft);
-            emit_expr(cx, aw->a, slot);
-            (void)n;
-          }
-          slot += shape_nlocals(ft);
-          if (want)
-            break;
+        if (aw->kind != NT_POSARG && aw->kind != NT_FIELDINIT)
+          continue;
+        // named args seek their field; positional take the next
+        size_t k = next_field;
+        if (aw->kind == NT_FIELDINIT) {
+          bool found = false;
+          for (k = 0; k < var->nfields; k++)
+            if (strcmp(var->fields[k].name, aw->name) == 0) {
+              found = true;
+              break;
+            }
+          if (!found)
+            continue; // the checker already reported
+        } else {
+          next_field++;
         }
+        extern Type *variant_field_ty(EnumVariant *, Type *, size_t);
+        Type *ft = variant_field_ty(var, t, k);
+        size_t n = shape_nlocals(ft);
+        size_t tmp = cx_fresh(cx, ft);
+        emit_expr(cx, aw->a, tmp);
+        for (size_t j = 0; j < n; j++) {
+          if (local_wty(t, abs) == W_I64 && local_wty(ft, j) != W_I64)
+            slot_store(cx, ft, j, slot + j, tmp + j);
+          else
+            op(cx, "(local.set %zu %s)\n", slot + j, L(cx, tmp + j));
+          abs++;
+        }
+        slot += n;
       }
       return;
     }
@@ -1549,7 +1644,7 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       emit_expr(cx, e->a, p);
       size_t n = shape_nlocals(ft);
       for (size_t i = 0; i < n; i++) {
-        size_t fo = off + i * 4;
+        size_t fo = off + shape_slot_off(ft, i);
         WTy w = local_wty(ft, i);
         const char *ld = w == W_I64   ? "i64.load"
                          : w == W_F32 ? "f32.load"
@@ -1609,7 +1704,7 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
                                : w == W_F64 ? "f64.store"
                                             : "i32.store";
           op(cx, "(%s (i32.add (local.get %zu) (i32.const %zu)) %s)\n",
-             str_op, dst, off + k * 4, L(cx, tmp + k));
+             str_op, dst, off + shape_slot_off(ft, k), L(cx, tmp + k));
         }
         // the block owns managed field values (fresh retain at store)
         retain(cx, ft, tmp);
@@ -1654,7 +1749,8 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
                          : w == W_F64 ? "f64.load"
                                       : "i32.load";
         op(cx, "(local.set %zu (%s (i32.add (local.get %zu) "
-               "(i32.const %zu))))\n", dst + k, ld, addr, k * 4);
+               "(i32.const %zu))))\n", dst + k, ld, addr,
+           shape_slot_off(el, k));
       }
     }
     return;
@@ -1769,7 +1865,8 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
                             : w == W_F64 ? "f64.store"
                                          : "i32.store";
         op(cx, "(%s (i32.add %s (i32.const %zu)) %s)\n", strop,
-           L(cx, dst), i2 * esz + k * 4, L(cx, v + k));
+           L(cx, dst), i2 * esz + shape_slot_off(elt, k),
+           L(cx, v + k));
       }
     }
     return;
@@ -1811,7 +1908,8 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
                             : w == W_F64 ? "f64.store"
                                          : "i32.store";
         op(cx, "(%s (i32.add (local.get %zu) (i32.const %zu)) %s)\n",
-           strop, blk, coff + k * 4, L(cx, cv->vreg + k));
+           strop, blk, coff + shape_slot_off(cv->ty, k),
+           L(cx, cv->vreg + k));
       }
       retain(cx, cv->ty, cv->vreg);
       coff += type_size(cv->ty);
@@ -1865,7 +1963,7 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
                                         : "i32.load";
           op(&cc, "(local.set %zu (%s (i32.add (local.get %zu) "
                   "(i32.const %zu))))\n", v + k, ld, capt_local,
-             off2 + k * 4);
+             off2 + shape_slot_off(cv->ty, k));
         }
         VarInfo *vi = VPUSH(cc.vars, VarInfo);
         vi->name = cv->name;
@@ -1928,17 +2026,56 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
     }
     op(cx, "(if (i32.eq (local.get %zu) (i32.const %d)) (then\n", v,
        absent_tag);
-    // propagate: build the fn's error value from the operand payload
+    // propagate: rebuild the fn's error value from the operand's
+    // error payload, field by field (the two enums may canonicalize
+    // their slots differently — e.g. Result[i32,_] into Result[i64,_])
     if (cx->ret && cx->ret->kind == TY_ENUM) {
       size_t ev = cx_fresh(cx, cx->ret);
-      // copy the whole operand shape; retag with the absent tag
-      size_t n = shape_nlocals(ot);
-      for (size_t i = 0; i < n; i++)
-        op(cx, "(local.set %zu %s)\n", ev + i, L(cx, v + i));
       op(cx, "(local.set %zu (i32.const %d))\n", ev, absent_tag);
+      {
+        EnumVariant *ov = NULL, *rv = NULL;
+        for (size_t i = 0; i < ot->edef->nvariants; i++)
+          if (ot->edef->variants[i].tag == absent_tag)
+            ov = &ot->edef->variants[i];
+        for (size_t i = 0; i < cx->ret->edef->nvariants; i++)
+          if (cx->ret->edef->variants[i].tag == absent_tag)
+            rv = &cx->ret->edef->variants[i];
+        size_t oslot = 1, rslot = 1; // payload positions in each shape
+        size_t nf = rv && ov ? (rv->nfields < ov->nfields ? rv->nfields
+                                                          : ov->nfields)
+                             : 0;
+        for (size_t f = 0; f < nf; f++) {
+          Type *rft = inst_ty(cx->ret, rv->fields[f].ty);
+          Type *oft = inst_ty(ot, ov->fields[f].ty);
+          size_t rn = shape_nlocals(rft), on = shape_nlocals(oft);
+          size_t kn = rn < on ? rn : on;
+          for (size_t k = 0; k < kn; k++) {
+            bool ow = local_wty(ot, oslot) == W_I64 &&
+                      local_wty(oft, k) != W_I64;
+            bool rw = local_wty(cx->ret, rslot) == W_I64 &&
+                      local_wty(rft, k) != W_I64;
+            if (ow && rw) {
+              size_t tmp = cx_fresh(cx, rft);
+              slot_load(cx, oft, k, tmp, v + oslot);
+              slot_store(cx, rft, k, ev + rslot, tmp);
+            } else if (rw) {
+              slot_store(cx, rft, k, ev + rslot, v + oslot);
+            } else if (ow) {
+              slot_load(cx, rft, k, ev + rslot, v + oslot);
+            } else {
+              op(cx, "(local.set %zu %s)\n", ev + rslot,
+                 L(cx, v + oslot));
+            }
+            oslot++;
+            rslot++;
+          }
+          oslot += on - kn;
+          rslot += rn - kn;
+        }
+      }
       emit_scope_exit(cx, 0);
-      n = shape_nlocals(cx->ret);
-      for (size_t i = 0; i < n; i++)
+      size_t rn2 = shape_nlocals(cx->ret);
+      for (size_t i = 0; i < rn2; i++)
         op(cx, "%s", L(cx, ev + i));
       op(cx, "(return))\n");
     } else {
@@ -1999,11 +2136,13 @@ static void emit_match(FnCx *cx, NodeRef er, size_t dst) {
              v, var ? var->tag : -1);
       } else if (pat->kind == NT_PLIT) {
         // literal arm: guard on the subject value
-        if (pat->op == 0) { // integer
-          op(cx, "(if (i32.eq (local.get %zu) (i32.const %d)) (then\n",
-             v, (int32_t)(uint32_t)pat->ival);
+        if (pat->op == 0) { // integer: compare at the subject's width
           if (scalar_wty(st) == W_I64)
-            op(cx, ";; i64 literal arm refined below\n");
+            op(cx, "(if (i64.eq (local.get %zu) (i64.const %lld))"
+                   " (then\n", v, (long long)pat->ival);
+          else
+            op(cx, "(if (i32.eq (local.get %zu) (i32.const %d)) (then\n",
+               v, (int32_t)(uint32_t)pat->ival);
         } else if (pat->op == 2) { // bool
           op(cx, "(if (i32.eq (local.get %zu) (i32.const %d)) (then\n",
              v, pat->bval ? 1 : 0);
@@ -2028,7 +2167,7 @@ static void emit_match(FnCx *cx, NodeRef er, size_t dst) {
     cx->scope++;
     size_t slot = v + 1;
     register_pattern_binders(cx, pat, st);
-    bind_pattern(cx, pat, st, &slot);
+    bind_pattern(cx, pat, st, &slot, v);
     // arm value
     if (dst != SIZE_MAX) {
       Node *ab0 = node_get(arm->b);
@@ -2091,16 +2230,26 @@ static void register_pattern_binders(FnCx *cx, Node *pat, Type *st) {
   }
 }
 
-// bind pattern locals to the subject's payload slots
-static void bind_pattern(FnCx *cx, Node *pat, Type *st, size_t *slot) {
+// bind pattern locals to the subject's payload slots; `base` is the
+// subject's vreg run start, so *slot - base indexes the enum shape
+static void bind_pattern(FnCx *cx, Node *pat, Type *st, size_t *slot,
+                         size_t base) {
   if (pat->kind == NT_PWILD)
     return;
   if (pat->kind == NT_PBIND) {
     VarInfo *v = cx_var(cx, pat->name);
     if (v) {
       size_t n = shape_nlocals(v->ty);
-      for (size_t i = 0; i < n; i++)
-        op(cx, "(local.set %zu %s)\n", v->vreg + i, L(cx, *slot + i));
+      for (size_t i = 0; i < n; i++) {
+        if (st && st->kind == TY_ENUM &&
+            local_wty(st, *slot + i - base) == W_I64 &&
+            local_wty(v->ty, i) != W_I64)
+          // canonical slot back to the field's own representation
+          slot_load(cx, v->ty, i, v->vreg + i, *slot + i);
+        else
+          op(cx, "(local.set %zu %s)\n", v->vreg + i,
+             L(cx, *slot + i));
+      }
       *slot += n;
     }
     return;
@@ -2110,10 +2259,10 @@ static void bind_pattern(FnCx *cx, Node *pat, Type *st, size_t *slot) {
     for (size_t i = 0; i < reflist_len(pat->list); i++) {
       Node *sub = node_get(reflist_at(pat->list, i));
       if (pat->op == VAR_STRUCT && sub->kind == NT_FIELD)
-        bind_pattern(cx, node_get(sub->a), st, slot);
+        bind_pattern(cx, node_get(sub->a), st, slot, base);
       else if (sub->kind == NT_PBIND || sub->kind == NT_PWILD ||
                sub->kind == NT_PVAR)
-        bind_pattern(cx, sub, st, slot);
+        bind_pattern(cx, sub, st, slot, base);
       // literal sub-patterns consume their slots without binding
       else {
         extern size_t pattern_slot_size(Node *);
@@ -2348,7 +2497,7 @@ static void emit_call_args(FnCx *cx, FnDef *f, RefList *args) {
                               : w == W_F64 ? "f64.store"
                                            : "i32.store";
           op(cx, "(%s (i32.add %s (i32.const %zu)) %s)\n", strop,
-             L(cx, v), j * esz + k * 4, L(cx, ev + k));
+             L(cx, v), j * esz + shape_slot_off(et, k), L(cx, ev + k));
         }
       }
       argregs_run[nfixedp] = v;
@@ -2529,7 +2678,7 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
                               : w == W_F64 ? "f64.store"
                                            : "i32.store";
           op(cx, "(%s (i32.add (local.get %zu) (i32.const %zu)) %s)\n",
-             strop, p, off + k * 4, L(cx, rhs + k));
+             strop, p, off + shape_slot_off(ft, k), L(cx, rhs + k));
         }
         return;
       }
@@ -2571,7 +2720,7 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
                              : w == W_F64 ? "f64.store"
                                           : "i32.store";
         op(cx, "(%s (i32.add (local.get %zu) (i32.const %zu)) %s)\n",
-           strop2, addr, k * 4, L(cx, rhs + k));
+           strop2, addr, shape_slot_off(el, k), L(cx, rhs + k));
       }
       return;
     }
@@ -2592,17 +2741,51 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
         emit_expr(cx, s->b, rhs);
         if (s->op == OP_NONE) {
           size_t n = shape_nlocals(lt);
-          for (size_t i = 0; i < n; i++)
-            op(cx, "(i32.store (i32.const %zu) %s)\n", slot + i * 4,
-               L(cx, rhs + i));
+          for (size_t i = 0; i < n; i++) {
+            WTy w = local_wty(lt, i);
+            const char *strop = w == W_I64   ? "i64.store"
+                                : w == W_F32 ? "f32.store"
+                                : w == W_F64 ? "f64.store"
+                                             : "i32.store";
+            op(cx, "(%s (i32.const %zu) %s)\n", strop,
+               slot + shape_slot_off(lt, i), L(cx, rhs + i));
+          }
           return;
         }
         size_t oldv = cx_fresh(cx, lt);
         size_t nv = cx_fresh(cx, lt);
         size_t n = shape_nlocals(lt);
-        for (size_t i = 0; i < n; i++)
-          op(cx, "(local.set %zu (i32.load (i32.const %zu)))\n", oldv + i,
-             slot + i * 4);
+        for (size_t i = 0; i < n; i++) {
+          WTy w = local_wty(lt, i);
+          const char *ld = w == W_I64   ? "i64.load"
+                           : w == W_F32 ? "f32.load"
+                           : w == W_F64 ? "f64.load"
+                                        : "i32.load";
+          op(cx, "(local.set %zu (%s (i32.const %zu)))\n", oldv + i,
+             ld, slot + shape_slot_off(lt, i));
+        }
+        if (type_is_float(lt)) {
+          const char *fw = lt->kind == TY_F32 ? "f32" : "f64";
+          const char *finstr = NULL;
+          switch (s->op) {
+          case OP_ADD: finstr = "add"; break;
+          case OP_SUB: finstr = "sub"; break;
+          case OP_MUL: finstr = "mul"; break;
+          case OP_DIV: finstr = "div"; break;
+          default: break;
+          }
+          if (finstr) {
+            op(cx, "(local.set %zu (%s.%s (local.get %zu) "
+                   "(local.get %zu)))\n", nv, fw, finstr, oldv, rhs);
+            for (size_t i = 0; i < n; i++) {
+              WTy w = local_wty(lt, i);
+              const char *strop = w == W_F32 ? "f32.store" : "f64.store";
+              op(cx, "(%s (i32.const %zu) %s)\n", strop,
+                 slot + shape_slot_off(lt, i), L(cx, nv + i));
+            }
+            return;
+          }
+        }
         const char *w = scalar_wty(lt) == W_I64 ? "i64" : "i32";
         const char *instr = NULL;
         switch (s->op) {
@@ -2622,9 +2805,15 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
           emit_div(cx, s->op, lt, nv, oldv, rhs);
           truncate_after(cx, lt, nv);
         }
-        for (size_t i = 0; i < n; i++)
-          op(cx, "(i32.store (i32.const %zu) %s)\n", slot + i * 4,
-             L(cx, nv + i));
+        for (size_t i = 0; i < n; i++) {
+          WTy w = local_wty(lt, i);
+          const char *strop = w == W_I64   ? "i64.store"
+                              : w == W_F32 ? "f32.store"
+                              : w == W_F64 ? "f64.store"
+                                           : "i32.store";
+          op(cx, "(%s (i32.const %zu) %s)\n", strop,
+             slot + shape_slot_off(lt, i), L(cx, nv + i));
+        }
         return;
       }
       size_t rhs = cx_fresh(cx, lt);
@@ -2914,6 +3103,12 @@ static void emit_start(Em *em) {
   Buf b;
   buf_init(&b);
   tprintf(&b, "  (func $_start\n");
+  {
+    Sym *main0 = symtab_get(em->p->entry->syms, "main");
+    if (main0 && main0->kind == SYM_FN &&
+        main0->u.fns->sig->ret->kind != TY_UNIT)
+      tprintf(&b, "    (local $rc i32)\n");
+  }
   // statics initialize from comptime-folded values (module × symbol
   // order, deterministic)
   for (Module *m = em->p->modules; m; m = m->next) {
@@ -2960,10 +3155,10 @@ static void emit_start(Em *em) {
   }
   if (main && main->kind == SYM_FN) {
     FnDef *mf = main->u.fns;
-    if (mf->sig->ret->kind != TY_UNIT)
-      tprintf(&b, "    (local $rc i32)\n");
     tprintf(&b, "    (local.set $rc (call $%s))\n", fn_wat_name(mf));
-    tprintf(&b, "    (call $proc_exit (local.get $rc))\n");
+    // POSIX exit semantics: the status travels as its low byte
+    tprintf(&b, "    (call $proc_exit (i32.and (local.get $rc) "
+               "(i32.const 255)))\n");
   } else {
     tprintf(&b, "    (call $proc_exit (i32.const 0))\n");
   }

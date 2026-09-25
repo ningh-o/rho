@@ -1,0 +1,29 @@
+// exit: 0
+// adapted: under the new law (§4) defer runs on EVERY scope exit
+// except panic — continue and break included — so the golden gains the
+// pass-2/pass-3/loop-2 defer lines the old compiler skipped
+fn main() -> i32 {
+  let mut i: i32 = 0;
+  while (i < 4) {
+    i += 1;
+    defer printf("  pass-{} defer\n", i);
+    printf("  pass-{} body\n", i);
+    if (i == 2) {
+      continue;
+    }
+    if (i == 3) {
+      break;
+    }
+  }
+  printf("done i={}\n", i);
+  let mut s: i32 = 0;
+  loop {
+    s += 1;
+    defer printf("  loop-{} defer\n", s);
+    if (s == 2) {
+      break;
+    }
+  }
+  printf("done s={}\n", s);
+  return 0;
+}
