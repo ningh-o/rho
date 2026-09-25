@@ -153,6 +153,9 @@ therefore come last when several parameters are declared.
   `fn Rect.area(self: *Rect) -> i32`. A function named `fn T.name`
   whose first parameter is not `self` is an **associated function**:
   `fn Rect.square(n: i32) -> *Rect`, called as `Rect.square(3)`.
+  In impl methods the receiver may be written bare — `self`
+  (read-only `*T`) or `mut self` (writable) — its type the
+  implemented type's pointer; the fully-typed form stays legal.
 - Overloads: several functions may share one name in a module (and
   across modules — see `type-system.md` §5). Resolution is exact-match
   unique.
@@ -356,18 +359,27 @@ variant   := path '(' patterns? ')' | path '{' binders? '}'
 binders   := ident (',' ident)* ','?
 struct_pat := path '{' ident ':' pattern (',' …)* ','? '}'
 literal   := int | float | bool | string (single-line)
+arm       := arm_pat ['if' expr] '=>' (expr | block)
+arm_pat   := pattern ('|' pattern)*
 ```
 
 - `ident` binds; the same binder twice in one pattern is an error;
   `_` matches anything.
 - Enum variants appear by full path (`Shape.Circle(r)`), tuple or
-  struct form matching the declaration.
+  struct form matching the declaration — or bare by the scrutinee's
+  type: a variant name in an arm resolves against the enum being
+  matched first (`Some(v)`, `Circle(r)`; prelude and user enums
+  alike), with no scope fallback. Full paths stay legal and are
+  required for variants of any other enum.
 - Literal patterns: integers, floats, bools, strings.
-- Match arms: `pattern => expr` or `pattern => block`. Arms are
-  expressions of the same type; a match used as a statement may have
-  unit arms of differing statement shapes only via blocks.
+- Match arms: `arm_pat => expr` or `arm_pat => block`; alternatives
+  of an or-pattern bind the identical name set, else a compile
+  error. An optional guard — `arm_pat if cond` — evaluates after the
+  pattern matches, in scope of its bindings. Arms are expressions of
+  the same type; a match used as a statement may have unit arms of
+  differing statement shapes only via blocks.
 - Exhaustive unless `_` is present: a match on an enum must cover every
-  variant or carry `_`.
+  variant or carry `_`; guarded arms never close exhaustiveness.
 
 ## 8. Formatting (fmt)
 
