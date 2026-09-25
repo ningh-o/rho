@@ -154,8 +154,10 @@ therefore come last when several parameters are declared.
   whose first parameter is not `self` is an **associated function**:
   `fn Rect.square(n: i32) -> *Rect`, called as `Rect.square(3)`.
   In impl methods the receiver may be written bare — `self`
-  (read-only `*T`) or `mut self` (writable) — its type the
-  implemented type's pointer; the fully-typed form stays legal.
+  (read-only `*T`) or `mut self` (writable) — in both homes: inside an
+  impl block the type comes from the header (`impl Show for Pt {
+  fn to_str(self) -> string }`), in a dotted method from the name
+  (`fn Pt.to_str(self)`); the fully-typed form stays legal.
 - Overloads: several functions may share one name in a module (and
   across modules — see `type-system.md` §5). Resolution is exact-match
   unique.

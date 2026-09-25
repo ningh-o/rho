@@ -691,9 +691,11 @@ the latter, and a value can never call a pointer-receiver method.
 Receiver `mut`-ness is not an overload axis and must match the
 trait's signature exactly at impl time. Declaring `mut` without ever
 writing through it is a hint (LSP), never an error. In impl methods
-the receiver may be written bare — `self` or `mut self` — its type
-the implemented type's pointer, read-only or writable respectively;
-the fully-typed form stays legal.
+the receiver may be written bare — `self` or `mut self` — in both
+homes: inside an impl block the type comes from the header
+(`impl Show for Pt { fn to_str(self) -> string }`), in a dotted
+method from the name (`fn Pt.to_str(self)`); read-only or writable
+respectively, and the fully-typed form stays legal.
 
 ### 19. Match arm ergonomics
 
