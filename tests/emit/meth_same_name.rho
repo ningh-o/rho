@@ -1,0 +1,20 @@
+// same-named methods on different types are legal (§10): the emitter
+// must disambiguate the WAT names
+// out: 1 2
+// out: 30 40
+// out: 3
+struct A { v: i32 }
+struct B { w: i32 }
+fn A.get(self: *A) -> i32 { return self.v; }
+fn B.get(self: *B) -> i32 { return self.w; }
+fn A.scale(self: *A, k: i32) -> i32 { return self.v * k; }
+fn B.scale(self: *B, k: i32) -> i32 { return self.w * k; }
+fn get(a: *A, b: *B) -> i32 { return a.get() + b.get(); }
+fn main() -> i32 {
+  let a: *A = new A { v: 1 };
+  let b: *B = new B { w: 2 };
+  printf("{} {}\n", a.get(), b.get());
+  printf("{} {}\n", a.scale(30), b.scale(20));
+  printf("{}\n", get(a, b));
+  return 0;
+}

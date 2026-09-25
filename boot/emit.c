@@ -198,7 +198,16 @@ typedef struct Em {
   size_t label_n;      // unique loop-label ids
   size_t closure_n;    // synthesized closure counter
   Vec closures;        // of const char* (wat names) — table order
+  Vec fnnames;         // of FnNameEnt — unique WAT names per FnDef
 } Em;
+
+// one FnDef ↔ one WAT name: same-named methods on different types are
+// legal rho (§10), so the emitter disambiguates with a deterministic
+// .N suffix in first-touch order (D1 keeps it stable)
+typedef struct FnNameEnt {
+  FnDef *f;
+  const char *name;
+} FnNameEnt;
 
 static Em *em_cur; // current emitter (single-shot compiler)
 
@@ -364,7 +373,32 @@ static void register_pattern_binders(FnCx *cx, Node *pat, Type *st);
 #define MATCH_DISCARD ((size_t)-1)
 static void emit_stmt(FnCx *cx, NodeRef sr);
 static void emit_scope_exit(FnCx *cx, size_t to_scope);
-static const char *fn_wat_name(FnDef *f) __attribute__((unused));
+static const char *fn_wat_name(FnDef *f);
+
+static const char *fn_wat_name(FnDef *f) {
+  Em *em = em_cur;
+  if (!em->fnnames.data)
+    vec_init(&em->fnnames, sizeof(FnNameEnt));
+  for (size_t i = 0; i < VLEN(em->fnnames); i++)
+    if (VAT(em->fnnames, FnNameEnt, i)->f == f)
+      return VAT(em->fnnames, FnNameEnt, i)->name;
+  const char *name = f->name;
+  for (size_t try = 1;; try++) {
+    bool taken = false;
+    for (size_t i = 0; i < VLEN(em->fnnames); i++)
+      if (strcmp(VAT(em->fnnames, FnNameEnt, i)->name, name) == 0) {
+        taken = true;
+        break;
+      }
+    if (!taken)
+      break;
+    name = aprintf(g_arena, "%s.%zu", f->name, try);
+  }
+  FnNameEnt *e = VPUSH(em->fnnames, FnNameEnt);
+  e->f = f;
+  e->name = name;
+  return name;
+}
 
 // move/copy helpers for managed values
 static void retain(FnCx *cx, Type *t, size_t vreg) {
@@ -686,7 +720,7 @@ size_t fnvalue_wrap(FnCx *cx, FnDef *pf) {
       tprintf(&b, " (local.get %zu)\n", base + k);
     base += n;
   }
-  tprintf(&b, " (call $%s)\n", pf->name);
+  tprintf(&b, " (call $%s)\n", fn_wat_name(pf));
   tprintf(&b, "  )\n");
   em_queue_text(cx->em, aprintf(g_arena, "%.*s", (int)b.n, b.p));
   return 4 + VLEN(cx->em->dropfns) + VLEN(cx->em->closures) +
@@ -1057,7 +1091,7 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       return;
     }
     emit_call_args(cx, f, e->list);
-    op(cx, "(call $%s)\n", f->name);
+    op(cx, "(call $%s)\n", fn_wat_name(f));
     // move stack results into dst: multi-value results pop in order;
     // set in reverse so the first result lands at dst
     Type *tres = f->sig->ret;
@@ -1444,7 +1478,7 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       op(cx, "%s", L(cx, selfv));
       for (size_t i = 0; i < nregs; i++)
         op(cx, "%s", L(cx, argregs[i]));
-      op(cx, "(call $%s)\n", f->name);
+      op(cx, "(call $%s)\n", fn_wat_name(f));
       Type *tres = f->sig->ret;
       if (tres->kind != TY_UNIT) {
         size_t n = shape_nlocals(tres);
@@ -2788,7 +2822,7 @@ static void emit_fndef(Em *em, FnDef *f) {
   // assemble: (func $name (param…) (result…) (local…) body)
   Buf fn;
   buf_init(&fn);
-  tprintf(&fn, "  (func $%s", f->name);
+  tprintf(&fn, "  (func $%s", fn_wat_name(f));
   for (size_t i = 0; i < f->sig->nparams; i++) {
     Type *pt = f->sig->params[i].ty ? f->sig->params[i].ty : ty_unit;
     size_t n = shape_nlocals(pt);
@@ -2874,7 +2908,7 @@ static void emit_start(Em *em) {
     FnDef *mf = main->u.fns;
     if (mf->sig->ret->kind != TY_UNIT)
       tprintf(&b, "    (local $rc i32)\n");
-    tprintf(&b, "    (local.set $rc (call $%s))\n", mf->name);
+    tprintf(&b, "    (local.set $rc (call $%s))\n", fn_wat_name(mf));
     tprintf(&b, "    (call $proc_exit (local.get $rc))\n");
   } else {
     tprintf(&b, "    (call $proc_exit (i32.const 0))\n");
