@@ -51,11 +51,6 @@ diff_one streq 'fn pick(s: string) -> i64 { if s == "yes" { return 1; } if s == 
 diff_one boolprint 'fn main() -> i32 { let r = "x" == "x"; let q = "x" == "y"; let n = 5; printf("r={} q={} n={}\\n", r, q, n); return 0; }'
 diff_one escapes 'fn main() -> i32 { let s: string = "a\rb\0c\x41\u{e9}\u{1F600}z"; printf("[{}] {}\n", s, len(s)); printf("r=[{}] 0=[{}] x=[{}] u2=[{}] u4=[{}]\n", "A\rB", "C\0D", "\x42\x7a", "\u{4e2d}\u{6587}", "\u{1F600}!"); return 0; }'
 diff_one widths 'fn main() -> i32 { let a8: i8 = 127; let m8: i8 = (-128); let a32: i32 = 2147483647; let m32: i32 = (-2147483648); let u: u32 = 4294967295; printf("i8: {} {}\n", a8 + 1, m8 - 1); printf("i32: {} {}\n", a32 + 1, m32 - 1); printf("u32+1={} eq={}\n", u + 1, u + 1 == 0); printf("mul={} div={} neg={}\n", m8 * (-1), m8 / (-1), -m8); return 0; }'
-diff_one strret 'fn join3(a: string, b: string, c: string) -> string { return a + b + c; } fn tag(s: string) -> string { if len(s) > 0 { return "[" + s + "]"; } printf("empty
-"); return s; } fn main() -> i32 { let s = join3("x", "-", "y"); printf("[{}]
-", s); printf("[{}]
-", join3(s, "!", s)); let a = tag("q"); let b = tag(""); printf("{}{}
-", a, b); return 0; }'
 diff_one cat 'fn main() -> i32 { let a: string = "con"; let b: string = "cat"; let mut c: string = ""; c = a + b + "!"; printf("[{}]\n", c); let d = a + "-" + (b + "?"); printf("[{}]\n", d); printf("[{}|{}]\n", a + b, c + c); let mut e = ""; e = e + "[" + a + "]"; printf("{}\n", e); return 0; }'
 diff_one tco 'fn down(n: i64) -> i64 { if n == 0 { return 7; } return down(n - 1); } fn sumto(n: i64, acc: i64) -> i64 { if n == 0 { return acc; } return sumto(n - 1, acc + n); } fn main() -> i32 { printf("down={} sum={}\n", down(2000000), sumto(1000000, 0)); return 0; }'
 diff_one defer 'static mut LOG: i64 = 0; fn work() -> i64 { defer LOG += 1; defer LOG += 10; LOG += 100; return 0; } fn two() -> i64 { defer LOG += 1000; if LOG >= 0 { defer LOG += 5; } return LOG; } fn main() -> i32 { let r = work(); printf("log={} r={}\n", LOG, r); let t = two(); printf("log={} t={}\n", LOG, t); return 0; }'
@@ -66,6 +61,7 @@ diff_one bits 'fn main() -> i32 { let a: i64 = 12; let b: i64 = 10; printf("and=
 diff_one labels 'fn main() -> i32 { let mut total = 0; let mut i = 0; outer: while i < 10 { i = i + 1; let mut j = 0; while j < 3 { j = j + 1; if j == 2 { continue outer; } if i == 7 { break outer; } total = total + 1; } } let mut k = 0; let mut hits = 0; scan: loop { k = k + 1; if k % 3 == 0 { continue scan; } if k > 8 { break scan; } hits = hits + 1; } printf("total={} i={} k={} hits={}\n", total, i, k, hits); return 0; }'
 diff_one scirc 'fn pick(v: bool) -> i64 { if v { return 1; } return 2; } fn main() -> i32 { let mut i = 5; let mut safe = 0; while i >= 0 { if i == 0 || 100 / i > 10 { safe = safe + 1; } if i > 0 && 100 / i >= 20 { safe = safe + 10; } i = i - 1; } let a: i64 = 3; let b: i64 = 0; let both = a > 0 && b == 0; let either = a == 0 || b == 0; printf("safe={} both={} either={} cmparg={}\n", safe, both, either, pick(a == 3)); return 0; }'
 diff_one breakcont 'fn main() -> i32 { let mut i = 0; let mut sum = 0; while true { i = i + 1; if i > 10 { break; } if i % 2 == 0 { continue; } sum = sum + i; } let mut n = 0; loop { n = n + 1; if n >= 5 { break; } } printf("sum={} i={} n={}\n", sum, i, n); return 0; }'
+diff_one strret 'fn join3(a: string, b: string, c: string) -> string { return a + b + c; } fn tag(s: string) -> string { if len(s) > 0 { return "[" + s + "]"; } printf("empty\n"); return s; } fn main() -> i32 { let s = join3("x", "-", "y"); printf("[{}]\n", s); printf("[{}]\n", join3(s, "!", s)); let a = tag("q"); let b = tag(""); printf("{}{}\n", a, b); return 0; }'
 diff_one verbatim 'fn main() -> i32 { let v: string = """ab""cd"""; printf("[{}] {}\\n", v, len(v)); let multi: string = """
 line1
 line2"""; printf("[{}]\\n", multi); printf("len={}\\n", len(multi)); return 0; }'
