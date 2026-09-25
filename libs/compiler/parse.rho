@@ -442,6 +442,28 @@ fn parse_stmt(c: *PCur) -> *Stmt {
     st.val = Option.Some(e);
     return st;
   }
+  if t.kind == lex.TK_IDENT && c.pos + 1 < len(c.toks) &&
+      c.toks[c.pos + 1].kind == lex.TK_PUNCT &&
+      len(c.toks[c.pos + 1].text) == 2 &&
+      c.toks[c.pos + 1].text[1] == 61 {
+    // name OP= expr; — desugars to name = name OP expr
+    let opt: u8 = c.toks[c.pos + 1].text[0];
+    tkadv(c); // the name
+    tkadv(c); // the operator
+    let rhs = parse_bin(c, 1);
+    eat_punct(c, 59);
+    let st = mk_stmt(ST_SET);
+    st.name = t.text;
+    let code: i64 = match opt {
+      43 => 0,
+      45 => 1,
+      42 => 2,
+      47 => 3,
+      _ => 4,
+    };
+    st.val = Option.Some(bin(code, var(t.text), rhs));
+    return st;
+  }
   if t.kind == lex.TK_KEYWORD && t.text == "if" {
     tkadv(c);
     let st = mk_stmt(ST_IF);

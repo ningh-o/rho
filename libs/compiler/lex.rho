@@ -150,17 +150,12 @@ pub fn lex(src: string) -> []*Tok {
     let mut two: bool = false;
     if c.pos + 1 < len(src) {
       let nx: u8 = src[c.pos + 1];
-      if b2 == 61 && nx == 61 {
-        two = true;
-      }
-      if b2 == 33 && nx == 61 {
-        two = true;
-      }
-      if b2 == 60 && nx == 61 {
-        two = true;
-      }
-      if b2 == 62 && nx == 61 {
-        two = true;
+      if nx == 61 {
+        // == != <= >= and the += -= *= /= %= family
+        if b2 == 61 || b2 == 33 || b2 == 60 || b2 == 62 || b2 == 43 ||
+            b2 == 45 || b2 == 42 || b2 == 47 || b2 == 37 {
+          two = true;
+        }
       }
     }
     adv(c);
