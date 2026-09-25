@@ -2574,13 +2574,21 @@ fn match_chain_m(pool: *Pool, arms: []*MatchArm, i: usize, bx: i64,
     if len(ptgt) > 0 && st_index(prog, ptgt) >= 0 {
       env_bind_ptr(env, a.pat.binders[k], bslot, ptgt);
     } else {
-      if (a.pat.ename == "Option" || a.pat.ename == "Result") &&
-          len(optpt) > 0 && st_index(prog, optpt) >= 0 {
-        // a Some/Ok binder over a *T element: the pointer lane keeps
-        // its fields reachable
-        env_bind_ptr(env, a.pat.binders[k], bslot, optpt);
+      if pty == "f64" || pty == "f32" {
+        let mut fk2: i64 = 1;
+        if pty == "f32" {
+          fk2 = 2;
+        }
+        env_bind_f(env, a.pat.binders[k], bslot, fk2);
       } else {
-        env_bind(env, a.pat.binders[k], bslot);
+        if (a.pat.ename == "Option" || a.pat.ename == "Result") &&
+            len(optpt) > 0 && st_index(prog, optpt) >= 0 {
+          // a Some/Ok binder over a *T element: the pointer lane keeps
+          // its fields reachable
+          env_bind_ptr(env, a.pat.binders[k], bslot, optpt);
+        } else {
+          env_bind(env, a.pat.binders[k], bslot);
+        }
       }
     }
     k = k + 1;
