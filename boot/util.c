@@ -382,3 +382,36 @@ bool tok_is_builtin_type(TokKind k, const char **spell) {
   }
   return false;
 }
+
+
+// deep clone of an AST subtree: fresh nodes, fresh reflists; sem fields
+// start clean (per-instance annotation)
+static NodeRef clone_ref(NodeRef r, RefList *owned) {
+  if (r == NO_REF)
+    return NO_REF;
+  Node *n = node_get(r);
+  NodeRef c = node_new(n->kind, n->file, n->line, n->col);
+  Node *m = node_get(c);
+  m->name = n->name;
+  m->name2 = n->name2;
+  m->op = n->op;
+  m->ival = n->ival;
+  m->fval = n->fval;
+  m->bval = n->bval;
+  m->sval = n->sval;
+  m->a = clone_ref(n->a, owned);
+  m->b = clone_ref(n->b, owned);
+  m->c = clone_ref(n->c, owned);
+  m->d = clone_ref(n->d, owned);
+  if (n->list) {
+    RefList *nl = reflist();
+    for (size_t i = 0; i < reflist_len(n->list); i++)
+      reflist_add(nl, clone_ref(reflist_at(n->list, i), owned));
+    m->list = nl;
+  }
+  return c;
+}
+
+NodeRef clone_node_tree(NodeRef r) {
+  return clone_ref(r, NULL);
+}

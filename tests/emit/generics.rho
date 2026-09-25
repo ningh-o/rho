@@ -1,0 +1,9 @@
+// out: 7 s
+fn id[T](x: T) -> T { return x; }
+fn pair[A, B](a: A, b: B) -> i64 { return 1; }
+fn main() -> i32 {
+  let a: i32 = id(7);
+  let b: string = id("s");
+  printf("{} {}\n", a, b);
+  return 0;
+}

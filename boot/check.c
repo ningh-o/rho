@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 
 static Program *g_program; // the program under check
+Program *g_program_ctx;    // alias visible to check2
 Module *g_prelude_mod;     // completed by check_program
 Module *g_entry_mod;
 
@@ -852,6 +853,7 @@ void module_prepare(Program *p, Module *m) {
 
 bool check_program(Program *p) {
   g_program = p;
+  g_program_ctx = p;
 
   // the prelude module: first in load order, always in scope
   g_prelude_mod = module_parse_src("<prelude>", prelude_src());

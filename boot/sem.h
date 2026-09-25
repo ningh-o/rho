@@ -166,6 +166,9 @@ typedef struct FnDef {
   const char **gparams;
   size_t ngparams;
   struct FnDef *next_overload; // same-name chain
+  struct FnDef *instances;     // monomorphized instances (chain)
+  struct FnDef *next_instance;
+  Type **ibinds;               // instance: gparam → concrete type
 } FnDef;
 
 typedef struct ConstDef {

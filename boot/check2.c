@@ -292,6 +292,8 @@ static bool sig_matches(FnCtx *c, FnSig *sig, NodeRef call_r,
     Node *a = node_get(reflist_at(args, i + first));
     if (a->kind != NT_POSARG)
       return false; // named args only valid on constructors
+    if (pt && pt->kind == TY_PARAM)
+      continue; // generic parameter: matches (bound at instantiation)
     Node *arg = node_get(a->a);
     if (arg->kind == NT_INT || arg->kind == NT_FLOAT) {
       if (!literal_adapts_to(c, arg, pt))
@@ -664,6 +666,34 @@ static Type *check_call(FnCtx *c, NodeRef er, Type *expected) {
     FnDef *f = resolve_overload(c, lk.fns, er, false, callee->name);
     if (!f)
       return ty_unit;
+    if (f->ngparams) {
+      // monomorphize: bind gparams from args (and expected), reuse
+      // identical instantiations, emit-check per instance
+      extern FnDef *instantiate_generic(FnCtx * c, FnDef * f, Node *call,
+                                        Type * expected);
+      FnDef *inst = instantiate_generic(c, f, node_get(er), expected);
+      if (!inst)
+        return ty_unit;
+      node_get(er)->sem2 = inst;
+      f = inst;
+      // re-check the args against the substituted signature
+      for (size_t i = 0; i < reflist_len(call->list); i++) {
+        Node *aw = node_get(reflist_at(call->list, i));
+        if (aw->kind != NT_POSARG)
+          continue;
+        size_t fixed = f->sig->nparams;
+        bool variadic2 = fixed > 0 && f->sig->params[fixed - 1].variadic;
+        Type *pt = NULL;
+        if (variadic2 && i >= fixed - 1) {
+          pt = f->sig->params[fixed - 1].ty;
+          if (pt && pt->kind == TY_SLICE)
+            pt = pt->base;
+        } else if (i < fixed)
+          pt = f->sig->params[i].ty;
+        check_expr(c, aw->a, pt);
+      }
+      return f->sig->ret;
+    }
     node_get(er)->sem2 = f; // the chosen overload rides with the call
     // check args against the chosen signature (proper, with consumers)
     for (size_t i = 0; i < reflist_len(args); i++) {
@@ -1716,39 +1746,40 @@ static void check_block(FnCtx *c, NodeRef br) {
 
 // ---------------------------------------------------------------- bodies
 
+// check one function body (shared by the module walk and generic
+// instance checking)
+static void check_fn_body(Program *p, FnDef *f) {
+  (void)p;
+  Module *m = f->mod;
+  if (f->body == NO_REF || !f->sig)
+    return;
+  FnCtx ctx;
+  memset(&ctx, 0, sizeof ctx);
+  ctx.fn = f;
+  ctx.mod = m;
+  vec_init(&ctx.locals, sizeof(Local));
+  vec_init(&ctx.labels, sizeof(const char *));
+  ctx.ret = f->sig->ret;
+  ctx.gparams = f->gparams;
+  ctx.ngparams = f->ngparams;
+  for (size_t i = 0; i < f->sig->nparams; i++) {
+    Local *l = ctx_decl_local(&ctx, f->sig->params[i].name);
+    l->ty = f->sig->params[i].ty ? f->sig->params[i].ty : ty_unit;
+    l->mut = false;
+    l->decl = f->sig->params[i].decl;
+  }
+  collect_labels(&ctx, f->body);
+  check_block(&ctx, f->body);
+}
+
 bool check_bodies(Program *p) {
   for (Module *m = p->modules; m; m = m->next) {
     for (Sym *s = m->syms->order_head; s; s = s->order_next) {
       if (s->kind != SYM_FN)
         continue;
       for (FnDef *f = s->u.fns; f; f = f->next_overload) {
-        if (f->body == NO_REF)
-          continue;
-        if (!f->sig) {
-          // trait signatures have no bodies; safety net
-          continue;
-        }
-        FnCtx ctx;
-        memset(&ctx, 0, sizeof ctx);
-        ctx.fn = f;
-        ctx.mod = m;
-        vec_init(&ctx.locals, sizeof(Local));
-        vec_init(&ctx.labels, sizeof(const char *));
-        ctx.ret = f->sig->ret;
-        ctx.gparams = f->gparams;
-        ctx.ngparams = f->ngparams;
-        // params live in the outermost scope of the body
-        for (size_t i = 0; i < f->sig->nparams; i++) {
-          // bare self in trait sig has NULL type; method self types
-          // resolved at signature build
-          Local *l = ctx_decl_local(&ctx, f->sig->params[i].name);
-          l->ty = f->sig->params[i].ty ? f->sig->params[i].ty : ty_unit;
-          l->mut = false;
-          l->decl = f->sig->params[i].decl;
-        }
-        collect_labels(&ctx, f->body);
-        check_block(&ctx, f->body);
-        // impl members: verify their self param exists
+        check_fn_body(p, f);
+        // generic instances checked at their instantiation sites
       }
     }
   }
@@ -1763,3 +1794,97 @@ bool check_bodies(Program *p) {
 
 // public shim (sem.h): TBind is checker-internal
 Type *tsubst(Type *t, void *b) { return tsubst_impl(t, (TBind *)b); }
+
+// ============================================================ generics
+
+// monomorphize a generic call: bind gparams from argument types (and
+// the expected type through the return), reuse identical instances
+FnDef *instantiate_generic(FnCtx *c, FnDef *f, Node *call, Type *expected) {
+  const char **names = f->gparams;
+  size_t ng = f->ngparams;
+  Type **binds = arena_alloc(g_arena, ng * sizeof(Type *), 8);
+  memset(binds, 0, ng * sizeof(Type *));
+  // bind from params/args in order
+  for (size_t i = 0; i < f->sig->nparams && i < reflist_len(call->list);
+       i++) {
+    Type *pt = f->sig->params[i].ty;
+    if (!pt || pt->kind != TY_PARAM)
+      continue;
+    Node *aw = node_get(reflist_at(call->list, i));
+    if (aw->kind != NT_POSARG)
+      continue;
+    for (size_t b = 0; b < ng; b++)
+      if (strcmp(names[b], pt->pname) == 0) {
+        if (!binds[b])
+          binds[b] = check_expr(c, aw->a, NULL);
+      }
+  }
+  // bind from the expected type through a param-typed return
+  Type *rt = f->sig->ret;
+  if (rt && rt->kind == TY_PARAM && expected) {
+    for (size_t b = 0; b < ng; b++)
+      if (strcmp(names[b], rt->pname) == 0 && !binds[b])
+        binds[b] = expected;
+  }
+  for (size_t b = 0; b < ng; b++)
+    if (!binds[b]) {
+      err_at(c, call, "cannot infer generic parameter '%s' of %s",
+             names[b], f->name);
+      binds[b] = ty_i32;
+    }
+  // reuse identical instantiations (structural binds)
+  for (FnDef *g = f->instances; g; g = g->next_instance) {
+    bool same = true;
+    for (size_t b = 0; b < ng && same; b++)
+      if (!type_eq(g->ibinds[b], binds[b]))
+        same = false;
+    if (same)
+      return g;
+  }
+  // build the instance
+  FnDef *inst = arena_alloc(g_arena, sizeof(FnDef), 8);
+  memset(inst, 0, sizeof(FnDef));
+  inst->name = aprintf(g_arena, "%s__i%zu", f->name,
+                       (size_t)(f->instances ? (size_t)1 : (size_t)0) +
+                           (size_t)0);
+  // count existing instances for a stable name
+  size_t ninst = 0;
+  for (FnDef *g = f->instances; g; g = g->next_instance)
+    ninst++;
+  inst->name = aprintf(g_arena, "%s__i%zu", f->name, ninst);
+  inst->mod = f->mod;
+  inst->decl = f->decl;
+  inst->body = f->body;
+  inst->is_pub = f->is_pub;
+  inst->sig = arena_alloc(g_arena, sizeof(FnSig), 8);
+  inst->sig->nparams = f->sig->nparams;
+  inst->sig->params = arena_alloc(
+      g_arena, (inst->sig->nparams ? inst->sig->nparams : 1) *
+                   sizeof(ParamDef), 8);
+  TBind tb = {names, binds, ng};
+  for (size_t i = 0; i < inst->sig->nparams; i++) {
+    inst->sig->params[i].name = f->sig->params[i].name;
+    inst->sig->params[i].decl = f->sig->params[i].decl;
+    inst->sig->params[i].ty = tsubst(f->sig->params[i].ty, &tb);
+    inst->sig->params[i].variadic = f->sig->params[i].variadic;
+  }
+  inst->sig->ret = tsubst(f->sig->ret, &tb);
+  inst->ibinds = binds;
+  inst->ngparams = 0;
+  // append (creation order)
+  if (!f->instances) {
+    f->instances = inst;
+  } else {
+    FnDef *t = f->instances;
+    while (t->next_instance)
+      t = t->next_instance;
+    t->next_instance = inst;
+  }
+  // per-instance body copy: node annotations (types) must not be
+  // shared across instantiations
+  extern NodeRef clone_node_tree(NodeRef r);
+  inst->body = clone_node_tree(f->body);
+  inst->sig = inst->sig; // sig built above
+  { extern Program *g_program_ctx; check_fn_body(g_program_ctx, inst); }
+  return inst;
+}

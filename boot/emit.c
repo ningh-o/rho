@@ -2810,9 +2810,13 @@ static void emit_all_fns(Em *em) {
     for (Sym *s = m->syms->order_head; s; s = s->order_next) {
       if (s->kind != SYM_FN)
         continue;
-      for (FnDef *f = s->u.fns; f; f = f->next_overload)
+      for (FnDef *f = s->u.fns; f; f = f->next_overload) {
         if (f->body != NO_REF)
           emit_fndef(em, f);
+        // generic instances emit right after their template
+        for (FnDef *g = f->instances; g; g = g->next_instance)
+          emit_fndef(em, g);
+      }
     }
   }
 }
