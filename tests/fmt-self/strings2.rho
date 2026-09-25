@@ -1,0 +1,28 @@
+const TAG: string = "v1";
+static mut HITS: i64 = 0;
+
+fn join3(a: string, b: string, c: string) -> string {
+  return a + b + c;
+}
+fn tag(s: string) -> string {
+  if len(s) > 0 {
+    return "[" + s + "]";
+  }
+  return s;
+}
+fn main() -> i32 {
+  let mut built: string = "";
+  let mut i: usize = 0;
+  while i < 4 {
+    i += 1;
+    defer HITS += 1;
+    built = built + "x";
+    if i == 3 {
+      continue;
+    }
+  }
+  let s = join3("a", "-", tag("b"));
+  let m = format("[{}]", len(s)) + "|" + s;
+  printf("{} {} {} {}\n", built, s, m, TAG);
+  return 0;
+}
