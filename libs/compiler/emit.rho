@@ -988,6 +988,10 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog) -> string {
     return out;
   }
   let divish: bool = e.op == 3 || e.op == 4;
+  if divish {
+    // the dividend parks in $r (each operand evaluates exactly once)
+    out = out + "    (local.set $r)\n";
+  }
   match e.rhs {
     Option.Some(r) => {
       out = out + emit_expr(pool, r, env, prog);
@@ -995,14 +999,38 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog) -> string {
     Option.None => {},
   }
   if divish {
-    // /0 %0 panics (§11): the divisor parks in $t, the zero check
-    // fires before the op (evaluated exactly once)
+    // /0 %0 panics (§11); MIN / -1 wraps back to MIN and MIN % -1
+    // reads 0 — wasm's div_s traps on that pair, so the -1 case
+    // rides the if-select instead of the native op
     let msg_addr: i64 = pool_intern(pool, "division by zero");
     out = out + "    (local.set $t)\n";
     out = out + "    (if (i64.eqz (local.get $t))\n" +
            "      (then (call $w_panic (i32.const " +
            msg_addr.to_str() + ") (i32.const 16))))\n";
-    out = out + "    (local.get $t)\n";
+    out = out + "    (if (result i64) (i64.eq (local.get $t)" +
+           " (i64.const -1))\n";
+    if e.op == 3 {
+      out = out + "      (then (i64.sub (i64.const 0) " +
+             "(local.get $r)))\n";
+    } else {
+      out = out + "      (then (i64.const 0))\n";
+    }
+    out = out + "      (else (" + wat_op(e.op) + " (local.get $r)" +
+           " (local.get $t))))\n";
+    // the width wrap still applies below
+    let mut w0: i64 = 0;
+    match e.lhs {
+      Option.Some(l) => {
+        if l.tag == parse.EX_VAR {
+          w0 = env_width_of(env, l.name);
+        }
+      },
+      Option.None => {},
+    }
+    if w0 != 0 {
+      out = out + wrap_snippet(w0);
+    }
+    return out;
   }
   out = out + "    (" + wat_op(e.op) + ")\n";
   // comparisons yield i32 in wasm: extend back to the i64 lane
@@ -1071,6 +1099,23 @@ fn dpop_emit(d: *DStack) -> string {
   return out;
 }
 
+// a break/continue exits every frame down to (and including) the
+// loop's body frame: emit those texts WITHOUT consuming — the normal
+// exit path still runs the frame-end copies
+fn dpeek_emit_to(d: *DStack, n_from: usize) -> string {
+  let mut out: string = "";
+  if n_from >= d.n {
+    return out;
+  }
+  let base: usize = d.starts[n_from];
+  let mut c: usize = d.cursor;
+  while c > base {
+    c = c - 1;
+    out = out + d.texts[c];
+  }
+  return out;
+}
+
 // a return unwinds every open frame of the function, LIFO across all
 fn dunwind_emit(d: *DStack) -> string {
   let mut out: string = "";
@@ -1087,19 +1132,23 @@ struct Loops {
   names: []string,
   bks: []string,
   ws: []string,
+  ddepths: []usize, // the dstack depth at each loop statement
   n: usize,
   next_id: i64,
 }
 
 fn loops_new() -> *Loops {
   return new Loops { names: make([]string, 32), bks: make([]string, 32),
-                     ws: make([]string, 32), n: 0, next_id: 0 };
+                     ws: make([]string, 32), ddepths: make([]usize, 32),
+                     n: 0, next_id: 0 };
 }
 
-fn loops_push_with(l: *Loops, name: string, bk: string, w: string) {
+fn loops_push_with(l: *Loops, name: string, bk: string, w: string,
+                   d: *DStack) {
   l.names[l.n] = name;
   l.bks[l.n] = bk;
   l.ws[l.n] = w;
+  l.ddepths[l.n] = d.n; // frames above this base exit at a jump
   l.n = l.n + 1;
 }
 
@@ -1107,6 +1156,24 @@ fn loops_pop(l: *Loops) {
   if l.n > 0 {
     l.n = l.n - 1;
   }
+}
+
+// the loop-stack index a jump targets (innermost when unnamed)
+fn loops_index(l: *Loops, name: string) -> usize {
+  if len(name) == 0 {
+    if l.n == 0 {
+      return 32; // out of range: no enclosing loop
+    }
+    return l.n - 1;
+  }
+  let mut i: usize = l.n;
+  while i > 0 {
+    if l.names[i - 1] == name {
+      return i - 1;
+    }
+    i = i - 1;
+  }
+  return 32;
 }
 
 // the break (block) label for a jump: named resolves to the labeled
@@ -1503,18 +1570,29 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
       }
     }
     if st.tag == parse.ST_BREAK {
-      // named resolves to the labeled loop, plain to the innermost
+      // a break exits every frame down to the loop's body: those
+      // defers run here (peeked, not consumed — the normal exit
+      // path keeps its frame-end copies)
+      let idx: usize = loops_index(loops, st.name);
+      if idx < loops.n {
+        body = body + dpeek_emit_to(dstack, loops.ddepths[idx]);
+      }
       body = body + "    (br " + loops_break(loops, st.name) + ")\n";
     }
     if st.tag == parse.ST_CONT {
-      // re-enter at the target's head: a while re-checks its condition
+      // a continue exits the body frame: its defers run, then the
+      // head re-checks
+      let idx: usize = loops_index(loops, st.name);
+      if idx < loops.n {
+        body = body + dpeek_emit_to(dstack, loops.ddepths[idx]);
+      }
       body = body + "    (br " + loops_cont(loops, st.name) + ")\n";
     }
     if st.tag == parse.ST_LOOP {
       let bk: string = "$b" + loops.next_id.to_str();
       let w: string = "$w" + loops.next_id.to_str();
       loops.next_id = loops.next_id + 1;
-      loops_push_with(loops, st.name, bk, w);
+      loops_push_with(loops, st.name, bk, w, dstack);
       body = body + "    (block " + bk + "\n";
       body = body + "    (loop " + w + "\n";
       body = body + emit_stmts(st.body, pool, env, next_local, in_fn, ret_slot, prog, loops, dstack, tfd);
@@ -1529,7 +1607,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
           let bk: string = "$b" + loops.next_id.to_str();
           let w: string = "$w" + loops.next_id.to_str();
           loops.next_id = loops.next_id + 1;
-          loops_push_with(loops, st.name, bk, w);
+          loops_push_with(loops, st.name, bk, w, dstack);
           body = body + "    (block " + bk + "\n";
           body = body + "    (loop " + w + "\n";
           body = body + emit_expr(pool, cond, env, prog);
@@ -1633,7 +1711,7 @@ fn emit_fn(fd: *FnDef, pool: *Pool, prog: *Prog) -> string {
 pub fn emit(prog: *Prog) -> string {
   let pool = new_pool();
   let env = env_new(64);
-  let next_local = new NextLocal { v: 4 }; // 0/1 capture, 2 exit, 3 = $t
+  let next_local = new NextLocal { v: 5 }; // 0/1 capture, 2 exit, 3 $t, 4 $r
   let loops = loops_new();
   let dstack = dstack_new();
   let body: string = emit_stmts(prog.main, pool, env, next_local, false,
@@ -1671,8 +1749,8 @@ pub fn emit(prog: *Prog) -> string {
   out = out + BOOLTEXT;
   out = out + fntext;
   out = out + "  (export \"_start\" (func $_start))\n";
-  out = out + "  (func $_start (local $a i32) (local $l i32) (local $rc i32) (local $t i64)\n";
-  let mut li: i64 = 3;
+  out = out + "  (func $_start (local $a i32) (local $l i32) (local $rc i32) (local $t i64) (local $r i64)\n";
+  let mut li: i64 = 5;
   while li < next_local_n {
     out = out + "    (local $v" + li.to_str() + " i64)\n";
     li = li + 1;
