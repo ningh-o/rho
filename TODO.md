@@ -244,6 +244,13 @@ section — no placeholder stages. boot is the reference compiler.
 
 ## Phase 3 — gates and the trust root
 
+- [ ] **T3.0** GitHub CI: one workflow on push + PR — clang builds
+      boot, `make test` runs as the leg (every script already
+      time-capped); wabt and wasmtime pinned by version, never
+      floating. When T3.1's gate.sh lands it becomes the leg list.
+      The workflow is dormant until master pushes resume (push timing
+      stays the owner's call). The native ring's ephemeral-runner CI
+      (T7.x) rides this same workflow when it exists.
 - [ ] **T3.1** gate.sh rebuilt: boot selftest; corpus differential
       (boot-built vs self-hosted-built, behavioral); diagnostic parity;
       the self chain (mirror → child → grandchild, graded behaviorally).
@@ -298,6 +305,11 @@ section — no placeholder stages. boot is the reference compiler.
 - [ ] **T5.3** (owner's call, do not self-deploy) add the deploy
       workflow and deploy the course site.
 
+This phase's ecosystem delivery — the vite plugin and the prettier
+plugin — is specified in [docs/ecosystem.md](docs/ecosystem.md): goal,
+dependencies, shape, acceptance law, npm version policy. They start
+only when their listed dependencies close.
+
 ## Phase 6 — freeze and 0.1.0
 
 - [ ] **T6.1** Full gate green: every leg, corpus differential, suites,
@@ -330,6 +342,11 @@ the language does not change when it lands.
       until a container exists. MCU remains a future backend: one
       emitter + assembler + image-writer triple, nothing in the
       language.
+
+The post-freeze ecosystem — the LSP and the compiler benchmarks — is
+specified in [docs/ecosystem.md](docs/ecosystem.md). The LSP starts
+only at the freeze; the benchmarks ride the T3.1 gate's harness when
+the numbers can mean something.
 
 ---
 
