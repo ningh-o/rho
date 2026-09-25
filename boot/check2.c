@@ -475,10 +475,22 @@ static Type *check_format_call(FnCtx *c, Node *call, Type *expected) {
     case TY_U8: case TY_U16: case TY_U32: case TY_U64: case TY_USIZE:
     case TY_F32: case TY_F64: case TY_BOOL: case TY_STRING:
       break;
-    default:
-      err_at(c, node_get(aw->a),
-             "value of type %s is not printable (aggregates are not)",
-             type_name(vt));
+    default: {
+      // §8: every value prints via to_str — a type carrying a
+      // to_str(self) -> string method IS printable
+      size_t n = 0;
+      FnDef **cands = method_candidates(c, vt, "to_str", &n);
+      bool printable = false;
+      for (size_t k = 0; k < n; k++)
+        if (cands[k]->sig->nparams == 1 &&
+            cands[k]->sig->ret->kind == TY_STRING)
+          printable = true;
+      if (!printable)
+        err_at(c, node_get(aw->a),
+               "value of type %s is not printable (no to_str)",
+               type_name(vt));
+      break;
+    }
     }
   }
   return strcmp(cname, "format") == 0 ? ty_string : ty_unit;

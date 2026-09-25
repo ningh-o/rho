@@ -1,0 +1,45 @@
+// exit: 0
+// adapted: assert_eq lives in the file (string form)
+
+fn assert_eq(a: string, b: string) {
+  assert(a == b, "assert_eq failed");
+  return;
+}
+
+fn assert_eq(a: i32, b: i32) {
+  assert(a == b, "assert_eq failed");
+  return;
+}
+struct Point {
+  x: i32,
+  y: i32,
+}
+
+fn Point.to_str(self: *Point) -> string {
+  return format("({}, {})", self.x, self.y);
+}
+
+enum Shape {
+  Circle(f64),
+  Unit,
+}
+
+fn Shape.to_str(self: Shape) -> string {
+  return match self {
+    Shape.Circle(r) => format("circle({})", r),
+    Shape.Unit => "unit",
+  };
+}
+
+fn main() -> i32 {
+  let p = new Point { x: 3, y: 0 - 4 };
+  printf("{}\n", p);
+  let c: Shape = Shape.Circle(2.5);
+  printf("{}\n", c);
+  let u: Shape = Shape.Unit;
+  printf("{}\n", u);
+  assert_eq(1 + 1, 2);
+  let n: i32 = 5;
+  printf("{}\n", n);
+  return 0;
+}

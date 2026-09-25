@@ -1,0 +1,25 @@
+// exit: 0
+// 0.3.3: printf/eprintf — `{}` takes the next value's to_str; `{{`/`}}`
+// are literal braces; the format string must be a literal and its `{}`
+// count must match the values
+struct Pt {
+  x: i32,
+  y: i32,
+}
+
+fn Pt.to_str(self: *Pt) -> string {
+  return format("({},{})", self.x, self.y);
+}
+
+fn main() -> i32 {
+  printf("no values at all\n");
+  printf("int={}, neg={}, str={}\n", 42, -7, "hi");
+  printf("braces {{}} and {{left}}\n");
+  let f: f32 = 2.25;
+  printf("float={} f32={}\n", 1.5, f);
+  let p = new Pt { x: 3, y: 9 };
+  printf("point={} bool={}\n", p, true);
+  printf("expr={} empty-slice-len={}\n", 6 * 7, len(""));
+  eprintf("err: {}{}\n", "e", 5);
+  return 0;
+}

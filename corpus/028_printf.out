@@ -1,0 +1,6 @@
+no values at all
+int=42, neg=-7, str=hi
+braces {} and {left}
+float=1.5 f32=2.25
+point=(3,9) bool=true
+expr=42 empty-slice-len=0

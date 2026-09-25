@@ -2410,6 +2410,52 @@ size_t static_slot(Module *m, const char *name) {
 
 // printf/eprintf: literal chunks and per-hole to_str pushes, one write
 // build a format string into the fb scratch (shared by printf/format)
+// the to_str method a printable aggregate carries (checker-approved);
+// mirrors method_candidates' native-then-extension order
+static FnDef *format_to_str_fn(FnCx *cx, Type *t) {
+  if (t->kind == TY_PTR)
+    t = t->base;
+  Module *tmod = NULL;
+  const char *tn = NULL;
+  if (t->kind == TY_STRUCT) {
+    tmod = t->sdef->mod;
+    tn = t->sdef->name;
+  } else if (t->kind == TY_ENUM) {
+    tmod = t->edef->mod;
+    tn = t->edef->name;
+  }
+  if (tmod && tmod->syms) {
+    for (Sym *s = tmod->syms->order_head; s; s = s->order_next) {
+      if (s->kind != SYM_FN || strcmp(s->name, "to_str") != 0)
+        continue;
+      for (FnDef *f = s->u.fns; f; f = f->next_overload)
+        if (f->is_method && strcmp(f->recv, tn) == 0 &&
+            f->sig->nparams == 1 && f->sig->ret->kind == TY_STRING)
+          return f;
+    }
+  }
+  for (size_t i = 0; i < VLEN(cx->fn->mod->uses); i++) {
+    UseBind *ub = VAT(cx->fn->mod->uses, UseBind, i);
+    Module *um = ub->target;
+    if (!um->syms)
+      continue;
+    for (Sym *s = um->syms->order_head; s; s = s->order_next) {
+      if (s->kind != SYM_FN || strcmp(s->name, "to_str") != 0 || !s->pub)
+        continue;
+      for (FnDef *f = s->u.fns; f; f = f->next_overload)
+        if (f->is_method && strcmp(f->recv, tn) == 0 &&
+            f->sig->nparams == 1 && f->sig->ret->kind == TY_STRING)
+          return f;
+    }
+  }
+  return NULL;
+}
+
+static bool type_is_managed_or_agg(Type *t) {
+  return t && (type_is_managed(t) || t->kind == TY_STRUCT ||
+               t->kind == TY_ENUM);
+}
+
 static void emit_format_build(FnCx *cx, Node *call) {
   // phase 1: evaluate every value BEFORE touching the scratch —
   // nested format/printf calls reset it (the fb is single-buffered)
@@ -2434,6 +2480,27 @@ static void emit_format_build(FnCx *cx, Node *call) {
       op(cx, "(local.set %zu)\n", valregs[i]);     // ptr (1st result)
       continue;
     }
+    if (at->kind != TY_STRING && type_is_managed_or_agg(at)) {
+      // a to_str-bearing type: phase 1 evaluates self, calls the
+      // method, and keeps the string block (§8)
+      extern FnDef *format_to_str_fn(FnCx * cx, Type * t);
+      FnDef *ts = format_to_str_fn(cx, at);
+      if (ts) {
+        valregs[i] = cx_fresh(cx, ty_string);
+        size_t sv = cx_fresh(cx, at);
+        emit_expr(cx, aw->a, sv);
+        if (at->kind == TY_PTR || at->kind == TY_DYN)
+          retain(cx, at, sv); // self is a borrowed receiver
+        size_t sn2 = shape_nlocals(at);
+        op(cx, "(call $%s", fn_wat_name(ts));
+        for (size_t k2 = 0; k2 < sn2; k2++)
+          op(cx, " %s", L(cx, sv + k2));
+        op(cx, ")\n");
+        op(cx, "(local.set %zu)\n", valregs[i] + 1);
+        op(cx, "(local.set %zu)\n", valregs[i]);
+        continue;
+      }
+    }
     valregs[i] = cx_fresh(cx, at);
     emit_expr(cx, aw->a, valregs[i]);
   }
@@ -2449,6 +2516,9 @@ static void emit_format_build(FnCx *cx, Node *call) {
       argi++;
       if (at->kind == TY_F32 || at->kind == TY_F64) {
         // converted to text back in phase 1; push the string block
+        op(cx, "(call $fb_push %s %s)\n", L(cx, v), L(cx, v + 1));
+      } else if (at->kind != TY_STRING && type_is_managed_or_agg(at)) {
+        // to_str already produced the block in phase 1
         op(cx, "(call $fb_push %s %s)\n", L(cx, v), L(cx, v + 1));
       } else if (at->kind == TY_I64) {
         op(cx, "(call $fb_i64 %s)\n", L(cx, v));
