@@ -611,6 +611,7 @@ static Type *check_call(FnCtx *c, NodeRef er, Type *expected) {
     FnDef *f = resolve_overload(c, lk.fns, er, false, callee->name);
     if (!f)
       return ty_unit;
+    node_get(er)->sem2 = f; // the chosen overload rides with the call
     // check args against the chosen signature (proper, with consumers)
     for (size_t i = 0; i < reflist_len(args); i++) {
       Node *aw = node_get(reflist_at(args, i));
@@ -797,7 +798,7 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
   return chosen->sig->ret;
 }
 
-static Type *check_expr(FnCtx *c, NodeRef er, Type *expected) {
+static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
   if (er == NO_REF)
     return ty_unit;
   Node *e = node_get(er);
@@ -1406,6 +1407,15 @@ static void check_pattern(FnCtx *c, Node *p, Type *st) {
   default:
     err_at(c, p, "bad pattern");
   }
+}
+
+// the public entry: annotate every expression node with its type so
+// the emitter reads types straight off the tree
+static Type *check_expr(FnCtx *c, NodeRef er, Type *expected) {
+  Type *t = check_expr_inner(c, er, expected);
+  if (er != NO_REF)
+    node_get(er)->sem = t;
+  return t;
 }
 
 // ---------------------------------------------------------------- stmts

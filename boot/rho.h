@@ -154,6 +154,8 @@ struct Node {
   NodeKind kind;
   const char *file;
   int line, col;
+  void *sem;  // checker-annotated Type* (emit reads it)
+  void *sem2; // checker-annotated FnDef* (chosen overload)
   const char *name;  // identifier payload (many kinds)
   const char *name2; // second identifier (method receiver type, alias)
   int op;            // small enum payload (operators, forms, flags)

@@ -3,6 +3,7 @@
 #define RHO_SEM_H
 
 #include "rho.h"
+#include "cval.h"
 
 // ---------------------------------------------------------------- types
 

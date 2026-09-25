@@ -108,7 +108,24 @@ section — no placeholder stages. boot is the reference compiler.
       modules); `--set name=value` with the **widened type face** (bool,
       all integer widths, f32/f64, string; range-checked; refusal = exit
       2).
-- [ ] **T1.7** Lower + wasm emit: rc insertion per the pure-local
+- [ ] **T1.7a** (landed; the vertical slice) Lower + emit core: the
+      WAT pipeline (wat2wasm pinned, tmp+rename law), kernel.wat
+      (allocator/rc glue/decimal print/wasi tail), scalar types,
+      literals, arithmetic (wrap/narrow/shift-mask/div-panic), calls
+      with the chosen-overload annotation, printf desugar (ints, bools,
+      strings), consts/statics, `_start`. hello→wasmtime green.
+- [ ] **T1.7b** structs + `*T` (boxed layout, field access through
+      pointers, methods, `new` with the zeroed/rc law, drop fns),
+      managed-value moves (retain/release discipline), defer on every
+      exit, assignment (simple + compound + through pointers).
+- [ ] **T1.7c** enums + match (tag dispatch, patterns/binders,
+      exhaustiveness), Option/Result + `?` propagation, `make`/slices/
+      len/index/`a..b`, string concat/`==` content.
+- [ ] **T1.7d** labels lowering, TCO (self tail call → loop), if/while/
+      loop statements, if/match as expressions.
+- [ ] **T1.7e** closures (capture boxes), fn values, dyn + vtables,
+      generic monomorphization (types + fns), bounds-checked calls.
+- [ ] **T1.7** (completes when a-d/e cover the conformance map rows) rc insertion per the pure-local
       counting rules (container ownership: walk elements only at the
       rc==1 death check), zeroed allocations, defer LIFO on every exit
       path except panic, tail-call→loop, labels lowering.
