@@ -59,7 +59,7 @@ to wasm → gate green → 0.1.0. Native compilation is **not** part of
       README stub, and LICENSE (MIT). Everything else — the old
       compiler, corpus, spec, site, tools — lives on the archive branch:
       **reference-only; copying code is forbidden.**
-- [ ] **T0.3 Rewrite the spec (the law).** From the design section below,
+- [x] **T0.3 Rewrite the spec (the law).** From the design section below,
       write the four documents fresh: `spec/syntax.md`,
       `spec/type-system.md`, `spec/module-system.md`, `spec/spec.md`
       (memory model, compilation model, determinism, version policy —
