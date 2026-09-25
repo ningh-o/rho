@@ -26,7 +26,7 @@ ident    := [a-zA-Z_][a-zA-Z0-9_]*
 Keywords (reserved in every position they could collide):
 
 ```
-fn let mut const static extern struct enum trait impl for dyn
+fn let mut const static extern struct enum trait impl for dyn test
 use pub as if else while loop match return defer break continue
 new null true false
 i8 i16 i32 i64 u8 u16 u32 u64 usize f32 f64 bool string
@@ -99,13 +99,14 @@ triple-quoted string that never closes is a compile error.
 ## 3. Types
 
 ```
-type      := builtin | ptr | opt | slice | fn_type | app
+type      := builtin | ptr | opt | slice | fn_type | app | dyn
 builtin   := i8|i16|i32|i64|u8|u16|u32|u64|usize|f32|f64|bool|string
 ptr       := '*' type            (*T — non-null heap pointer)
 opt       := '?' type            (?T — sugar for Option[T])
 slice     := '[' ']' type        ([]T — slice of T, Go style)
 fn_type   := 'fn' '(' [types] ')' ['->' type]   (unnamed param types)
 app       := ident ['[' types ']']  (Pair[i32, f64]; bare ident = named type)
+dyn       := 'dyn' ident            (trait object; the ident names the trait)
 ```
 
 `?T` parses as `Option[T]` before type checking sees it; there is one
@@ -118,7 +119,7 @@ A module is a sequence of declarations; order within a module is free.
 
 ```
 decl      := fndecl | struct | enum | trait | impl | const | static
-           | extern | use | pub_use
+           | extern | use | pub_use | test
 ```
 
 ### 4.1 Functions
@@ -211,6 +212,19 @@ are private to the importing module. `pub use` is legal only in a
 facade (`lib.rho`) and has exactly the four forms above (see
 `module-system.md`).
 
+### 4.5 Test blocks
+
+```
+test      := 'test' string block
+```
+
+A top-level `test "name" { … }` declares one test: a synthesized void
+fn in its own module — white-box, it sees the module's private items —
+judged by panic (assert) versus clean return. Test blocks are checked
+in every mode and emitted only under the `rho test` verb; the full
+protocol (file tests, golden headers, the runner's law) lives in the
+design (TODO.md §17).
+
 ## 5. Statements
 
 ```
@@ -256,7 +270,7 @@ ladder, with `as` inserted Rust-style above the multiplicative level):
 | level | operators            |
 | ----- | -------------------- |
 | 11    | postfix: call, field, index, slice, `?` |
-| 10    | unary `-` `!`        |
+| 10    | unary `-` `!` `*` `~`  |
 | 9     | `as`                 |
 | 8     | `*` `/` `%`          |
 | 7     | `+` `-`              |
@@ -295,7 +309,8 @@ there is no truthiness.
 ### 6.7 `as`
 
 `e as T` — the only conversion (see `type-system.md` §3 for the full
-matrix). Binds tighter than comparisons, looser than `||`.
+matrix). Level 9 exactly: looser than unary (`-x as T` reads
+`(-x) as T`), tighter than every binary operator below it.
 
 ### 6.8 Closures and function values
 

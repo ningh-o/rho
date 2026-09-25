@@ -165,9 +165,9 @@ Binary arithmetic/bitwise/shift/comparison operators require both
 sides the **same** type; the result is that type (comparisons yield
 `bool`). There is no mixed-width arithmetic: widen explicitly with
 `as`. `&&`/`||` take and return `bool`. Unary `-` takes the operand's
-type (integer or float); `!` is bool-not (there is no integer bitwise
-not operator — use `x ^ -1` idioms; the law is one operator, one
-meaning).
+type (integer or float); `!` is bool-not; `~` is integer bitwise-not —
+one operator, one meaning (`!` never meets an integer, `~` never meets
+a `bool`, neither converts).
 
 Integer semantics (wrap, `MIN / -1 = MIN`, `/0 %0` panic, shifts mask
 by the left width) and float semantics (IEEE-754, `/0.0` = inf) are
