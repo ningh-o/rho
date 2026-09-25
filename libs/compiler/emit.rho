@@ -3419,6 +3419,17 @@ fn build_string_pair(e: *Expr, pool: *Pool, env: *Env, prog: *Prog,
                 na = na + 1;
                 nl.v = nl.v + 2;
               } else {
+                // any other string-buildable argument (a nested
+                // format, a concat, a string-returning call) rides
+                // its built pair
+                let sph = build_string_pair(arg, pool, env, prog,
+                                            nl);
+                if sph.ok {
+                  text = text + sph.text;
+                  chain_a[na] = sph.a;
+                  chain_l[na] = sph.l;
+                  na = na + 1;
+                } else {
                 // an integer expression renders via $w_itoa
                 text = text + emit_expr(pool, arg, env, prog, nl) +
                        "    call $w_itoa\n" +
@@ -3430,6 +3441,7 @@ fn build_string_pair(e: *Expr, pool: *Pool, env: *Env, prog: *Prog,
                 chain_l[na] = nl.v + 1;
                 na = na + 1;
                 nl.v = nl.v + 2;
+                }
               }
               }
               }
