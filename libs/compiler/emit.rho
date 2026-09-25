@@ -638,6 +638,11 @@ fn push_string(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
              "    (i64.const " + pool_len(pool, raw).to_str() + ")\n";
     },
     Option.None => {
+      if e.tag == parse.EX_VAR && str_static_is(prog, e.name) {
+        // a string static reads its global pair
+        return "    (global.get $g_" + e.name + ")\n" +
+               "    (global.get $g_" + e.name + "_l)\n";
+      }
       let a: i64 = env_str_look(env, e.name);
       if a < 0 {
         let lslot: i64 = env_str_len_slot(env, e.name);
@@ -1524,6 +1529,20 @@ fn static_global(prog: *Prog, name: string) -> string {
   return "";
 }
 
+// a static of string type: its pair rides the two globals
+// $g_NAME / $g_NAME_l
+fn str_static_is(prog: *Prog, name: string) -> bool {
+  let mut i: usize = 0;
+  while i < prog.nconsts {
+    if prog.consts[i] == name && prog.cstatic[i] &&
+        prog.ctypes[i] == "string" {
+      return true;
+    }
+    i = i + 1;
+  }
+  return false;
+}
+
 fn const_value(prog: *Prog, name: string) -> i64 {
   let mut i: usize = 0;
   while i < prog.nconsts {
@@ -1686,6 +1705,9 @@ fn is_stringy(e: *Expr, env: *Env, prog: *Prog) -> bool {
     return true;
   }
   if e.tag == parse.EX_VAR {
+    if str_static_is(prog, e.name) {
+      return true;
+    }
     return env_str_is_runtime(env, e.name) &&
            env_kind_of(env, e.name) == 1;
   }
@@ -1768,6 +1790,9 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
     if a0.tag == parse.EX_VAR && env_str_is_runtime(env, a0.name) {
       return "    (local.get " +
              env_str_len_slot(env, a0.name).to_str() + ")\n";
+    }
+    if a0.tag == parse.EX_VAR && str_static_is(prog, a0.name) {
+      return "    (global.get $g_" + a0.name + "_l)\n";
     }
     match fold_string(a0, env) {
       Option.Some(raw) => {
@@ -3185,6 +3210,20 @@ fn build_string_pair(e: *Expr, pool: *Pool, env: *Env, prog: *Prog,
     Option.None => {},
   }
   if e.tag == parse.EX_VAR {
+    if str_static_is(prog, e.name) {
+      // a string static reads its global pair into fresh slots
+      let sa: i64 = nl.v;
+      nl.v = nl.v + 1;
+      let sl: i64 = nl.v;
+      nl.v = nl.v + 1;
+      let sps = new SPair { ok: true, text:
+        "    (global.get $g_" + e.name + ")\n" +
+        "    (local.set " + sa.to_str() + ")\n" +
+        "    (global.get $g_" + e.name + "_l)\n" +
+        "    (local.set " + sl.to_str() + ")\n",
+        a: sa, l: sl };
+      return sps;
+    }
     let kind: i64 = env_kind_of(env, e.name);
     if kind == 0 {
       let addr: i64 = env_str_look(env, e.name);
@@ -4651,6 +4690,20 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
               body = body + emit_expr(pool, e, env, prog, nl);
             }
           } else {
+          if str_static_is(prog, st.name) {
+            // a string static's rebind writes BOTH globals
+            let sps2 = build_string_pair(e, pool, env, prog, nl);
+            if sps2.ok {
+              body = body + sps2.text;
+              body = body + "    (local.get " + sps2.a.to_str() +
+                     ")\n    (global.set $g_" + st.name + ")\n" +
+                     "    (local.get " + sps2.l.to_str() +
+                     ")\n    (global.set $g_" + st.name + "_l)\n";
+            } else {
+              body = body + emit_expr(pool, e, env, prog, nl);
+              body = body + "    (global.set $g_" + st.name + ")\n";
+            }
+          } else {
           body = body + emit_expr(pool, e, env, prog, nl);
           if slot >= 0 {
             body = body + wrap_snippet(env_width_of(env, st.name));
@@ -4660,6 +4713,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
             if len(g) > 0 {
               body = body + "    (global.set " + g + ")\n";
             }
+          }
           }
           }
           }
@@ -5353,9 +5407,33 @@ pub fn emit(prog: *Prog) -> string {
   let mut gi: usize = 0;
   while gi < prog.nconsts {
     if prog.cstatic[gi] {
+      let mut ginit: string = prog.cvals[gi].to_str();
+      if prog.ctypes[gi] == "string" {
+        // a string static's pair rides TWO globals — the address and
+        // the length — with a literal initializer resolving to its
+        // rodata pair at emit time
+        let ie: *Expr = prog.cexprs[gi];
+        ginit = "0";
+        if ie.tag == parse.EX_STR {
+          let sa: i64 = pool_intern(pool, ie.name);
+          ginit = sa.to_str();
+          out = out + "  (global $g_" + prog.consts[gi] +
+                 " (mut i64) (i64.const " + ginit + "))\n";
+          out = out + "  (global $g_" + prog.consts[gi] +
+                 "_l (mut i64) (i64.const " +
+                 pool_len(pool, ie.name).to_str() + "))\n";
+          gi = gi + 1;
+          continue;
+        }
+        out = out + "  (global $g_" + prog.consts[gi] +
+               " (mut i64) (i64.const 0))\n";
+        out = out + "  (global $g_" + prog.consts[gi] +
+               "_l (mut i64) (i64.const 0))\n";
+        gi = gi + 1;
+        continue;
+      }
       out = out + "  (global $g_" + prog.consts[gi] +
-             " (mut i64) (i64.const " + prog.cvals[gi].to_str() +
-             "))\n";
+             " (mut i64) (i64.const " + ginit + "))\n";
     }
     gi = gi + 1;
   }
