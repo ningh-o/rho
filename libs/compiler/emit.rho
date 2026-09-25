@@ -96,6 +96,16 @@ pub fn wat_data_body(raw: string) -> string {
 
 // the decimal runtime the generated module carries: $w_i64 writes
 // |v|'s digits backward into [2048, 4096) and returns {addr, len}
+const BOOLTEXT: string =
+  "  (func $w_bool (param $v i64) (result i32) (result i32)\n" +
+  "    (if (result i32) (i64.ne (local.get $v) (i64.const 0))\n" +
+  "      (then (i32.const 4030))\n" +
+  "      (else (i32.const 4034)))\n" +
+  "    (if (result i32) (i64.ne (local.get $v) (i64.const 0))\n" +
+  "      (then (i32.const 4))\n" +
+  "      (else (i32.const 5)))\n" +
+  "  )\n";
+
 const STREQ: string =
   "  (func $w_streq (param $ap i64) (param $al i64) (param $bp i64)" +
   " (param $bl i64) (result i64)\n" +
@@ -176,6 +186,26 @@ struct Env {
   slens: []i64,
   sraws: []string,
   sn: usize,
+}
+
+fn env_bool_bind(e: *Env, name: string) {
+  e.snames[e.sn] = name + "#b";
+  e.saddrs[e.sn] = 0 - 1000; // bool marker
+  e.slens[e.sn] = 0;
+  e.sraws[e.sn] = "";
+  e.sn = e.sn + 1;
+}
+
+fn env_bool_is(e: *Env, name: string) -> bool {
+  let want: string = name + "#b";
+  let mut i: usize = 0;
+  while i < e.sn {
+    if e.snames[i] == want {
+      return true;
+    }
+    i = i + 1;
+  }
+  return false;
 }
 
 fn env_new(cap: usize) -> *Env {
@@ -614,6 +644,18 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
                                                            arg.name));
               folded = true;
             }
+            if !folded && arg.tag == parse.EX_VAR &&
+                env_bool_is(env, arg.name) {
+              let bslot: i64 = env_look(env, arg.name);
+              body = body + "    (local.get " + bslot.to_str() +
+                     ")\n    call $w_bool\n" +
+                     "    (local.set $l)\n    (local.set $a)\n" +
+                     "    (i32.store (i32.const 64) (local.get $a))\n" +
+                     "    (i32.store (i32.const 68) (local.get $l))\n" +
+                     "    (drop (call $fd_write (i32.const 1) " +
+                     "(i32.const 64) (i32.const 1) (i32.const 96)))\n";
+              folded = true;
+            }
             if !folded {
               match fold_string(arg, env) {
                 Option.Some(raw) => {
@@ -648,6 +690,9 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
               body = body + "    (local.set " + next_local.v.to_str() +
                      ")\n";
               env_bind(env, st.name, next_local.v);
+              if e.tag == parse.EX_BIN && e.op >= 5 && e.op <= 10 {
+                env_bool_bind(env, st.name);
+              }
               next_local.v = next_local.v + 1;
             },
           }
@@ -808,6 +853,7 @@ pub fn emit(prog: *Prog) -> string {
   out = out + "  (export \"memory\" (memory 0))\n";
   out = out + RUNTIME;
   out = out + STREQ;
+  out = out + BOOLTEXT;
   out = out + fntext;
   out = out + "  (export \"_start\" (func $_start))\n";
   out = out + "  (func $_start (local $a i32) (local $l i32) (local $rc i32)\n";
@@ -819,6 +865,7 @@ pub fn emit(prog: *Prog) -> string {
   out = out + body;
   out = out + "    (call $proc_exit (local.get 2))\n";
   out = out + "  )\n";
+  out = out + "  (data (i32.const 4030) \"truefalse\")\n";
   let mut d: usize = 0;
   while d < pool.n {
     out = out + "  (data (i32.const " + pool.addrs[d].to_str() +
