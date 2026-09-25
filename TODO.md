@@ -108,38 +108,47 @@ section — no placeholder stages. boot is the reference compiler.
       modules); `--set name=value` with the **widened type face** (bool,
       all integer widths, f32/f64, string; range-checked; refusal = exit
       2).
-- [ ] **T1.7a** (landed; the vertical slice) Lower + emit core: the
+- [x] **T1.7a** Lower + emit core: the
       WAT pipeline (wat2wasm pinned, tmp+rename law), kernel.wat
       (allocator/rc glue/decimal print/wasi tail), scalar types,
       literals, arithmetic (wrap/narrow/shift-mask/div-panic), calls
       with the chosen-overload annotation, printf desugar (ints, bools,
       strings), consts/statics, `_start`. hello→wasmtime green.
-- [x] **T1.7b(partial)** structs + *T — boxed layout, field access through pointers, methods with self, new with the zeroed law, string concat/content ==, len; memory.grow in the allocator; rc drop-fn registry + field lvalues + defer emission remain + `*T` (boxed layout, field access through
-      pointers, methods, `new` with the zeroed/rc law, drop fns),
-      managed-value moves (retain/release discipline), defer on every
-      exit, assignment (simple + compound + through pointers).
-- [ ] **T1.7c** enums + match (tag dispatch, patterns/binders,
-      exhaustiveness), Option/Result + `?` propagation, `make`/slices/
-      len/index/`a..b`, string concat/`==` content.
-- [ ] **T1.7d** labels lowering, TCO (self tail call → loop), if/while/
-      loop statements, if/match as expressions.
-- [ ] **T1.7e** closures (capture boxes), fn values, dyn + vtables,
-      generic monomorphization (types + fns), bounds-checked calls.
-- [ ] **T1.7** (completes when a-d/e cover the conformance map rows) rc insertion per the pure-local
-      counting rules (container ownership: walk elements only at the
-      rc==1 death check), zeroed allocations, defer LIFO on every exit
-      path except panic, tail-call→loop, labels lowering.
+- [x] **T1.7b** structs + *T — boxed layout, field access through
+      pointers, methods, `new` with the zeroed/rc law, drop-fn registry,
+      managed-value moves (retain/release discipline), defer LIFO on
+      every exit (incl. continue/break), assignment (simple + compound
+      + through pointers).
+- [x] **T1.7c** enums + match (tag dispatch, patterns/binders,
+      exhaustiveness + wildcard gating), Option/Result + `?`
+      propagation, `make`/slices/len/index/`a..b`, string concat/`==`
+      content.
+- [x] **T1.7d** labels lowering, TCO (self tail call → loop,
+      million-deep recursion verified), if/while/loop statements,
+      if/match as expressions (escape ownership retained).
+- [ ] **T1.7e** closures (capture boxes) ✅, fn values (trampolines) ✅,
+      generic fn monomorphization (bind/clone/emit) ✅; **remain: dyn +
+      vtables, generic struct instantiation, bounds-checked calls**.
+- [ ] **T1.7** (completes when a-e cover the conformance map rows) rc insertion per the pure-local
+      counting rules ✅ (incl. enum-payload deep retain/release, let/assign
+      copy retain), zeroed allocations ✅, container ownership walk at the
+      rc==1 death check, tail-call→loop ✅, labels lowering ✅.
 - [ ] **T1.8** Kernel prelude (the whole kernel, nothing more):
       Option/Result + `?` machinery, `to_str` family + variadic format
       sinks (printf/eprintf/format desugaring), panic/assert + hooks,
       allocator + rc glue, string primitives (`__streq`, concat), wasi
       raw-syscall tail (fd_write/proc_exit/args/file io). `read_line`
       does **not** live here — it is std.io's job.
-- [ ] **T1.9** CLI: build/run/test/fmt/check; `-g` full symbols; fmt
-      canonical roundtrip byte-for-byte.
-- [x] **T1.10(tranches 1+2 underway)** — 42 programs in-repo with regenerated goldens; ?T/weak adaptations proven (linked list, weak death observation); n05-n11 string family deferred: printf multi-chunk output drifts vs archive goldens (self-recorded goldens masked it; the fb/printf assembly needs a real fix next session): adapt the first batch of archive
-      corpus programs + the new-feature programs; goldens regenerated
-      from boot. Every later tranche is its own TODO.
+      *(status: the embedded kernel serves ints/bools/strings; f64
+      to_str needs the exact bigint decimal algorithm; mechanism-set
+      audit pending.)*
+- [ ] **T1.9** CLI: build/run/fmt/check ✅ (`-g` routes to the emitter);
+      `rho test` delegates to the shell runner — the in-binary form
+      lands with the gate; fmt canonical roundtrip green (21/21).
+- [x] **T1.10(tranches 1+2)** — 46 in-repo programs with goldens judged
+      against the archive; ?T/weak/rc/churn/string-family adaptations
+      proven. **Remain: n10_format_edges traps (deep fb case);
+      tranche 3 (new-feature programs) not yet written.**
 
 ## Phase 2 — the self-hosted compiler, written in rho (wasm only)
 
