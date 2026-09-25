@@ -189,6 +189,7 @@ enum {
   // star
   USE_PLAIN = 0, USE_PUB_MOD = 1, USE_PUB_ITEM = 2, USE_PUB_AS = 3,
   USE_PUB_STAR = 4,
+  USE_DEAD = 8, // or-ed in when a comptime-folded branch kills the use
   // enum variant forms
   VAR_UNIT = 0, VAR_TUPLE = 1, VAR_STRUCT = 2,
   // new forms
@@ -227,7 +228,7 @@ typedef struct Module {
   struct Module *importer; // first module that pulled this in
   SymTab *syms;    // collected symbols (sem.h Sym)
   Vec uses;        // of UseBind — the module's use closure, use order
-  bool checked;
+  bool prepared; // collected + consts resolved at load time
 } Module;
 
 Module *module_load(Arena *a, const char *path);       // read + lex + parse

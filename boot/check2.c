@@ -1195,17 +1195,36 @@ static Type *check_expr(FnCtx *c, NodeRef er, Type *expected) {
     return type_fn(sig);
   }
   case NT_QMARK: {
-    // T1.6 completes the enclosing-return compatibility; type-wise the
-    // operand must be Option/Result and the value is the payload
+    // the operand is Option/Result; the value is the payload; the
+    // enclosing return must be compatible (Option: any payload;
+    // Result: exact error type)
     Type *ot = check_expr(c, e->a, NULL);
     EnumDef *opt = prelude_enum("Option");
     EnumDef *res = prelude_enum("Result");
-    if (is_option_of(ot, opt) && ot->nargs == 1)
-      return ot->args[0];
-    if (is_option_of(ot, res) && ot->nargs == 2)
-      return ot->args[0];
-    err_at(c, e, "? applies to Option or Result, got %s", type_name(ot));
-    return ty_unit;
+    Type *payload = NULL;
+    if (is_option_of(ot, opt) && ot->nargs == 1) {
+      payload = ot->args[0];
+      if (c->ret) {
+        if (!(is_option_of(c->ret, opt) && c->ret->nargs == 1))
+          err_at(c, e, "? on Option needs the enclosing fn to return "
+                       "Option, it returns %s",
+                 type_name(c->ret));
+      }
+    } else if (is_option_of(ot, res) && ot->nargs == 2) {
+      payload = ot->args[0];
+      if (c->ret) {
+        if (!(is_option_of(c->ret, res) && c->ret->nargs == 2 &&
+              type_eq(c->ret->args[1], ot->args[1])))
+          err_at(c, e, "? on Result needs the enclosing fn to return "
+                       "Result with error type %s, it returns %s",
+                 type_name(ot->args[1]), type_name(c->ret));
+      }
+    } else {
+      err_at(c, e, "? applies to Option or Result, got %s",
+             type_name(ot));
+      return ty_unit;
+    }
+    return payload;
   }
   case NT_IF_EXPR: {
     Type *ct = check_expr(c, e->a, ty_bool);
@@ -1494,6 +1513,22 @@ static void check_stmt(FnCtx *c, NodeRef sr) {
     return;
   }
   case NT_IF: {
+    if (s->op == 1) {
+      // comptime-folded at load: only the live branch exists
+      if (s->ival) {
+        ctx_push_scope(c);
+        check_block(c, s->b);
+        ctx_pop_scope(c);
+      } else if (s->c != NO_REF) {
+        ctx_push_scope(c);
+        if (node_get(s->c)->kind == NT_IF)
+          check_stmt(c, s->c);
+        else
+          check_block(c, s->c);
+        ctx_pop_scope(c);
+      }
+      return;
+    }
     Type *ct = check_expr(c, s->a, ty_bool);
     if (ct->kind != TY_BOOL)
       err_at(c, s, "if condition is %s, want bool", type_name(ct));

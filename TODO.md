@@ -102,7 +102,7 @@ section — no placeholder stages. boot is the reference compiler.
       signature match; `[T: Bound]` bounds verified per instantiation;
       **non-null pointers by default, `?T` = Option sugar**, no smart
       casts; element-wise `==` behind the comparability law).
-- [ ] **T1.6** Checker III — errors and folding: `?` on Result/Option;
+- [x] **T1.6** Checker III — errors and folding: `?` on Result/Option;
       panic law; comptime folding of root-build-parameter conditions
       (dead branch parsed then skipped whole; reachability prunes
       modules); `--set name=value` with the **widened type face** (bool,

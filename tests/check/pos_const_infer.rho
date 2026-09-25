@@ -1,0 +1,12 @@
+// const inference + annotation pinning + comptime conditions
+const N = 4;
+const BIG: i64 = 1_000;
+const NAME: string = "rho";
+fn main() -> i32 {
+  if N > 2 {
+    printf("{} {}\n", BIG, NAME);
+  } else {
+    printf("dead\n");
+  }
+  return 0;
+}

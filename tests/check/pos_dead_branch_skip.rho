@@ -1,0 +1,12 @@
+// dead branches are parsed then skipped whole: the unknown name inside
+// is never checked
+const MODE: i32 = 1;
+fn main() -> i32 {
+  if MODE == 1 {
+    printf("one\n");
+  } else {
+    let x: i32 = totally_unknown_name;
+    printf("{}\n", x);
+  }
+  return 0;
+}

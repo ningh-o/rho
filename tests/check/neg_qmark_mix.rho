@@ -1,0 +1,6 @@
+// expect: needs the enclosing fn to return Option
+fn f(o: Option[i32]) -> Result[i32, string] {
+  let v: i32 = o?;
+  return Result.Ok(v);
+}
+fn main() -> i32 { return 0; }

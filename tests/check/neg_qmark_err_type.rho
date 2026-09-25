@@ -1,0 +1,6 @@
+// expect: error type string
+fn f(r: Result[i32, string]) -> Result[i32, i64] {
+  let v: i32 = r?;
+  return Result.Ok(v);
+}
+fn main() -> i32 { return 0; }

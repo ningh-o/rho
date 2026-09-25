@@ -134,6 +134,9 @@ extern Module *g_prelude_mod; // the <prelude> module
 extern Module *g_entry_mod;   // the entry module
 
 Type *resolve_type_pub(Module *m, NodeRef tr, GScope *g);
+void for_each_live_use(Module *m, bool (*cb)(Module *, NodeRef));
+void const_resolve_module_pub(Module *m);
+void prune_dead_uses(Module *m);
 
 // ---------------------------------------------------------------- symbols
 
@@ -167,9 +170,11 @@ typedef struct ConstDef {
   const char *name;
   Type *ty;
   NodeRef init;
+  NodeRef decl;
   struct Module *mod;
-  bool is_root;   // root-file const (build parameter, prelude status)
+  bool is_root;    // root-file const (build parameter, prelude status)
   bool overridden; // --set replaced the value
+  void *cval;      // resolved comptime value (check3's CVal), or NULL
 } ConstDef;
 
 typedef struct Sym {

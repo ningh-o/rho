@@ -14,13 +14,15 @@ Module *g_entry_mod;
 Type *ty_i8, *ty_i16, *ty_i32, *ty_i64, *ty_u8, *ty_u16, *ty_u32,
     *ty_u64, *ty_usize, *ty_f32, *ty_f64, *ty_bool, *ty_string, *ty_unit;
 
+void init_builtin_types(void);
+
 static Type *new_type(TyKind k) {
   Type *t = arena_alloc(g_arena, sizeof(Type), 8);
   t->kind = k;
   return t;
 }
 
-static void init_builtin_types(void) {
+void init_builtin_types(void) {
   ty_i8 = new_type(TY_I8);
   ty_i16 = new_type(TY_I16);
   ty_i32 = new_type(TY_I32);
@@ -383,28 +385,38 @@ static Module *resolve_use(Program *p, Module *importer, NodeRef use_r) {
   return NULL;
 }
 
+// load-time module preparation: collect symbols, resolve consts, fold
+// dead branches — so a use inside a comptime-dead branch never loads
+void module_prepare(Program *p, Module *m);
+
+static Program *g_program_for_load;
+
+static bool load_one_use(Module *m, NodeRef d) {
+  Node *n = node_get(d);
+  Module *t = resolve_use(g_program_for_load, m, d);
+  if (!t)
+    return true; // reported; keep walking for more diagnostics
+  UseBind *ub = vec_push(&m->uses);
+  ub->alias = n->name2 ? n->name2
+                       : node_get(reflist_at(n->list,
+                                             reflist_len(n->list) - 1))
+                             ->name;
+  ub->target = t;
+  ub->decl = d;
+  return true;
+}
+
+
 bool program_load_graph(Program *p, const char *entry_path) {
+  g_program_for_load = p;
   p->entry = module_load(g_arena, entry_path);
   program_add(p, p->entry, NULL);
 
-  // BFS over use declarations in load order (deterministic)
+  // BFS in load order (deterministic); each module is prepared (consts
+  // folded, dead branches marked) before its uses are resolved
   for (Module *m = p->modules; m; m = m->next) {
-    for (size_t i = 0; i < reflist_len(m->decls); i++) {
-      NodeRef d = reflist_at(m->decls, i);
-      Node *n = node_get(d);
-      if (n->kind != NT_USE || n->op != USE_PLAIN)
-        continue; // pub use re-exports resolve during collection
-      Module *t = resolve_use(p, m, d);
-      if (!t)
-        continue;
-      UseBind *ub = vec_push(&m->uses);
-      ub->alias = n->name2 ? n->name2
-                           : node_get(reflist_at(n->list,
-                                                 reflist_len(n->list) - 1))
-                                 ->name;
-      ub->target = t;
-      ub->decl = d;
-    }
+    module_prepare(p, m);
+    for_each_live_use(m, load_one_use);
   }
   return !g_had_error;
 }
@@ -746,6 +758,7 @@ static void collect_fns(Program *p, Module *m) {
       memset(cd, 0, sizeof(ConstDef));
       cd->name = d->name;
       cd->init = d->b;
+      cd->decl = dr;
       cd->mod = m;
       cd->is_root = (m == p->entry);
       s->u.konst = cd;
@@ -822,21 +835,46 @@ static void collect_fns(Program *p, Module *m) {
   }
 }
 
+void module_prepare(Program *p, Module *m) {
+  if (m->prepared)
+    return;
+  g_program = p;
+  collect_module(p, m);
+  collect_fns(p, m);
+  const_resolve_module_pub(m);
+  prune_dead_uses(m);
+  m->prepared = true;
+}
+
 bool check_program(Program *p) {
   g_program = p;
-  if (!ty_i32)
-    init_builtin_types();
 
   // the prelude module: first in load order, always in scope
   g_prelude_mod = module_parse_src("<prelude>", prelude_src());
   program_add(p, g_prelude_mod, NULL);
   g_entry_mod = p->entry;
 
-  // collect: prelude first so its types exist for everyone
-  for (Module *m = p->modules; m; m = m->next)
-    collect_module(p, m);
-  for (Module *m = p->modules; m; m = m->next)
+  // collect: prelude first so its types exist for everyone; modules
+  // prepared at load time are skipped
+  for (Module *m = p->modules; m; m = m->next) {
+    if (!m->prepared)
+      collect_module(p, m);
+  }
+  for (Module *m = p->modules; m; m = m->next) {
+    if (m->prepared)
+      continue; // fns collected at load time
     collect_fns(p, m);
+  }
+
+  // --set overrides land after inference, before bodies see them
+  {
+    extern int sets_apply(Program *p);
+    extern bool g_set_refused;
+    if (sets_apply(p) != 0) {
+      g_set_refused = true;
+      return false;
+    }
+  }
 
   // fn signatures (needs struct/enum/trait tables complete)
   for (Module *m = p->modules; m; m = m->next) {

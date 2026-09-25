@@ -16,9 +16,12 @@ static void usage(FILE *out) {
           "  rho selftest\n");
 }
 
+void init_builtin_types(void);
+
 int main(int argc, char **argv) {
   g_arena = arena_new(1 << 20);
   vec_init(&g_diags, sizeof(Diag));
+  init_builtin_types();
   if (argc < 2) {
     usage(stderr);
     return EXIT_USAGE;

@@ -37,11 +37,26 @@ int cmd_check(int argc, char **argv) {
   }
   const char *path = argv[0];
   Program *p = program_new();
+  for (int i = 1; i < argc; i++) {
+    if (strncmp(argv[i], "--set ", 6) == 0) {
+      char *eq = strchr(argv[i] + 6, '=');
+      if (!eq) {
+        fprintf(stderr, "rho: --set needs name=value\n");
+        return EXIT_USAGE;
+      }
+      SetOverride *so = vec_push(&p->sets);
+      so->name = intern(argv[i] + 6, (size_t)(eq - (argv[i] + 6)));
+      so->value = eq + 1;
+    }
+  }
   if (!program_load_graph(p, path)) {
     diags_print(stderr);
     return EXIT_COMPILE;
   }
   bool ok = check_program(p);
+  extern bool g_set_refused;
+  if (g_set_refused)
+    return EXIT_USAGE; // exit 2: refusal
   if (!ok) {
     diags_print(stderr);
     return EXIT_COMPILE;

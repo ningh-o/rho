@@ -1411,6 +1411,7 @@ static char *read_whole_file(const char *path, size_t *n) {
 
 Module *module_parse_src(const char *path, const char *src) {
   Module *m = arena_alloc(g_arena, sizeof(Module), 8);
+  memset(m, 0, sizeof(Module));
   m->path = intern_c(path);
   // name = file stem
   const char *slash = strrchr(path, '/');
