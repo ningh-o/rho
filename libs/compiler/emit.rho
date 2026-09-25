@@ -221,6 +221,16 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env) -> string {
     }
     return "    (local.get " + slot.to_str() + ")\n";
   }
+  if e.tag == parse.EX_CALL {
+    let mut out: string = "";
+    let mut k: usize = 0;
+    while k < len(e.args) {
+      out = out + emit_expr(pool, e.args[k], env);
+      k = k + 1;
+    }
+    out = out + "    call $u_" + e.name + "\n";
+    return out;
+  }
   // binary: operand code, then the operator
   let mut out: string = "";
   match e.lhs {
@@ -240,11 +250,23 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env) -> string {
 }
 
 fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
-               next_local: *NextLocal) -> string {
+               next_local: *NextLocal, in_fn: bool) -> string {
   let mut body: string = "";
   let mut i: usize = 0;
   while i < len(nodes) {
     let st = nodes[i];
+    if st.tag == parse.ST_RET && in_fn {
+      // a fn's return: the value rides when the statement carries one
+      match st.val {
+        Option.Some(rv) => {
+          body = body + emit_expr(pool, rv, env);
+          body = body + "    return\n";
+        },
+        Option.None => {
+          body = body + "    (i64.const 0)\n";
+        },
+      }
+    }
     if st.tag == parse.ST_PF {
       let pieces: []string = parse.fmt_pieces(st.fmt);
       let mut pi: usize = 0;
@@ -299,10 +321,11 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
           // flat if: the condition's stack code precedes the keyword
           body = body + emit_expr(pool, cond, env);
           body = body + "    if\n";
-          body = body + emit_stmts(st.body, pool, env, next_local);
+          body = body + emit_stmts(st.body, pool, env, next_local, in_fn);
           if len(st.body2) > 0 {
             body = body + "    else\n";
-            body = body + emit_stmts(st.body2, pool, env, next_local);
+            body = body + emit_stmts(st.body2, pool, env, next_local,
+                                     in_fn);
           }
           body = body + "    end\n";
         },
@@ -315,7 +338,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
           body = body + "    (loop $w\n";
           body = body + emit_expr(pool, cond, env);
           body = body + "    if\n";
-          body = body + emit_stmts(st.body, pool, env, next_local);
+          body = body + emit_stmts(st.body, pool, env, next_local, in_fn);
           body = body + "      (br $w)\n";
           body = body + "    end\n";
           body = body + "    )\n";
@@ -333,12 +356,47 @@ struct NextLocal {
   v: i64,
 }
 
-pub fn emit(nodes: []*Stmt) -> string {
+// one user fn: params as i64 locals, an i64 result
+fn emit_fn(fd: *FnDef, pool: *Pool) -> string {
+  let env = env_new(64);
+  let next_local = new NextLocal { v: 0 };
+  let mut k: usize = 0;
+  while k < len(fd.params) {
+    env_bind(env, fd.params[k], next_local.v);
+    next_local.v = next_local.v + 1;
+    k = k + 1;
+  }
+  let body: string = emit_stmts(fd.body, pool, env, next_local, true);
+  let mut out: string = "  (func $u_" + fd.name;
+  let mut q: i64 = 0;
+  while q < next_local.v {
+    out = out + " (param i64)";
+    q = q + 1;
+  }
+  out = out + " (result i64)\n";
+  q = 0;
+  while q < next_local.v {
+    out = out + "    (local $p" + q.to_str() + " i64)\n";
+    q = q + 1;
+  }
+  // local indices: params already occupy 0..n; lets continue after
+  out = out + body;
+  out = out + "    (i64.const 0)\n  )\n";
+  return out;
+}
+
+pub fn emit(prog: *Prog) -> string {
   let pool = new_pool();
   let env = env_new(64);
   let next_local = new NextLocal { v: 2 }; // 0/1 are the $a/$l pair
-  let body: string = emit_stmts(nodes, pool, env, next_local);
+  let body: string = emit_stmts(prog.main, pool, env, next_local, false);
   let next_local_n: i64 = next_local.v;
+  let mut fntext: string = "";
+  let mut fi: usize = 0;
+  while fi < len(prog.fns) {
+    fntext = fntext + emit_fn(prog.fns[fi], pool);
+    fi = fi + 1;
+  }
   // assemble: header, memory, runtime, _start with the let locals
   let mut out: string = "";
   out = out + "(module\n";
@@ -350,6 +408,7 @@ pub fn emit(nodes: []*Stmt) -> string {
   out = out + "  (memory 1)\n";
   out = out + "  (export \"memory\" (memory 0))\n";
   out = out + RUNTIME;
+  out = out + fntext;
   out = out + "  (export \"_start\" (func $_start))\n";
   out = out + "  (func $_start (local $a i32) (local $l i32)\n";
   let mut li: i64 = 2;

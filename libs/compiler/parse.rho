@@ -9,14 +9,16 @@ pub const EX_LIT: i32 = 0;
 pub const EX_VAR: i32 = 1;
 pub const EX_BIN: i32 = 2;
 pub const EX_STR: i32 = 3;
+pub const EX_CALL: i32 = 4;
 
 pub struct Expr {
   tag: i32,      // EX_*
   lit: i64,      // literal value
-  name: string,  // variable name
+  name: string,  // variable / callee name
   op: i64,       // binary operator code
   lhs: ?*Expr,
   rhs: ?*Expr,
+  args: []*Expr, // call arguments
 }
 
 pub const ST_PF: i32 = 0;
@@ -45,17 +47,20 @@ fn mk_stmt(tag: i32) -> *Stmt {
 
 pub fn lit(v: i64) -> *Expr {
   return new Expr { tag: EX_LIT, lit: v, name: "", op: 0,
-                     lhs: Option.None, rhs: Option.None };
+                     lhs: Option.None, rhs: Option.None ,
+                     args: make([]*Expr, 0) };
 }
 
 pub fn var(name: string) -> *Expr {
   return new Expr { tag: EX_VAR, lit: 0, name: name, op: 0,
-                     lhs: Option.None, rhs: Option.None };
+                     lhs: Option.None, rhs: Option.None ,
+                     args: make([]*Expr, 0) };
 }
 
 pub fn strlit(text: string) -> *Expr {
   return new Expr { tag: EX_STR, lit: 0, name: text, op: 0,
-                     lhs: Option.None, rhs: Option.None };
+                     lhs: Option.None, rhs: Option.None ,
+                     args: make([]*Expr, 0) };
 }
 
 // operator codes: 0=+ 1=- 2=* 3=/ 4=% 5=< 6=> 7=<= 8=>= 9=== 10=!=
@@ -96,7 +101,25 @@ pub fn op_code(t: *Tok) -> i64 {
 
 pub fn bin(op: i64, lhs: *Expr, rhs: *Expr) -> *Expr {
   return new Expr { tag: EX_BIN, lit: 0, name: "", op: op,
-                     lhs: Option.Some(lhs), rhs: Option.Some(rhs) };
+                     lhs: Option.Some(lhs), rhs: Option.Some(rhs) ,
+                     args: make([]*Expr, 0) };
+}
+
+pub struct FnDef {
+  name: string,
+  params: []string,
+  body: []*Stmt,
+}
+
+pub struct Prog {
+  fns: []*FnDef,
+  main: []*Stmt,
+}
+
+pub fn call(name: string, args: []*Expr) -> *Expr {
+  return new Expr { tag: EX_CALL, lit: 0, name: name, op: 0,
+                     lhs: Option.None, rhs: Option.None,
+                     args: args };
 }
 
 struct PCur {
@@ -217,6 +240,25 @@ fn parse_primary(c: *PCur) -> *Expr {
   }
   if t.kind == lex.TK_IDENT {
     tkadv(c);
+    // name(args…) — a call
+    if is_punct(tk(c), 40) {
+      tkadv(c);
+      let args: []*Expr = make([]*Expr, 8);
+      let mut na: usize = 0;
+      while true {
+        if is_punct(tk(c), 41) {
+          tkadv(c);
+          break;
+        }
+        args[na] = parse_bin(c, 1);
+        na = na + 1;
+        if !eat_punct(c, 44) {
+          eat_punct(c, 41);
+          break;
+        }
+      }
+      return call(t.text, args[0..na]);
+    }
     return var(t.text);
   }
   if is_punct(t, 40) {
@@ -273,15 +315,11 @@ fn parse_stmt(c: *PCur) -> *Stmt {
   let t = tk(c);
   if t.kind == lex.TK_KEYWORD && t.text == "return" {
     tkadv(c);
-    let mut v: i64 = 0;
-    let t2 = tk(c);
-    if t2.kind == lex.TK_INT {
-      v = t2.ival;
-      tkadv(c);
+    let st = mk_stmt(ST_RET);
+    if !is_punct(tk(c), 59) {
+      st.val = Option.Some(parse_bin(c, 1));
     }
     eat_punct(c, 59);
-    let st = mk_stmt(ST_RET);
-    st.ret = v;
     return st;
   }
   if t.kind == lex.TK_KEYWORD && t.text == "let" {
@@ -384,7 +422,51 @@ fn parse_stmt(c: *PCur) -> *Stmt {
   return bad;
 }
 
-pub fn parse(toks: []*Tok, src: string) -> []*Stmt {
+// ( params ) — names only; the skeleton is i64-typed throughout
+fn parse_params(c: *PCur) -> []string {
+  let names: []string = make([]string, 8);
+  let mut n: usize = 0;
+  if !eat_punct(c, 40) {
+    return names[0..0];
+  }
+  while true {
+    if is_punct(tk(c), 41) {
+      tkadv(c);
+      break;
+    }
+    let pt = tk(c);
+    if pt.kind == lex.TK_IDENT || pt.kind == lex.TK_KEYWORD {
+      names[n] = pt.text;
+      n = n + 1;
+      tkadv(c);
+      // optional : type
+      if is_punct(tk(c), 58) {
+        tkadv(c);
+        tkadv(c);
+      }
+    } else {
+      tkadv(c);
+    }
+    if !eat_punct(c, 44) {
+      eat_punct(c, 41);
+      break;
+    }
+  }
+  return names[0..n];
+}
+
+// the optional '-> type' tail
+fn eat_arrow(c: *PCur) {
+  if is_punct(tk(c), 45) {
+    tkadv(c);
+    tkadv(c);
+    tkadv(c);
+  }
+}
+
+pub fn parse(toks: []*Tok, src: string) -> *Prog {
+  let fns: []*FnDef = make([]*FnDef, 16);
+  let mut nf: usize = 0;
   let nodes: []*Stmt = make([]*Stmt, len(src) + 4);
   let mut n: usize = 0;
   let c = new PCur { toks: toks, pos: 0 };
@@ -399,12 +481,7 @@ pub fn parse(toks: []*Tok, src: string) -> []*Stmt {
       if nm.text == "main" {
         eat_punct(c, 40);
         eat_punct(c, 41);
-        // optional -> i32 (three tokens: '-', '>', the type word)
-        if is_punct(tk(c), 45) {
-          tkadv(c);
-          tkadv(c);
-          tkadv(c);
-        }
+        eat_arrow(c);
         if eat_punct(c, 123) {
           while tk(c).kind != lex.TK_EOF {
             if is_punct(tk(c), 125) {
@@ -417,26 +494,30 @@ pub fn parse(toks: []*Tok, src: string) -> []*Stmt {
         }
         continue;
       }
-      // a non-main fn: skip to its closing brace (skeleton: no calls)
-      let mut depth: i32 = 0;
-      while tk(c).kind != lex.TK_EOF {
-        let t4 = tk(c);
-        if is_punct(t4, 123) {
-          depth = depth + 1;
-        }
-        if is_punct(t4, 125) {
-          depth = depth - 1;
-          tkadv(c);
-          if depth <= 0 {
+      // a user fn: params, arrow, body
+      let params = parse_params(c);
+      eat_arrow(c);
+      let mut body: []*Stmt = make([]*Stmt, 0);
+      if eat_punct(c, 123) {
+        let bstmts: []*Stmt = make([]*Stmt, 64);
+        let mut bn: usize = 0;
+        while tk(c).kind != lex.TK_EOF {
+          if is_punct(tk(c), 125) {
+            tkadv(c);
             break;
           }
-          continue;
+          bstmts[bn] = parse_stmt(c);
+          bn = bn + 1;
         }
-        tkadv(c);
+        body = bstmts[0..bn];
       }
+      let fd = new FnDef { name: nm.text, params: params, body: body };
+      fns[nf] = fd;
+      nf = nf + 1;
       continue;
     }
     tkadv(c);
   }
-  return nodes[0..n];
+  let prog = new Prog { fns: fns[0..nf], main: nodes[0..n] };
+  return prog;
 }
