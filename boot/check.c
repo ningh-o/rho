@@ -407,22 +407,45 @@ static Program *g_program_for_load;
 static bool load_one_use(Module *m, NodeRef d) {
   Node *n = node_get(d);
   int form = n->op & 7;
+  const char *alias =
+      n->name2 ? n->name2
+               : node_get(reflist_at(n->list, reflist_len(n->list) - 1))
+                     ->name;
   if (form == USE_PUB_ITEM || form == USE_PUB_AS) {
-    // an item re-export: load the MODULE PREFIX so the item's owner
-    // exists; no use binding (the facade exports the item, not the
-    // module name)
-    if (reflist_len(n->list) > 1)
-      resolve_use(g_program_for_load, m, d, reflist_len(n->list) - 1);
+    // an item re-export: the owner is the module named by the prefix —
+    // either a binding this module already holds, or a path to load;
+    // no use binding (the facade exports the item, not the module)
+    if (reflist_len(n->list) > 1) {
+      const char *mod0 = node_get(reflist_at(n->list, 0))->name;
+      bool bound = false;
+      for (size_t k = 0; k < VLEN(m->uses); k++)
+        if (strcmp(VAT(m->uses, UseBind, k)->alias, mod0) == 0)
+          bound = true;
+      if (!bound)
+        resolve_use(g_program_for_load, m, d, reflist_len(n->list) - 1);
+    }
     return true;
+  }
+  // a pub use may name a module already bound privately in this
+  // module (use inner.core as core; pub use core;) — the binding, not
+  // the filesystem, is the target
+  if (form == USE_PUB_MOD || form == USE_PUB_STAR) {
+    for (size_t k = 0; k < VLEN(m->uses); k++) {
+      UseBind *ub0 = VAT(m->uses, UseBind, k);
+      if (strcmp(ub0->alias, alias) == 0) {
+        UseBind *ub = vec_push(&m->uses);
+        ub->alias = alias;
+        ub->target = ub0->target;
+        ub->decl = d;
+        return true;
+      }
+    }
   }
   Module *t = resolve_use(g_program_for_load, m, d, reflist_len(n->list));
   if (!t)
     return true; // reported; keep walking for more diagnostics
   UseBind *ub = vec_push(&m->uses);
-  ub->alias = n->name2 ? n->name2
-                       : node_get(reflist_at(n->list,
-                                             reflist_len(n->list) - 1))
-                             ->name;
+  ub->alias = alias;
   ub->target = t;
   ub->decl = d;
   return true;

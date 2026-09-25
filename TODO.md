@@ -158,11 +158,18 @@ section — no placeholder stages. boot is the reference compiler.
       emitter); `rho test` delegates to the shell runners (selftest +
       check + emit + fmt + corpus; the in-binary form lands with the
       gate); fmt canonical roundtrip green (27/27).
-- [x] **T1.10(tranches 1+2)** — 79 in-repo programs with goldens judged
-      against the archive (n10 restored; floats/enum-payload/statics/
-      to_str/null-family/assoc/MIN-division all landed byte-exact or
-      lawfully regenerated). **Remain: tranche 3 (new-feature programs)
-      not yet written; leftovers listed in corpus/PLAN.md.**
+- [x] **T1.10(tranches 1+2+3)** — 108 in-repo programs with goldens
+      judged against the archive (n10 restored; floats/enum-payload/
+      statics/to_str/null-family/assoc/MIN-division all landed
+      byte-exact or lawfully regenerated; tranche 2 complete: 031
+      verbatim, 032 facade tree, 102/105 []?T). Tranche 3 (t01–t12,
+      prefixed t to sit beside the n-series): overloads, opt sugar,
+      labels, as-const-var, aggregate let, pub-use forms (t09 with
+      its pk/ package tree), verbatim, compound bitwise, precedence —
+      plus tests/run-set-tests.sh pinning --set's widened face (the
+      runner honors `// set:` header lines). The archive scan reads
+      79 pass + 3 known law-diffs (in-repo regenerated) + 18
+      adapted-in-repo + 107 (std.io, Phase 4) — full coverage.
 
 ## Phase 2 — the self-hosted compiler, written in rho (wasm only)
 

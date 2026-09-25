@@ -1,0 +1,16 @@
+// exit: 0
+// tranche 3 — the facade's four pub use forms: full flatten, one item
+// renamed, the plain private use (module-qualified reach), and a
+// subpackage behind its own facade
+use pk;
+use pk.deep;
+
+fn main() -> i32 {
+  // flatten brought the interior's public items
+  printf("{} {}\n", pk.one(), pk.two());
+  // the renamed item
+  printf("{}\n", pk.twice());
+  // the subpackage's facade
+  printf("{}\n", deep.three());
+  return 0;
+}

@@ -252,7 +252,11 @@ static Type *default_lit_type(Node *e) {
 
 // ---------------------------------------------------------------- helpers
 
+static bool g_probe_quiet; // overload probing: mismatches are selection
+
 static void err_at(FnCtx *c, Node *n, const char *fmt, ...) {
+  if (g_probe_quiet)
+    return;
   char buf[512];
   va_list ap;
   va_start(ap, fmt);
@@ -360,8 +364,20 @@ static void check_assign_target_base(FnCtx *c, NodeRef base);
 
 // compare a call's args against a signature (with literal adaptation);
 // returns match quality: 0 no, 1 yes
+static bool sig_matches_q(FnCtx *c, FnSig *sig, NodeRef call_r,
+                          bool has_recv);
+
 static bool sig_matches(FnCtx *c, FnSig *sig, NodeRef call_r,
                         bool has_recv) {
+  bool saved_quiet = g_probe_quiet;
+  g_probe_quiet = true;
+  bool r = sig_matches_q(c, sig, call_r, has_recv);
+  g_probe_quiet = saved_quiet;
+  return r;
+}
+
+static bool sig_matches_q(FnCtx *c, FnSig *sig, NodeRef call_r,
+                          bool has_recv) {
   Node *call = node_get(call_r);
   RefList *args = call->list;
   size_t nargv = reflist_len(args);
@@ -1260,12 +1276,15 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
            m->name, type_name(rt));
     return ty_unit;
   }
-  // exact-match-unique over candidates (recv already consumed)
+  // exact-match-unique over candidates (recv already consumed);
+  // probing is quiet — a mismatch is selection, not a diagnostic
   int nmatch = 0;
   FnDef *chosen = NULL;
   // a generic method's implicit params bind from the receiver
   // instantiation (self: Opt binds T from Opt[i32])
   Type *rbase = rt->kind == TY_PTR ? rt->base : rt;
+  bool saved_quiet = g_probe_quiet;
+  g_probe_quiet = true;
   for (size_t i = 0; i < ncand; i++) {
     FnDef *f = cands[i];
     // arity/type check with literal adaptation (params[0] is self)
@@ -1316,6 +1335,7 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
       chosen = f;
     }
   }
+  g_probe_quiet = saved_quiet;
   if (nmatch != 1) {
     if (nmatch == 0)
       err_at(c, m, "no overload of method '%s' matches the arguments",
@@ -1680,9 +1700,28 @@ static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
     }
   }
   case NT_AS: {
-    Type *ft = check_expr(c, e->a, NULL);
     GScope dummy = {0};
     Type *tt = check_type_in_ctx(c, e->b, &dummy);
+    // a literal source rides its WIDE carrier (i64/f64) so the as
+    // truncates exactly like a variable would — constants and
+    // variables share one semantics (§3.3): 100000 as i16 and
+    // 4000000000 as i64 are both ordinary truncations, not range
+    // errors
+    Node *src0 = node_get(e->a);
+    Type *ft = NULL;
+    if (src0->kind == NT_INT ||
+        (src0->kind == NT_UNARY && src0->op == OP_NEG &&
+         node_get(src0->a)->kind == NT_INT)) {
+      ft = ty_i64;
+      src0->sem = ft;
+    } else if (src0->kind == NT_FLOAT ||
+               (src0->kind == NT_UNARY && src0->op == OP_NEG &&
+                node_get(src0->a)->kind == NT_FLOAT)) {
+      ft = ty_f64;
+      src0->sem = ft;
+    } else {
+      ft = check_expr(c, e->a, NULL);
+    }
     bool ok = false;
     if (type_is_num(ft) && type_is_num(tt))
       ok = true;
@@ -1774,7 +1813,7 @@ static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
     if (expected && expected->kind == TY_SLICE)
       elem = expected->base;
     if (reflist_len(e->list) > 0) {
-      Node *f = node_get(node_get(reflist_at(e->list, 0))->a);
+      Node *f = node_get(reflist_at(e->list, 0)); // elements are raw
       if (!elem) {
         if (f->kind == NT_INT)
           elem = ty_i32;

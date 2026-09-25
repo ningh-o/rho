@@ -1,0 +1,16 @@
+// exit: 0
+// tranche 3 — build parameters: root consts overridden by --set with
+// the widened type face (bool, every integer width, f32/f64, string);
+// the defaults below are what a bare run uses (this golden), the
+// runner's '// set:' lines prove the overrides land (checked by
+// tests/run-set-tests.sh)
+const WIDTH: i32 = 4;
+const MODE: bool = true;
+const RATE: f64 = 0.5;
+const NAME: string = "plain";
+const BIG: u64 = 100;
+
+fn main() -> i32 {
+  printf("w={} m={} r={} n={} b={}\n", WIDTH, MODE, RATE, NAME, BIG);
+  return 0;
+}

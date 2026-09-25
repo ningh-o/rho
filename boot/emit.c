@@ -1263,6 +1263,18 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
                                   : NULL;
     bool is_pre = ps && ps->kind == SYM_FN && ps->u.fns &&
                   ps->u.fns->mod == g_prelude_mod;
+    // an intrinsic name the CALLER redefined resolves to the user's
+    // overload (the checker's sem2): emit a plain call, not the
+    // builtin path — `fn make(n: i64)` is an ordinary fn
+    if (is_pre && e->sem2) {
+      FnDef *pf = (FnDef *)e->sem2;
+      bool own = false;
+      for (FnDef *g2 = ps->u.fns; g2; g2 = g2->next_overload)
+        if (g2 == pf)
+          own = true;
+      if (!own)
+        is_pre = false;
+    }
     if (is_pre && strcmp(callee->name, "printf") == 0) {
       emit_printf(cx, e, false);
       return;

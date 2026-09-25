@@ -1,0 +1,48 @@
+// exit: 0
+// tranche 3 — labels: outer: while … { break outer; } — the Go form;
+// nested continue keeps the inner loop, labeled continue restarts the
+// outer body (the continue-outer round never lets the inner loop
+// finish); labels live in their own function-unique namespace
+fn main() -> i32 {
+  let mut hits: i64 = 0;
+  let mut rounds: i32 = 0;
+  outer: while rounds < 3 {
+    rounds += 1;
+    let mut i: i32 = 0;
+    while i < 5 {
+      i += 1;
+      if i == 2 {
+        continue; // the inner loop only
+      }
+      if i == 4 {
+        continue outer; // restart the outer body (i is discarded)
+      }
+      hits += 1;
+    }
+    // unreachable: i==4 always restarts the outer body first
+    hits += 100;
+  }
+  printf("hits={}\n", hits);
+  let mut found: i32 = 0 - 1;
+  search: while true {
+    let mut j: i32 = 0;
+    while j < 10 {
+      if j * j > 50 {
+        found = j;
+        break search; // leave both loops at once
+      }
+      j += 1;
+    }
+  }
+  printf("found={}\n", found);
+  let mut seen: i64 = 0;
+  walk: loop {
+    seen += 1;
+    if seen < 3 {
+      continue walk;
+    }
+    break walk;
+  }
+  printf("seen={}\n", seen);
+  return 0;
+}

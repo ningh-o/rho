@@ -1,0 +1,16 @@
+// exit: 0
+// tranche 3 — triple-quoted strings are FULLY verbatim: no escape
+// decodes, the first """ closes (mid-line closers included), and
+// backslash runs stay their raw bytes
+fn main() -> i32 {
+  let v: string = """ab""cd""";
+  printf("[{}] {}\n", v, len(v));
+  let multi: string = """
+line1
+line2""";
+  printf("[{}]\n", multi);
+  printf("len={}\n", len(multi));
+  let rawslash: string = """x\ty\nz""";
+  printf("[{}] {}\n", rawslash, len(rawslash));
+  return 0;
+}

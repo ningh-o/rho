@@ -12,11 +12,16 @@ for f in corpus/*.rho; do
   [ -z "$want_exit" ] && want_exit=0
   want_out=""
   [ -f "corpus/$name.out" ] && want_out=$(cat "corpus/$name.out")
-  if ! "$RHO" check "$f" >/dev/null 2>&1; then
+  # per-program build parameters: '// set: name=value' header lines
+  sets=()
+  for s in $(sed -n 's/^\/\/ set: //p' "$f"); do
+    sets+=(--set "$s")
+  done
+  if ! "$RHO" check "$f" ${sets:+${sets[@]}} >/dev/null 2>&1; then
     fail=$((fail+1)); echo "FAIL $name: compile error"
     continue
   fi
-  got=$("$RHO" run "$f" 2>/dev/null)
+  got=$("$RHO" run "$f" ${sets:+${sets[@]}} 2>/dev/null)
   rc=$?
   if [ "$rc" -eq "$want_exit" ] && [ "$got" = "$want_out" ]; then
     pass=$((pass+1))

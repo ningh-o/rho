@@ -1,0 +1,32 @@
+// exit: 0
+// tranche 3 — ?T parses as Option[T]: one absence mechanism. weak.get()
+// yields ?*T; absence unwraps through match, never a null compare
+struct Node {
+  v: i32,
+}
+
+fn find(v: ?i32) -> i32 {
+  return match v {
+    Option.Some(x) => x,
+    Option.None => 0 - 1,
+  };
+}
+
+fn main() -> i32 {
+  let a: ?i32 = Option.Some(7);
+  let b: ?i32 = Option.None;
+  printf("{} {}\n", find(a), find(b));
+  let n = new Node { v: 3 };
+  let w: weak[Node] = weak.from(n);
+  let got: ?*Node = w.get();
+  match got {
+    Option.Some(p) => printf("alive {}\n", p.v),
+    Option.None => printf("dead\n"),
+  }
+  let maybe: ?string = Option.Some("s");
+  printf("{}\n", match maybe {
+    Option.Some(s) => s,
+    Option.None => "none",
+  });
+  return 0;
+}

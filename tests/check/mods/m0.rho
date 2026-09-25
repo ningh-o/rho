@@ -1,0 +1,7 @@
+pub struct S2 {
+  n: i32,
+}
+
+pub fn make() -> *S2 {
+  return new S2 { n: 5 };
+}

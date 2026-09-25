@@ -1,0 +1,44 @@
+// exit: 0
+// tranche 3 — aggregate values in let position are legal (the old
+// runtime panic was a bug to fix, not a feature): enums with payloads,
+// slices, optionals, and if/match expressions all bind by value
+struct P {
+  x: i32,
+  y: i32,
+}
+
+enum Shape {
+  Dot,
+  Circ(i64),
+}
+
+fn make(n: i64) -> Shape {
+  if n > 0 {
+    return Shape.Circ(n);
+  }
+  return Shape.Dot;
+}
+
+fn main() -> i32 {
+  let e: Shape = make(9);
+  match e {
+    Shape.Circ(r) => printf("circ {}\n", r),
+    Shape.Dot => printf("dot\n"),
+  }
+  let d: Shape = make(0);
+  match d {
+    Shape.Circ(r) => printf("circ {}\n", r),
+    Shape.Dot => printf("dot\n"),
+  }
+  let s: []i32 = [10, 20, 30];
+  printf("{} {} {}\n", s[0], s[2], len(s));
+  let o: ?i32 = Option.Some(5);
+  let v: i32 = match o {
+    Option.Some(x) => x,
+    Option.None => 0,
+  };
+  printf("v={}\n", v);
+  let p = new P { x: 3, y: 4 };
+  printf("{} {}\n", p.x, p.y);
+  return 0;
+}

@@ -1,0 +1,3 @@
+pub fn S2.hi(self: *S2) -> i32 {
+  return 2;
+}

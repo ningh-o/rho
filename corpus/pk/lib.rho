@@ -1,0 +1,4 @@
+// the facade: all four pub use forms ride the private bindings
+use inner.core as core;
+pub use core;                 // flatten: one, two ride pk
+pub use core.two as twice;    // one item renamed

@@ -1,0 +1,9 @@
+// expect: method 'hi' with one signature defined in both
+use mods.m0;
+use mods.ma;
+use mods.mb;
+
+fn main() -> i32 {
+  let s: *S2 = m0.make();
+  return s.hi();
+}

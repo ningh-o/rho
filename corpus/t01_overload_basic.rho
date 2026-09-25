@@ -1,0 +1,27 @@
+// exit: 0
+// tranche 3 — overloads: one name, many signatures; every call
+// resolves exact-match-unique against the candidate chain
+fn pick(a: i32) -> i32 {
+  return a + 1;
+}
+
+fn pick(a: i64, b: i64) -> i64 {
+  return a * 10 + b;
+}
+
+fn pick(s: string) -> string {
+  return "[" + s + "]";
+}
+
+fn pick(a: bool, b: i32) -> i32 {
+  if a {
+    return b;
+  }
+  return 0 - b;
+}
+
+fn main() -> i32 {
+  printf("{} {} {} {}\n", pick(4), pick(4, 2), pick("hey"), pick(true, 9));
+  printf("{} {}\n", pick(false, 100), pick(4000000000 as i64, 5));
+  return 0;
+}

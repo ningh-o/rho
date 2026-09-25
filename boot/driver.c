@@ -13,12 +13,18 @@ static Program *load_and_check(int argc, char **argv, const char **path_out) {
   const char *path = argv[0];
   Program *p = program_new();
   for (int i = 1; i < argc; i++) {
-    if (strncmp(argv[i], "--set ", 6) == 0) {
-      char *eq = strchr(argv[i] + 6, '=');
+    const char *nv = NULL;
+    if (strncmp(argv[i], "--set ", 6) == 0)
+      nv = argv[i] + 6; // one-token form: "--set name=value"
+    else if (strcmp(argv[i], "--set") == 0 && i + 1 < argc &&
+             strchr(argv[i + 1], '='))
+      nv = argv[++i]; // two-token form: --set name=value
+    if (nv) {
+      char *eq = strchr(nv, '=');
       if (!eq)
         continue;
       SetOverride *so = vec_push(&p->sets);
-      so->name = intern(argv[i] + 6, (size_t)(eq - (argv[i] + 6)));
+      so->name = intern(nv, (size_t)(eq - nv));
       so->value = eq + 1;
     }
   }
@@ -131,6 +137,7 @@ int cmd_test(int argc, char **argv) {
   const char *suites[] = {"tests/run-check-tests.sh",
                           "tests/run-emit-tests.sh",
                           "tests/run-fmt-tests.sh",
+                          "tests/run-set-tests.sh",
                           "tests/run-corpus-repo.sh", NULL};
   for (size_t i = 0; suites[i]; i++) {
     if (access(suites[i], R_OK) != 0) {

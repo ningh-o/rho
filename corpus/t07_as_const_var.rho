@@ -1,0 +1,16 @@
+// exit: 0
+// tranche 3 — one as semantics: constants truncate exactly like
+// variables (the old compiler folded constants differently — the law
+// is one behavior); the conversion target types a wide literal
+fn main() -> i32 {
+  let big: i32 = 100000;
+  let via_var: i16 = big as i16;
+  let via_const: i16 = 100000 as i16;
+  printf("{} {}\n", via_var, via_const);
+  let neg: i32 = 0 - 100000;
+  printf("{} {}\n", neg as i16, (0 - 100000) as i16);
+  let wide: i64 = 4000000000;
+  printf("{}\n", (wide as i32) as u32);
+  printf("{} {}\n", 300 as u8, 4294967295 as u32);
+  return 0;
+}

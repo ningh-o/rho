@@ -1,0 +1,23 @@
+// exit: 0
+// tranche 3 — the 11-level precedence table, pinned behaviorally:
+// every line's value would differ under any reassociation
+fn main() -> i32 {
+  printf("{}\n", 2 + 3 * 4);           // 14, not 20
+  printf("{}\n", (2 + 3) * 4);          // 20
+  printf("{}\n", 10 - 4 - 3);           // 3 (left assoc), not 9
+  printf("{}\n", 100 / 10 / 2);         // 5, not 20
+  printf("{}\n", 1 << 2 + 1);           // 8: + binds tighter than <<
+  printf("{}\n", (1 << 2) + 1);         // 5
+  printf("{}\n", 7 & 3 | 8);            // 11: & over |
+  printf("{}\n", 7 | 3 & 8);            // 7
+  printf("{}\n", 1 | 2 ^ 3 & 4);        // 1|2^(3&4)=3
+  printf("{}\n", 5 & 6 ^ 12 | 13);      // (5&6)^12|13 = 9
+  printf("{}\n", 8 >> 1 + 1);           // 2: + over >>
+  printf("{}\n", 1 + 2 == 3);           // true: + over ==
+  printf("{}\n", false || true && false); // false: && over ||
+  printf("{}\n", !false && true);       // true: ! is unary-tight
+  printf("{}\n", 10 % 3 * 2);           // 2: % and * same level, left
+  printf("{}\n", -2 * 3);               // -6: unary over *
+  printf("{}\n", 1 < 2 == 4 > 3);       // true: rel over ==
+  return 0;
+}
