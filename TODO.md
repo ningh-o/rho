@@ -184,28 +184,45 @@ section — no placeholder stages. boot is the reference compiler.
 - [ ] **T2.2+** Port module by module; each module its own TODO; graded
       by behavioral parity with boot across the whole corpus
       (determinism law: same compiler + same input → identical bytes).
-      *(growth so far, each pinned by tests/run-selfhost.sh and the
-      boot-vs-self differential: integer printing with a decimal
-      runtime; string hole args; let bindings, arithmetic with
-      precedence, variables; while/if/else-if/assignment with
-      comparisons and unary minus; user fns with parameters, call
+      *(growth so far, each pinned by tests/run-selfhost.sh, the
+      boot-vs-self differential, and — since the twenty-sixth growth —
+      tests/run-corpus-diff.sh running the WHOLE corpus through both
+      compilers (36 of 108 behavioral today, pinned floor 36): integer
+      printing with a decimal runtime; string hole args; let bindings,
+      arithmetic with precedence, variables; while/if/else-if/assignment
+      with comparisons and unary minus; user fns with parameters, call
       statements, expression returns — recursion lands (fib(10)=55);
       string values with literal-concatenation folding; string
       parameters over a pair-passing ABI; len(); main's return as the
-      exit code; the checker module seeds the pipeline's fourth layer
-      (unknown fns/names refuse emission); the compiler streams its
-      WAT in slices past the format scratch. The fourteenth growth
-      lands verbatim triple-quoted strings in the self-hosted lexer
-      (content rides raw to the first `"""`; the one escape-sensitive
-      byte — the backslash — is doubled at the token boundary so every
-      downstream decoder yields the exact byte back), and emit.rho's
-      WAT runtime templates trade their `+`-chained lines for single
-      verbatim literals; the runner and differential gain the verbatim
-      program, and the differential now refuses loudly when the
-      compiler build or the WAT assembly fails. The differential
-      (tests/run-diff.sh) runs thirteen programs through both
-      compilers — byte- and rc-identical. Remain: the type layer, fmt,
-      module loading, the kernel parity surface.)*
+      exit code; the checker module (unknown fns/names/labels refuse
+      emission); WAT streaming in slices; verbatim triple-quoted
+      strings (the emitter's templates ride them); break/continue and
+      loop; short-circuit &&/|| (the full precedence ladder renumbered
+      to §6.1, call args fixed to parse it); labeled loops with
+      unique wasm labels and a scoped label check; integer bitwise
+      & | ^ << >> ~ with all compound forms; slices — make/index/
+      slice-of/len with a zeroed bump allocator, bounds panics at
+      exit 101, fat-view aliasing, and string byte indexing; module
+      consts/statics (folding consts, wasm globals); defer with a
+      frame stack (returns park the value in $r while scopes unwind
+      LIFO; loop exits run their defers — 075's law); self tail calls
+      become loops (a two-million-deep countdown rides the default
+      wasm stack); narrow-width arithmetic fidelity (annotations kept,
+      widths propagate through arithmetic with literals adapting and
+      declaring operands winning, the i32 literal default, sub-32
+      shifts on the 32-bit lane, unsigned shr_u, MIN/-1 division via
+      if-select, unsigned printing through $w_u64); the full escape
+      law (\r \0 \xHH \u{...}); hex and bin literals; /0 %0 panics;
+      and the formatter — fmt.rho byte-identical to boot on the
+      subset (tests/run-fmt-self.sh), with the parser retaining what
+      fmt needs (mut, types, compound spellings, init exprs). The
+      growths also fixed a real boot bug: --set overrides now land
+      before the load-time dead-branch fold (they used to fold against
+      the declared value while printing the override). Remain, by the
+      failing-corpus clusters: enums/match/Option/?; structs/new/rc;
+      closures/traits/dyn/generics/variadics; floats (the f64 lane);
+      runtime string concat/format/to_str; module loading; the set
+      face in the differential runner.)*
 - [ ] **T2.x** Optimizer in the mirror: constant folding, dead-code
       elimination, globals tree-shaking, tail-call→loop — with the
       language suites (opt/eq/params/modsys/strops/multiline) rebuilt
