@@ -2326,7 +2326,9 @@ fn dyn_hole_dispatch(arg: *Expr, pool: *Pool, env: *Env,
     vbox = (0 - a0) - 1;
     obj = env_str_len_slot(env, arg.name);
   } else {
-    if arg.tag == parse.EX_MCALL && arg.name == "to_str" {
+    if arg.tag == parse.EX_MCALL {
+      // a dyn method call whose declared return is string rides its
+      // parked pair (any trait method, not only to_str)
       // d.to_str() on a dyn receiver — the dispatch parks the pair;
       // ride it (the arg's own text already parked into nl slots)
       let mut rv9: *Expr = parse.lit(0);
@@ -3162,6 +3164,7 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
       let trt8: string =
           dyn_trait(env_slice_elemtext(env, recv.name));
       let ord8: i64 = trait_ordinal(prog, trt8, e.name);
+
       if ord8 >= 0 {
         let a0r: i64 = env_str_look(env, recv.name);
         let vbox8: i64 = (0 - a0r) - 1;

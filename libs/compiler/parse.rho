@@ -1963,8 +1963,9 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
                     }
                     tkadv(c);
                   }
-                  eat_arrow(c);
-                  rty = eat_type(c);
+                  // eat_arrow_typed returns the arrow's type itself
+                  // (eat_arrow would swallow it)
+                  rty = eat_arrow_typed(c);
                   if len(rty) == 0 {
                     rty = "i64";
                   }

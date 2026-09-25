@@ -388,8 +388,15 @@ section — no placeholder stages. boot is the reference compiler.
       payload target resolves through a binding, an element, or a
       struct-field slice. 084 and 085 land byte-exact (name-
       satisfaction and bounds are static dispatch): 100 of 108
-      behavioral, floor 100. Remain: the dyn emit's crash then
-      030/086-089; module loading (032/t09); 105's field-slice
+      behavioral, floor 100. A follow-up fixed the trait signature
+      capture (eat_arrow swallows the arrow's type itself — the
+      rtypes rode as i64 defaults; eat_arrow_typed's return is the
+      type) and broadened the parked hole branch to any string-
+      returning dyn method — with the hooks re-disabled, 084/085/t03
+      all hold and the trait table now carries true rtypes for the
+      re-landing. Remain: the dyn emit's temp accounting (its
+      dispatched pairs push local indices past the declared count)
+      then 030/086-089; module loading (032/t09); 105's field-slice
       stores; the mut law and usize lane (T3.6's mirror side)*
 - [ ] **T2.x** Optimizer in the mirror: constant folding, dead-code
       elimination, globals tree-shaking, tail-call→loop — with the
