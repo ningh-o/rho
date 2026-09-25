@@ -5,7 +5,7 @@
 # closing of this leg IS the corpus differential going green.
 set -u
 RHO=${RHO:-./build/rho}
-PINNED=79
+PINNED=81
 pass=0; fail=0; failed=""
 for f in corpus/*.rho; do
   name=$(basename "$f" .rho)

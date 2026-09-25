@@ -194,7 +194,8 @@ pub fn clone_fndef(fd: *FnDef) -> *FnDef {
   }
   return new FnDef { name: fd.name, params: fd.params,
                      pstr: fd.pstr, pslc: fd.pslc,
-                     ptypes: fd.ptypes, rtype: fd.rtype,
+                     ptypes: fd.ptypes, pvar: fd.pvar,
+                     rtype: fd.rtype,
                      tparams: fd.tparams, body: nbody };
 }
 
@@ -313,6 +314,7 @@ pub struct FnDef {
   pstr: []bool, // true where the parameter rides the pair ABI
   pslc: []bool, // true where that pair is a slice (vs a string)
   ptypes: []string, // each param's written type ("" when absent)
+  pvar: []bool, // true where the parameter is variadic (rest: T...)
   rtype: string,    // the written return type ("" when absent)
   tparams: []string, // the [T]/[T: Bound] type parameters (names only)
   body: []*Stmt,
@@ -585,6 +587,15 @@ fn parse_args(c: *PCur) -> []*Expr {
       break;
     }
     args[na] = parse_bin(c, 0);
+    // xs... — the spread marker rides the argument's lit slot
+    if is_punct(tk(c), 46) && c.pos + 2 < len(c.toks) &&
+        is_punct(c.toks[c.pos + 1], 46) &&
+        is_punct(c.toks[c.pos + 2], 46) {
+      args[na].lit = 0 - 99;
+      tkadv(c);
+      tkadv(c);
+      tkadv(c);
+    }
     na = na + 1;
     if !eat_punct(c, 44) {
       eat_punct(c, 41);
@@ -1546,7 +1557,7 @@ fn parse_stmt(c: *PCur) -> *Stmt {
 // ( params ) — names plus a string flag per parameter (': string');
 // everything else is i64
 fn parse_params2(c: *PCur, pstr: []bool, pslc: []bool,
-                 ptypes: []string) -> []string {
+                 ptypes: []string, pvar: []bool) -> []string {
   let names: []string = make([]string, 8);
   let mut n: usize = 0;
   if !eat_punct(c, 40) {
@@ -1562,6 +1573,7 @@ fn parse_params2(c: *PCur, pstr: []bool, pslc: []bool,
       names[n] = pt.text;
       pstr[n] = false;
       pslc[n] = false;
+      pvar[n] = false;
       n = n + 1;
       tkadv(c);
       // optional : type ([]T and *T ride composed text; string and
@@ -1569,13 +1581,26 @@ fn parse_params2(c: *PCur, pstr: []bool, pslc: []bool,
       if is_punct(tk(c), 58) {
         tkadv(c);
         let ty: string = eat_type(c);
-        ptypes[n - 1] = ty;
-        if len(ty) >= 2 && ty[0] == 91 && ty[1] == 93 {
+        // T... — the variadic rest parameter: a []T in the body
+        if is_punct(tk(c), 46) && c.pos + 2 < len(c.toks) &&
+            is_punct(c.toks[c.pos + 1], 46) &&
+            is_punct(c.toks[c.pos + 2], 46) {
+          tkadv(c);
+          tkadv(c);
+          tkadv(c);
+          ptypes[n - 1] = "[]" + ty;
           pstr[n - 1] = true;
           pslc[n - 1] = true;
+          pvar[n - 1] = true;
         } else {
-          if ty == "string" {
+          ptypes[n - 1] = ty;
+          if len(ty) >= 2 && ty[0] == 91 && ty[1] == 93 {
             pstr[n - 1] = true;
+            pslc[n - 1] = true;
+          } else {
+            if ty == "string" {
+              pstr[n - 1] = true;
+            }
           }
         }
       }
@@ -1922,7 +1947,8 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
       let pstr: []bool = make([]bool, 8);
       let pslc: []bool = make([]bool, 8);
       let ptypes: []string = make([]string, 8);
-      let params = parse_params2(c, pstr, pslc, ptypes);
+      let pvar: []bool = make([]bool, 8);
+      let params = parse_params2(c, pstr, pslc, ptypes, pvar);
       let rtype: string = eat_arrow_typed(c);
       let mut body: []*Stmt = make([]*Stmt, 0);
       if eat_punct(c, 123) {
@@ -1942,6 +1968,7 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
                            pstr: pstr[0..len(params)],
                            pslc: pslc[0..len(params)],
                            ptypes: ptypes[0..len(params)],
+                           pvar: pvar[0..len(params)],
                            rtype: rtype,
                            tparams: tparams[0..ntp],
                            body: body };

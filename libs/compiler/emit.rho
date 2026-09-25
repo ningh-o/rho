@@ -925,6 +925,14 @@ fn env_sliceelem_of(e: *Env, name: string, prog: *Prog) -> string {
   return "";
 }
 
+// the element text of a slice binding, "" when unbound
+fn env_slice_elemtext(e: *Env, name: string) -> string {
+  if e.selnames[0] == name {
+    return e.selvals[0];
+  }
+  return "";
+}
+
 fn env_val_of(e: *Env, name: string) -> string {
   let mut i: usize = e.n;
   while i > 0 {
@@ -2518,12 +2526,9 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
     return wtext + "    (i64.const 0)\n";
   }
   if e.tag == parse.EX_CALL {
+    let fd7: *FnDef = resolve_call_fd(prog, e, env);
     let mut out: string = "";
-    let mut k: usize = 0;
-    while k < len(e.args) {
-      out = out + emit_arg(pool, e.args[k], env, prog, nl);
-      k = k + 1;
-    }
+    out = out + emit_call_args(pool, prog, fd7, e, env, nl);
     out = out + "    call " + ginst_call_name(pool, prog, e, env) +
            "\n";
     return out;
@@ -3677,11 +3682,8 @@ fn build_string_pair(e: *Expr, pool: *Pool, env: *Env, prog: *Prog,
   if e.tag == parse.EX_CALL &&
       rtype_is_pair(call_fn_rtype(prog, e, env)) {
     let mut text: string = "";
-    let mut k: usize = 0;
-    while k < len(e.args) {
-      text = text + emit_arg(pool, e.args[k], env, prog, nl);
-      k = k + 1;
-    }
+    let fd8: *FnDef = resolve_call_fd(prog, e, env);
+    text = text + emit_call_args(pool, prog, fd8, e, env, nl);
     text = text + "    call " + ginst_call_name(pool, prog, e, env) +
            "\n" +
            "    (local.set " + (nl.v + 1).to_str() + ")\n" +
@@ -3726,6 +3728,50 @@ fn build_string_pair(e: *Expr, pool: *Pool, env: *Env, prog: *Prog,
                          l: nl.v + 1 };
     nl.v = nl.v + 2;
     return sp;
+  }
+  if e.tag == parse.EX_IDX {
+    // a string-element slice's indexing yields the element's pair
+    // (two loads at a 16-byte stride)
+    let mut base: *Expr = parse.lit(0);
+    match e.lhs {
+      Option.Some(b6) => {
+        base = b6;
+      },
+      Option.None => {},
+    }
+    if base.tag == parse.EX_VAR &&
+        env_kind_of(env, base.name) == 2 &&
+        env_slice_elemtext(env, base.name) == "string" {
+      let a: i64 = env_str_look(env, base.name);
+      let addr_slot: i64 = (0 - a) - 1;
+      let len_slot: i64 = env_str_len_slot(env, base.name);
+      let mut idx: *Expr = parse.lit(0);
+      match e.rhs {
+        Option.Some(i6) => {
+          idx = i6;
+        },
+        Option.None => {},
+      }
+      let ta: i64 = nl.v;
+      let tl: i64 = nl.v + 1;
+      nl.v = nl.v + 2;
+      let text: string = emit_expr(pool, idx, env, prog, nl) +
+             "    (local.set $t)\n" +
+             oob_check(pool, "(local.get " + len_slot.to_str() + ")") +
+             "    (i64.load (i32.add (i32.add (i32.wrap_i64 " +
+             "(local.get " + addr_slot.to_str() + ")) (i32.mul " +
+             "(i32.wrap_i64 (local.get $t)) (i32.const 16))) " +
+             "(i32.const 0)))\n" +
+             "    (local.set " + ta.to_str() + ")\n" +
+             "    (i64.load (i32.add (i32.add (i32.wrap_i64 " +
+             "(local.get " + addr_slot.to_str() + ")) (i32.mul " +
+             "(i32.wrap_i64 (local.get $t)) (i32.const 16))) " +
+             "(i32.const 8)))\n" +
+             "    (local.set " + tl.to_str() + ")\n";
+      let spi2 = new SPair { ok: true, text: text, a: ta, l: tl };
+      return spi2;
+    }
+    return bad;
   }
   if e.tag == parse.EX_MCALL {
     // a string-returning method call: the receiver and args ride the
@@ -4376,6 +4422,112 @@ fn to_str_pair(e: *Expr, pool: *Pool, env: *Env, prog: *Prog,
   return spt;
 }
 
+// ---- variadics: rest: T... materializes at the call ----
+
+// the rest parameter's index, -1 when the fn is not variadic
+fn fn_variadic_at(fd: *FnDef) -> i64 {
+  let mut k: usize = 0;
+  while k < len(fd.pvar) {
+    if fd.pvar[k] {
+      return k as i64;
+    }
+    k = k + 1;
+  }
+  return 0 - 1;
+}
+
+// a call's arguments: fixed params in order, then the rest tail — a
+// lone spread rides its pair whole, anything else materializes a
+// fresh zeroed slice (string elements take two slots each)
+fn emit_call_args(pool: *Pool, prog: *Prog, fd: *FnDef, e: *Expr,
+                  env: *Env, nl: *NextLocal) -> string {
+  let vp: i64 = fn_variadic_at(fd);
+  let mut out: string = "";
+  if vp < 0 {
+    let mut k: usize = 0;
+    while k < len(e.args) {
+      out = out + emit_arg(pool, e.args[k], env, prog, nl);
+      k = k + 1;
+    }
+    return out;
+  }
+  let mut elem: string = "";
+  if (vp as usize) < len(fd.ptypes) {
+    elem = fd.ptypes[vp as usize];
+  }
+  let et: string = elem[2..len(elem)];
+  let sstr: bool = et == "string";
+  let mut esz: i64 = 1;
+  if sstr {
+    esz = 2;
+  }
+  let mut k: usize = 0;
+  while (k as i64) < vp && k < len(e.args) {
+    out = out + emit_arg(pool, e.args[k], env, prog, nl);
+    k = k + 1;
+  }
+  let rest: i64 = (len(e.args) as i64) - vp;
+  if rest <= 0 {
+    // an empty rest: a zero-count allocation still lands the pair
+    out = out + "    (i64.extend_i32_u (call $w_alloc (i32.const 0)))" +
+           "\n    (local.set " + nl.v.to_str() + ")\n" +
+           "    (i64.const 0)\n    (local.set " +
+           (nl.v + 1).to_str() + ")\n" +
+           "    (local.get " + nl.v.to_str() + ")\n" +
+           "    (local.get " + (nl.v + 1).to_str() + ")\n";
+    nl.v = nl.v + 2;
+    return out;
+  }
+  let lasti: usize = len(e.args) - 1;
+  let lastarg: *Expr = e.args[lasti];
+  if lastarg.lit == 0 - 99 && (lasti as i64) == vp {
+    // a lone spread rides its pair whole
+    out = out + emit_arg(pool, lastarg, env, prog, nl);
+    return out;
+  }
+  // a fresh slice of the rest values
+  let a_slot: i64 = nl.v;
+  let l_slot: i64 = nl.v + 1;
+  nl.v = nl.v + 2;
+  out = out + "    (i64.extend_i32_u (call $w_alloc (i32.const " +
+         (rest * esz).to_str() + ")))\n" +
+         "    (local.set " + a_slot.to_str() + ")\n" +
+         "    (i64.const " + rest.to_str() + ")\n" +
+         "    (local.set " + l_slot.to_str() + ")\n";
+  let mut j: usize = vp as usize;
+  let mut sl: i64 = 0;
+  while j < len(e.args) {
+    let av: *Expr = e.args[j];
+    if sstr {
+      let spv2 = build_string_pair(av, pool, env, prog, nl);
+      out = out + spv2.text +
+             "    (i64.store (i32.add (i32.wrap_i64 (local.get " +
+             a_slot.to_str() + ")) (i32.mul (i32.const " +
+             sl.to_str() + ") (i32.const 8))) (local.get " +
+             spv2.a.to_str() + "))\n" +
+             "    (i64.store (i32.add (i32.add (i32.wrap_i64 (local.get " +
+             a_slot.to_str() + ")) (i32.mul (i32.const " +
+             sl.to_str() + ") (i32.const 8))) (i32.const 8)) " +
+             "(local.get " + spv2.l.to_str() + "))\n";
+      sl = sl + 2;
+    } else {
+      let tv2: i64 = nl.v;
+      nl.v = nl.v + 1;
+      out = out + emit_expr(pool, av, env, prog, nl);
+      out = out + "    (local.set " + tv2.to_str() + ")\n" +
+             "    (i64.store (i32.add (i32.wrap_i64 (local.get " +
+             a_slot.to_str() + ")) (i32.mul (i32.const " +
+             sl.to_str() + ") (i32.const 8))) (local.get " +
+             tv2.to_str() + "))\n";
+      sl = sl + 1;
+    }
+    j = j + 1;
+  }
+  out = out + "    (local.get " + a_slot.to_str() + ")\n" +
+         "    (local.get " + l_slot.to_str() + ")\n";
+  return out;
+}
+
 fn emit_print_fd(pool: *Pool, fmt: string, args: []*Expr, env: *Env,
                  prog: *Prog, nl: *NextLocal, fd: i64) -> string {
   let pieces: []string = parse.fmt_pieces(fmt);
@@ -4717,9 +4869,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
                      "            (br $mo" + fi.to_str() + "))))\n";
             }
             env_str_bind_runtime(env, st.name, a_slot, l_slot, 2);
-            if optelem {
-              env_bind_sliceelem(env, st.name, e.name);
-            }
+            env_bind_sliceelem(env, st.name, e.name);
           } else {
             if e.tag == parse.EX_SLICE2 {
               // base[a..b]: a view — addr' = addr + lo*esz, len' =
@@ -5054,6 +5204,29 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
         body = body + "    (local.set $t)\n";
         body = body + oob_check(pool, "(local.get " + len_slot.to_str() +
                                ")");
+        if env_slice_elemtext(env, st.name) == "string" {
+          // a string element writes its pair at a 16-byte stride
+          match st.val {
+            Option.Some(sv) => {
+              let spsv = build_string_pair(sv, pool, env, prog, nl);
+              if spsv.ok {
+                body = body + spsv.text +
+                       "    (i64.store (i32.add (i32.wrap_i64 " +
+                       "(local.get " + addr_slot.to_str() +
+                       ")) (i32.mul (i32.wrap_i64 (local.get $t)) " +
+                       "(i32.const 16))) (local.get " +
+                       spsv.a.to_str() + "))\n" +
+                       "    (i64.store (i32.add (i32.add " +
+                       "(i32.wrap_i64 (local.get " +
+                       addr_slot.to_str() + ")) (i32.mul " +
+                       "(i32.wrap_i64 (local.get $t)) (i32.const 16))) " +
+                       "(i32.const 8)) (local.get " +
+                       spsv.l.to_str() + "))\n";
+              }
+            },
+            Option.None => {},
+          }
+        } else {
         body = body + "    (i32.add (i32.wrap_i64 (local.get " +
                addr_slot.to_str() + "))\n" +
                "                     (i32.mul (i32.wrap_i64 " +
@@ -5067,6 +5240,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
         }
         body = body + "    (local.set $t)\n";
         body = body + "    (i64.store (local.get $a) (local.get $t))\n";
+        }
       }
     }
     if st.tag == parse.ST_FSTORE {
@@ -5512,6 +5686,14 @@ fn emit_fn(fd: *FnDef, pool: *Pool, prog: *Prog,
       }
       env_str_bind_runtime(env, fd.params[k], nl.v,
                            nl.v + 1, kind);
+      // a slice param carries its element text ([]string and the
+      // variadic rest alike — element reads key on it)
+      if kind == 2 && k < len(fd.ptypes) {
+        let pt2: string = fd.ptypes[k];
+        if len(pt2) >= 2 && pt2[0] == 91 && pt2[1] == 93 {
+          env_bind_sliceelem(env, fd.params[k], pt2[2..len(pt2)]);
+        }
+      }
       nl.v = nl.v + 2;
     } else {
       let mut pw: i64 = 0;
