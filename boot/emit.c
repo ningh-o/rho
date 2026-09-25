@@ -505,7 +505,7 @@ static void emit_const_to(FnCx *cx, Node *e, Type *t, size_t dst) {
     op(cx, "(local.set %zu (i32.const %d))\n", dst, e->kind == NT_BOOL
                        ? (e->bval ? 1 : 0) : 0);
     break;
-  case TY_I64: case TY_U64: {
+  case TY_I64: case TY_U64: case TY_USIZE: {
     uint64_t v = 0;
     if (e->kind == NT_INT) v = e->ival;
     else if (e->kind == NT_UNARY) {
@@ -652,6 +652,37 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       emit_printf(cx, e, true);
       return;
     }
+    if (is_pre && strcmp(callee->name, "make") == 0) {
+      // make([]T, n): zeroed block; slice = (payload, n)
+      Node *aw1 = reflist_len(e->list) > 1
+                      ? node_get(reflist_at(e->list, 1))
+                      : NULL;
+      Type *st = (Type *)e->sem; // the slice type
+      size_t esz = st && st->kind == TY_SLICE ? type_size(st->base) : 4;
+      size_t n = cx_fresh(cx, ty_usize);
+      if (aw1 && aw1->kind == NT_POSARG)
+        emit_expr(cx, aw1->a, n);
+      else
+        op(cx, "(local.set %zu (i64.const 0))\n", n);
+      // byte size = n * esz (i64 math, wrap to i32 for alloc)
+      size_t bytes = cx_fresh(cx, ty_i64);
+      op(cx, "(local.set %zu (i64.mul (local.get %zu) (i64.const %zu)))\n",
+         bytes, n, esz);
+      size_t b32 = cx_fresh(cx, ty_i32);
+      op(cx, "(local.set %zu (i32.wrap_i64 (local.get %zu)))\n", b32,
+         bytes);
+      size_t blk = cx_fresh(cx, ty_i32);
+      op(cx, "(local.set %zu (call $rho_alloc (local.get %zu)))\n", blk,
+         b32);
+      op(cx, "(local.set %zu (i32.add (local.get %zu) (i32.const 24)))\n",
+         dst, blk);
+      {
+        size_t n32 = cx_fresh(cx, ty_i32);
+        op(cx, "(local.set %zu (i32.wrap_i64 %s))\n", n32, L(cx, n));
+        op(cx, "(local.set %zu %s)\n", dst + 1, L(cx, n32));
+      }
+      return;
+    }
     if (is_pre && strcmp(callee->name, "len") == 0) {
       Node *aw = reflist_len(e->list) ? node_get(reflist_at(e->list, 0))
                                       : NULL;
@@ -660,7 +691,8 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
         size_t v = cx_fresh(cx, at);
         emit_expr(cx, aw->a, v);
         if (at->kind == TY_STRING || at->kind == TY_SLICE)
-          op(cx, "(local.set %zu %s)\n", dst, L(cx, v + 1));
+          op(cx, "(local.set %zu (i64.extend_i32_u %s))\n", dst,
+             L(cx, v + 1));
         else {
           op(cx, "(local.set %zu (i32.const 0))\n", dst);
         }
@@ -1091,6 +1123,114 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
         retain(cx, ft, tmp);
       }
       // unset fields read 0 (zeroed allocation law)
+    }
+    return;
+  }
+
+  case NT_INDEX: {
+    Type *bt = (Type *)node_get(e->a)->sem;
+    size_t b = cx_fresh(cx, bt);
+    emit_expr(cx, e->a, b);
+    size_t i = cx_fresh(cx, ty_usize);
+    emit_expr(cx, e->b, i);
+    size_t i32v = cx_fresh(cx, ty_i32);
+    op(cx, "(local.set %zu (i32.wrap_i64 (local.get %zu)))\n", i32v, i);
+    // bounds check: i >=u len → panic (spec §3)
+    size_t msg = data_intern("index out of bounds", 19);
+    op(cx, "(if (i32.ge_u (local.get %zu) %s) (then\n", i32v,
+       L(cx, b + 1));
+    op(cx, "  (call $rho_panic (i32.const %zu) (i32.const 19))))\n", msg);
+    if (bt->kind == TY_STRING) {
+      op(cx, "(local.set %zu (i32.load8_u (i32.add %s (local.get %zu))))\n",
+         dst, L(cx, b), i32v);
+    } else {
+      Type *el = bt->base;
+      size_t esz = type_size(el);
+      size_t addr = cx_fresh(cx, ty_i32);
+      if (esz == 1)
+        op(cx, "(local.set %zu (i32.add %s (local.get %zu)))\n", addr,
+           L(cx, b), i32v);
+      else
+        op(cx, "(local.set %zu (i32.add %s (i32.mul (local.get %zu) "
+               "(i32.const %zu))))\n", addr, L(cx, b), i32v, esz);
+      size_t n = shape_nlocals(el);
+      for (size_t k = 0; k < n; k++) {
+        WTy w = local_wty(el, k);
+        const char *ld = w == W_I64   ? "i64.load"
+                         : w == W_F32 ? "f32.load"
+                         : w == W_F64 ? "f64.load"
+                                      : "i32.load";
+        op(cx, "(local.set %zu (%s (i32.add (local.get %zu) "
+               "(i32.const %zu))))\n", dst + k, ld, addr, k * 4);
+      }
+    }
+    return;
+  }
+
+  case NT_SLICE_E: {
+    // s[a..b]: a view (ptr+a*esz, b-a); bounds-checked both ends
+    Type *bt = (Type *)node_get(e->a)->sem;
+    size_t b = cx_fresh(cx, bt);
+    emit_expr(cx, e->a, b);
+    size_t lo = cx_fresh(cx, ty_i32);
+    size_t hi = cx_fresh(cx, ty_i32);
+    if (e->b != NO_REF) {
+      size_t t = cx_fresh(cx, ty_usize);
+      emit_expr(cx, e->b, t);
+      op(cx, "(local.set %zu (i32.wrap_i64 (local.get %zu)))\n", lo, t);
+    } else {
+      op(cx, "(local.set %zu (i32.const 0))\n", lo);
+    }
+    if (e->c != NO_REF) {
+      size_t t = cx_fresh(cx, ty_usize);
+      emit_expr(cx, e->c, t);
+      op(cx, "(local.set %zu (i32.wrap_i64 (local.get %zu)))\n", hi, t);
+    } else {
+      op(cx, "(local.set %zu %s)\n", hi, L(cx, b + 1));
+    }
+    size_t msg = data_intern("index out of bounds", 19);
+    op(cx, "(if (i32.gt_u (local.get %zu) (local.get %zu)) (then\n", lo,
+       hi);
+    op(cx, "  (call $rho_panic (i32.const %zu) (i32.const 19))))\n", msg);
+    op(cx, "(if (i32.gt_u (local.get %zu) %s) (then\n", hi, L(cx, b + 1));
+    op(cx, "  (call $rho_panic (i32.const %zu) (i32.const 19))))\n", msg);
+    size_t esz = bt->kind == TY_STRING ? 1 : type_size(bt->base);
+    if (esz == 1)
+      op(cx, "(local.set %zu (i32.add %s (local.get %zu)))\n", dst,
+         L(cx, b), lo);
+    else
+      op(cx, "(local.set %zu (i32.add %s (i32.mul (local.get %zu) "
+             "(i32.const %zu))))\n", dst, L(cx, b), lo, esz);
+    op(cx, "(local.set %zu (i32.sub (local.get %zu) (local.get %zu)))\n",
+       dst + 1, hi, lo);
+    return;
+  }
+
+  case NT_SLICE_LIT: {
+    Type *st = t;
+    size_t esz = type_size(st->base);
+    size_t n = reflist_len(e->list);
+    size_t blk = cx_fresh(cx, ty_i32);
+    op(cx, "(local.set %zu (call $rho_alloc (i32.const %zu)))\n", blk,
+       n * esz);
+    op(cx, "(local.set %zu (i32.add (local.get %zu) (i32.const 24)))\n",
+       dst, blk);
+    op(cx, "(local.set %zu (i32.const %zu))\n", dst + 1, n);
+    for (size_t i2 = 0; i2 < n; i2++) {
+      Node *el = node_get(reflist_at(e->list, i2));
+      Type *elt = (Type *)el->sem;
+      size_t v = cx_fresh(cx, elt);
+      emit_expr(cx, reflist_at(e->list, i2), v);
+      size_t nl = shape_nlocals(elt);
+      for (size_t k = 0; k < nl; k++) {
+        WTy w = local_wty(elt, k);
+        const char *strop = w == W_I64   ? "i64.store"
+                            : w == W_F32 ? "f32.store"
+                            : w == W_F64 ? "f64.store"
+                                         : "i32.store";
+        op(cx, "(%s (i32.add %s (i32.const %zu)) %s)\n", strop,
+           L(cx, dst), i2 * esz + k * 4, L(cx, v + k));
+      }
     }
     return;
   }
@@ -1577,6 +1717,44 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
         return;
       }
       return; // inline-value field stores arrive with copies (later)
+    }
+    if (lv->kind == NT_INDEX) {
+      // s[i] = v: bounds-checked store at ptr + i*esz
+      Type *bt = (Type *)node_get(lv->a)->sem;
+      size_t b = cx_fresh(cx, bt);
+      emit_expr(cx, lv->a, b);
+      size_t i = cx_fresh(cx, ty_i32);
+      {
+        size_t iw = cx_fresh(cx, ty_usize);
+        emit_expr(cx, lv->b, iw);
+        op(cx, "(local.set %zu (i32.wrap_i64 (local.get %zu)))\n", i, iw);
+      }
+      size_t msg = data_intern("index out of bounds", 19);
+      op(cx, "(if (i32.ge_u (local.get %zu) %s) (then\n", i,
+         L(cx, b + 1));
+      op(cx, "  (call $rho_panic (i32.const %zu) (i32.const 19))))\n", msg);
+      Type *el = bt->kind == TY_STRING ? ty_u8 : bt->base;
+      size_t esz = type_size(el);
+      size_t rhs = cx_fresh(cx, lt);
+      emit_expr(cx, s->b, rhs);
+      size_t addr = cx_fresh(cx, ty_i32);
+      if (esz == 1)
+        op(cx, "(local.set %zu (i32.add %s (local.get %zu)))\n", addr,
+           L(cx, b), i);
+      else
+        op(cx, "(local.set %zu (i32.add %s (i32.mul (local.get %zu) "
+               "(i32.const %zu))))\n", addr, L(cx, b), i, esz);
+      size_t nl = shape_nlocals(el);
+      for (size_t k = 0; k < nl; k++) {
+        WTy w = local_wty(el, k);
+        const char *strop2 = w == W_I64   ? "i64.store"
+                             : w == W_F32 ? "f32.store"
+                             : w == W_F64 ? "f64.store"
+                                          : "i32.store";
+        op(cx, "(%s (i32.add (local.get %zu) (i32.const %zu)) %s)\n",
+           strop2, addr, k * 4, L(cx, rhs + k));
+      }
+      return;
     }
     if (lv->kind == NT_PATH) {
       VarInfo *v = cx_var(cx, lv->name);

@@ -598,6 +598,31 @@ static Type *check_call(FnCtx *c, NodeRef er, Type *expected) {
         strcmp(callee->name, "len") != 0 && lk.fns->mod == g_prelude_mod) {
       return check_format_call(c, call, expected);
     }
+    if (strcmp(callee->name, "make") == 0 &&
+        lk.fns->mod == g_prelude_mod) {
+      if (reflist_len(args) >= 1 &&
+          node_get(reflist_at(args, 0))->kind == NT_POSARG &&
+          node_get(reflist_at(args, 0))->op == 1) {
+        // type-argument form: make([]T, n) — the parser stashed the
+        // element type on the marker arg
+        Node *targ = node_get(node_get(reflist_at(args, 0))->a);
+        GScope g2 = {0};
+        Type *el = resolve_type_pub(c->mod, targ->a, &g2);
+        Type *st = el && el->kind == TY_SLICE
+                       ? el
+                       : (el ? type_slice(el) : NULL);
+        if (st) {
+          if (reflist_len(args) > 1) {
+            Node *cnt = node_get(reflist_at(args, 1));
+            if (cnt->kind == NT_POSARG)
+              check_expr(c, cnt->a, ty_usize);
+          }
+          return st;
+        }
+      }
+      err_at(c, call, "make takes a slice type and a length");
+      return ty_unit;
+    }
     if (strcmp(callee->name, "len") == 0 && lk.fns->mod == g_prelude_mod) {
       if (reflist_len(args) != 1 ||
           node_get(reflist_at(args, 0))->kind != NT_POSARG) {

@@ -1,0 +1,12 @@
+// out: 0+2+4+6+8+5-101
+fn main() -> i32 {
+  let mut xs: []i32 = make([]i32, 5);
+  let mut i: usize = 0;
+  while i < 5 {
+    xs[i] = (i * 2) as i32;
+    i += 1;
+  }
+  let s: string = "abcde";
+  printf("{}+{}+{}+{}+{}+{}-{}\n", xs[0], xs[1], xs[2], xs[3], xs[4], len(xs), s[4]);
+  return 0;
+}

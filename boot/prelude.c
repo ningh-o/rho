@@ -31,6 +31,8 @@ const char *prelude_src(void) {
     "  return 0 as usize;\n"
     "}\n"
     "\n"
+    "pub fn make() -> usize { return 0 as usize; }\n"
+    "\n"
     "pub fn panic(msg: string) {}\n"
     "\n"
     "pub fn assert(cond: bool, msg: string) {}\n"

@@ -26,6 +26,8 @@ pub fn len(s: string) -> usize {
   return 0 as usize;
 }
 
+pub fn make() -> usize { return 0 as usize; }
+
 pub fn panic(msg: string) {}
 
 pub fn assert(cond: bool, msg: string) {}
