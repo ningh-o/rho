@@ -184,13 +184,20 @@ section — no placeholder stages. boot is the reference compiler.
 - [ ] **T2.2+** Port module by module; each module its own TODO; graded
       by behavioral parity with boot across the whole corpus
       (determinism law: same compiler + same input → identical bytes).
-      *(growth so far, each pinned by tests/run-selfhost.sh: integer
-      printing with a decimal runtime; string hole args; let bindings,
-      arithmetic with precedence, variables; while/if/else/assignment
-      with comparisons; user fns with parameters, call expressions,
-      expression returns — recursion lands (fib(10)=55). Remain:
-      strings as values, the checker layer, fmt, module loading,
-      the kernel parity surface.)*
+      *(growth so far, each pinned by tests/run-selfhost.sh and the
+      boot-vs-self differential: integer printing with a decimal
+      runtime; string hole args; let bindings, arithmetic with
+      precedence, variables; while/if/else-if/assignment with
+      comparisons and unary minus; user fns with parameters, call
+      statements, expression returns — recursion lands (fib(10)=55);
+      string values with literal-concatenation folding; string
+      parameters over a pair-passing ABI; len(); main's return as the
+      exit code; the checker module seeds the pipeline's fourth layer
+      (unknown fns/names refuse emission); the compiler streams its
+      WAT in slices past the format scratch. The differential
+      (tests/run-diff.sh) runs eight programs through both compilers —
+      byte- and rc-identical. Remain: the type layer, fmt, module
+      loading, the kernel parity surface.)*
 - [ ] **T2.x** Optimizer in the mirror: constant folding, dead-code
       elimination, globals tree-shaking, tail-call→loop — with the
       language suites (opt/eq/params/modsys/strops/multiline) rebuilt
