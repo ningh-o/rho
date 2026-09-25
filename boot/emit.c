@@ -2260,7 +2260,8 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
             break;
         if (!ss)
           return;
-        size_t slot = static_slot(cx->fn->mod, lv->name);
+        size_t slot = static_slot(cx->fn ? cx->fn->mod : cx->p->entry,
+                                  lv->name);
         size_t rhs = cx_fresh(cx, lt);
         emit_expr(cx, s->b, rhs);
         if (s->op == OP_NONE) {
