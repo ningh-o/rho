@@ -1,0 +1,21 @@
+// exit: 0
+// signed wraparound at every width: MAX+1 lands on MIN, MIN-1 on MAX,
+// and MIN * -1, MIN / -1 and -MIN all wrap back to MIN (no panic)
+fn main() -> i32 {
+  let a8: i8 = 127;
+  let m8: i8 = (-128);
+  let a16: i16 = 32767;
+  let m16: i16 = (-32768);
+  let a32: i32 = 2147483647;
+  let m32: i32 = (-2147483648);
+  let a64: i64 = 9223372036854775807;
+  let m64: i64 = (-9223372036854775808);
+  printf("i8: max+1={} min-1={}\n", (a8 + 1), (m8 - 1));
+  printf("i16: max+1={} min-1={}\n", (a16 + 1), (m16 - 1));
+  printf("i32: max+1={} min-1={}\n", (a32 + 1), (m32 - 1));
+  printf("i64: max+1={} min-1={}\n", (a64 + 1), (m64 - 1));
+  printf("min*-1: i8={} i16={} i32={} i64={}\n", (m8 * (-1)), (m16 * (-1)), (m32 * (-1)), (m64 * (-1)));
+  printf("min/-1: i8={} i16={} i32={} i64={}\n", (m8 / (-1)), (m16 / (-1)), (m32 / (-1)), (m64 / (-1)));
+  printf("-min: i8={} i16={} i32={} i64={}\n", (-m8), (-m16), (-m32), (-m64));
+  return 0;
+}

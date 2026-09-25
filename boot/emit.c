@@ -584,27 +584,36 @@ __attribute__((unused)) static void emit_div(FnCx *cx, int opkind, Type *t, size
   op(cx, "(if (%s.eqz (local.get %zu)) (then\n", w, b);
   size_t msg = data_intern("division by zero", 18);
   op(cx, "  (call $rho_panic (i32.const %zu) (i32.const 18))))\n", msg);
-  if (opkind == OP_DIV) {
-    if (uns)
-      op(cx, "(local.set %zu (%s.div_u (local.get %zu) (local.get %zu)))\n",
-         out, w, a, b);
-    else
-      op(cx, "(local.set %zu (%s.div_s (local.get %zu) (local.get %zu)))\n",
-         out, w, a, b);
-  } else {
-    if (uns)
-      op(cx, "(local.set %zu (%s.rem_u (local.get %zu) (local.get %zu)))\n",
-         out, w, a, b);
-    else
-      op(cx, "(local.set %zu (%s.rem_s (local.get %zu) (local.get %zu)))\n",
-         out, w, a, b);
-  }
-  if (is64 && !uns) {
-    // wasm traps on MIN/-1: convert to the defined wrap (MIN)
-    // -- check divisor == -1: result = MIN
+  if (!uns) {
+    // wasm traps on MIN/-1: the defined answers are MIN (div) and 0
+    // (rem) — spec §11; branch around the trapping instruction. The
+    // MIN constant is the OPERAND TYPE's own minimum (narrow ints
+    // live sign-extended in i32, so their min is a small negative)
+    long long tmin = is64 ? (long long)INT64_MIN
+                          : (t->kind == TY_I8    ? -128LL
+                             : t->kind == TY_I16 ? -32768LL
+                                                 : (long long)INT32_MIN);
     op(cx, "(if (%s.eq (local.get %zu) (%s.const -1)) (then\n", w, b, w);
-    op(cx, "  (local.set %zu (%s.const 0x8000000000000000))))\n", out, w);
+    if (opkind == OP_DIV)
+      op(cx, "  (local.set %zu (%s.const %lld))\n", out, w, tmin);
+    else
+      op(cx, "  (local.set %zu (%s.const 0))\n", out, w);
+    op(cx, ") (else\n");
+    if (opkind == OP_DIV)
+      op(cx, "  (local.set %zu (%s.div_s (local.get %zu) "
+             "(local.get %zu)))\n", out, w, a, b);
+    else
+      op(cx, "  (local.set %zu (%s.rem_s (local.get %zu) "
+             "(local.get %zu)))\n", out, w, a, b);
+    op(cx, "))\n");
+    return;
   }
+  if (opkind == OP_DIV)
+    op(cx, "(local.set %zu (%s.div_u (local.get %zu) (local.get %zu)))\n",
+       out, w, a, b);
+  else
+    op(cx, "(local.set %zu (%s.rem_u (local.get %zu) (local.get %zu)))\n",
+       out, w, a, b);
 }
 
 // struct field memory offsets (boxed layout)
@@ -914,11 +923,82 @@ static void emit_dropfns_and_table(Em *em) {
   (void)dropfn_for;
 }
 
+// a block in expression position: statements run, then the tail
+// (bare expression, block-final if, or block-final match) lands in dst
+static void emit_block_value(FnCx *cx, NodeRef br, size_t dst) {
+  Node *b = node_get(br);
+  Type *vt = (Type *)b->sem;
+  cx->scope++;
+  size_t base_vars = VLEN(cx->vars);
+  size_t base_defers = VLEN(cx->defers);
+  size_t n = reflist_len(b->list);
+  for (size_t i = 0; i < n; i++) {
+    bool last = i + 1 == n;
+    Node *sn = node_get(reflist_at(b->list, i));
+    if (!last) {
+      emit_stmt(cx, reflist_at(b->list, i));
+      continue;
+    }
+    Type *tail = (Type *)sn->sem;
+    if (sn->kind == NT_EXPRSTMT && sn->bval) {
+      emit_expr(cx, sn->a, dst);
+    } else if (sn->kind == NT_IF && tail && tail->kind != TY_UNIT) {
+      size_t c = cx_fresh(cx, ty_bool);
+      emit_expr(cx, sn->a, c);
+      op(cx, "(if (local.get %zu) (then\n", c);
+      size_t tv = cx_fresh(cx, tail);
+      emit_expr(cx, sn->b, tv);
+      size_t nn = shape_nlocals(tail);
+      for (size_t k = 0; k < nn; k++)
+        op(cx, "(local.set %zu %s)\n", dst + k, L(cx, tv + k));
+      op(cx, ") (else\n");
+      size_t fv = cx_fresh(cx, tail);
+      emit_expr(cx, sn->c, fv);
+      for (size_t k = 0; k < nn; k++)
+        op(cx, "(local.set %zu %s)\n", dst + k, L(cx, fv + k));
+      op(cx, "))\n");
+    } else if (sn->kind == NT_MATCH_EXPR) {
+      emit_match(cx, reflist_at(b->list, i), dst);
+    } else {
+      emit_stmt(cx, reflist_at(b->list, i));
+    }
+  }
+  for (size_t i = VLEN(cx->defers); i > base_defers;) {
+    DeferEnt *d = VAT(cx->defers, DeferEnt, --i);
+    if (d->scope < cx->scope)
+      break;
+    NodeRef act = node_get(d->stmt)->a;
+    Node *an = node_get(act);
+    if (an->kind == NT_ASSIGN)
+      emit_stmt(cx, act);
+    else {
+      Type *at2 = (Type *)an->sem;
+      size_t tv = cx_fresh(cx, at2 ? at2 : ty_unit);
+      emit_expr(cx, act, tv);
+      release(cx, at2, tv);
+    }
+  }
+  cx->defers.len = base_defers;
+  for (size_t i = VLEN(cx->vars); i > base_vars; i--) {
+    VarInfo *v = VAT(cx->vars, VarInfo, i - 1);
+    if (v->scope >= cx->scope)
+      release(cx, v->ty, v->vreg);
+  }
+  cx->vars.len = base_vars;
+  cx->scope--;
+  (void)vt;
+}
+
 static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
   if (er == NO_REF)
     return;
   Node *e = node_get(er);
   Type *t = (Type *)e->sem;
+
+  if (e->kind == NT_EXPRSTMT && e->op == 3) {
+    emit_block_value(cx, er, dst);
+    return;
+  }
 
   switch (e->kind) {
   case NT_INT:

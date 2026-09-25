@@ -205,6 +205,20 @@ static bool literal_adapts_to(FnCtx *c, Node *e, Type *t) {
   (void)c;
   if (!t)
     return false;
+  if (e->kind == NT_UNARY && e->op == OP_NEG) {
+    // -literal adapts THROUGH the negation: the magnitude may reach
+    // MIN, one past max (128 fits i8 here — the fold negates it)
+    Node *op0 = node_get(e->a);
+    if (op0->kind == NT_FLOAT)
+      return type_is_float(t);
+    if (op0->kind != NT_INT)
+      return false;
+    if (!type_is_int(t))
+      return false; // negative ints never adapt to unsigned targets
+    if (op0->ival == 0)
+      return int_fits(0, t); // -0
+    return int_fits(op0->ival - 1, t);
+  }
   if (e->kind == NT_INT) {
     if (type_is_int(t))
       return int_fits(e->ival, t);
@@ -1124,8 +1138,13 @@ static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
     Node *operand = node_get(e->a);
     if (e->op == OP_NEG &&
         (operand->kind == NT_INT || operand->kind == NT_FLOAT)) {
-      // -literal: the consumer type flows through the negation
-      Type *t = check_expr(c, e->a, expected);
+      // -literal: the consumer flows through the negation — including
+      // the MIN magnitudes that only fit after the fold
+      if (expected && literal_adapts_to(c, e, expected)) {
+        operand->sem = expected;
+        return expected;
+      }
+      Type *t = check_expr(c, e->a, NULL);
       if (!type_is_num(t))
         err_at(c, e, "cannot negate %s", type_name(t));
       return t;
@@ -1421,20 +1440,67 @@ static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
 }
 
 // the value of a block: its tail expression's type (unit if none)
+static Type *check_block_value(FnCtx *c, NodeRef br, Type *expected);
+static Type *check_if_tail_value(FnCtx *c, Node *s, Type *expected);
+
+// an if in block-final position carries its value (§9); branches are
+// block values, else-if chains recurse
+static Type *check_if_tail_value(FnCtx *c, Node *s, Type *expected) {
+  Type *ct = check_expr(c, s->a, ty_bool);
+  if (ct->kind != TY_BOOL)
+    err_at(c, s, "if condition is %s, want bool", type_name(ct));
+  if (s->c == NO_REF) {
+    err_at(c, s, "if-expression requires else");
+    s->sem = ty_unit;
+    return ty_unit;
+  }
+  ctx_push_scope(c);
+  Type *t = check_block_value(c, s->b, expected);
+  ctx_pop_scope(c);
+  ctx_push_scope(c);
+  Type *et;
+  if (node_get(s->c)->kind == NT_IF)
+    et = check_if_tail_value(c, node_get(s->c), expected);
+  else
+    et = check_block_value(c, s->c, expected);
+  ctx_pop_scope(c);
+  if (!type_eq(t, et)) {
+    err_at(c, s, "if arms disagree: %s vs %s", type_name(t),
+           type_name(et));
+    s->sem = t;
+    return t;
+  }
+  s->sem = t; // the value the emitter reads
+  return t;
+}
+
+// a block in value position: one scoped walk; the final statement may
+// be a bare expression, an if, or a match — it types the block
 static Type *check_block_value(FnCtx *c, NodeRef br, Type *expected) {
-  check_block(c, br);
   Node *b = node_get(br);
-  if (b->kind == NT_EXPRSTMT && b->op == 3 && reflist_len(b->list) > 0) {
-    NodeRef last = reflist_at(b->list, reflist_len(b->list) - 1);
-    Node *ln = node_get(last);
-    if (ln->kind == NT_EXPRSTMT && ln->bval) {
-      // tail: re-check with the expected type so literals adapt — the
-      // first pass typed it without one; literals default safely, so
-      // the value type is whatever it produced
-      return check_expr(c, ln->a, expected);
+  Type *tail_ty = ty_unit;
+  ctx_push_scope(c);
+  size_t n = reflist_len(b->list);
+  for (size_t i = 0; i < n; i++) {
+    bool last = i + 1 == n;
+    Node *sn = node_get(reflist_at(b->list, i));
+    if (!last) {
+      check_stmt(c, reflist_at(b->list, i));
+      continue;
+    }
+    if (sn->kind == NT_EXPRSTMT && sn->bval) {
+      tail_ty = check_expr(c, sn->a, expected);
+    } else if (sn->kind == NT_IF && sn->op != 1 && sn->c != NO_REF) {
+      tail_ty = check_if_tail_value(c, sn, expected);
+    } else if (sn->kind == NT_MATCH_EXPR) {
+      tail_ty = check_match(c, reflist_at(b->list, i), expected);
+    } else {
+      check_stmt(c, reflist_at(b->list, i));
     }
   }
-  return ty_unit;
+  b->sem = tail_ty;
+  ctx_pop_scope(c);
+  return tail_ty;
 }
 
 static Type *check_match(FnCtx *c, NodeRef er, Type *expected) {
