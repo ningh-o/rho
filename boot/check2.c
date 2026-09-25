@@ -287,6 +287,73 @@ static FnDef *instantiate_generic_seeded(FnCtx *c, FnDef *f, Node *call,
                                          Type *expected, Type **seed);
 static bool ty_has_param(Type *t);
 static bool ty_pattern_match(Type *pat, Type *val);
+static FnDef **method_candidates(FnCtx *c, Type *t, const char *name,
+                                 size_t *count);
+
+// the scalar builtins (their methods may live in the prelude)
+static bool type_is_scalar_builtin(Type *t) {
+  switch (t->kind) {
+  case TY_I8: case TY_I16: case TY_I32: case TY_I64:
+  case TY_U8: case TY_U16: case TY_U32: case TY_U64: case TY_USIZE:
+  case TY_F32: case TY_F64: case TY_BOOL: case TY_STRING:
+    return true;
+  default:
+    return false;
+  }
+}
+
+// a trait visible from module m by name (pub / same module / prelude)
+static TraitDef *find_trait(Module *m, const char *name) {
+  extern Program *g_program_ctx;
+  for (Module *mod = g_program_ctx->modules; mod; mod = mod->next) {
+    Sym *s = mod->syms ? symtab_get(mod->syms, name) : NULL;
+    if (s && s->kind == SYM_TRAIT &&
+        (mod == m || mod == g_prelude_mod || s->pub))
+      return s->u.tdef;
+  }
+  return NULL;
+}
+
+// trait satisfaction = name + signature match (§3.5), computed from
+// the method tables (native methods, the caller's own module, the use
+// closure — the same visibility as a method call)
+static bool trait_satisfied(FnCtx *c, Type *t, TraitDef *td) {
+  for (size_t i = 0; i < td->nsigs; i++) {
+    const char *signame = NULL;
+    // the trait sig's name rides its first param decl node (parse
+    // stores the fn name on the NT_FN; trait sigs hold NT_FN bodies)
+    Node *sn = node_get(reflist_at(node_get(td->decl)->list, i));
+    signame = sn->name;
+    size_t n = 0;
+    FnDef **cands = method_candidates(c, t, signame, &n);
+    bool hit = false;
+    for (size_t k = 0; k < n && !hit; k++) {
+      FnDef *f = cands[k];
+      // signature match: params[1..] vs the trait sig's params[1..]
+      // (bare self params are NULL-typed on both sides), ret match
+      FnSig *a = f->sig, *b = &td->sigs[i];
+      size_t na = a->nparams ? a->nparams : 0;
+      if (na != b->nparams)
+        continue;
+      bool ok = true;
+      for (size_t q = 0; q < na && ok; q++) {
+        Type *pa = a->params[q].ty;
+        Type *pb = b->params[q].ty;
+        if (!pb) // the trait's bare self slot matches any receiver
+          continue;
+        if (!pa || !type_eq(pa, pb))
+          ok = false;
+      }
+      if (ok && !type_eq(a->ret, b->ret))
+        ok = false;
+      if (ok)
+        hit = true;
+    }
+    if (!hit)
+      return false;
+  }
+  return true;
+}
 static Type *check_format_call(FnCtx *c, Node *call, Type *expected);
 static void check_assign_target(FnCtx *c, Node *lv);
 static void check_assign_target_base(FnCtx *c, NodeRef base);
@@ -381,9 +448,12 @@ static FnDef **method_candidates(FnCtx *c, Type *t, const char *name,
     tmod = t->sdef->mod;
   else if (t->kind == TY_ENUM)
     tmod = t->edef->mod;
+  else if (type_is_scalar_builtin(t))
+    tmod = g_prelude_mod; // builtins: their methods live in the prelude
   const char *tn = t->kind == TY_STRUCT    ? t->sdef->name
                    : t->kind == TY_ENUM    ? t->edef->name
-                                            : NULL;
+                   : tmod                  ? type_name(t)
+                                           : NULL;
   if (!tn) {
     *count = 0;
     return NULL;
@@ -2286,12 +2356,74 @@ static FnDef *instantiate_generic_seeded(FnCtx *c, FnDef *f, Node *call,
     Type *at = check_expr(c, aw->a, NULL);
     tunify(pt, at, &tb0);
   }
-  for (size_t b = 0; b < ng; b++)
+  for (size_t b = 0; b < ng; b++) {
+    if (binds[b])
+      continue;
+    // literals bind their parameter at the DEFAULT type (§3.1: no
+    // consumer → i32/f64) — the unification pass skipped them on
+    // purpose so an expected type could bind first
+    for (size_t i = 0; !binds[b] && i < f->sig->nparams &&
+                       i < reflist_len(call->list);
+         i++) {
+      Type *pt = f->sig->params[i].ty;
+      if (!pt || pt->kind != TY_PARAM ||
+          strcmp(names[b], pt->pname) != 0)
+        continue;
+      Node *aw = node_get(reflist_at(call->list, i));
+      if (aw->kind != NT_POSARG)
+        continue;
+      Node *arg = node_get(aw->a);
+      Type *dt = NULL;
+      if (arg->kind == NT_INT)
+        dt = ty_i32;
+      else if (arg->kind == NT_FLOAT)
+        dt = ty_f64;
+      else if (arg->kind == NT_UNARY && arg->op == OP_NEG) {
+        Node *op0 = node_get(arg->a);
+        dt = op0->kind == NT_INT    ? ty_i32
+             : op0->kind == NT_FLOAT ? ty_f64
+                                     : NULL;
+      }
+      if (dt)
+        binds[b] = dt;
+    }
     if (!binds[b]) {
       err_at(c, call, "cannot infer generic parameter '%s' of %s",
              names[b], f->name);
       binds[b] = ty_i32;
     }
+  }
+  // bounds verified per instantiation (§3.8): every [T: Trait] checks
+  // the concrete bind carries the trait's methods
+  if (f->decl != NO_REF) {
+    Node *d = node_get(f->decl);
+    if (d->kind == NT_FN && d->a != NO_REF &&
+        node_get(d->a)->list) {
+      RefList *gps = node_get(d->a)->list;
+      for (size_t i = 0; i < reflist_len(gps); i++) {
+        Node *gp = node_get(reflist_at(gps, i));
+        if (!gp->list)
+          continue;
+        for (size_t b = 0; b < ng; b++)
+          if (names[b] && strcmp(names[b], gp->name) == 0) {
+            for (size_t k = 0; k < reflist_len(gp->list); k++) {
+              const char *bn = node_get(reflist_at(gp->list, k))->name;
+              TraitDef *td = find_trait(c->mod, bn);
+              if (!td) {
+                err_at(c, call, "unknown trait '%s' in the bounds of %s",
+                       bn, f->name);
+                continue;
+              }
+              if (!trait_satisfied(c, binds[b], td))
+                err_at(c, call,
+                       "%s does not satisfy %s: %s bound to %s here",
+                       f->name, bn, names[b], type_name(binds[b]));
+            }
+            break;
+          }
+      }
+    }
+  }
   // reuse identical instantiations (structural binds)
   for (FnDef *g = f->instances; g; g = g->next_instance) {
     bool same = true;
@@ -2352,4 +2484,36 @@ static FnDef *instantiate_generic_seeded(FnCtx *c, FnDef *f, Node *call,
   inst->sig = inst->sig; // sig built above
   { extern Program *g_program_ctx; check_fn_body(g_program_ctx, inst); }
   return inst;
+}
+
+// eager impl-block check (§3.5): impl Trait for T requires T to carry
+// every trait method with a matching signature — checked the moment
+// the impl exists, not at the first call
+void check_impls(Program *p) {
+  for (Module *m = p->modules; m; m = m->next) {
+    if (!m->decls)
+      continue;
+    for (size_t i = 0; i < reflist_len(m->decls); i++) {
+      Node *d = node_get(reflist_at(m->decls, i));
+      if (d->kind != NT_IMPL)
+        continue;
+      TraitDef *td = find_trait(m, d->name);
+      if (!td) {
+        diag_at(DIAG_ERROR, m->path, d->line, d->col,
+                "impl of unknown trait '%s'", d->name);
+        continue;
+      }
+      Type *tgt = resolve_type_pub(m, d->b, NULL);
+      if (!tgt)
+        continue;
+      FnCtx ctx;
+      memset(&ctx, 0, sizeof ctx);
+      ctx.mod = m;
+      if (!trait_satisfied(&ctx, tgt, td))
+        diag_at(DIAG_ERROR, m->path, d->line, d->col,
+                "impl %s for %s: the type does not carry every trait "
+                "method with a matching signature",
+                d->name, type_name(tgt));
+    }
+  }
 }

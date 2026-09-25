@@ -1,0 +1,60 @@
+// exit: 0
+// slice 081: trait bounds on generics — [T: Show] is checked at each
+// instantiation, over pointer shapes and primitives alike, and a bound
+// propagates into nested generic calls
+trait Show {
+  fn to_str(self) -> string,
+}
+
+struct Pt {
+  x: i32,
+  y: i32,
+}
+
+fn Pt.to_str(self: *Pt) -> string {
+  return format("pt({}, {})", self.x, self.y);
+}
+
+struct Word {
+  s: string,
+}
+
+fn Word.to_str(self: *Word) -> string {
+  return format("<{}>", self.s);
+}
+
+fn label[T: Show](v: *T) -> string {
+  return format("[{}]", v);
+}
+
+fn twice_str[T: Show](v: T) -> string {
+  return format("{}|{}", v, v);
+}
+
+// a bound flows through: wrap's own T satisfies Show, so label(v) checks
+fn wrap[T: Show](v: *T) -> string {
+  return format("w{}", label(v));
+}
+
+fn main() -> i32 {
+  let p = new Pt { x: 1, y: 2 };
+  let w = new Word { s: "hey" };
+  // one instantiation per concrete T
+  printf("label={} {}\n", label(p), label(w));
+  // primitives satisfy Show through the prelude's methods
+  printf("prim={} {}\n", twice_str(42), twice_str(true));
+  printf("str={}\n", twice_str("raw"));
+  // the same instantiation reused: still one body, one answer
+  printf("again={}\n", label(p));
+  // bounds compose through nested generic calls
+  printf("wrap={} {}\n", wrap(p), wrap(w));
+  // all the instantiations in one line
+  printf("mix={} {} {}\n", label(p), twice_str(7), label(w));
+  let tags: []string = make([]string, 3);
+  tags[0] = label(p);
+  tags[1] = twice_str(false);
+  tags[2] = label(w);
+  let joined: string = tags[0] + " " + (tags[1] + (" " + tags[2]));
+  printf("joined={}\n", joined);
+  return 0;
+}

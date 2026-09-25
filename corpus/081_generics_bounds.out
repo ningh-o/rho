@@ -1,0 +1,7 @@
+label=[pt(1, 2)] [<hey>]
+prim=42|42 true|true
+str=raw|raw
+again=[pt(1, 2)]
+wrap=w[pt(1, 2)] w[<hey>]
+mix=[pt(1, 2)] 7|7 [<hey>]
+joined=[pt(1, 2)] false|false [<hey>]

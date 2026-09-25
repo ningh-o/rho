@@ -1,0 +1,18 @@
+// expect: does not satisfy Show
+trait Show {
+  fn to_str(self) -> string,
+}
+
+struct NoShow {
+  n: i32,
+}
+
+fn label[T: Show](v: *T) -> string {
+  return format("[{}]", v);
+}
+
+fn main() -> i32 {
+  let x = new NoShow { n: 1 };
+  printf("{}\n", label(x));
+  return 0;
+}

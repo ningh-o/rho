@@ -4,6 +4,15 @@
 // targets: their signatures here anchor checking, the emitter
 // implements them (format desugar per spec §5, panic per spec §2).
 
+// The print protocol as a trait (§8): satisfaction is computed from
+// the method tables — every primitive's to_str below implements it,
+// and a user type joins by defining to_str (an impl block only adds
+// the eager check). Each primitive rides the emitter's native format
+// path, so the digits are one source with printf's own.
+pub trait Show {
+  fn to_str(self) -> string,
+}
+
 pub enum Option[T] {
   Some(T),
   None,
@@ -12,6 +21,58 @@ pub enum Option[T] {
 pub enum Result[T, E] {
   Ok(T),
   Err(E),
+}
+
+fn i8.to_str(self: i8) -> string {
+  return format("{}", self);
+}
+
+fn i16.to_str(self: i16) -> string {
+  return format("{}", self);
+}
+
+fn i32.to_str(self: i32) -> string {
+  return format("{}", self);
+}
+
+fn i64.to_str(self: i64) -> string {
+  return format("{}", self);
+}
+
+fn u8.to_str(self: u8) -> string {
+  return format("{}", self);
+}
+
+fn u16.to_str(self: u16) -> string {
+  return format("{}", self);
+}
+
+fn u32.to_str(self: u32) -> string {
+  return format("{}", self);
+}
+
+fn u64.to_str(self: u64) -> string {
+  return format("{}", self);
+}
+
+fn usize.to_str(self: usize) -> string {
+  return format("{}", self);
+}
+
+fn f32.to_str(self: f32) -> string {
+  return __f32_text(self);
+}
+
+fn f64.to_str(self: f64) -> string {
+  return __f64_text(self);
+}
+
+fn bool.to_str(self: bool) -> string {
+  return format("{}", self);
+}
+
+fn string.to_str(self: string) -> string {
+  return self;
 }
 
 pub fn printf(fmt: string) {}

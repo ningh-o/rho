@@ -601,7 +601,19 @@ void fmt_program(FILE *out, Program *p) {
       case NT_ENUM: {
         if (d->bval)
           fp(&f, "pub ");
-        fp(&f, "enum %s {\n", d->name);
+        fp(&f, "enum %s", d->name);
+        if (d->a != NO_REF && NG(d->a)->list &&
+            reflist_len(NG(d->a)->list)) {
+          RefList *gps = NG(d->a)->list;
+          fp(&f, "[");
+          for (size_t g = 0; g < reflist_len(gps); g++) {
+            if (g)
+              fp(&f, ", ");
+            fp(&f, "%s", NG(reflist_at(gps, g))->name);
+          }
+          fp(&f, "]");
+        }
+        fp(&f, " {\n", d->name);
         f.depth++;
         for (size_t vi = 0; vi < reflist_len(d->list); vi++) {
           Node *v = NG(reflist_at(d->list, vi));

@@ -791,99 +791,128 @@ static void collect_module(Program *p, Module *m) {
 }
 
 // pass 3: consts, statics, externs, fn signatures
+static void collect_one_fn(Program *p, Module *m, NodeRef dr);
+
 static void collect_fns(Program *p, Module *m) {
   (void)p;
   for (size_t i = 0; i < reflist_len(m->decls); i++) {
     NodeRef dr = reflist_at(m->decls, i);
     Node *d = node_get(dr);
-    if (d->kind == NT_CONST) {
-      Sym *ex = symtab_get(m->syms, d->name);
-      if (ex) {
-        diag_at(DIAG_ERROR, m->path, d->line, d->col,
-                "duplicate definition of '%s' in module %s", d->name,
-                m->name);
-        continue;
+    if (d->kind == NT_IMPL) {
+      // impl members are methods of the impl's target type (the trait
+      // names the PROTOCOL, the target names the receiver)
+      Node *tgt = d->b != NO_REF ? node_get(d->b) : NULL;
+      const char *tn = tgt ? tgt->name : NULL;
+      for (size_t k = 0; k < reflist_len(d->list); k++) {
+        NodeRef fr = reflist_at(d->list, k);
+        Node *f = node_get(fr);
+        if (f->kind != NT_FN || !tn)
+          continue;
+        f->op = 1; // a method decl from here on
+        f->name2 = tn;
+        collect_one_fn(p, m, fr);
       }
-      Sym *s = symtab_add(m->syms, d->name);
-      s->kind = SYM_CONST;
+      continue;
+    }
+    if (d->kind != NT_CONST && d->kind != NT_STATIC && d->kind != NT_EXTERN &&
+        d->kind != NT_FN)
+      continue;
+    collect_one_fn(p, m, dr);
+  }
+}
+
+static void collect_one_fn(Program *p, Module *m, NodeRef dr) {
+  Node *d = node_get(dr);
+  if (d->kind == NT_CONST) {
+    Sym *ex = symtab_get(m->syms, d->name);
+    if (ex) {
+      diag_at(DIAG_ERROR, m->path, d->line, d->col,
+              "duplicate definition of '%s' in module %s", d->name, m->name);
+      return;
+    }
+    Sym *s = symtab_add(m->syms, d->name);
+    s->kind = SYM_CONST;
+    s->pub = d->bval;
+    ConstDef *cd = arena_alloc(g_arena, sizeof(ConstDef), 8);
+    memset(cd, 0, sizeof(ConstDef));
+    cd->name = d->name;
+    cd->init = d->b;
+    cd->decl = dr;
+    cd->mod = m;
+    cd->is_root = (m == p->entry);
+    s->u.konst = cd;
+    // type resolved during checking (const inference, T1.6)
+    return;
+  }
+  if (d->kind == NT_STATIC) {
+    Sym *ex = symtab_get(m->syms, d->name);
+    if (ex) {
+      diag_at(DIAG_ERROR, m->path, d->line, d->col,
+              "duplicate definition of '%s' in module %s", d->name, m->name);
+      return;
+    }
+    Sym *s = symtab_add(m->syms, d->name);
+    s->kind = SYM_STATIC;
+    s->pub = false;
+    // statics carry their own type slot; store in a ConstDef-shaped
+    // holder reusing the same field layout
+    ConstDef *cd = arena_alloc(g_arena, sizeof(ConstDef), 8);
+    memset(cd, 0, sizeof(ConstDef));
+    cd->name = d->name;
+    cd->init = d->b;
+    cd->mod = m;
+    s->u.konst = cd;
+    cd->ty = resolve_type(m, d->a, NULL);
+    return;
+  }
+  if (d->kind == NT_EXTERN) {
+    Sym *s = symtab_get(m->syms, d->name);
+    if (!s)
+      s = symtab_add(m->syms, d->name);
+    s->kind = SYM_EXTERN;
+    s->pub = d->bval;
+    return;
+  }
+  if (d->kind == NT_FN) {
+    // overloads: same name allowed with different signatures;
+    // exact-duplicate signatures are an error
+    Sym *s = symtab_get(m->syms, d->name);
+    if (s && s->kind != SYM_FN) {
+      diag_at(DIAG_ERROR, m->path, d->line, d->col,
+              "duplicate definition of '%s' in module %s", d->name, m->name);
+      return;
+    }
+    FnDef *fd = arena_alloc(g_arena, sizeof(FnDef), 8);
+    memset(fd, 0, sizeof(FnDef));
+    fd->name = d->name;
+    fd->mod = m;
+    fd->decl = dr;
+    fd->is_pub = d->bval;
+    fd->body = d->d;
+    fd->is_method = d->op == 1 && reflist_len(d->list) > 0 &&
+                    strcmp(node_get(reflist_at(d->list, 0))->name, "self") ==
+                        0;
+    fd->is_assoc = d->op == 1 && !fd->is_method;
+    fd->recv = d->name2;
+    // generic params
+    if (d->a != NO_REF) {
+      RefList *gps = node_get(d->a)->list;
+      fd->ngparams = reflist_len(gps);
+      fd->gparams = arena_alloc(g_arena, fd->ngparams * sizeof(char *), 8);
+      for (size_t j = 0; j < fd->ngparams; j++)
+        fd->gparams[j] = node_get(reflist_at(gps, j))->name;
+    }
+    if (!s) {
+      s = symtab_add(m->syms, d->name);
+      s->kind = SYM_FN;
       s->pub = d->bval;
-      ConstDef *cd = arena_alloc(g_arena, sizeof(ConstDef), 8);
-      memset(cd, 0, sizeof(ConstDef));
-      cd->name = d->name;
-      cd->init = d->b;
-      cd->decl = dr;
-      cd->mod = m;
-      cd->is_root = (m == p->entry);
-      s->u.konst = cd;
-      // type resolved during checking (const inference, T1.6)
-    } else if (d->kind == NT_STATIC) {
-      Sym *ex = symtab_get(m->syms, d->name);
-      if (ex) {
-        diag_at(DIAG_ERROR, m->path, d->line, d->col,
-                "duplicate definition of '%s' in module %s", d->name,
-                m->name);
-        continue;
-      }
-      Sym *s = symtab_add(m->syms, d->name);
-      s->kind = SYM_STATIC;
-      s->pub = false;
-      // statics carry their own type slot; store in a ConstDef-shaped
-      // holder reusing the same field layout
-      ConstDef *cd = arena_alloc(g_arena, sizeof(ConstDef), 8);
-      memset(cd, 0, sizeof(ConstDef));
-      cd->name = d->name;
-      cd->init = d->b;
-      cd->mod = m;
-      s->u.konst = cd;
-      cd->ty = resolve_type(m, d->a, NULL);
-    } else if (d->kind == NT_EXTERN) {
-      Sym *s = symtab_get(m->syms, d->name);
-      if (!s)
-        s = symtab_add(m->syms, d->name);
-      s->kind = SYM_EXTERN;
-      s->pub = d->bval;
-    } else if (d->kind == NT_FN) {
-      // overloads: same name allowed with different signatures;
-      // exact-duplicate signatures are an error
-      Sym *s = symtab_get(m->syms, d->name);
-      if (s && s->kind != SYM_FN) {
-        diag_at(DIAG_ERROR, m->path, d->line, d->col,
-                "duplicate definition of '%s' in module %s", d->name,
-                m->name);
-        continue;
-      }
-      FnDef *fd = arena_alloc(g_arena, sizeof(FnDef), 8);
-      memset(fd, 0, sizeof(FnDef));
-      fd->name = d->name;
-      fd->mod = m;
-      fd->decl = dr;
-      fd->is_pub = d->bval;
-      fd->body = d->d;
-      fd->is_method = d->op == 1 && reflist_len(d->list) > 0 &&
-                      strcmp(node_get(reflist_at(d->list, 0))->name,
-                             "self") == 0;
-      fd->is_assoc = d->op == 1 && !fd->is_method;
-      fd->recv = d->name2;
-      // generic params
-      if (d->a != NO_REF) {
-        RefList *gps = node_get(d->a)->list;
-        fd->ngparams = reflist_len(gps);
-        fd->gparams = arena_alloc(g_arena, fd->ngparams * sizeof(char *), 8);
-        for (size_t j = 0; j < fd->ngparams; j++)
-          fd->gparams[j] = node_get(reflist_at(gps, j))->name;
-      }
-      if (!s) {
-        s = symtab_add(m->syms, d->name);
-        s->kind = SYM_FN;
-        s->pub = d->bval;
-        s->u.fns = fd;
-      } else {
-        // append to overload chain; signature dup checked in T1.5
-        FnDef *t = s->u.fns;
-        while (t->next_overload)
-          t = t->next_overload;
-        t->next_overload = fd;
-      }
+      s->u.fns = fd;
+    } else {
+      // append to overload chain; signature dup checked in T1.5
+      FnDef *t = s->u.fns;
+      while (t->next_overload)
+        t = t->next_overload;
+      t->next_overload = fd;
     }
   }
 }
@@ -1017,7 +1046,11 @@ bool check_program(Program *p) {
   }
 
   // bodies checked by check_bodies (T1.5/T1.6 drive it)
-  extern bool check_bodies(Program *p);
-  check_bodies(p);
+  {
+    extern void check_impls(Program *p);
+    check_impls(p);
+    extern bool check_bodies(Program *p);
+    check_bodies(p);
+  }
   return !g_had_error;
 }

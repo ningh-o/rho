@@ -1,0 +1,23 @@
+// expect: does not carry every trait method
+trait Two {
+  fn a(self) -> i32,
+  fn b(self) -> i32,
+}
+
+struct S {
+  n: i32,
+}
+
+fn S.a(self: *S) -> i32 {
+  return self.n;
+}
+
+impl Two for S {
+  fn a(self: *S) -> i32 {
+    return self.n;
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -39,6 +39,11 @@ static bool accept(Parser *p, TokKind k) {
   return false;
 }
 
+static bool peek_is(Parser *p, size_t ahead, TokKind k) {
+  size_t i = p->pos + ahead;
+  return i < p->m->ntoks && p->m->toks[i].kind == k;
+}
+
 static Token *expect(Parser *p, TokKind k, const char *what) {
   if (is(p, k))
     return eat(p);
@@ -1151,6 +1156,31 @@ static NodeRef parse_decl(Parser *p) {
     NodeRef r = nnew(p, NT_FN);
     Node *n = node_get(r);
     n->bval = pub;
+    // builtin receiver first: `fn i32.to_str` — the keyword can never
+    // be a plain function name, so there is no ambiguity
+    if (kind(p) >= K_I8 && kind(p) <= K_STRING && peek_is(p, 1, T_DOT)) {
+      const char *spell = NULL;
+      tok_is_builtin_type(kind(p), &spell);
+      eat(p);
+      eat(p); // the dot
+      Token *mn = expect(p, T_IDENT, "as the method name");
+      n->name2 = intern_c(spell);
+      n->name = intern(mn->text.p, mn->text.n);
+      n->op = 1; // method marker
+      n->a = NO_REF;
+      if (is(p, T_LBRACK)) {
+        NodeRef gw = nnew(p, NT_APP);
+        node_get(gw)->name = "$generics";
+        node_get(gw)->list = parse_generics(p);
+        n->a = gw;
+      }
+      bool variadic = false;
+      n->list = parse_params(p, &variadic);
+      if (accept(p, T_ARROW))
+        n->c = parse_type(p);
+      n->d = parse_block(p);
+      return r;
+    }
     Token *nm = expect(p, T_IDENT, "as the function name");
     n->name = intern(nm->text.p, nm->text.n);
     // method or associated function: fn Type.name
