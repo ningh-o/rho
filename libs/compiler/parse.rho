@@ -356,7 +356,7 @@ fn parse_stmt(c: *PCur) -> *Stmt {
     tkadv(c);
     let st = mk_stmt(ST_RET);
     if !is_punct(tk(c), 59) {
-      st.val = Option.Some(parse_bin(c, 1));
+      st.val = Option.Some(parse_bin(c, 0));
     }
     eat_punct(c, 59);
     return st;
@@ -386,7 +386,7 @@ fn parse_stmt(c: *PCur) -> *Stmt {
       bad.ret = 0 - 21;
       return bad;
     }
-    let e = parse_bin(c, 1);
+    let e = parse_bin(c, 0);
     eat_punct(c, 59);
     let st = mk_stmt(ST_LET);
     st.name = nm;
@@ -424,7 +424,7 @@ fn parse_stmt(c: *PCur) -> *Stmt {
   if t.kind == lex.TK_IDENT && c.pos + 1 < len(c.toks) &&
       is_punct(c.toks[c.pos + 1], 40) {
     // name(args); — a call statement, its result discarded
-    let e = parse_bin(c, 1);
+    let e = parse_bin(c, 0);
     eat_punct(c, 59);
     let st = mk_stmt(ST_CALL);
     st.val = Option.Some(e);
@@ -435,7 +435,7 @@ fn parse_stmt(c: *PCur) -> *Stmt {
     // name = expr;
     tkadv(c); // the name
     eat_punct(c, 61); // '='
-    let e = parse_bin(c, 1);
+    let e = parse_bin(c, 0);
     eat_punct(c, 59);
     let st = mk_stmt(ST_SET);
     st.name = t.text;
@@ -450,7 +450,7 @@ fn parse_stmt(c: *PCur) -> *Stmt {
     let opt: u8 = c.toks[c.pos + 1].text[0];
     tkadv(c); // the name
     tkadv(c); // the operator
-    let rhs = parse_bin(c, 1);
+    let rhs = parse_bin(c, 0);
     eat_punct(c, 59);
     let st = mk_stmt(ST_SET);
     st.name = t.text;

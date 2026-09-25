@@ -96,6 +96,26 @@ pub fn wat_data_body(raw: string) -> string {
 
 // the decimal runtime the generated module carries: $w_i64 writes
 // |v|'s digits backward into [2048, 4096) and returns {addr, len}
+const STREQ: string =
+  "  (func $w_streq (param $ap i64) (param $al i64) (param $bp i64)" +
+  " (param $bl i64) (result i64)\n" +
+  "    (local $i i64)\n" +
+  "    (if (i64.ne (local.get $al) (local.get $bl))\n" +
+  "      (then (return (i64.const 0))))\n" +
+  "    (loop $c\n" +
+  "      (if (i64.ge_u (local.get $i) (local.get $al))\n" +
+  "        (then (return (i64.const 1))))\n" +
+  "      (if (i32.ne (i32.load8_u (i32.wrap_i64 (i64.add (local.get $ap)" +
+  " (local.get $i))))\n" +
+  "                (i32.load8_u (i32.wrap_i64 (i64.add (local.get $bp)" +
+  " (local.get $i)))))\n" +
+  "        (then (return (i64.const 0))))\n" +
+  "      (local.set $i (i64.add (local.get $i) (i64.const 1)))\n" +
+  "      (br $c)\n" +
+  "    )\n" +
+  "    (i64.const 1)\n" +
+  "  )\n";
+
 const RUNTIME: string = "  (global $w_top (mut i32) (i32.const 4096))\n"
   + "  (func $w_i64 (param $v i64) (result i32) (result i32)\n"
   + "    (local $p i32) (local $neg i32) (local $u i64)\n"
@@ -268,6 +288,9 @@ fn env_str_raw(e: *Env, name: string) -> ?string {
   let mut i: usize = 0;
   while i < e.sn {
     if e.snames[i] == name {
+      if e.saddrs[i] < 0 {
+        return Option.None; // runtime pair: no folded text exists
+      }
       return Option.Some(e.sraws[i]);
     }
     i = i + 1;
@@ -415,6 +438,37 @@ fn fold_string(e: *Expr, env: *Env) -> ?string {
   return Option.None;
 }
 
+fn is_stringy(e: *Expr, env: *Env) -> bool {
+  if e.tag == parse.EX_STR {
+    return true;
+  }
+  if e.tag == parse.EX_VAR {
+    return env_str_is_runtime(env, e.name);
+  }
+  return false;
+}
+
+fn both_stringy(e: *Expr, env: *Env) -> bool {
+  let mut l: bool = false;
+  match e.lhs {
+    Option.Some(x) => {
+      l = is_stringy(x, env);
+    },
+    Option.None => {},
+  }
+  if !l {
+    return false;
+  }
+  match e.rhs {
+    Option.Some(y) => {
+      return is_stringy(y, env);
+    },
+    Option.None => {
+      return false;
+    },
+  }
+}
+
 // compile an expression: lines that leave one i64 on the stack
 fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog) -> string {
   if e.tag == parse.EX_LIT {
@@ -448,6 +502,27 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog) -> string {
       k = k + 1;
     }
     out = out + "    call $u_" + e.name + "\n";
+    return out;
+  }
+  // string equality routes through $w_streq over the pairs
+  if (e.op == 9 || e.op == 10) && both_stringy(e, env) {
+    let mut out: string = "";
+    match e.lhs {
+      Option.Some(l) => {
+        out = out + push_string(pool, l, env);
+      },
+      Option.None => {},
+    }
+    match e.rhs {
+      Option.Some(r) => {
+        out = out + push_string(pool, r, env);
+      },
+      Option.None => {},
+    }
+    out = out + "    call $w_streq\n";
+    if e.op == 10 {
+      out = out + "    (i64.eqz)\n    (i64.extend_i32_s)\n";
+    }
     return out;
   }
   // binary: operand code, then the operator
@@ -732,6 +807,7 @@ pub fn emit(prog: *Prog) -> string {
   out = out + "  (memory 1)\n";
   out = out + "  (export \"memory\" (memory 0))\n";
   out = out + RUNTIME;
+  out = out + STREQ;
   out = out + fntext;
   out = out + "  (export \"_start\" (func $_start))\n";
   out = out + "  (func $_start (local $a i32) (local $l i32) (local $rc i32)\n";

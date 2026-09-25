@@ -41,6 +41,7 @@ run_one suite 'fn banner() -> i64 { printf("[banner]\n"); return 3; } fn main() 
 run_one strparam 'fn greet(s: string) -> i64 { printf("hello {}! len={}\n", s, len(s)); return len(s) as i64; } fn main() -> i32 { let n = greet("world"); let t = greet("rho"); let big: i64 = 3000000000; printf("n={} t={} big={} wide={}\n", n, t, big, (big as i32) as i64); return 0; }' $'hello world! len=5\nhello rho! len=3\nn=5 t=3 big=3000000000 wide=-1294967296'
 run_one bools 'fn main() -> i32 { let flag = true; let off = false; if flag { printf("on\n"); } if !off { printf("not off\n"); } if !flag { printf("no\n"); } else { printf("yes\n"); } printf("f={} nf={}\n", off, !flag); return 0; }' $'on\nnot off\nyes\nf=0 nf=0'
 run_one compound 'fn main() -> i32 { let mut total = 0; let mut i = 0; while i < 5 { total += i; i += 1; } total *= 3; total -= 2; printf("total={} i={}\n", total, i); return 0; }' 'total=28 i=5'
+run_one streq 'fn pick(s: string) -> i64 { if s == "yes" { return 1; } if s == "no" { return 2; } return 0; } fn main() -> i32 { let a = pick("yes"); let b = pick("no"); let c = pick("maybe"); printf("a={} b={} c={}\n", a, b, c); if "x" == "x" { printf("eq\n"); } if "x" == "y" { printf("bug\n"); } return 0; }' $'a=1 b=2 c=0\neq'
 # the checker rejects unknown names with diagnostics and exit 1
 "$RHO" build libs/compiler/main.rho -o /tmp/rhoc-bad.wasm \
   --set 'SRC=fn main() -> i32 { let x = mystery(1); return 0; }' >/dev/null 2>&1
