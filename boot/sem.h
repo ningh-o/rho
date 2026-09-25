@@ -12,6 +12,7 @@ typedef enum {
   TY_U8, TY_U16, TY_U32, TY_U64, TY_USIZE,
   TY_F32, TY_F64, TY_BOOL, TY_STRING,
   TY_UNIT,   // the absent return type
+  TY_WEAK,   // weak[T]: a handle observing a block's death
   TY_PTR,    // base = pointee
   TY_SLICE,  // base = element
   TY_DYN,    // tdef = trait
@@ -104,6 +105,7 @@ struct TraitDef {
 extern Type *ty_i8, *ty_i16, *ty_i32, *ty_i64, *ty_u8, *ty_u16, *ty_u32,
     *ty_u64, *ty_usize, *ty_f32, *ty_f64, *ty_bool, *ty_string, *ty_unit;
 
+Type *make_type_public(TyKind k);
 Type *type_ptr(Type *elem);
 Type *type_slice(Type *elem);
 Type *type_dyn(TraitDef *t);

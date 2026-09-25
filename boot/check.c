@@ -40,6 +40,8 @@ void init_builtin_types(void) {
   ty_unit = new_type(TY_UNIT);
 }
 
+Type *make_type_public(TyKind k) { return new_type(k); }
+
 Type *type_ptr(Type *elem) {
   Type *t = new_type(TY_PTR);
   t->base = elem;
@@ -88,6 +90,7 @@ bool type_eq(Type *a, Type *b) {
   switch (a->kind) {
   case TY_PTR:
   case TY_SLICE:
+  case TY_WEAK:
     return type_eq(a->base, b->base);
   case TY_DYN:
     return a->tdef == b->tdef;
@@ -156,6 +159,8 @@ const char *type_name(Type *t) {
     return "string";
   case TY_UNIT:
     return "unit";
+  case TY_WEAK:
+    return aprintf(g_arena, "weak[%s]", type_name(t->base));
   case TY_PTR:
     return aprintf(g_arena, "*%s", type_name(t->base));
   case TY_SLICE:
@@ -185,6 +190,7 @@ bool type_is_managed(Type *t) {
   case TY_SLICE:
   case TY_STRING:
   case TY_DYN:
+  case TY_WEAK:
     return true;
   default:
     return false;
@@ -564,6 +570,12 @@ static Type *resolve_type(Module *m, NodeRef tr, GScope *g) {
     return type_fn(sig);
   }
   case NT_APP: {
+    if (strcmp(t->name, "weak") == 0 && t->list &&
+        reflist_len(t->list) == 1) {
+      Type *w = new_type(TY_WEAK);
+      w->base = resolve_type(m, reflist_at(t->list, 0), g);
+      return w;
+    }
     if (gscope_has(g, t->name))
       return type_param(t->name);
     size_t nargs = t->list ? reflist_len(t->list) : 0;

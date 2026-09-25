@@ -150,6 +150,26 @@
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $c))))
 
+  ;; weak handle: block stores the target's header ptr; wrc tracks
+  (func $rho_weak_from (param $payload i32) (result i32)
+    (local $p i32)
+    ;; bump the target's weak count
+    (i32.store (i32.sub (local.get $payload) (i32.const 16))
+      (i32.add (i32.load (i32.sub (local.get $payload) (i32.const 16)))
+               (i32.const 1)))
+    (local.set $p (call $rho_alloc (i32.const 4)))
+    (i32.store (local.get $p)
+               (i32.sub (local.get $payload) (i32.const 24)))
+    (local.get $p))
+
+  ;; weak.get: ?*T — the target payload when alive, None when dead
+  (func $rho_weak_alive (param $wp i32) (result i32)
+    (i32.gt_s
+      (i32.load (i32.add (i32.load (local.get $wp)) (i32.const 0)))
+      (i32.const 0)))
+  (func $rho_weak_payload (param $wp i32) (result i32)
+    (i32.add (i32.load (local.get $wp)) (i32.const 24)))
+
   ;; decimal u64 into the fmt buffer end [fmt_lo, fmt_hi)
   (func $fmt_u64 (param $v i64)
     (local $i i32)

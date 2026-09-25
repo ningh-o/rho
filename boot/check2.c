@@ -730,6 +730,26 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
   (void)expected;
   Node *m = node_get(er);
 
+  // weak.from(ptr): the weak constructor
+  Node *recv0 = node_get(m->a);
+  if (recv0->kind == NT_PATH && strcmp(recv0->name, "weak") == 0 &&
+      strcmp(m->name, "from") == 0 &&
+      !lookup(c, "weak", &((Look){0}))) {
+    if (reflist_len(m->list) == 1 &&
+        node_get(reflist_at(m->list, 0))->kind == NT_POSARG) {
+      Type *pt = check_expr(c, node_get(reflist_at(m->list, 0))->a,
+                            NULL);
+      if (pt->kind != TY_PTR) {
+        err_at(c, m, "weak.from takes *T, got %s", type_name(pt));
+        return ty_unit;
+      }
+      Type *w = make_type_public(TY_WEAK);
+      w->base = pt->base;
+      return w;
+    }
+    err_at(c, m, "weak.from takes exactly one pointer");
+    return ty_unit;
+  }
   // Enum.Variant construction and module calls: recv is a bare name
   // that resolves to an enum or a use binding — checked before the
   // recv is typed as an expression
@@ -822,6 +842,18 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
 
   // real method call on a value
   Type *rt = check_expr(c, m->a, NULL);
+  if (rt->kind == TY_WEAK && strcmp(m->name, "get") == 0) {
+    Sym *os2 = g_prelude_mod ? symtab_get(g_prelude_mod->syms, "Option")
+                             : NULL;
+    if (os2 && os2->kind == SYM_ENUM) {
+      Type **args2 = arena_alloc(g_arena, sizeof(Type *), 8);
+      args2[0] = type_ptr(rt->base);
+      Type *r = type_enum(os2->u.edef, args2, 1);
+      r->is_opt = true;
+      node_get(er)->op = 3; // weak.get marker for the emitter
+      return r;
+    }
+  }
   size_t ncand = 0;
   FnDef **cands = method_candidates(c, rt, m->name, &ncand);
   if (!ncand) {

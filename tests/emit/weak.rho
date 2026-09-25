@@ -1,0 +1,11 @@
+// out: got=8
+struct Node { v: i32 }
+fn main() -> i32 {
+  let n = new Node { v: 8 };
+  let w: weak[Node] = weak.from(n);
+  match w.get() {
+    Option.Some(p) => printf("got={}\n", p.v),
+    Option.None => printf("dead\n"),
+  }
+  return 0;
+}

@@ -1329,6 +1329,21 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
   }
 
   case NT_METHOD: {
+    // weak.from(ptr): the weak constructor
+    {
+      Node *recvw = node_get(e->a);
+      if (recvw->kind == NT_PATH && strcmp(recvw->name, "weak") == 0 &&
+          strcmp(e->name, "from") == 0) {
+        Node *aw = reflist_len(e->list) ? node_get(reflist_at(e->list, 0))
+                                        : NULL;
+        size_t pv = cx_fresh(cx, ty_i32);
+        if (aw && aw->kind == NT_POSARG)
+          emit_expr(cx, aw->a, pv);
+        op(cx, "(local.set %zu (call $rho_weak_from %s))\n", dst,
+           L(cx, pv));
+        return;
+      }
+    }
     // op==2 marks a real method call (sem2 = FnDef); otherwise a
     // non-NULL sem2 is a variant constructor
     EnumVariant *var = e->op == 2 ? NULL : (EnumVariant *)e->sem2;
@@ -1364,6 +1379,30 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
             break;
         }
       }
+      return;
+    }
+    if (e->op == 3) {
+      // weak.get() -> ?*T
+      Type *wt = (Type *)node_get(e->a)->sem;
+      size_t wp = cx_fresh(cx, wt);
+      emit_expr(cx, e->a, wp);
+      Sym *os3 = g_prelude_mod ? symtab_get(g_prelude_mod->syms, "Option")
+                               : NULL;
+      int some_tag = -1, none_tag = -1;
+      if (os3 && os3->kind == SYM_ENUM) {
+        for (size_t i = 0; i < os3->u.edef->nvariants; i++) {
+          if (strcmp(os3->u.edef->variants[i].name, "Some") == 0)
+            some_tag = os3->u.edef->variants[i].tag;
+          if (strcmp(os3->u.edef->variants[i].name, "None") == 0)
+            none_tag = os3->u.edef->variants[i].tag;
+        }
+      }
+      op(cx, "(if (call $rho_weak_alive %s) (then\n", L(cx, wp));
+      op(cx, "  (local.set %zu (i32.const %d))\n", dst, some_tag);
+      op(cx, "  (local.set %zu (call $rho_weak_payload %s)))\n", dst + 1,
+         L(cx, wp));
+      op(cx, "(else\n");
+      op(cx, "  (local.set %zu (i32.const %d))))\n", dst, none_tag);
       return;
     }
     if (e->op == 2) {
