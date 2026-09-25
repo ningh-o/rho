@@ -101,6 +101,8 @@ bool type_eq(Type *a, Type *b) {
   case TY_STRUCT:
     if (a->sdef != b->sdef || a->nargs != b->nargs)
       return false;
+    if (!a->args || !b->args)
+      return a->args == b->args; // template forms match only templates
     for (size_t i = 0; i < a->nargs; i++)
       if (!type_eq(a->args[i], b->args[i]))
         return false;
@@ -108,6 +110,8 @@ bool type_eq(Type *a, Type *b) {
   case TY_ENUM:
     if (a->edef != b->edef || a->nargs != b->nargs)
       return false;
+    if (!a->args || !b->args)
+      return a->args == b->args;
     for (size_t i = 0; i < a->nargs; i++)
       if (!type_eq(a->args[i], b->args[i]))
         return false;

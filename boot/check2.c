@@ -484,9 +484,11 @@ static Type *tsubst_impl(Type *t, TBind *b) {
   if (!t)
     return t;
   if (t->kind == TY_PARAM) {
+    if (!b->names || !b->tys)
+      return t;
     for (size_t i = 0; i < b->n; i++)
-      if (strcmp(b->names[i], t->pname) == 0)
-        return b->tys[i];
+      if (b->names[i] && strcmp(b->names[i], t->pname) == 0)
+        return b->tys[i] ? b->tys[i] : t;
     return t;
   }
   if (t->kind == TY_PTR)

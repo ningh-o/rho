@@ -98,6 +98,8 @@ const char *kernel_wat_src(void) {
     "        (br $d)))\n"
     "    (call $print_mem (i32.sub (i32.const 1024) (local.get $i))\n"
     "                     (local.get $i)))\n"
+    "  (func $print_u64 (param $v i64)\n"
+    "    (call $fmt_u64 (local.get $v)))\n"
     "  (func $print_i64 (param $v i64)\n"
     "    (if (i64.lt_s (local.get $v) (i64.const 0))\n"
     "      (then\n"

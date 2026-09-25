@@ -102,6 +102,9 @@
     (call $print_mem (i32.sub (i32.const 1024) (local.get $i))
                      (local.get $i)))
 
+  (func $print_u64 (param $v i64)
+    (call $fmt_u64 (local.get $v)))
+
   (func $print_i64 (param $v i64)
     (if (i64.lt_s (local.get $v) (i64.const 0))
       (then

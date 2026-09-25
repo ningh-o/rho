@@ -70,7 +70,7 @@ static const char *wty_s(WTy w) {
 
 static WTy scalar_wty(Type *t) {
   switch (t->kind) {
-  case TY_I64: case TY_U64: return W_I64;
+  case TY_I64: case TY_U64: case TY_USIZE: return W_I64;
   case TY_F32: return W_F32;
   case TY_F64: return W_F64;
   default: return W_I32;
@@ -383,11 +383,20 @@ static void release(FnCx *cx, Type *t, size_t vreg) {
 // narrow-int truncation after arithmetic (values stay in range)
 static void truncate_after(FnCx *cx, Type *t, size_t v) {
   switch (t->kind) {
-  case TY_I8: case TY_U8:
+  case TY_I8:
+    // sign-extend the low 8 bits so prints/arithmetic see -128..127
+    op(cx, "(local.set %zu (i32.shr_s (i32.shl (local.get %zu) "
+           "(i32.const 24)) (i32.const 24)))\n", v, v);
+    break;
+  case TY_U8:
     op(cx, "(local.set %zu (i32.and (local.get %zu) (i32.const 255)))\n",
        v, v);
     break;
-  case TY_I16: case TY_U16:
+  case TY_I16:
+    op(cx, "(local.set %zu (i32.shr_s (i32.shl (local.get %zu) "
+           "(i32.const 16)) (i32.const 16)))\n", v, v);
+    break;
+  case TY_U16:
     op(cx, "(local.set %zu (i32.and (local.get %zu) (i32.const 65535)))\n",
        v, v);
     break;
@@ -778,10 +787,7 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
     case OP_BOR: instr = "or"; break;
     case OP_BXOR: instr = "xor"; break;
     case OP_SHL: {
-      int bits = lt->kind == TY_I8 || lt->kind == TY_U8 ? 8
-                 : lt->kind == TY_I16 || lt->kind == TY_U16 ? 16
-                 : lt->kind == TY_I32 || lt->kind == TY_U32 ||
-                       lt->kind == TY_USIZE ? 32 : 64;
+      int bits = scalar_wty(lt) == W_I64 ? 64 : 32; // storage width
       if (scalar_wty(lt) == W_I64)
         op(cx, "(local.set %zu (i64.shl (local.get %zu) "
                "(i64.and (local.get %zu) (i64.const %d))))\n", dst, a, b,
@@ -795,10 +801,7 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       return;
     }
     case OP_SHR: {
-      int bits = lt->kind == TY_I8 || lt->kind == TY_U8 ? 8
-                 : lt->kind == TY_I16 || lt->kind == TY_U16 ? 16
-                 : lt->kind == TY_I32 || lt->kind == TY_U32 ||
-                       lt->kind == TY_USIZE ? 32 : 64;
+      int bits = scalar_wty(lt) == W_I64 ? 64 : 32;
       const char *k = uns || lt->kind == TY_USIZE
                           ? "shr_u"
                           : (scalar_wty(lt) == W_I64 ? "shr_s" : "shr_u");
@@ -1309,8 +1312,11 @@ static void emit_printf(FnCx *cx, Node *call, bool err) {
       size_t v = cx_fresh(cx, at);
       emit_expr(cx, aw->a, v);
       switch (at->kind) {
-      case TY_I64: case TY_U64:
+      case TY_I64:
         op(cx, "(call $print_i64 %s)\n", L(cx, v));
+        break;
+      case TY_U64: case TY_USIZE:
+        op(cx, "(call $print_u64 %s)\n", L(cx, v));
         break;
       case TY_F32: case TY_F64:
         // float printing lands with the rho-source prelude (T1.8);
@@ -1588,10 +1594,8 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
             op(cx, "(local.set %zu %s)\n", v->vreg + i, L(cx, res + i));
           return;
         }
-        // shifts (mask by left width)
-        int bits = lt->kind == TY_I8 || lt->kind == TY_U8 ? 8
-                   : lt->kind == TY_I16 || lt->kind == TY_U16 ? 16
-                   : lt->kind == TY_I64 || lt->kind == TY_U64 ? 64 : 32;
+        // shifts mask by the storage width (spec §4)
+        int bits = scalar_wty(lt) == W_I64 ? 64 : 32;
         if (scalar_wty(lt) == W_I64)
           op(cx, "(local.set %zu (i64.%s (local.get %zu) (i64.and "
                  "(local.get %zu) (i64.const %d))))\n", res,
@@ -1811,7 +1815,13 @@ static void emit_fndef(Em *em, FnDef *f) {
     for (size_t j = 0; j < n; j++)
       tprintf(&fn, " (result %s)", wty_s(local_wty(cx.ret, j)));
   }
-  for (size_t i = 0; i < VLEN(cx.localtypes); i++)
+  // wasm declares params separately: the local list starts after them
+  size_t nparam_locals = 0;
+  for (size_t i = 0; i < f->sig->nparams; i++) {
+    Type *pt = f->sig->params[i].ty ? f->sig->params[i].ty : ty_unit;
+    nparam_locals += shape_nlocals(pt);
+  }
+  for (size_t i = nparam_locals; i < VLEN(cx.localtypes); i++)
     tprintf(&fn, " (local %s)", wty_s(*VAT(cx.localtypes, WTy, i)));
   tprintf(&fn, "\n");
   tneed(&fn, cx.b.n);

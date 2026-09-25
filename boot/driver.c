@@ -101,12 +101,15 @@ int cmd_run(int argc, char **argv) {
   // panic catalog (stack overflow = defined panic, exit 101)
   snprintf(cmd, sizeof cmd,
            "wat2wasm %s -o %s 2>/dev/null && "
-           "wasmtime run %s 2>/tmp/rho-trap.$$.err; rc=$?; "
-           "if [ $rc -eq 134 ] || [ $rc -eq 132 ] || [ $rc -eq 133 ]; "
-           "then echo \"panic: stack overflow\" >&2; rm -f "
-           "/tmp/rho-trap.$$.err; exit 101; "
-           "else cat /tmp/rho-trap.$$.err >&2; rm -f "
-           "/tmp/rho-trap.$$.err; exit $rc; fi",
+           "{ wasmtime run %s 2>/tmp/rho-trap.$$.err; rc=$?; "
+           "  if [ $rc -eq 134 ] || [ $rc -eq 132 ] || [ $rc -eq 133 ] "
+           "|| [ $rc -eq 7 ]; then "
+           "    echo \"panic: stack overflow\" >&2; "
+           "    rm -f /tmp/rho-trap.$$.err; exit 101; "
+           "  fi; "
+           "  cat /tmp/rho-trap.$$.err >&2 2>/dev/null; "
+           "  rm -f /tmp/rho-trap.$$.err; exit $rc; }; "
+           "exit 1",
            watz, wasmt, wasmt);
   int rc = system(cmd);
   unlink(watz);
