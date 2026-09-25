@@ -16,19 +16,37 @@ pub struct Pool {
 
 // generic instantiation registry: each distinct (fn, type key) pair
 // clones the fn with its type parameters bound; the worklist drains
-// after the user's fns (an instantiation may call more generics)
+// after the user's fns (an instantiation may call more generics).
+// Closure entries ride here too: bases "clo:<wat>" with the body,
+// captures, and params in the parallel arrays, emitted by
+// emit_closure_fn instead of emit_fn
 struct GenInsts {
-  bases: []string, // the generic fn's name
+  bases: []string, // the generic fn's name (or "clo:<wat name>")
   keys: []string,  // the mangled type key
   sufs: []string,  // the wasm suffix riding the fn name
-  fds: []*FnDef,   // the substituted clones
+  fds: []*FnDef,   // the substituted clones (closure entries: none)
+  clo_fds: []*FnDef, // closure carriers: .body holds the literal's
+                     // statements (a field assign, not an index)
+  clo_caps: []string,  // closure capture names (8 per entry, base idx*8)
+  clo_params: []string, // closure param names (8 per entry)
+  ids: []i64,        // per entry: the closure's table idx (0 generic)
   n: usize,
+  cfn: usize,      // closure table entries (names in clo_wasms)
+  clo_wasms: []string,
+  clo_ty: []i64,   // 1 where an indirect-call arity (param count)
+                   // is used: [1]=fn(), [2]=fn(x), [3]=fn(x,y)
 }
 
 fn ginsts_new() -> *GenInsts {
   return new GenInsts { bases: make([]string, 32), keys: make([]string, 32),
                         sufs: make([]string, 32), fds: make([]*FnDef, 32),
-                        n: 0 };
+                        clo_fds: make([]*FnDef, 32),
+                        clo_caps: make([]string, 256),
+                        clo_params: make([]string, 256),
+                        ids: make([]i64, 32),
+                        n: 0, cfn: 0,
+                        clo_wasms: make([]string, 32),
+                        clo_ty: make([]i64, 4) };
 }
 
 pub fn new_pool() -> *Pool {
@@ -682,6 +700,71 @@ fn emit_arg(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
             nl: *NextLocal) -> string {
   if e.tag == parse.EX_ARR {
     return emit_array(pool, e, env, prog, nl);
+  }
+  if e.tag == parse.EX_VAR && env_kind_of(env, e.name) < 0 &&
+      env_look(env, e.name) < 0 && !name_is_const(prog, e.name) &&
+      len(static_global(prog, e.name)) == 0 &&
+      user_fn_exists(prog, e.name) && e.lit != 0 - 99 {
+    // a plain fn referenced as a VALUE: a trampoline wraps the box
+    // param around the call, the value is (idx, null box)
+    let tfd: *FnDef = fn_def_of(prog, e.name);
+    let tname: string = "__tr_" + e.name;
+    let mut already: i64 = 0 - 1;
+    let mut ti: usize = 0;
+    while ti < pool.gi.n {
+      if pool.gi.sufs[ti] == tname {
+        already = pool.gi.ids[ti];
+      }
+      ti = ti + 1;
+    }
+    if already < 0 {
+      let tparams: []string = make([]string, 9);
+      let tptypes: []string = make([]string, 9);
+      tparams[0] = "__b";
+      tptypes[0] = "i64";
+      let cargs: []*Expr = make([]*Expr, 8);
+      let mut pk: usize = 0;
+      while pk < len(tfd.params) && pk < 8 {
+        tparams[pk + 1] = tfd.params[pk];
+        if pk < len(tfd.ptypes) {
+          tptypes[pk + 1] = tfd.ptypes[pk];
+        } else {
+          tptypes[pk + 1] = "";
+        }
+        cargs[pk] = parse.var(tfd.params[pk]);
+        pk = pk + 1;
+      }
+      let callx = parse.call(e.name, cargs[0..len(tfd.params)]);
+      let rstmt = parse.ret_stmt(callx);
+      let tbd: []*Stmt = make([]*Stmt, 1);
+      tbd[0] = rstmt;
+      let tramp = parse.clone_fndef(tfd);
+      tramp.name = tname;
+      tramp.params = tparams[0..(len(tfd.params) + 1)];
+      tramp.ptypes = tptypes[0..(len(tfd.params) + 1)];
+      tramp.pstr = make([]bool, 0);
+      tramp.pslc = make([]bool, 0);
+      tramp.pvar = make([]bool, 0);
+      tramp.tparams = make([]string, 0);
+      tramp.body = tbd;
+      let gi_t: usize = pool.gi.n;
+      pool.gi.bases[gi_t] = e.name;
+      pool.gi.keys[gi_t] = "";
+      pool.gi.sufs[gi_t] = tname;
+      pool.gi.fds[gi_t] = tramp;
+      pool.gi.ids[gi_t] = pool.gi.cfn as i64;
+      pool.gi.n = pool.gi.n + 1;
+      pool.gi.clo_wasms[pool.gi.cfn] = "$u_" + tname;
+      pool.gi.cfn = pool.gi.cfn + 1;
+      let tari: i64 = 1 + (len(tfd.params) as i64);
+      if tari >= 1 && tari <= 3 {
+        let cty2: []i64 = pool.gi.clo_ty;
+        cty2[tari as usize] = 1;
+      }
+      already = pool.gi.cfn as i64 - 1;
+    }
+    return "    (i64.const " + already.to_str() + ")\n" +
+           "    (i64.const 0)\n";
   }
   if e.tag == parse.EX_STR {
     return push_string(pool, e, env, prog, nl);
@@ -2479,7 +2562,8 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
     }
   }
   if (e.tag == parse.EX_CALL &&
-       rtype_is_pair(call_fn_rtype(prog, e, env))) ||
+       rtype_is_pair(call_fn_rtype(prog, e, env)) &&
+       !is_fn_type(call_fn_rtype(prog, e, env))) ||
      (e.tag == parse.EX_MCALL) {
     let mut sret: bool = false;
     if e.tag == parse.EX_CALL {
@@ -2525,7 +2609,29 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
     }
     return wtext + "    (i64.const 0)\n";
   }
+  if e.tag == parse.EX_CLO {
+    // the closure value: (table idx, capture box) on the lane
+    return emit_closure_value(e, pool, env, prog, nl);
+  }
   if e.tag == parse.EX_CALL {
+    // a closure-typed binding calls through the table
+    if e.tag == parse.EX_CALL && env_kind_of(env, e.name) == 3 {
+      let ca: i64 = env_str_look(env, e.name);
+      let idx_slot: i64 = (0 - ca) - 1;
+      let box_slot: i64 = env_str_len_slot(env, e.name);
+      let mut out2: string = "    (local.get " + box_slot.to_str() +
+             ")\n";
+      let mut k2: usize = 0;
+      while k2 < len(e.args) {
+        out2 = out2 + emit_arg(pool, e.args[k2], env, prog, nl);
+        k2 = k2 + 1;
+      }
+      out2 = out2 + "    (i32.wrap_i64 (local.get " +
+             idx_slot.to_str() + "))\n" +
+             "    call_indirect (type $cl" +
+             ((len(e.args) as i64) + 1).to_str() + ")\n";
+      return out2;
+    }
     let fd7: *FnDef = resolve_call_fd(prog, e, env);
     let mut out: string = "";
     out = out + emit_call_args(pool, prog, fd7, e, env, nl);
@@ -3217,8 +3323,11 @@ fn user_fn_exists(prog: *Prog, name: string) -> bool {
 }
 
 fn rtype_is_pair(rt: string) -> bool {
-  return rt == "string" || (len(rt) >= 2 && rt[0] == 91 &&
-         rt[1] == 93);
+  if rt == "string" || (len(rt) >= 2 && rt[0] == 91 && rt[1] == 93) {
+    return true;
+  }
+  // a fn-typed return rides its (idx, box) pair
+  return len(rt) >= 2 && rt[0] == 102 && rt[1] == 110;
 }
 
 fn fn_returns_string(prog: *Prog, name: string) -> bool {
@@ -3784,6 +3893,17 @@ fn build_string_pair(e: *Expr, pool: *Pool, env: *Env, prog: *Prog,
       return spi2;
     }
     return bad;
+  }
+  if e.tag == parse.EX_CLO {
+    // a closure value parks its (idx, box) pair into fresh slots
+    let ta: i64 = nl.v;
+    let tl: i64 = nl.v + 1;
+    nl.v = nl.v + 2;
+    let text: string = emit_expr(pool, e, env, prog, nl) +
+           "    (local.set " + tl.to_str() + ")\n" +
+           "    (local.set " + ta.to_str() + ")\n";
+    let spc = new SPair { ok: true, text: text, a: ta, l: tl };
+    return spc;
   }
   if e.tag == parse.EX_MCALL {
     // a string-returning method call: the receiver and args ride the
@@ -4540,6 +4660,243 @@ fn emit_call_args(pool: *Pool, prog: *Prog, fd: *FnDef, e: *Expr,
   return out;
 }
 
+// ---- closures: capture boxes + an indirect-call table ----
+
+fn is_fn_type(t: string) -> bool {
+  return len(t) >= 2 && t[0] == 102 && t[1] == 110;
+}
+
+// the capture-name accumulator
+struct CapList {
+  names: []string,
+  n: usize,
+}
+
+fn cap_add(caps: *CapList, name: string) {
+  let mut i: usize = 0;
+  while i < caps.n {
+    if caps.names[i] == name {
+      return;
+    }
+    i = i + 1;
+  }
+  if caps.n < len(caps.names) {
+    caps.names[caps.n] = name;
+    caps.n = caps.n + 1;
+  }
+}
+
+fn cap_expr(e: *Expr, env: *Env, prog: *Prog, skip: []string,
+            nskip: usize, caps: *CapList) {
+  if e.tag == parse.EX_CLO {
+    // a nested literal: its own params are its own
+    let mut b: usize = 0;
+    while b < nskip {
+      b = b + 1;
+    }
+    let mut m: usize = 0;
+    while m < len(e.marms) {
+      cap_stmts(e.marms[m].body, env, prog, e.fnames, caps);
+      m = m + 1;
+    }
+    return;
+  }
+  if e.tag == parse.EX_VAR {
+    if env_look(env, e.name) >= 0 && !name_is_const(prog, e.name) &&
+        len(static_global(prog, e.name)) == 0 {
+      let mut hit: bool = false;
+      let mut k: usize = 0;
+      while k < nskip {
+        if skip[k] == e.name {
+          hit = true;
+        }
+        k = k + 1;
+      }
+      if !hit {
+        cap_add(caps, e.name);
+      }
+    }
+  }
+  match e.lhs {
+    Option.Some(l15) => {
+      cap_expr(l15, env, prog, skip, nskip, caps);
+    },
+    Option.None => {},
+  }
+  match e.rhs {
+    Option.Some(r15) => {
+      cap_expr(r15, env, prog, skip, nskip, caps);
+    },
+    Option.None => {},
+  }
+  let mut k: usize = 0;
+  while k < len(e.args) {
+    cap_expr(e.args[k], env, prog, skip, nskip, caps);
+    k = k + 1;
+  }
+}
+
+fn cap_stmts(nodes: []*Stmt, env: *Env, prog: *Prog,
+             skip: []string, caps: *CapList) {
+  let nskip: usize = len(skip);
+  let mut i: usize = 0;
+  while i < len(nodes) {
+    let st = nodes[i];
+    match st.val {
+      Option.Some(v15) => {
+        cap_expr(v15, env, prog, skip, nskip, caps);
+      },
+      Option.None => {},
+    }
+    let mut a: usize = 0;
+    while a < len(st.args) {
+      cap_expr(st.args[a], env, prog, skip, nskip, caps);
+      a = a + 1;
+    }
+    cap_stmts(st.body, env, prog, skip, caps);
+    cap_stmts(st.body2, env, prog, skip, caps);
+    i = i + 1;
+  }
+}
+
+// a closure literal's value: the capture box (a copy of each free
+// local), plus the (table idx, box) pair on the lane
+fn emit_closure_value(e: *Expr, pool: *Pool, env: *Env,
+                      prog: *Prog, nl: *NextLocal) -> string {
+  let caps = new CapList { names: make([]string, 32), n: 0 };
+  let mut m: usize = 0;
+  while m < len(e.marms) {
+    cap_stmts(e.marms[m].body, env, prog, e.fnames, caps);
+    m = m + 1;
+  }
+  // the box: [pad][cap0][cap1]...
+  let b_slot: i64 = nl.v;
+  nl.v = nl.v + 1;
+  let mut out: string = "    (i64.extend_i32_u (call $w_alloc (i32.const " +
+         ((caps.n + 1) as i64).to_str() + ")))\n" +
+         "    (local.set " + b_slot.to_str() + ")\n";
+  let mut ci: usize = 0;
+  while ci < caps.n {
+    let cslot: i64 = env_look(env, caps.names[ci]);
+    out = out + "    (i64.store (i32.add (i32.wrap_i64 (local.get " +
+           b_slot.to_str() + ")) (i32.const " +
+           ((ci + 1) * 8).to_str() + ")) (local.get " +
+           cslot.to_str() + "))\n";
+    ci = ci + 1;
+  }
+  // register the body + its table slot
+  let wat: string = "$u___clo" + pool.gi.cfn.to_str();
+  let gi_n: usize = pool.gi.n;
+  pool.gi.bases[gi_n] = "clo:" + wat;
+  pool.gi.keys[gi_n] = "";
+  pool.gi.sufs[gi_n] = "";
+  pool.gi.fds[gi_n] = prog.fns[0];
+  let carrier = parse.clone_fndef(prog.fns[0]);
+  carrier.body = e.marms[0].body;
+  pool.gi.clo_fds[gi_n] = carrier;
+  let idx: i64 = pool.gi.cfn as i64;
+  pool.gi.ids[gi_n] = idx;
+  let capbase: usize = (idx as usize) * 8;
+  let mut pi2: usize = 0;
+  while pi2 < len(e.fnames) && pi2 < 8 {
+    pool.gi.clo_params[capbase + pi2] = e.fnames[pi2];
+    pi2 = pi2 + 1;
+  }
+  let mut cj: usize = 0;
+  while cj < caps.n && cj < 8 {
+    let cname: string = caps.names[cj];
+    let cty: string = env_ptr_of(env, cname);
+    if len(cty) > 0 {
+      pool.gi.clo_caps[capbase + cj] = cname + ":" + cty;
+    } else {
+      pool.gi.clo_caps[capbase + cj] = cname;
+    }
+    cj = cj + 1;
+  }
+  pool.gi.n = pool.gi.n + 1;
+  pool.gi.clo_wasms[pool.gi.cfn] = wat;
+  pool.gi.cfn = pool.gi.cfn + 1;
+  // the arity the body's calls will use (box + params)
+  let ari: i64 = 1 + (len(e.fnames) as i64);
+  if ari >= 1 && ari <= 3 {
+    let cty0: []i64 = pool.gi.clo_ty;
+    cty0[ari as usize] = 1;
+  }
+  out = out + "    (i64.const " + idx.to_str() + ")\n" +
+         "    (local.get " + b_slot.to_str() + ")\n";
+  return out;
+}
+
+// one closure's fn: param 0 the capture box, captures load from its
+// slots, the literal's params follow — the body emits as statements
+fn emit_closure_fn(wat: string, caps: []string,
+                   captypes: []string, ncaps: usize,
+                   params: []string, body: []*Stmt, pool: *Pool,
+                   prog: *Prog) -> string {
+  let env = env_new(64);
+  env_bind_consts(env, prog, pool);
+  let nparams: i64 = 1 + (len(params) as i64);
+  let nl = new NextLocal { v: nparams + 5 };
+  let loops = loops_new();
+  let dstack = dstack_new();
+  let mut text: string = "";
+  let mut ci: usize = 0;
+  while ci < ncaps {
+    let cslot: i64 = nl.v;
+    nl.v = nl.v + 1;
+    text = text + "    (i64.load (i32.add (i32.wrap_i64 " +
+           "(local.get 0)) (i32.const " + ((ci + 1) * 8).to_str() +
+           ")))\n" +
+           "    (local.set " + cslot.to_str() + ")\n";
+    let mut cty2: string = "";
+    if ci < len(captypes) {
+      cty2 = captypes[ci];
+    }
+    if len(cty2) > 0 && st_index(prog, cty2) >= 0 {
+      env_bind_ptr(env, caps[ci], cslot, cty2);
+    } else {
+      env_bind(env, caps[ci], cslot);
+    }
+    ci = ci + 1;
+  }
+  let mut pi: usize = 0;
+  while pi < len(params) {
+    env_bind(env, params[pi], (pi as i64) + 1);
+    pi = pi + 1;
+  }
+  text = text + emit_stmts(body, pool, env, nl, true, 0 - 1, prog,
+                           loops, dstack, Option.None);
+  let mut out: string = "  (func " + wat;
+  let mut q: i64 = 0;
+  while q < nparams {
+    out = out + " (param i64)";
+    q = q + 1;
+  }
+  out = out + " (result i64)\n";
+  out = out + "    (local $a i32) (local $l i32) (local $t i64)" +
+         " (local $r i64) (local $d i64)\n";
+  q = nparams + 5;
+  while q < nl.v {
+    out = out + "    (local i64)\n";
+    q = q + 1;
+  }
+  out = out + text;
+  out = out + "    (i64.const 0)\n  )\n";
+  return out;
+}
+
+// the first ':' in a name:type capture record, 0 when bare
+fn find_colon(s: string) -> usize {
+  let mut i: usize = 0;
+  while i < len(s) {
+    if s[i] == 58 {
+      return i;
+    }
+    i = i + 1;
+  }
+  return 0;
+}
+
 fn emit_print_fd(pool: *Pool, fmt: string, args: []*Expr, env: *Env,
                  prog: *Prog, nl: *NextLocal, fd: i64) -> string {
   let pieces: []string = parse.fmt_pieces(fmt);
@@ -4839,7 +5196,19 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
     if st.tag == parse.ST_LET {
       match st.val {
         Option.Some(e) => {
-          if e.tag == parse.EX_MAKE {
+          if e.tag == parse.EX_CLO ||
+              (len(st.fmt) >= 2 && st.fmt[0] == 102 && st.fmt[1] == 110) {
+            // a closure literal (or any fn-typed init) rides its
+            // (idx, box) pair into two slots — kind 3
+            let fi_slot: i64 = nl.v;
+            let fb_slot: i64 = nl.v + 1;
+            nl.v = nl.v + 2;
+            body = body + emit_expr(pool, e, env, prog, nl);
+            body = body + "    (local.set " + fb_slot.to_str() +
+                   ")\n" +
+                   "    (local.set " + fi_slot.to_str() + ")\n";
+            env_str_bind_runtime(env, st.name, fi_slot, fb_slot, 3);
+          } else if e.tag == parse.EX_MAKE {
             // make([]T, n): the count rides $t once, the allocation
             // and the len slot both read it; an Option-element slice
             // fills with the shared None box (the zeroed form)
@@ -5666,7 +6035,12 @@ fn capture_at_after(fd: *FnDef) -> i64 {
     if k < len(fd.pstr) && fd.pstr[k] {
       n = n + 2;
     } else {
-      n = n + 1;
+      if k < len(fd.ptypes) && is_fn_type(fd.ptypes[k]) {
+        // a fn-typed param rides its (idx, box) pair
+        n = n + 2;
+      } else {
+        n = n + 1;
+      }
     }
     k = k + 1;
   }
@@ -5691,6 +6065,11 @@ fn emit_fn(fd: *FnDef, pool: *Pool, prog: *Prog,
   }
   let mut k: usize = 0;
   while k < len(fd.params) {
+    if k < len(fd.ptypes) && is_fn_type(fd.ptypes[k]) {
+      // a closure-typed param: (idx, box) slots, kind 3
+      env_str_bind_runtime(env, fd.params[k], nl.v, nl.v + 1, 3);
+      nl.v = nl.v + 2;
+    } else {
     if k < len(fd.pstr) && fd.pstr[k] {
       let mut kind: i64 = 1;
       if k < len(fd.pslc) && fd.pslc[k] {
@@ -5744,6 +6123,7 @@ fn emit_fn(fd: *FnDef, pool: *Pool, prog: *Prog,
         }
       }
       nl.v = nl.v + 1;
+    }
     }
     k = k + 1;
   }
@@ -6202,10 +6582,53 @@ pub fn emit(prog: *Prog) -> string {
     fi = fi + 1;
   }
   // the generic worklist drains until stable — an instantiation's
-  // body may call more generics, appending as it emits
+  // body may call more generics, appending as it emits; closure
+  // entries emit their box-param form
   let mut gdone: usize = 0;
   while gdone < pool.gi.n {
-    fntext = fntext + emit_fn(pool.gi.fds[gdone], pool, prog, "");
+    let gb: string = pool.gi.bases[gdone];
+    if len(gb) >= 5 && gb[0] == 99 && gb[1] == 108 && gb[2] == 111 &&
+        gb[3] == 58 {
+      // "clo:<wat>"
+      let wat2: string = gb[4..len(gb)];
+      let idx2: i64 = pool.gi.ids[gdone];
+      let capbase2: usize = (idx2 as usize) * 8;
+      let mut capnames: []string = make([]string, 8);
+      let mut captypes: []string = make([]string, 8);
+      let mut ncaps2: usize = 0;
+      while ncaps2 < 8 {
+        let raw0: string = pool.gi.clo_caps[capbase2 + ncaps2];
+        if len(raw0) == 0 {
+          break;
+        }
+        let colon: usize = find_colon(raw0);
+        if colon > 0 {
+          capnames[ncaps2] = raw0[0..colon];
+          captypes[ncaps2] = raw0[(colon + 1)..len(raw0)];
+        } else {
+          capnames[ncaps2] = raw0;
+          captypes[ncaps2] = "";
+        }
+        ncaps2 = ncaps2 + 1;
+      }
+      let mut cparams: []string = make([]string, 8);
+      let mut np2: usize = 0;
+      while np2 < 8 {
+        if len(pool.gi.clo_params[capbase2 + np2]) == 0 {
+          break;
+        }
+        cparams[np2] = pool.gi.clo_params[capbase2 + np2];
+        np2 = np2 + 1;
+      }
+      let carrier2: *FnDef = pool.gi.clo_fds[gdone];
+      fntext = fntext + emit_closure_fn(wat2, capnames, captypes,
+                                        ncaps2,
+                                        cparams[0..np2],
+                                        carrier2.body,
+                                        pool, prog);
+    } else {
+      fntext = fntext + emit_fn(pool.gi.fds[gdone], pool, prog, "");
+    }
     gdone = gdone + 1;
   }
   // assemble: header, memory, runtime, _start with the let locals
@@ -6260,6 +6683,32 @@ pub fn emit(prog: *Prog) -> string {
   out = out + ENUQ;
   out = out + NONEBOX;
   out = out + BOOLTEXT;
+  if pool.gi.cfn > 0 {
+    // the closure table: one funcref per entry, the indirect-call
+    // types for the arities the calls used
+    let cty1: []i64 = pool.gi.clo_ty;
+    let mut ari: i64 = 1;
+    while ari <= 3 {
+      if cty1[ari as usize] > 0 {
+        out = out + "  (type $cl" + ari.to_str() + " (func";
+        let mut pk: i64 = 0;
+        while pk < ari {
+          out = out + " (param i64)";
+          pk = pk + 1;
+        }
+        out = out + " (result i64)))\n";
+      }
+      ari = ari + 1;
+    }
+    out = out + "  (table " + pool.gi.cfn.to_str() + " funcref)\n";
+    out = out + "  (elem (i32.const 0)";
+    let mut ti: usize = 0;
+    while ti < pool.gi.cfn {
+      out = out + " " + pool.gi.clo_wasms[ti];
+      ti = ti + 1;
+    }
+    out = out + ")\n";
+  }
   if FLOAT_WANTED > 0 {
     out = out + float_runtime_wat(pool);
   }

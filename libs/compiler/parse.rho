@@ -16,6 +16,9 @@ pub const EX_SLICE2: i32 = 7; // base[a..b]: lhs = base, args = lo/hi;
                               // op bit0 = lo present, bit1 = hi present
 pub const EX_Q: i32 = 13;    // e? — the propagate-and-unwrap
 pub const EX_ARR: i32 = 16;  // [a, b, c]: a fresh slice literal
+pub const EX_CLO: i32 = 17;  // fn(params) -> T { body } as a value:
+                             // fnames = the params, name = the return,
+                             // one arm's body stmts carry the body
 pub const EX_IF: i32 = 15;   // if c { a } else { b } as an expression:
                              // lhs = cond, args[0]/args[1] = the arms
 pub const EX_FLIT: i32 = 14; // a float literal; the raw decimal text
@@ -197,6 +200,24 @@ pub fn clone_fndef(fd: *FnDef) -> *FnDef {
                      ptypes: fd.ptypes, pvar: fd.pvar,
                      rtype: fd.rtype,
                      tparams: fd.tparams, body: nbody };
+}
+
+pub fn clo_expr(params: []string, body: []*Stmt,
+                rtype: string) -> *Expr {
+  let arm = new MatchArm { pat: mk_pat(0), body: body,
+                           val: Option.None };
+  let arms: []*MatchArm = make([]*MatchArm, 1);
+  arms[0] = arm;
+  return new Expr { tag: EX_CLO, lit: 0, name: rtype, op: 0,
+                    lhs: Option.None, rhs: Option.None,
+                    args: make([]*Expr, 0), fnames: params,
+                    marms: arms };
+}
+
+pub fn ret_stmt(v: *Expr) -> *Stmt {
+  let st = mk_stmt(ST_RET);
+  st.val = Option.Some(v);
+  return st;
 }
 
 pub fn lit(v: i64) -> *Expr {
@@ -527,6 +548,26 @@ fn eat_type(c: *PCur) -> string {
     return pre + "[]" + eat_type(c);
   }
   let t = tk(c);
+  if t.kind == lex.TK_KEYWORD && t.text == "fn" &&
+      c.pos + 1 < len(c.toks) && is_punct(c.toks[c.pos + 1], 40) {
+    // fn(params) -> T — the fn type; the whole form rides as text
+    // (captures and calls key on the 'fn' prefix)
+    tkadv(c); // fn
+    tkadv(c); // (
+    let mut depth: i64 = 1;
+    while tk(c).kind != lex.TK_EOF && depth > 0 {
+      if is_punct(tk(c), 40) {
+        depth = depth + 1;
+      }
+      if is_punct(tk(c), 41) {
+        depth = depth - 1;
+      }
+      tkadv(c);
+    }
+    eat_arrow(c);
+    eat_type(c);
+    return pre + "fn";
+  }
   if t.kind == lex.TK_IDENT || t.kind == lex.TK_KEYWORD {
     let name: string = t.text;
     tkadv(c);
@@ -800,6 +841,33 @@ fn parse_primary(c: *PCur) -> *Expr {
 
 fn parse_atom(c: *PCur) -> *Expr {
   let t = tk(c);
+  if t.kind == lex.TK_KEYWORD && t.text == "fn" &&
+      c.pos + 1 < len(c.toks) && is_punct(c.toks[c.pos + 1], 40) {
+    // fn(params) -> T { body } — the closure literal (params bind at
+    // 64-bit lanes; captures resolve in the emitter's env)
+    tkadv(c); // fn
+    let pstr2: []bool = make([]bool, 8);
+    let pslc2: []bool = make([]bool, 8);
+    let ptypes2: []string = make([]string, 8);
+    let pvar2: []bool = make([]bool, 8);
+    let params = parse_params2(c, pstr2, pslc2, ptypes2, pvar2);
+    let rtype2: string = eat_arrow_typed(c);
+    let mut body2: []*Stmt = make([]*Stmt, 0);
+    if eat_punct(c, 123) {
+      let bstmts: []*Stmt = make([]*Stmt, 16);
+      let mut bn: usize = 0;
+      while tk(c).kind != lex.TK_EOF {
+        if is_punct(tk(c), 125) {
+          tkadv(c);
+          break;
+        }
+        bstmts[bn] = parse_stmt(c);
+        bn = bn + 1;
+      }
+      body2 = bstmts[0..bn];
+    }
+    return parse_postfix(c, clo_expr(params, body2, rtype2));
+  }
   if is_punct(t, 45) {
     // -literal folds; -expr negates
     tkadv(c);

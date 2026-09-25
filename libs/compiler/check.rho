@@ -239,8 +239,22 @@ fn expr_walk(e: *Expr, prog: *Prog, bound: []string, nb: usize,
     }
     return;
   }
+  if e.tag == parse.EX_CLO {
+    // a closure literal: its body binds its own params and captures
+    // (the emitter resolves captures against the enclosing env)
+    return;
+  }
   if e.tag == parse.EX_CALL {
-    if !name_known(prog, e.name) {
+    // a locally-bound name (a closure value) is callable
+    let mut isbound: bool = false;
+    let mut b: usize = 0;
+    while b < nb {
+      if bound[b] == e.name {
+        isbound = true;
+      }
+      b = b + 1;
+    }
+    if !isbound && !name_known(prog, e.name) {
       eprintf("check: unknown fn '{}'\n", e.name);
       errs.n = errs.n + 1;
     }
@@ -267,7 +281,8 @@ fn expr_walk(e: *Expr, prog: *Prog, bound: []string, nb: usize,
       }
       g = g + 1;
     }
-    if !hit {
+    if !hit && !name_known(prog, e.name) {
+      // a plain fn's name is a value (the trampoline pair)
       eprintf("check: unknown name '{}'\n", e.name);
       errs.n = errs.n + 1;
     }
