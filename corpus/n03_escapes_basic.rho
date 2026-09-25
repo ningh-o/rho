@@ -1,0 +1,22 @@
+// exit: 0
+// adapted: assert_eq lives in the file (string form)
+fn assert_eq(a: string, b: string) {
+  assert(a == b, "assert_eq failed");
+  return;
+}
+
+// 064 — the basic escapes (\n \t \\ \"): each decodes to exactly one
+// byte, a doubled backslash stays one backslash, and escaped text
+// equals the same string built by hand with `+`
+fn main() -> i32 {
+  printf("{} {} {} {}\n", len("\n"), len("\t"), len("\\"), len("\""));
+  printf("{} {}\n", len("\\n"), len("\\\\"));
+  assert_eq("a\tb", "a" + ("\t" + "b"));
+  assert_eq("line1\nline2", "line1" + ("\n" + "line2"));
+  assert_eq("a\\b", "a" + ("\\" + "b"));
+  assert_eq("say \"hi\"", "say " + ("\"" + ("hi" + "\"")));
+  printf("say \"hi\" \\ ok\n");
+  printf("{} {} {} {}\n", "\n"[0], "\t"[0], "\\"[0], "\""[0]);
+  printf("tab[\t]done\n");
+  return 0;
+}
