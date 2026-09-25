@@ -10,6 +10,7 @@
 // strings), while/if/else-if, comparisons, len() over strings.
 use lex;
 use parse;
+use check;
 use emit;
 
 const SRC: string = "fn main() -> i32 { printf(\"hello, self\\n\"); return 0; }";
@@ -17,6 +18,11 @@ const SRC: string = "fn main() -> i32 { printf(\"hello, self\\n\"); return 0; }"
 fn main() -> i32 {
   let toks: []*Tok = lex.lex(SRC);
   let prog: *Prog = parse.parse(toks, SRC);
+  let errs: i64 = check.check(prog);
+  if errs > 0 {
+    eprintf("check: {} error(s)\n", errs);
+    return 1;
+  }
   let wat: string = emit.emit(prog);
   printf("{}", wat);
   return 0;

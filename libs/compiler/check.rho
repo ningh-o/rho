@@ -1,0 +1,141 @@
+// check.rho — the self-hosted compiler's checker seed (T2.2 growth).
+// The full type layer grows here; today it walks the fn table and
+// the statements proving every CALLED name has a definition and every
+// variable reference is bound — unknown names are errors (exit 1)
+// before emission runs.
+use parse;
+
+pub fn name_known(prog: *Prog, name: string) -> bool {
+  if name == "len" {
+    return true;
+  }
+  let mut i: usize = 0;
+  while i < len(prog.fns) {
+    if prog.fns[i].name == name {
+      return true;
+    }
+    i = i + 1;
+  }
+  return false;
+}
+
+fn expr_walk(e: *Expr, prog: *Prog, bound: []string, nb: usize,
+             errs: *ErrBox) {
+  if e.tag == parse.EX_CALL {
+    if !name_known(prog, e.name) {
+      eprintf("check: unknown fn '{}'\n", e.name);
+      errs.n = errs.n + 1;
+    }
+    let mut k: usize = 0;
+    while k < len(e.args) {
+      expr_walk(e.args[k], prog, bound, nb, errs);
+      k = k + 1;
+    }
+    return;
+  }
+  if e.tag == parse.EX_VAR {
+    let mut hit: bool = false;
+    let mut k: usize = 0;
+    while k < nb {
+      if bound[k] == e.name {
+        hit = true;
+      }
+      k = k + 1;
+    }
+    if !hit {
+      eprintf("check: unknown name '{}'\n", e.name);
+      errs.n = errs.n + 1;
+    }
+    return;
+  }
+  match e.lhs {
+    Option.Some(l) => {
+      expr_walk(l, prog, bound, nb, errs);
+    },
+    Option.None => {},
+  }
+  match e.rhs {
+    Option.Some(r) => {
+      expr_walk(r, prog, bound, nb, errs);
+    },
+    Option.None => {},
+  }
+}
+
+fn stmts_walk(nodes: []*Stmt, prog: *Prog, bound: []string,
+              nb0: usize, errs: *ErrBox) {
+  let mut nb: usize = nb0;
+  let mut i: usize = 0;
+  while i < len(nodes) {
+    let st = nodes[i];
+    if st.tag == parse.ST_LET || st.tag == parse.ST_SET ||
+        st.tag == parse.ST_CALL || st.tag == parse.ST_RET {
+      match st.val {
+        Option.Some(e) => {
+          expr_walk(e, prog, bound, nb, errs);
+        },
+        Option.None => {},
+      }
+      if st.tag == parse.ST_LET || st.tag == parse.ST_SET {
+        if nb < len(bound) {
+          bound[nb] = st.name;
+          nb = nb + 1;
+        }
+      }
+    }
+    if st.tag == parse.ST_PF {
+      let mut k: usize = 0;
+      while k < len(st.args) {
+        expr_walk(st.args[k], prog, bound, nb, errs);
+        k = k + 1;
+      }
+    }
+    if st.tag == parse.ST_IF {
+      match st.val {
+        Option.Some(e) => {
+          expr_walk(e, prog, bound, nb, errs);
+        },
+        Option.None => {},
+      }
+      stmts_walk(st.body, prog, bound, nb, errs);
+      stmts_walk(st.body2, prog, bound, nb, errs);
+    }
+    if st.tag == parse.ST_WHILE {
+      match st.val {
+        Option.Some(e) => {
+          expr_walk(e, prog, bound, nb, errs);
+        },
+        Option.None => {},
+      }
+      stmts_walk(st.body, prog, bound, nb, errs);
+    }
+    i = i + 1;
+  }
+}
+
+// returns the error count; zero = clean
+pub fn check(prog: *Prog) -> i64 {
+  let errs_box = new_errbox();
+  let mut nf: usize = 0;
+  while nf < len(prog.fns) {
+    let bound: []string = make([]string, 64);
+    let mut k: usize = 0;
+    while k < len(prog.fns[nf].params) {
+      bound[k] = prog.fns[nf].params[k];
+      k = k + 1;
+    }
+    stmts_walk(prog.fns[nf].body, prog, bound, k, errs_box);
+    nf = nf + 1;
+  }
+  let bound: []string = make([]string, 64);
+  stmts_walk(prog.main, prog, bound, 0, errs_box);
+  return errs_box.n;
+}
+
+struct ErrBox {
+  n: i64,
+}
+
+pub fn new_errbox() -> *ErrBox {
+  return new ErrBox { n: 0 };
+}
