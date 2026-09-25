@@ -688,6 +688,10 @@ static void emit_const_to(FnCx *cx, Node *e, Type *t, size_t dst) {
                                  : 0.0;
     } else
       dv = (double)(int64_t)e->ival;
+    if (dv > 3.402823466385288598e38)
+      dv = 1.0 / 0.0; // f32 saturates to inf (wat2wasm rejects overs)
+    else if (dv < -3.402823466385288598e38)
+      dv = -1.0 / 0.0;
     op(cx, "(local.set %zu (f32.const %.9g))\n", dst, dv);
     break;
   }
@@ -1513,7 +1517,7 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
 
   case NT_AS: {
     Type *ft = (Type *)node_get(e->a)->sem;
-    bool uns_src = ft && ft->kind >= TY_U8; // picks convert_s vs _u
+    bool uns_src = ft && type_is_int(ft) && ft->kind >= TY_U8; // _s vs _u
     size_t v = cx_fresh(cx, ft);
     emit_expr(cx, e->a, v);
     // the unified matrix: wrap/truncate/extend; float→int truncates
@@ -1523,19 +1527,36 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       op(cx, "(local.set %zu (f32.demote_f64 (local.get %zu)))\n", dst, v);
     else if (fw == W_F32 && tw == W_F64)
       op(cx, "(local.set %zu (f64.promote_f32 (local.get %zu)))\n", dst, v);
-    else if (fw == W_F32 && tw == W_I32)
-      // trunc toward zero, saturating out of range (§3)
-      op(cx, "(local.set %zu (i32.trunc_sat_f32_s (local.get %zu)))\n",
-         dst, v);
-    else if (fw == W_F64 && tw == W_I32)
-      op(cx, "(local.set %zu (i32.trunc_sat_f64_s (local.get %zu)))\n",
-         dst, v);
-    else if (fw == W_F32 && tw == W_I64)
-      op(cx, "(local.set %zu (i64.trunc_sat_f32_s (local.get %zu)))\n",
-         dst, v);
-    else if (fw == W_F64 && tw == W_I64)
-      op(cx, "(local.set %zu (i64.trunc_sat_f64_s (local.get %zu)))\n",
-         dst, v);
+    else if ((fw == W_F32 || fw == W_F64) && tw == W_I32) {
+      // trunc toward zero; saturation is at the TARGET's width (§3):
+      // narrow ints clamp before the truncate
+      op(cx, "(local.set %zu (%s.trunc_sat_f%s_%s (local.get %zu)))\n",
+         dst, "i32", fw == W_F32 ? "32" : "64",
+         (t->kind >= TY_U8 && type_is_int(t)) ? "u" : "s", v);
+      if (t->kind == TY_I8 || t->kind == TY_I16 ||
+          t->kind == TY_U8 || t->kind == TY_U16) {
+        int lo = t->kind == TY_I8    ? -128
+                 : t->kind == TY_I16 ? -32768
+                 : t->kind == TY_U8  ? 0
+                                     : 0;
+        int hi = t->kind == TY_I8    ? 127
+                 : t->kind == TY_I16 ? 32767
+                 : t->kind == TY_U8  ? 255
+                                     : 65535;
+        bool un = t->kind == TY_U8 || t->kind == TY_U16;
+        op(cx, "(local.set %zu (select (i32.const %d) %s "
+               "(i32.gt_%s %s (i32.const %d))))\n", dst, hi, L(cx, dst),
+           un ? "u" : "s", L(cx, dst), hi);
+        op(cx, "(local.set %zu (select (i32.const %d) %s "
+               "(i32.lt_%s %s (i32.const %d))))\n", dst, lo, L(cx, dst),
+           un ? "u" : "s", L(cx, dst), lo);
+        truncate_after(cx, t, dst);
+      }
+    }
+    else if ((fw == W_F32 || fw == W_F64) && tw == W_I64)
+      op(cx, "(local.set %zu (i64.trunc_sat_f%s_%s (local.get %zu)))\n",
+         dst, fw == W_F32 ? "32" : "64",
+         (t->kind >= TY_U8 && type_is_int(t)) ? "u" : "s", v);
     else if (fw == W_I32 && tw == W_F32)
       op(cx, "(local.set %zu (f32.convert_i32_%s (local.get %zu)))\n",
          dst, uns_src ? "u" : "s", v);
