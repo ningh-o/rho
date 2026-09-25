@@ -213,6 +213,24 @@ const BOOLTEXT: string = """
   )
 """;
 
+const UINT: string = """
+  (func $w_u64 (param $v i64) (result i32) (result i32)
+    (local $p i32) (local $u i64)
+    (local.set $p (i32.const 4096))
+    (local.set $u (local.get $v))
+    (loop $d
+      (local.set $p (i32.sub (local.get $p) (i32.const 1)))
+      (i32.store8 (local.get $p)
+        (i32.wrap_i64 (i64.add (i64.rem_u (local.get $u)
+                             (i64.const 10)) (i64.const 48))))
+      (local.set $u (i64.div_u (local.get $u) (i64.const 10)))
+      (br_if $d (i64.ne (local.get $u) (i64.const 0)))
+    )
+    (local.get $p)
+    (i32.sub (global.get $w_top) (local.get $p))
+  )
+""";
+
 const STREQ: string = """
   (func $w_streq (param $ap i64) (param $al i64) (param $bp i64) (param $bl i64) (result i64)
     (local $i i64)
@@ -322,6 +340,17 @@ fn write_call(addr: i64, nbytes: i64) -> string {
 // spelled word (true/false) — the same capture pair write_int uses
 fn write_bool_top() -> string {
   return "    call $w_bool\n" +
+         "    (local.set $l)\n" +
+         "    (local.set $a)\n" +
+         "    (i32.store (i32.const 64) (local.get $a))\n" +
+         "    (i32.store (i32.const 68) (local.get $l))\n" +
+         "    (drop (call $fd_write (i32.const 1) " +
+         "(i32.const 64) (i32.const 1) (i32.const 96)))\n";
+}
+
+// unsigned print: the value rides the stack into $w_u64
+fn write_uint() -> string {
+  return "    call $w_u64\n" +
          "    (local.set $l)\n" +
          "    (local.set $a)\n" +
          "    (i32.store (i32.const 64) (local.get $a))\n" +
@@ -591,6 +620,62 @@ fn env_bind_w(e: *Env, name: string, slot: i64, w: i64) {
   e.n = e.n + 1;
 }
 
+// an operand's width: a var by its binding, an as-cast by its target
+// type, a bare literal by the fixed default i32 (§3.1) — and the
+// width PROPAGATES through arithmetic (one64 << 63 is still i64)
+fn expr_width(e: *Expr, env: *Env) -> i64 {
+  if e.tag == parse.EX_VAR {
+    return env_width_of(env, e.name);
+  }
+  if e.tag == parse.EX_BIN && e.op == 11 {
+    return type_width(e.name);
+  }
+  if e.tag == parse.EX_LIT {
+    return 32;
+  }
+  if e.tag == parse.EX_BIN {
+    return bin_width(e, env);
+  }
+  return 0;
+}
+
+// a binary's width: the DECLARING operand wins (vars and casts), a
+// literal adapts — so 0 - m8 takes m8's width, not the literal's
+// default
+fn bin_width(e: *Expr, env: *Env) -> i64 {
+  let mut lhs_lit: bool = false;
+  match e.lhs {
+    Option.Some(l) => {
+      lhs_lit = l.tag == parse.EX_LIT;
+    },
+    Option.None => {},
+  }
+  if !lhs_lit {
+    match e.lhs {
+      Option.Some(l) => {
+        let w: i64 = expr_width(l, env);
+        if w != 0 {
+          return w;
+        }
+      },
+      Option.None => {},
+    }
+  }
+  match e.rhs {
+    Option.Some(r) => {
+      let w: i64 = expr_width(r, env);
+      if w != 0 {
+        return w;
+      }
+    },
+    Option.None => {},
+  }
+  if lhs_lit {
+    return 32; // both literals: the i32 default
+  }
+  return 0;
+}
+
 fn env_width_of(e: *Env, name: string) -> i64 {
   let mut i: usize = 0;
   while i < e.n {
@@ -608,9 +693,12 @@ fn type_width(tyname: string) -> i64 {
   if tyname == "i8" { return 8; }
   if tyname == "i16" { return 16; }
   if tyname == "i32" { return 32; }
+  if tyname == "i64" { return 64; }
   if tyname == "u8" { return 0 - 8; }
   if tyname == "u16" { return 0 - 16; }
   if tyname == "u32" { return 0 - 32; }
+  if tyname == "u64" { return 0 - 64; }
+  if tyname == "usize" { return 0 - 64; }
   return 0;
 }
 
@@ -624,6 +712,9 @@ fn wrap_snippet(w: i64) -> string {
   let mut bits: i64 = w;
   if bits < 0 {
     bits = 0 - bits;
+  }
+  if bits >= 64 {
+    return ""; // the full lane already
   }
   if bits >= 32 {
     if w < 0 {
@@ -1033,34 +1124,54 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog) -> string {
     }
     return out;
   }
+  // the operand width: the declaring operand wins (§3.1 — literals
+  // adapt to their consumer)
+  let mut w: i64 = bin_width(e, env);
+  if e.op == 18 || e.op == 19 {
+    // shifts mask the count by the left width (§11); sub-32 widths
+    // live in the 32-bit lane so their mask is 31 (boot's iron), and
+    // unsigned widths shift logically (shr_u)
+    let mw: i64 = w;
+    let mut mbits: i64 = mw;
+    if mbits < 0 {
+      mbits = 0 - mbits;
+    }
+    if mbits >= 64 {
+      mbits = 64;
+    } else {
+      if mbits == 0 {
+        mbits = 32;
+      } else {
+        mbits = 32; // sub-32 ints ride the 32-bit lane
+      }
+    }
+    out = out + "    (local.set $t)\n";
+    out = out + "    (i64.and (local.get $t) (i64.const " +
+           (mbits - 1).to_str() + "))\n";
+    out = out + "    (local.set $t)\n";
+    out = out + "    (local.get $t)\n";
+    let mut sop: string = "i64.shl";
+    if e.op == 19 {
+      if w < 0 {
+        sop = "i64.shr_u";
+      } else {
+        sop = "i64.shr_s";
+      }
+    }
+    out = out + "    (" + sop + ")\n";
+    if w != 0 && w != 64 && w != 0 - 64 {
+      out = out + wrap_snippet(w);
+    }
+    return out;
+  }
   out = out + "    (" + wat_op(e.op) + ")\n";
   // comparisons yield i32 in wasm: extend back to the i64 lane
   if e.op >= 5 && e.op <= 10 {
     out = out + "    (i64.extend_i32_s)\n";
     return out;
   }
-  // arithmetic/bitwise at a narrow operand's width wraps after the
-  // op (either operand carries the width; literals adapt)
-  let mut w: i64 = 0;
-  match e.lhs {
-    Option.Some(l) => {
-      if l.tag == parse.EX_VAR {
-        w = env_width_of(env, l.name);
-      }
-    },
-    Option.None => {},
-  }
-  if w == 0 {
-    match e.rhs {
-      Option.Some(r) => {
-        if r.tag == parse.EX_VAR {
-          w = env_width_of(env, r.name);
-        }
-      },
-      Option.None => {},
-    }
-  }
-  if w != 0 && e.op != 11 && e.op != 12 {
+  // arithmetic/bitwise at a narrow width wraps after the op
+  if w != 0 && w != 64 && e.op != 11 && e.op != 12 {
     out = out + wrap_snippet(w);
   }
   return out;
@@ -1347,7 +1458,11 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
             }
             if !folded {
               body = body + emit_expr(pool, arg, env, prog);
-              body = body + write_int();
+              if expr_width(arg, env) < 0 {
+                body = body + write_uint();
+              } else {
+                body = body + write_int();
+              }
             }
             ai = ai + 1;
           }
@@ -1674,7 +1789,11 @@ fn emit_fn(fd: *FnDef, pool: *Pool, prog: *Prog) -> string {
                            next_local.v + 1, kind);
       next_local.v = next_local.v + 2;
     } else {
-      env_bind(env, fd.params[k], next_local.v);
+      let mut pw: i64 = 0;
+      if k < len(fd.ptypes) {
+        pw = type_width(fd.ptypes[k]);
+      }
+      env_bind_w(env, fd.params[k], next_local.v, pw);
       next_local.v = next_local.v + 1;
     }
     k = k + 1;
@@ -1745,6 +1864,7 @@ pub fn emit(prog: *Prog) -> string {
     gi = gi + 1;
   }
   out = out + RUNTIME;
+  out = out + UINT;
   out = out + ALLOC;
   out = out + STREQ;
   out = out + BOOLTEXT;
