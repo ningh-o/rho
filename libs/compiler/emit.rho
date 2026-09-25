@@ -2417,6 +2417,10 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
         optpt = env_slicept_of(env, b6.name);
       }
     }
+    if sc.tag == parse.EX_VAR {
+      // an Option-typed binding carries its payload's pointer target
+      optpt = env_slicept_of(env, sc.name);
+    }
     out = out + match_chain_m(pool, e.marms, 0, bx, env, prog, nl,
                               true, false, optpt);
     return out;
@@ -4897,6 +4901,25 @@ fn find_colon(s: string) -> usize {
   return 0;
 }
 
+// an Option-typed annotation's payload text ('?*Node' -> '*Node'),
+// "" when the annotation names none
+fn opt_payload(fmt: string) -> string {
+  if len(fmt) >= 1 && fmt[0] == 63 {
+    return fmt[1..len(fmt)];
+  }
+  if len(fmt) >= 7 && fmt[0] == 79 && fmt[7] == 91 {
+    // Option[..]: find the matching close bracket
+    let mut i: usize = 8;
+    while i < len(fmt) {
+      if fmt[i] == 93 {
+        return fmt[8..i];
+      }
+      i = i + 1;
+    }
+  }
+  return "";
+}
+
 fn emit_print_fd(pool: *Pool, fmt: string, args: []*Expr, env: *Env,
                  prog: *Prog, nl: *NextLocal, fd: i64) -> string {
   let pieces: []string = parse.fmt_pieces(fmt);
@@ -5459,6 +5482,12 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
                     body = body + "    (local.set " + nl.v.to_str() +
                            ")\n";
                     env_bind_enum(env, st.name, nl.v, es);
+                    // an Option binding records its payload text so
+                    // Some binders keep the pointer lane
+                    let opay: string = opt_payload(st.fmt);
+                    if len(opay) > 0 {
+                      env_bind_sliceelem(env, st.name, opay);
+                    }
                     nl.v = nl.v + 1;
                   } else {
                   // a pair field read (b.xs, st.name) binds its live
@@ -5926,6 +5955,9 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
             if b7.tag == parse.EX_VAR {
               optpt = env_slicept_of(env, b7.name);
             }
+          }
+          if sc.tag == parse.EX_VAR {
+            optpt = env_slicept_of(env, sc.name);
           }
           body = body + match_chain_m(pool, st.marms, 0, bx, env,
                                       prog, nl, false, false, optpt);
