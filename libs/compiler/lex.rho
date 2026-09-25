@@ -16,6 +16,8 @@ pub const TK_INT: i32 = 2;
 pub const TK_STR: i32 = 3;
 pub const TK_PUNCT: i32 = 4;
 pub const TK_KEYWORD: i32 = 5;
+pub const TK_FLOAT: i32 = 6; // the raw decimal text rides the token
+                             // (the emitter's f64.const does strtod)
 
 struct Cur {
   src: string,
@@ -224,6 +226,43 @@ pub fn lex(src: string) -> []*Tok {
             adv(c);
           }
         }
+      }
+      // a trailing '.', or an exponent with a digit behind it, makes
+      // the run a float literal (the raw text rides along)
+      let mut isf: bool = false;
+      if c.pos < len(src) && src[c.pos] == 46 && c.pos + 1 < len(src) &&
+          is_digit(src[c.pos + 1]) {
+        // only '.digit' opens a fraction — '1..' is a range, and a
+        // member dot never follows an INT in this grammar
+        isf = true;
+        adv(c);
+        while c.pos < len(src) && (is_digit(at(c)) || at(c) == 95) {
+          adv(c);
+        }
+      }
+      if !isf && c.pos < len(src) && (src[c.pos] == 101 ||
+          src[c.pos] == 69) && c.pos + 1 < len(src) &&
+          (is_digit(src[c.pos + 1]) || src[c.pos + 1] == 45 ||
+           src[c.pos + 1] == 43) {
+        let digbehind: bool = c.pos + 2 < len(src) &&
+            is_digit(src[c.pos + 2]);
+        let sign: bool = src[c.pos + 1] == 45 || src[c.pos + 1] == 43;
+        if digbehind || !sign {
+          isf = true;
+          adv(c);
+          if sign {
+            adv(c);
+          }
+          while c.pos < len(src) && (is_digit(at(c)) || at(c) == 95) {
+            adv(c);
+          }
+        }
+      }
+      if isf {
+        toks[n] = new Tok { kind: TK_FLOAT, text: src[start..c.pos],
+                            ival: 0, line: line };
+        n = n + 1;
+        continue;
       }
       toks[n] = new Tok { kind: TK_INT, text: src[start..c.pos],
                           ival: v, line: line };

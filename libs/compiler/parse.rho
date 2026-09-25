@@ -15,6 +15,8 @@ pub const EX_IDX: i32 = 6;   // base[idx]: lhs = base, rhs = index
 pub const EX_SLICE2: i32 = 7; // base[a..b]: lhs = base, args = lo/hi;
                               // op bit0 = lo present, bit1 = hi present
 pub const EX_Q: i32 = 13;    // e? — the propagate-and-unwrap
+pub const EX_FLIT: i32 = 14; // a float literal; the raw decimal text
+                             // rides the name (f64.const parses it)
 pub const EX_MATCH: i32 = 12; // match scrut { arms }: scrut rides
                                // lhs, the arms ride marms
 pub const EX_FIELD: i32 = 8;  // base.name: lhs = base (a *T receiver)
@@ -275,6 +277,13 @@ pub fn call(name: string, args: []*Expr) -> *Expr {
 pub fn field_expr(base: *Expr, fname: string) -> *Expr {
   return new Expr { tag: EX_FIELD, lit: 0, name: fname, op: 0,
                     lhs: Option.Some(base), rhs: Option.None,
+                    args: make([]*Expr, 0), fnames: make([]string, 0),
+                    marms: make([]*MatchArm, 0) };
+}
+
+pub fn flit(text: string) -> *Expr {
+  return new Expr { tag: EX_FLIT, lit: 0, name: text, op: 0,
+                    lhs: Option.None, rhs: Option.None,
                     args: make([]*Expr, 0), fnames: make([]string, 0),
                     marms: make([]*MatchArm, 0) };
 }
@@ -706,6 +715,10 @@ fn parse_atom(c: *PCur) -> *Expr {
   if t.kind == lex.TK_INT {
     tkadv(c);
     return lit(t.ival);
+  }
+  if t.kind == lex.TK_FLOAT {
+    tkadv(c);
+    return flit(t.text);
   }
   if t.kind == lex.TK_STR {
     tkadv(c);

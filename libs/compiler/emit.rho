@@ -486,6 +486,7 @@ struct Env {
   sraws: []string,
   skinds: []i64, // 0 folded string, 1 runtime string pair, 2 slice pair
   sn: usize,
+  fkind: []i64,     // per binding: 0 int, 1 f64, 2 f32
   selnames: []string, // slice bindings whose ELEMENTS are enums
   selvals: []string,  // the element's enum name
   // the enclosing fn context (an expression-position match emits
@@ -529,6 +530,7 @@ fn env_new(cap: usize) -> *Env {
                    saddrs: make([]i64, cap), slens: make([]i64, cap),
                    sraws: make([]string, cap),
                    skinds: make([]i64, cap), sn: 0,
+                   fkind: make([]i64, cap),
                    selnames: make([]string, 16),
                    selvals: make([]string, 16),
                    infn: false, retslot: 0 - 1,
@@ -769,7 +771,33 @@ fn env_bind(e: *Env, name: string, slot: i64) {
   e.senum[e.n] = "";
   e.sval[e.n] = "";
   e.vbases[e.n] = 0;
+  e.fkind[e.n] = 0;
   e.n = e.n + 1;
+}
+
+// a float binding: kind 1 f64, 2 f32 (f32 rides f64 storage with
+// demote-after-op rounding — the exact f32 semantics)
+fn env_bind_f(e: *Env, name: string, slot: i64, kind: i64) {
+  e.names[e.n] = name;
+  e.slots[e.n] = slot;
+  e.vwidths[e.n] = 0;
+  e.sptr[e.n] = "";
+  e.senum[e.n] = "";
+  e.sval[e.n] = "";
+  e.vbases[e.n] = 0;
+  e.fkind[e.n] = kind;
+  e.n = e.n + 1;
+}
+
+fn env_fkind_of(e: *Env, name: string) -> i64 {
+  let mut i: usize = e.n;
+  while i > 0 {
+    if e.names[i - 1] == name {
+      return e.fkind[i - 1];
+    }
+    i = i - 1;
+  }
+  return 0;
 }
 
 // a value binding: the fields live in a consecutive local frame
@@ -1129,6 +1157,57 @@ fn norm_enum(rt: string) -> string {
     return "Result";
   }
   return rt;
+}
+
+// the float kind of an expression: 0 int, 1 f64, 2 f32
+fn expr_fkind(e: *Expr, env: *Env, prog: *Prog) -> i64 {
+  if e.tag == parse.EX_FLIT {
+    return 1;
+  }
+  if e.tag == parse.EX_VAR {
+    return env_fkind_of(env, e.name);
+  }
+  if e.tag == parse.EX_BIN && e.op == 11 {
+    if e.name == "f64" {
+      return 1;
+    }
+    if e.name == "f32" {
+      return 2;
+    }
+    return 0;
+  }
+  if e.tag == parse.EX_BIN {
+    let mut lf: i64 = 0;
+    let mut rf: i64 = 0;
+    match e.lhs {
+      Option.Some(l7) => {
+        lf = expr_fkind(l7, env, prog);
+      },
+      Option.None => {},
+    }
+    match e.rhs {
+      Option.Some(r7) => {
+        rf = expr_fkind(r7, env, prog);
+      },
+      Option.None => {},
+    }
+    if lf > 0 {
+      return lf;
+    }
+    if rf > 0 {
+      return rf;
+    }
+  }
+  if e.tag == parse.EX_CALL {
+    let rt: string = fn_rtype_of(prog, e.name);
+    if rt == "f64" {
+      return 1;
+    }
+    if rt == "f32" {
+      return 2;
+    }
+  }
+  return 0;
 }
 
 // the enum an expression's value belongs to, "" when none
@@ -1994,6 +2073,65 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
                               true, false, optpt);
     return out;
   }
+  if e.tag == parse.EX_FLIT {
+    // the raw text rides into f64.const (wat2wasm does strtod); f32
+    // literals round through demote for exact f32 values
+    return "    (i64.reinterpret_f64 (f64.const " + e.name + "))\n";
+  }
+  if e.tag == parse.EX_BIN && e.op >= 0 && e.op <= 10 &&
+      expr_fkind(e, env, prog) > 0 {
+    // float arithmetic and comparison: operands floatify (reinterpret
+    // for float lanes, convert for int operands), the op runs in
+    // f64, f32 results demote-and-promote back (exact f32 rounding)
+    let fk: i64 = expr_fkind(e, env, prog);
+    let mut out: string = "";
+    match e.lhs {
+      Option.Some(l8) => {
+        out = out + emit_expr(pool, l8, env, prog, nl);
+        if expr_fkind(l8, env, prog) > 0 {
+          out = out + "    (f64.reinterpret_i64)\n";
+        } else {
+          out = out + "    (f64.convert_i64_s)\n";
+        }
+      },
+      Option.None => {},
+    }
+    match e.rhs {
+      Option.Some(r8) => {
+        out = out + emit_expr(pool, r8, env, prog, nl);
+        if expr_fkind(r8, env, prog) > 0 {
+          out = out + "    (f64.reinterpret_i64)\n";
+        } else {
+          out = out + "    (f64.convert_i64_s)\n";
+        }
+      },
+      Option.None => {},
+    }
+    if e.op >= 5 && e.op <= 10 {
+      // comparisons land as i32, extended back to the i64 lane
+      let cops: []string = make([]string, 11);
+      cops[5] = "f64.lt";
+      cops[6] = "f64.gt";
+      cops[7] = "f64.le";
+      cops[8] = "f64.ge";
+      cops[9] = "f64.eq";
+      cops[10] = "f64.ne";
+      out = out + "    (" + cops[e.op as usize] + ")\n" +
+             "    (i64.extend_i32_s)\n";
+      return out;
+    }
+    let fops: []string = make([]string, 5);
+    fops[0] = "f64.add";
+    fops[1] = "f64.sub";
+    fops[2] = "f64.mul";
+    fops[3] = "f64.div";
+    out = out + "    (" + fops[e.op as usize] + ")\n";
+    if fk == 2 {
+      out = out + "    (f64.promote_f32 (f32.demote_f64))\n";
+    }
+    out = out + "    (i64.reinterpret_f64)\n";
+    return out;
+  }
   if e.tag == parse.EX_STR {
     // a literal in a scalar lane rides its pooled ADDRESS
     let saddr0: i64 = pool_intern(pool, e.name);
@@ -2190,15 +2328,81 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
     Option.None => {},
   }
   if e.op == 11 {
-    // 'as T': an enum operand takes the tag (§3.3), then wraps at
-    // the TARGET width and extends back to the i64 lane
+    // 'as T': an enum operand takes the tag (§3.3); a float operand
+    // converts through the f64 lane (trunc-toward-zero, saturating);
+    // an int operand into f64/f32 converts and reinterprets
+    let mut srcf: i64 = 0;
     match e.lhs {
       Option.Some(l2) => {
+        srcf = expr_fkind(l2, env, prog);
         if len(expr_enum_type(l2, env, prog)) > 0 {
           out = out + "    (i64.load (i32.wrap_i64))\n";
         }
       },
       Option.None => {},
+    }
+    if srcf > 0 {
+      if e.name == "f64" {
+        return out + "    (f64.reinterpret_i64)\n" +
+               "    (i64.reinterpret_f64)\n";
+      }
+      if e.name == "f32" {
+        return out + "    (f64.reinterpret_i64)\n" +
+               "    (f64.promote_f32 (f32.demote_f64))\n" +
+               "    (i64.reinterpret_f64)\n";
+      }
+      // float -> int: trunc toward zero, saturating AT THE TARGET
+      // WIDTH (§3.3) — narrow widths clamp through boundary compares
+      // in f64 (HI = max+1, LO = min-1, both exact), the lane-wide
+      // widths ride i64.trunc_sat directly
+      let w0: i64 = type_width(e.name);
+      let mut bits0: i64 = w0;
+      if bits0 < 0 {
+        bits0 = 0 - bits0;
+      }
+      out = out + "    (local.set $t)\n";
+      if bits0 >= 64 {
+        if w0 < 0 {
+          out = out + "    (i64.trunc_sat_f64_u (f64.reinterpret_i64 " +
+                 "(local.get $t)))\n";
+        } else {
+          out = out + "    (i64.trunc_sat_f64_s (f64.reinterpret_i64 " +
+                 "(local.get $t)))\n";
+        }
+        return out;
+      }
+      let mut mx: i64 = (1 << bits0) - 1;
+      let mut mn: i64 = 0;
+      let mut hi: string = "";
+      let mut lo: string = "";
+      if w0 < 0 {
+        mn = 0;
+        hi = (mx + 1).to_str();
+        lo = "-0.5";
+      } else {
+        mx = mx / 2;
+        mn = 0 - (1 << (bits0 - 1));
+        hi = (mx + 1).to_str();
+        lo = (mn - 1).to_str();
+      }
+      out = out + "    (if (result i64) (f64.ge (f64.reinterpret_i64 " +
+             "(local.get $t)) (f64.const " + hi + "))\n" +
+             "      (then (i64.const " + mx.to_str() + "))\n" +
+             "      (else (if (result i64) (f64.le " +
+             "(f64.reinterpret_i64 (local.get $t)) (f64.const " + lo +
+             "))\n" +
+             "        (then (i64.const " + mn.to_str() + "))\n" +
+             "        (else (i64.extend_i32_s (i32.trunc_sat_f64_s " +
+             "(f64.reinterpret_i64 (local.get $t))))))))\n";
+      return out;
+    }
+    if e.name == "f64" || e.name == "f32" {
+      out = out + "    (f64.convert_i64_s)\n";
+      if e.name == "f32" {
+        out = out + "    (f64.promote_f32 (f32.demote_f64))\n";
+      }
+      out = out + "    (i64.reinterpret_f64)\n";
+      return out;
     }
     out = out + wrap_snippet(type_width(e.name));
     return out;
@@ -3523,6 +3727,31 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
                   } else {
                   // an enum-typed value (the annotation names an
                   // enum, or the init constructs one) binds the box
+                  if st.fmt == "f64" || st.fmt == "f32" ||
+                      expr_fkind(e, env, prog) > 0 {
+                    let mut fk0: i64 = 1;
+                    if st.fmt == "f32" {
+                      fk0 = 2;
+                    } else {
+                      if expr_fkind(e, env, prog) == 2 {
+                        fk0 = 2;
+                      }
+                    }
+                    body = body + emit_expr(pool, e, env, prog, nl);
+                    if expr_fkind(e, env, prog) == 0 {
+                      body = body + "    (i64.reinterpret_f64 " +
+                             "(f64.convert_i64_s))\n";
+                    }
+                    if fk0 == 2 {
+                      body = body + "    (i64.reinterpret_f64 " +
+                             "(f64.promote_f32 (f32.demote_f64 " +
+                             "(f64.reinterpret_i64))))\n";
+                    }
+                    body = body + "    (local.set " + nl.v.to_str() +
+                           ")\n";
+                    env_bind_f(env, st.name, nl.v, fk0);
+                    nl.v = nl.v + 1;
+                  } else {
                   let mut es: string = norm_enum(st.fmt);
                   if len(es) == 0 || (en_index(prog, es) < 0 &&
                       es != "Option" && es != "Result") {
@@ -3628,6 +3857,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
                       env_bool_bind(env, st.name);
                     }
                     nl.v = nl.v + 1;
+                  }
                   }
                   }
                   }
@@ -4110,6 +4340,13 @@ fn emit_fn(fd: *FnDef, pool: *Pool, prog: *Prog) -> string {
       if len(target) > 0 && st_index(prog, target) >= 0 {
         env_bind_ptr(env, fd.params[k], nl.v, target);
       } else {
+        if pt == "f64" || pt == "f32" {
+          let mut fk1: i64 = 1;
+          if pt == "f32" {
+            fk1 = 2;
+          }
+          env_bind_f(env, fd.params[k], nl.v, fk1);
+        } else {
         let mut ename: string = pt;
         if len(ename) >= 2 && ename[0] == 63 {
           ename = "Option";
@@ -4121,6 +4358,7 @@ fn emit_fn(fd: *FnDef, pool: *Pool, prog: *Prog) -> string {
           env_bind_enum(env, fd.params[k], nl.v, ename);
         } else {
           env_bind_w(env, fd.params[k], nl.v, pw);
+        }
         }
       }
       nl.v = nl.v + 1;
