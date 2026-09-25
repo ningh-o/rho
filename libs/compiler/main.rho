@@ -24,6 +24,15 @@ fn main() -> i32 {
     return 1;
   }
   let wat: string = emit.emit(prog);
-  printf("{}", wat);
+  // stream in slices: the format scratch is bounded, programs are not
+  let mut off: usize = 0;
+  while off < len(wat) {
+    let mut end: usize = off + 512;
+    if end > len(wat) {
+      end = len(wat);
+    }
+    printf("{}", wat[off..end]);
+    off = end;
+  }
   return 0;
 }

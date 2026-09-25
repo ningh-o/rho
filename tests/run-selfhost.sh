@@ -38,7 +38,7 @@ run_one fns 'fn double(x: i64) -> i64 { return x * 2; } fn add3(a: i64, b: i64, 
 run_one fib 'fn fib(n: i64) -> i64 { if n < 2 { return n; } return fib(n - 1) + fib(n - 2); } fn main() -> i32 { printf("fib(10)={}\n", fib(10)); return 0; }' 'fib(10)=55'
 run_one strs 'fn main() -> i32 { let a = "one"; let b = "two"; let c = a + "-" + b + "!"; printf("a={} b={} c={} all={}\n", a, b, c, "x" + "y"); return 0; }' 'a=one b=two c=one-two! all=xy'
 run_one suite 'fn banner() -> i64 { printf("[banner]\n"); return 3; } fn main() -> i32 { let n = banner(); if n == 3 { printf("three\n"); } else if n == 4 { printf("four\n"); } else { printf("other\n"); } printf("neg={} len={}\n", 0 - 5, len("abcd")); banner(); return 7; }' $'[banner]\nthree\nneg=-5 len=4\n[banner]' 7
-run_one strparam 'fn greet(s: string) -> i64 { printf("hello {}!\n", s); return len(s); } fn main() -> i32 { let n = greet("world"); let t = greet("rho"); printf("n={} t={}\n", n, t); return 0; }' $'hello world!\nhello rho!\nn=5 t=3'
+run_one strparam 'fn greet(s: string) -> i64 { printf("hello {}! len={}\n", s, len(s)); return 1; } fn main() -> i32 { let n = greet("world"); let t = greet("rho"); printf("n={} t={}\n", n, t); return 0; }' $'hello world! len=5\nhello rho! len=3\nn=1 t=1'
 # the checker rejects unknown names with diagnostics and exit 1
 "$RHO" build libs/compiler/main.rho -o /tmp/rhoc-bad.wasm \
   --set 'SRC=fn main() -> i32 { let x = mystery(1); return 0; }' >/dev/null 2>&1
