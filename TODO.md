@@ -294,6 +294,25 @@ section — no placeholder stages. boot is the reference compiler.
       old boot-vs-mirror differential retired with the old code — the
       fuzz framework is the price of the clean slate; rebuild it before
       calling anything done.)
+- [ ] **T3.5** The test protocol (§17) — **lands before T3.4, so the
+      suites are written directly on the real verb and no second runner
+      ever exists.** boot grows the `test` block and rebuilds the
+      `rho test` verb from its script-forwarding stub into the real
+      runner: lex/parse/check/emit/fmt for the block form (fmt
+      round-trips it like any decl); paths or directories — a directory
+      picks up `*_test.rho` files and case directories with a `main.rho`
+      entry, name sorted; every test compiles as its own program
+      instance (per-test isolation under the time cap); filter; honest
+      zero-tests exit 1. Golden headers: `// out:` / `// exit:` /
+      `// set:` (§17), plus the three the suites need — `// expect:`
+      (diagnostic: check must fail with every named substring present),
+      `// err:` (stderr substrings — pins the panic catalog's messages),
+      `// pending:` (expected-fail ledger for law ratified but not yet
+      implemented; a pending case that passes prints a PROMOTE notice,
+      promotion = the marker comes off). Fixtures are the suites' first
+      directories; the suite leg wires into make test. The self-hosted
+      compiler mirrors the surface when its CLI lands (a T2 dogfood
+      leg: rho's test suite running rho).
 - [ ] **T3.4** Suites: lang/modsys/opt/eq/params/multiline/strops/diag
       rebuilt for the new language, incl. the fixes the design mandates
       (aggregate let-position values are legal; `as` truncates constants
@@ -307,23 +326,14 @@ section — no placeholder stages. boot is the reference compiler.
       from the anchors, and a rule whose test does not exist is a rule
       not implemented. Multi-file cases (packages, facades) are
       directories with a `main.rho` entry carrying the same headers.
-      Two tiers: green files gate now; a case for law already ratified
+      Two tiers: green files gate; a case for law already ratified
       but not yet implemented (§18 mut view, §19 match ergonomics,
       T3.7 item imports, the T3.6 usize lane) carries
       `// pending: T3.x` and runs as an expected-fail ledger,
-      promoting per case when its task lands. Until T3.5's verb
-      exists, `tests/run-suites.sh` implements the `rho test`
-      contract (paths, directory scan, golden headers, diagnostics,
-      pending ledger, honest zero-tests exit 1); when the verb lands
-      it takes the suite over unchanged. The existing tests/check
+      promoting per case when its task lands. The suite runs on
+      T3.5's verb — it is the verb's fixtures and acceptance; no
+      interim runner exists. The existing tests/check
       negatives stay put — no migration churn.
-- [ ] **T3.5** The test protocol (§17): boot grows the `test` block and
-      the `rho test` verb — lex/parse/check/emit for the block form,
-      the runner (paths, directory scan, golden headers, per-test
-      isolation under the time cap, filter, honest zero-tests exit),
-      fixtures + a suite leg wired into make test. The self-hosted
-      compiler mirrors the surface when its CLI lands (a T2 dogfood
-      leg: rho's test suite running rho).
 - [ ] **T3.6** The mut view law (§18) + the usize lane. Boot surface
       map: parse grows the `mut` argument prefix in call argument
       lists (params already carry the flag); check_fn_body keeps the
