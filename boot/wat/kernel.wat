@@ -21,9 +21,11 @@
                               (i32.const 65535)))
     (if (i32.gt_u (local.get $need) (i32.shl (memory.size) (i32.const 16)))
       (then
+        ;; grow by ceil((need - current) / 64K) pages
         (drop (memory.grow
-          (i32.div_u (i32.sub (local.get $need)
-                              (i32.shl (memory.size) (i32.const 16)))
+          (i32.div_u (i32.add (i32.sub (local.get $need)
+                                        (i32.shl (memory.size) (i32.const 16)))
+                               (i32.const 65535))
                      (i32.const 65536))))))
     (local.set $p (global.get $heap))
     (global.set $heap
