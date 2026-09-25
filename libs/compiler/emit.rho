@@ -1590,6 +1590,82 @@ fn build_string_pair(e: *Expr, pool: *Pool, env: *Env, prog: *Prog,
     }
     return bad;
   }
+  if e.tag == parse.EX_SLICE2 {
+    let mut base: *Expr = parse.lit(0);
+    match e.lhs {
+      Option.Some(b) => {
+        base = b;
+      },
+      Option.None => {},
+    }
+    if base.tag != parse.EX_VAR {
+      return bad;
+    }
+    let bname: string = base.name;
+    let bkind: i64 = env_kind_of(env, bname);
+    let mut kind: i64 = 2;
+    let mut esz: i64 = 8;
+    if bkind == 0 || bkind == 1 {
+      kind = 1;
+      esz = 1;
+    }
+    if kind != 1 {
+      return bad; // slicing a slice inside a concat: next cut
+    }
+    let a_slot: i64 = next_local.v;
+    next_local.v = next_local.v + 1;
+    let l_slot: i64 = next_local.v;
+    next_local.v = next_local.v + 1;
+    let mut text: string = "";
+    if e.op % 2 == 1 && len(e.args) > 0 {
+      text = text + emit_expr(pool, e.args[0], env, prog);
+    } else {
+      text = text + "    (i64.const 0)\n";
+    }
+    text = text + "    (local.set " + a_slot.to_str() + ")\n";
+    if (e.op / 2) % 2 == 1 && len(e.args) > 1 {
+      text = text + emit_expr(pool, e.args[1], env, prog);
+    } else {
+      if bkind == 0 {
+        text = text + "    (i64.const " +
+               env_str_len(env, bname).to_str() + ")\n";
+      } else {
+        text = text + "    (local.get " +
+               env_str_len_slot(env, bname).to_str() + ")\n";
+      }
+    }
+    text = text + "    (local.set " + l_slot.to_str() + ")\n";
+    let mut blen: string = "";
+    if bkind == 0 {
+      blen = "(i64.const " + env_str_len(env, bname).to_str() + ")";
+    } else {
+      blen = "(local.get " + env_str_len_slot(env, bname).to_str() + ")";
+    }
+    text = text + "    (local.set $t (local.get " + a_slot.to_str() +
+           "))\n";
+    text = text + oob_check_at(pool, blen, false);
+    text = text + "    (local.set $t (local.get " + l_slot.to_str() +
+           "))\n";
+    text = text + oob_check_at(pool, blen, false);
+    text = text + "    (i64.sub (local.get " + l_slot.to_str() +
+           ") (local.get " + a_slot.to_str() + "))\n";
+    text = text + "    (local.set " + l_slot.to_str() + ")\n";
+    if bkind == 0 {
+      text = text + "    (i64.add (i64.const " +
+             env_str_look(env, bname).to_str() +
+             ") (i64.mul (local.get " + a_slot.to_str() +
+             ") (i64.const " + esz.to_str() + ")))\n";
+    } else {
+      let ba: i64 = env_str_look(env, bname);
+      text = text + "    (i64.add (local.get " +
+             ((0 - ba) - 1).to_str() + ") (i64.mul (local.get " +
+             a_slot.to_str() + ") (i64.const " + esz.to_str() +
+             ")))\n";
+    }
+    text = text + "    (local.set " + a_slot.to_str() + ")\n";
+    let sps = new SPair { ok: true, text: text, a: a_slot, l: l_slot };
+    return sps;
+  }
   if e.tag == parse.EX_CALL && fn_returns_string(prog, e.name) {
     let mut text: string = "";
     let mut k: usize = 0;
