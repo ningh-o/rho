@@ -1,0 +1,40 @@
+// exit: 0
+// tranche-2 adaptation of 091_weak_dead: weaks do not keep the object
+// alive and never resurrect it; absence reads as ?*Node throughout
+struct Node {
+  v: i32,
+}
+
+fn make_node(v: i32) -> *Node {
+  return new Node { v: v };
+}
+
+fn alive(w: weak[Node]) -> bool {
+  return match w.get() {
+    Option.Some(_) => true,
+    Option.None => false,
+  };
+}
+
+fn deref(o: ?*Node) -> *Node {
+  return match o {
+    Option.Some(p) => p,
+    Option.None => make_node(0),
+  };
+}
+
+fn main() -> i32 {
+  let mut n: ?*Node = Option.Some(make_node(42));
+  let w1: weak[Node] = weak.from(deref(n));
+  let w2: weak[Node] = weak.from(deref(n));
+  printf("up: w1={} w2={}\n", alive(w1), alive(w2));
+  n = Option.None;
+  printf("down: w1={} w2={}\n", alive(w1), alive(w2));
+  let w3: weak[Node] = w2;
+  printf("copied weak: w3={}\n", alive(w3));
+  let mut q: ?*Node = w1.get();
+  printf("get1: none={}\n", q == Option.None);
+  q = w3.get();
+  printf("get2: none={}\n", q == Option.None);
+  return 0;
+}

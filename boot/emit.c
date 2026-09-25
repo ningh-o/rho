@@ -1902,7 +1902,18 @@ static void emit_match(FnCx *cx, NodeRef er, size_t dst) {
     bind_pattern(cx, pat, st, &slot);
     // arm value
     if (dst != SIZE_MAX) {
+      Node *ab0 = node_get(arm->b);
       emit_expr(cx, arm->b, dst);
+      // a copied-out managed value owns a new reference when it
+      // escapes the match (bare binder/path arms)
+      Type *vt0 = (Type *)ab0->sem;
+      if (vt0 && type_is_managed(vt0) &&
+          (ab0->kind == NT_PATH ||
+           (ab0->kind == NT_EXPRSTMT && ab0->op == 3 &&
+            reflist_len(ab0->list) &&
+            node_get(reflist_at(ab0->list, reflist_len(ab0->list) - 1))
+                    ->bval)))
+        retain(cx, vt0, dst);
     } else {
       Node *ab = node_get(arm->b);
       if (ab->kind == NT_EXPRSTMT && ab->op == 3)
