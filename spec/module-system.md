@@ -89,7 +89,10 @@ package name:
 | `pub use sub.*;`         | flatten: bind every public item of `sub`      |
 
 Use bindings (plain `use`) are private: an importer of a module does
-not see what that module imported.
+not see what that module imported. The facade keeps the re-export
+monopoly: a plain `use` may import an item into the importer's own
+scope (§2), but only `pub use` — here, in a facade — publishes
+anything outward.
 
 ## 7. `std` — the reserved directory
 

@@ -92,8 +92,10 @@ detected at the call site that needs them.
 
 ## 7. `use` has one form
 
-Dotted `use a.b.c;`. See `module-system.md`. (Kept here as rule 7 to
-preserve the design's numbering.)
+Dotted `use a.b.c;` — the final segment binds a module or a public
+item, with the brace sugar and the collision law defined in
+`module-system.md` §2. (Kept here as rule 7 to preserve the design's
+numbering.)
 
 ## 8. Trait bounds, verified per instantiation
 

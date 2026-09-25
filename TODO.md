@@ -271,6 +271,20 @@ section — no placeholder stages. boot is the reference compiler.
       fixtures + a suite leg wired into make test. The self-hosted
       compiler mirrors the surface when its CLI lands (a T2 dogfood
       leg: rho's test suite running rho).
+- [ ] **T3.6** Conformance pair from the syntax audit: boot honors
+      `mut` parameters — a mut param is a mutable local copy, the
+      caller never sees assignments to the slot; writes through a
+      handle-typed param stay caller-visible (syntax.md §4.1) — and
+      the usize lane comes home to the address width (u32 on wasm32;
+      syntax.md §3): len, indexing, alloc counts included. The diff
+      suite gains the mut-param program in the same commit; the
+      self-host mirrors both when it grows the matching surface.
+- [ ] **T3.7** Module item imports (module-system.md §2/§4/§6,
+      syntax.md §4.4): the final use-segment binds a public item
+      unqualified (`use lex.a as b;`), the brace form expands one
+      plain use per item, module-vs-item and name collisions are
+      errors naming both, and item imports stop at package facades.
+      Implemented with the T3.4 modsys suite; the self-host mirrors.
 
 ## Phase 4 — kernel boundary and the std library
 

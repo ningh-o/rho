@@ -76,7 +76,8 @@ plugin path; a plugin release pins the compiler generation it embeds.
 ## 4. LSP
 
 **Goal.** Diagnostics, hover, go-to-definition, completion, format —
-one language service, many editors.
+one language service, many editors — plus style hints: a `mut` on a
+scalar-value parameter is a hint (meaningless), never an error.
 
 **Depends on.** **The 0.1.0 freeze.** The language surface must stop
 moving first; an LSP built on a weekly-changing grammar is rework as a

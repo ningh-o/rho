@@ -110,8 +110,10 @@ dyn       := 'dyn' ident            (trait object; the ident names the trait)
 ```
 
 `?T` parses as `Option[T]` before type checking sees it; there is one
-absence mechanism. `usize` is the unsigned word type (u32 on wasm32) and
-the type of `len` results and index expressions.
+absence mechanism. `usize` is the unsigned word type — the address
+width of its target (u32 on wasm32, the 0.1.0 backend; each Phase-7
+backend pins its own) — and the type of `len` results and index
+expressions.
 
 ## 4. Declarations
 
@@ -154,6 +156,14 @@ therefore come last when several parameters are declared.
 - Overloads: several functions may share one name in a module (and
   across modules — see `type-system.md` §5). Resolution is exact-match
   unique.
+- A `mut` parameter is a mutable local copy: the caller never sees
+  assignments to it (values copy at every boundary — `type-system.md`
+  §11); without `mut` a parameter is immutable, exactly like a `let`
+  without `mut`. A parameter holding a handle (`*T`, `[]T`, `string`,
+  `dyn`) is a copied handle over shared storage: the copy is the
+  binding, never the pointee, so writes through it (`p.x = 1`, a
+  slice-alias store) are caller-visible. Visibility follows the
+  storage, not the `mut`.
 - Closures are anonymous function expressions (§6.8).
 
 ### 4.2 Structs, enums, traits, impls
@@ -198,7 +208,10 @@ extern    := 'extern' name ':' fn_type ';'
 
 ```
 use       := 'use' segs ['as' ident] ';'
+           | 'use' segs '.' '{' items '}' ';'
 segs      := ident ('.' ident)*
+items     := item (',' item)* ','?
+item      := ident ['as' ident]
 pub_use   := 'pub' 'use' useform ';'
 useform   := segs                       (re-export a module/package)
            | segs '.' ident             (re-export one item)
@@ -206,11 +219,16 @@ useform   := segs                       (re-export a module/package)
            | segs '.' '*'               (flatten all public items)
 ```
 
-Plain `use` takes a dotted path (the one path form) with an optional
-`as` alias that renames the binding; no `*` on plain use. Use bindings
-are private to the importing module. `pub use` is legal only in a
-facade (`lib.rho`) and has exactly the four forms above (see
-`module-system.md`).
+A plain `use` binds one name two ways: if the final segment resolves
+to a module (file or directory), the binding is the module — access
+stays qualified (`lex.token`); if it resolves to a public item of the
+module it lands in, the binding is the item itself, used unqualified,
+under its own name or the `as` name. The brace form is pure sugar: it
+expands to one plain `use` per item. Resolution order, the package
+boundary, and the collision law are `module-system.md` §2/§4.
+`pub use` is legal only in a facade (`lib.rho`) and has exactly the
+four forms above; it keeps the re-export monopoly (see
+`module-system.md` §6).
 
 ### 4.5 Test blocks
 
