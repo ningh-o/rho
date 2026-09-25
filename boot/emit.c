@@ -627,6 +627,21 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       emit_printf(cx, e, true);
       return;
     }
+    if (is_pre && strcmp(callee->name, "len") == 0) {
+      Node *aw = reflist_len(e->list) ? node_get(reflist_at(e->list, 0))
+                                      : NULL;
+      if (aw && aw->kind == NT_POSARG) {
+        Type *at = (Type *)node_get(aw->a)->sem;
+        size_t v = cx_fresh(cx, at);
+        emit_expr(cx, aw->a, v);
+        if (at->kind == TY_STRING || at->kind == TY_SLICE)
+          op(cx, "(local.set %zu %s)\n", dst, L(cx, v + 1));
+        else {
+          op(cx, "(local.set %zu (i32.const 0))\n", dst);
+        }
+      }
+      return;
+    }
     if (is_pre && strcmp(callee->name, "panic") == 0) {
       Node *aw = node_get(reflist_at(e->list, 0));
       size_t v = cx_fresh(cx, ty_string);
@@ -729,6 +744,21 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
     size_t b = cx_fresh(cx, lt);
     emit_expr(cx, e->a, a);
     emit_expr(cx, e->b, b);
+    if (e->op == OP_ADD && lt->kind == TY_STRING) {
+      op(cx, "(call $rho_cat2 (local.get %zu) (local.get %zu) "
+             "(local.get %zu) (local.get %zu))\n", a, a + 1, b, b + 1);
+      op(cx, "(local.set %zu (global.get $cat_ptr))\n", dst);
+      op(cx, "(local.set %zu (global.get $cat_len))\n", dst + 1);
+      return;
+    }
+    if ((e->op == OP_EQ || e->op == OP_NE) && lt->kind == TY_STRING) {
+      op(cx, "(local.set %zu (call $rho_streq (local.get %zu) "
+             "(local.get %zu) (local.get %zu) (local.get %zu)))\n", dst,
+         a, a + 1, b, b + 1);
+      if (e->op == OP_NE)
+        op(cx, "(local.set %zu (i32.eqz (local.get %zu)))\n", dst, dst);
+      return;
+    }
     const char *instr = NULL;
     bool cmp = false;
     bool uns = lt->kind >= TY_U8;
@@ -886,7 +916,9 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
   }
 
   case NT_METHOD: {
-    EnumVariant *var = (EnumVariant *)e->sem2;
+    // op==2 marks a real method call (sem2 = FnDef); otherwise a
+    // non-NULL sem2 is a variant constructor
+    EnumVariant *var = e->op == 2 ? NULL : (EnumVariant *)e->sem2;
     if (var) {
       // Enum.Variant(…) construction: tag + payload slots
       op(cx, "(local.set %zu (i32.const %d))\n", dst, var->tag);
@@ -921,7 +953,44 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       }
       return;
     }
-    op(cx, ";; method call (T1.7b)\n");
+    if (e->op == 2) {
+      // real method: push self, then args, direct call
+      FnDef *f = (FnDef *)e->sem2;
+      if (!f)
+        return;
+      Type *rt = (Type *)node_get(e->a)->sem;
+      size_t selfv = cx_fresh(cx, rt);
+      emit_expr(cx, e->a, selfv);
+      // args map to params[1..]
+      size_t nfixed = f->sig->nparams;
+      size_t argregs[16];
+      size_t nregs = 0;
+      for (size_t i = 1; i < nfixed; i++) {
+        Type *pt = f->sig->params[i].ty;
+        Node *aw = (i - 1) < reflist_len(e->list)
+                       ? node_get(reflist_at(e->list, i - 1))
+                       : NULL;
+        size_t v = cx_fresh(cx, pt);
+        argregs[nregs++] = v;
+        if (aw && aw->kind == NT_POSARG)
+          emit_expr(cx, aw->a, v);
+      }
+      // call_indirect for boxed receivers is unnecessary: methods on
+      // the concrete type are direct; push args then call
+      op(cx, "%s", L(cx, selfv));
+      for (size_t i = 0; i < nregs; i++)
+        op(cx, "%s", L(cx, argregs[i]));
+      op(cx, "(call $%s)\n", f->name);
+      Type *tres = f->sig->ret;
+      if (tres->kind != TY_UNIT) {
+        size_t n = shape_nlocals(tres);
+        for (size_t i = n; i > 0; i--)
+          op(cx, "(local.set %zu)\n", dst + i - 1);
+      }
+      (void)rt;
+      return;
+    }
+    op(cx, ";; variant ctor fallback\n");
     return;
   }
 
@@ -932,7 +1001,78 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       // payload slots zeroed by local default
       return;
     }
-    op(cx, ";; field access (T1.7b)\n");
+    Type *bt = (Type *)node_get(e->a)->sem;
+    bool viaptr = bt->kind == TY_PTR;
+    Type *st = viaptr ? bt->base : bt;
+    int idx = e->op; // the checker's field index
+    size_t off = field_offset(st, (size_t)idx);
+    Type *ft = inst_ty(st, st->sdef->fields[idx].ty);
+    if (viaptr) {
+      // load the field run from the block payload (ptr + 24 + off)
+      size_t p = cx_fresh(cx, bt);
+      emit_expr(cx, e->a, p);
+      size_t n = shape_nlocals(ft);
+      for (size_t i = 0; i < n; i++) {
+        size_t fo = off + i * 4;
+        WTy w = local_wty(ft, i);
+        const char *ld = w == W_I64   ? "i64.load"
+                         : w == W_F32 ? "f32.load"
+                         : w == W_F64 ? "f64.load"
+                                      : "i32.load";
+        op(cx, "(local.set %zu (%s (i32.add (local.get %zu) "
+               "(i32.const %zu))))\n", dst + i, ld, p, 24 + fo);
+      }
+      return;
+    }
+    // value struct: the field's locals sit at the base run's offset
+    size_t base = cx_fresh(cx, bt);
+    emit_expr(cx, e->a, base);
+    size_t skip = 0;
+    for (size_t i = 0; i < (size_t)idx; i++)
+      skip += shape_nlocals(inst_ty(st, st->sdef->fields[i].ty));
+    size_t n = shape_nlocals(ft);
+    for (size_t i = 0; i < n; i++)
+      op(cx, "(local.set %zu %s)\n", dst + i, L(cx, base + skip + i));
+    return;
+  }
+
+  case NT_NEW: {
+    // new T { fields } → heap block (header 24B, payload at +24)
+    Type *st = t->base; // result type is *T
+    size_t sz = type_size(st);
+    op(cx, "(local.set %zu (call $rho_alloc (i32.const %zu)))\n", dst,
+       sz);
+    RefList *inits = e->b != NO_REF ? node_get(e->b)->list : NULL;
+    for (size_t i = 0; i < st->sdef->nfields; i++) {
+      const char *fname = st->sdef->fields[i].name;
+      Type *ft = inst_ty(st, st->sdef->fields[i].ty);
+      size_t off = field_offset(st, i);
+      NodeRef found = NO_REF;
+      if (inits) {
+        for (size_t j = 0; j < reflist_len(inits); j++) {
+          Node *fi = node_get(reflist_at(inits, j));
+          if (fi->kind == NT_FIELDINIT && strcmp(fi->name, fname) == 0)
+            found = reflist_at(inits, j);
+        }
+      }
+      size_t n = shape_nlocals(ft);
+      if (found != NO_REF) {
+        size_t tmp = cx_fresh(cx, ft);
+        emit_expr(cx, node_get(found)->a, tmp);
+        for (size_t k = 0; k < n; k++) {
+          WTy w = local_wty(ft, k);
+          const char *str_op = w == W_I64   ? "i64.store"
+                               : w == W_F32 ? "f32.store"
+                               : w == W_F64 ? "f64.store"
+                                            : "i32.store";
+          op(cx, "(%s (i32.add (local.get %zu) (i32.const %zu)) %s)\n",
+             str_op, dst, 24 + off + k * 4, L(cx, tmp + k));
+        }
+        // the block owns managed field values (fresh retain at store)
+        retain(cx, ft, tmp);
+      }
+      // unset fields read 0 (zeroed allocation law)
+    }
     return;
   }
 
@@ -1632,6 +1772,52 @@ int emit_program(Program *p, bool debug, char **wat_out, size_t *wat_len) {
   memcpy(o->p + o->n, kw + start, end - start);
   o->n += end - start;
   tprintf(o, "\n");
+  // string concat: returns a fresh block {ptr,len} via two globals
+  tprintf(o, "  (global $cat_ptr (mut i32) (i32.const 0))\n");
+  tprintf(o, "  (global $cat_len (mut i32) (i32.const 0))\n");
+  tprintf(o, "  (func $rho_cat2 (param $a i32) (param $al i32) "
+             "(param $b i32) (param $bl i32)\n");
+  tprintf(o, "    (local $p i32) (local $i i32)\n");
+  tprintf(o, "    (local.set $p (call $rho_alloc (i32.add (local.get $al) "
+             "(local.get $bl))))\n");
+  tprintf(o, "    (local.set $i (i32.const 0))\n");
+  tprintf(o, "    (block $d1 (loop $c1 (br_if $d1 (i32.ge_u (local.get $i) "
+             "(local.get $al)))\n");
+  tprintf(o, "      (i32.store8 (i32.add (i32.add (local.get $p) "
+             "(i32.const 24)) (local.get $i))\n");
+  tprintf(o, "        (i32.load8_u (i32.add (local.get $a) "
+             "(local.get $i))))\n");
+  tprintf(o, "      (local.set $i (i32.add (local.get $i) (i32.const 1))) "
+             "(br $c1)))\n");
+  tprintf(o, "    (local.set $i (i32.const 0))\n");
+  tprintf(o, "    (block $d2 (loop $c2 (br_if $d2 (i32.ge_u (local.get $i) "
+             "(local.get $bl)))\n");
+  tprintf(o, "      (i32.store8 (i32.add (i32.add (i32.add (local.get $p) "
+             "(i32.const 24)) (local.get $al)) (local.get $i))\n");
+  tprintf(o, "        (i32.load8_u (i32.add (local.get $b) "
+             "(local.get $i))))\n");
+  tprintf(o, "      (local.set $i (i32.add (local.get $i) (i32.const 1))) "
+             "(br $c2)))\n");
+  tprintf(o, "    (global.set $cat_ptr (i32.add (local.get $p) "
+             "(i32.const 24)))\n");
+  tprintf(o, "    (global.set $cat_len (i32.add (local.get $al) "
+             "(local.get $bl))))\n");
+  tprintf(o, "  (func $rho_streq (param $a i32) (param $al i32) "
+             "(param $b i32) (param $bl i32) (result i32)\n");
+  tprintf(o, "    (local $i i32)\n");
+  tprintf(o, "    (if (i32.ne (local.get $al) (local.get $bl)) "
+             "(then (return (i32.const 0))))\n");
+  tprintf(o, "    (local.set $i (i32.const 0))\n");
+  tprintf(o, "    (block $d (loop $c (br_if $d (i32.ge_u (local.get $i) "
+             "(local.get $al)))\n");
+  tprintf(o, "      (if (i32.ne (i32.load8_u (i32.add (local.get $a) "
+             "(local.get $i)))\n");
+  tprintf(o, "              (i32.load8_u (i32.add (local.get $b) "
+             "(local.get $i))))\n");
+  tprintf(o, "        (then (return (i32.const 0))))\n");
+  tprintf(o, "      (local.set $i (i32.add (local.get $i) (i32.const 1))) "
+             "(br $c)))\n");
+  tprintf(o, "    (i32.const 1))\n");
   // functions
   for (size_t i = 0; i < VLEN(em.fns); i++) {
     EFn *f = VAT(em.fns, EFn, i);

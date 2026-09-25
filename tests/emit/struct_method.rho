@@ -1,0 +1,18 @@
+// out: 12
+// out: twelve
+struct Rect {
+  w: i32,
+  h: i32,
+}
+
+fn Rect.area(self: *Rect) -> i32 {
+  return self.w * self.h;
+}
+
+fn main() -> i32 {
+  let r = new Rect { w: 3, h: 4 };
+  let a: i32 = r.area();
+  printf("{}\n", a);
+  if a == 12 { printf("twelve\n"); } else { printf("other\n"); }
+  return 0;
+}

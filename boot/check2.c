@@ -785,6 +785,8 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
              m->name, nmatch);
     return ty_unit;
   }
+  node_get(er)->sem2 = chosen; // the chosen method (emit reads it)
+  node_get(er)->op = 2;        // marks: real method call
   for (size_t j = 0; j < reflist_len(m->list); j++) {
     Node *aw = node_get(reflist_at(m->list, j));
     if (aw->kind != NT_POSARG)
@@ -934,8 +936,10 @@ static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
       return ty_unit;
     }
     for (size_t i = 0; i < bt->sdef->nfields; i++)
-      if (strcmp(bt->sdef->fields[i].name, e->name) == 0)
+      if (strcmp(bt->sdef->fields[i].name, e->name) == 0) {
+        node_get(er)->op = (int)i; // field index for the emitter
         return bt->sdef->fields[i].ty;
+      }
     err_at(c, e, "struct %s has no field '%s'", bt->sdef->name, e->name);
     return ty_unit;
   }

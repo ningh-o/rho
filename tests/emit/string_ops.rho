@@ -1,0 +1,7 @@
+// out: true false
+fn main() -> i32 {
+  let a: string = "abc";
+  let b: string = "ab" + "c";
+  printf("{} {}\n", a == b, a == "abd");
+  return 0;
+}

@@ -15,7 +15,16 @@
   ;; bump allocation, zeroed, with the 24-byte header
   ;; {rc,sz,wrc,drop} at block start; payload at +24
   (func $rho_alloc (param $sz i32) (result i32)
-    (local $p i32) (local $i i32)
+    (local $p i32) (local $i i32) (local $need i32)
+    ;; grow memory when the block would cross the end
+    (local.set $need (i32.add (i32.add (global.get $heap) (local.get $sz))
+                              (i32.const 65535)))
+    (if (i32.gt_u (local.get $need) (i32.shl (memory.size) (i32.const 16)))
+      (then
+        (drop (memory.grow
+          (i32.div_u (i32.sub (local.get $need)
+                              (i32.shl (memory.size) (i32.const 16)))
+                     (i32.const 65536))))))
     (local.set $p (global.get $heap))
     (global.set $heap
       (i32.add (global.get $heap)
@@ -27,8 +36,7 @@
       (loop $z
         (br_if $done
           (i32.ge_u (local.get $i) (i32.add (local.get $sz) (i32.const 24))))
-        (i32.store8 (i32.sub (i32.add (local.get $p) (local.get $i))
-                             (i32.const 24))
+        (i32.store8 (i32.add (local.get $p) (local.get $i))
                     (i32.const 0))
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $z)))

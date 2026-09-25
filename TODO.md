@@ -114,7 +114,7 @@ section — no placeholder stages. boot is the reference compiler.
       literals, arithmetic (wrap/narrow/shift-mask/div-panic), calls
       with the chosen-overload annotation, printf desugar (ints, bools,
       strings), consts/statics, `_start`. hello→wasmtime green.
-- [ ] **T1.7b** structs + `*T` (boxed layout, field access through
+- [x] **T1.7b(partial)** structs + *T — boxed layout, field access through pointers, methods with self, new with the zeroed law, string concat/content ==, len; memory.grow in the allocator; rc drop-fn registry + field lvalues + defer emission remain + `*T` (boxed layout, field access through
       pointers, methods, `new` with the zeroed/rc law, drop fns),
       managed-value moves (retain/release discipline), defer on every
       exit, assignment (simple + compound + through pointers).
