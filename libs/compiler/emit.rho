@@ -1002,6 +1002,9 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog) -> string {
       },
       Option.None => {},
     }
+    // any string-built operand (a slice view, a concat): its pair's
+    // len slot is the answer — the builder runs inside the caller's
+    // next_local
   }
   if e.tag == parse.EX_IDX {
     // base[i] — byte loads for strings, i64 loads for slices; the
