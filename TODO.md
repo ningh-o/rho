@@ -275,11 +275,20 @@ section — no placeholder stages. boot is the reference compiler.
       (printf and format holes alike); variadic rest params
       materialize at the call (a lone spread rides whole) and
       []string slices store and read their pairs at a 16-byte stride.
-      81 of 108 behavioral, floor 81. Remain: closures (fn-literal
-      expressions, fn-typed params, call_indirect); traits/impl/dyn;
-      generic structs/enums/methods; module loading; weak/rc; the
-      mut law and usize lane (T3.6's mirror side); the set face in
-      the differential runner)*
+      81 of 108 behavioral, floor 81. The fifty-second through
+      fifty-fourth cuts (2026-09-26, same session): a format hole
+      holding another string build rides its built pair (a nested
+      format printed its ADDRESS — n10), and closures land whole —
+      the fn-literal parses in expression position, its value is
+      (table idx, capture box) with pointer captures typed, calls go
+      through call_indirect over a funcref table, plain fns ride
+      trampolines as values, and fn-typed params/returns ride the
+      pair ABI as a third kind (eat_type consuming 'fn' as a bare
+      name was the silent killer underneath every fn-typed
+      annotation). 84 of 108 behavioral, floor 84. Remain:
+      traits/impl/dyn; generic structs/enums/methods; module
+      loading; weak/rc; the mut law and usize lane (T3.6's mirror
+      side); the set face in the differential runner)*
 - [ ] **T2.x** Optimizer in the mirror: constant folding, dead-code
       elimination, globals tree-shaking, tail-call→loop — with the
       language suites (opt/eq/params/modsys/strops/multiline) rebuilt
