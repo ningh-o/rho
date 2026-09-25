@@ -127,7 +127,12 @@ int cmd_run(int argc, char **argv) {
 int cmd_test(int argc, char **argv) {
   (void)argc;
   (void)argv;
-  fprintf(stderr, "rho test: not implemented yet (Phase 1, T1.9+)\n");
+  // behavioral testing runs through tests/run-corpus-repo.sh (stdout +
+  // exit vs recorded goldens); the in-binary runner arrives with the
+  // gate (T3.1)
+  fprintf(stderr,
+          "rho test: use tests/run-corpus-repo.sh (in-binary runner "
+          "arrives with the gate, T3.1)\n");
   return EXIT_USAGE;
 }
 
