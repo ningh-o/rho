@@ -1618,9 +1618,12 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
         return;
       }
     }
-    // op==2 marks a real method call (sem2 = FnDef); otherwise a
-    // non-NULL sem2 is a variant constructor
-    EnumVariant *var = e->op == 2 ? NULL : (EnumVariant *)e->sem2;
+    // op==2 marks a real method call and op==5 an associated-fn call
+    // (sem2 = FnDef both ways); otherwise a non-NULL sem2 is a variant
+    // constructor
+    EnumVariant *var = (e->op == 2 || e->op == 5)
+                           ? NULL
+                           : (EnumVariant *)e->sem2;
     if (var) {
       // Enum.Variant(…) construction: tag + payload in canonical
       // slots (wide slots take reinterpreted/extended field bits)
@@ -1684,6 +1687,21 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
          L(cx, wp));
       op(cx, "(else\n");
       op(cx, "  (local.set %zu (i32.const %d))))\n", dst, none_tag);
+      return;
+    }
+    if (e->op == 5) {
+      // associated fn: a plain call on the type's namespace
+      FnDef *f = (FnDef *)e->sem2;
+      if (!f)
+        return;
+      emit_call_args(cx, f, e->list);
+      op(cx, "(call $%s)\n", fn_wat_name(f));
+      Type *tres = f->sig->ret;
+      if (tres->kind != TY_UNIT) {
+        size_t n = shape_nlocals(tres);
+        for (size_t i = n; i > 0; i--)
+          op(cx, "(local.set %zu)\n", dst + i - 1);
+      }
       return;
     }
     if (e->op == 2) {

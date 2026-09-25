@@ -1,0 +1,25 @@
+// associated fns: Type.name(args) — construction and computation on
+// the type's namespace (§10)
+// out: 9
+// out: 12
+struct Rect {
+  w: i32,
+  h: i32,
+}
+fn Rect.square(n: i32) -> *Rect {
+  return new Rect { w: n, h: n };
+}
+fn Rect.unit() -> *Rect {
+  return new Rect { w: 1, h: 1 };
+}
+fn Rect.area(self: *Rect) -> i32 {
+  return self.w * self.h;
+}
+fn main() -> i32 {
+  let r = Rect.square(3);
+  printf("{}\n", r.area());
+  let u = Rect.unit();
+  u.w = 12;
+  printf("{}\n", u.w);
+  return 0;
+}

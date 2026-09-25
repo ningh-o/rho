@@ -801,6 +801,66 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
     err_at(c, m, "unknown intrinsic '%s'", m->name);
     return ty_unit;
   }
+  // Type.assoc_fn(args): the receiver names a struct/enum type and
+  // the call hits an associated fn (declared without self)
+  Node *recvA = node_get(m->a);
+  if (recvA->kind == NT_PATH) {
+    Look lkA;
+    if (lookup(c, recvA->name, &lkA) &&
+        (lkA.kind == LOOK_STRUCT || lkA.kind == LOOK_ENUM)) {
+      StructDef *sd = lkA.kind == LOOK_STRUCT ? lkA.sdef : NULL;
+      EnumDef *ed = lkA.kind == LOOK_ENUM ? lkA.edef : NULL;
+      Module *tmodA = sd ? sd->mod : ed->mod;
+      if (tmodA && tmodA->syms) {
+        Sym *sA = symtab_get(tmodA->syms, m->name);
+        if (sA && sA->kind == SYM_FN) {
+          for (FnDef *fA = sA->u.fns; fA; fA = fA->next_overload) {
+            if (fA->is_assoc && !fA->is_method) {
+              // exact-match unique across assoc candidates
+              FnDef *hit = NULL;
+              size_t nhits = 0;
+              for (FnDef *fB = sA->u.fns; fB; fB = fB->next_overload) {
+                if (!fB->is_assoc)
+                  continue;
+                if (sig_matches(c, fB->sig, er, false)) {
+                  hit = fB;
+                  nhits++;
+                }
+              }
+              if (nhits == 1) {
+                // sig_matches' literal fast path leaves arg sems unset;
+                // check every arg for real (the emitter reads them)
+                for (size_t ai = 0; ai < reflist_len(m->list); ai++) {
+                  Node *aw = node_get(reflist_at(m->list, ai));
+                  if (aw->kind != NT_POSARG)
+                    continue;
+                  size_t nfixed2 = hit->sig->nparams;
+                  bool variadic2 = nfixed2 > 0 &&
+                      hit->sig->params[nfixed2 - 1].variadic;
+                  if (variadic2)
+                    nfixed2--;
+                  Type *pt2 = ai < nfixed2
+                                  ? hit->sig->params[ai].ty
+                                  : (variadic2
+                                         ? hit->sig->params[nfixed2].ty
+                                         : NULL);
+                  if (pt2 && pt2->kind == TY_SLICE)
+                    pt2 = pt2->base; // variadic element type
+                  check_expr(c, aw->a, pt2);
+                }
+                node_get(er)->op = 5; // assoc call marker for the emitter
+                node_get(er)->sem2 = hit;
+                return hit->sig->ret;
+              }
+              err_at(c, m, "no overload of %s.%s matches the arguments "
+                     "(%zu candidates)", recvA->name, m->name, nhits);
+              return ty_unit;
+            }
+          }
+        }
+      }
+    }
+  }
   // Enum.Variant construction and module calls: recv is a bare name
   // that resolves to an enum or a use binding — checked before the
   // recv is typed as an expression
