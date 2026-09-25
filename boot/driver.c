@@ -131,11 +131,21 @@ int cmd_test(int argc, char **argv) {
   return EXIT_USAGE;
 }
 
+// canonical formatter (T1.9): prints the checked AST back in canonical
+// form; fmt(fmt(x)) == fmt(x) byte-for-byte
 int cmd_fmt(int argc, char **argv) {
-  (void)argc;
-  (void)argv;
-  fprintf(stderr, "rho fmt: not implemented yet (Phase 1, T1.9)\n");
-  return EXIT_USAGE;
+  if (argc < 1) {
+    fprintf(stderr, "rho fmt <file.rho>\n");
+    return EXIT_USAGE;
+  }
+  Program *p = program_new();
+  if (!program_load_graph(p, argv[0])) {
+    diags_print(stderr);
+    return EXIT_COMPILE;
+  }
+  extern void fmt_program(FILE * out, Program * p);
+  fmt_program(stdout, p);
+  return 0;
 }
 
 int cmd_check(int argc, char **argv) {
