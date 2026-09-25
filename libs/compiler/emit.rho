@@ -1506,9 +1506,15 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
                 Option.None => {},
               }
               let bname: string = base.name;
-              let kind: i64 = env_kind_of(env, bname);
+              let bkind: i64 = env_kind_of(env, bname);
+              // a slice of a string is a RUNTIME string pair (kind 1)
+              // even when the base was folded (kind 0); slices stay 2
+              let mut kind: i64 = 2;
+              if bkind == 0 || bkind == 1 {
+                kind = 1;
+              }
               let mut esz: i64 = 8;
-              if kind == 0 || kind == 1 {
+              if kind == 1 {
                 esz = 1;
               }
               let a_slot: i64 = next_local.v;
@@ -1526,7 +1532,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
               if (e.op / 2) % 2 == 1 && len(e.args) > 1 {
                 body = body + emit_expr(pool, e.args[1], env, prog);
               } else {
-                if kind == 0 {
+                if bkind == 0 {
                   body = body + "    (i64.const " +
                          env_str_len(env, bname).to_str() + ")\n";
                 } else {
@@ -1538,7 +1544,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
               // bounds both ends against the base's len (lo first,
               // then hi — each rides $t for the check)
               let mut blen: string = "";
-              if kind == 0 {
+              if bkind == 0 {
                 blen = "(i64.const " +
                        env_str_len(env, bname).to_str() + ")";
               } else {
@@ -1558,7 +1564,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
               body = body + "    (local.set " + l_slot.to_str() +
                      ")\n";
               // addr' = base + lo*esz
-              if kind == 0 {
+              if bkind == 0 {
                 body = body + "    (i64.add (i64.const " +
                        env_str_look(env, bname).to_str() +
                        ") (i64.mul (local.get " + a_slot.to_str() +
