@@ -3,6 +3,7 @@
 // compile to i64 stack code into _start locals (let bindings get one
 // local each), and the generated module carries the decimal runtime.
 use parse;
+use lex;
 
 pub struct Pool {
   segs: []string, // raw spans (escapes still encoded)
@@ -654,7 +655,7 @@ fn push_string(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
 // old router sent every variable and every + through push_string,
 // and its not-found fallback spelled a bogus local.get 0 pair)
 fn emit_arg(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
-             nl: *NextLocal) -> string {
+            nl: *NextLocal) -> string {
   if e.tag == parse.EX_ARR {
     return emit_array(pool, e, env, prog, nl);
   }
@@ -663,6 +664,14 @@ fn emit_arg(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
   }
   if e.tag == parse.EX_VAR && env_kind_of(env, e.name) >= 0 {
     return push_string(pool, e, env, prog, nl);
+  }
+  // any other string-buildable expression — a slice view, a runtime
+  // concat, a string-returning call — rides its built pair; ints and
+  // pointers refuse the build cleanly and fall to the scalar lane
+  let sps = build_string_pair(e, pool, env, prog, nl);
+  if sps.ok {
+    return sps.text + "    (local.get " + sps.a.to_str() +
+           ")\n    (local.get " + sps.l.to_str() + ")\n";
   }
   if e.tag == parse.EX_BIN && e.op == 0 {
     match fold_string(e, env) {
@@ -1089,6 +1098,21 @@ fn st_field_index(prog: *Prog, si: i64, fname: string) -> i64 {
   return 0 - 1;
 }
 
+// a struct field's float kind by its written type, 0 when not float
+fn st_field_fkind(prog: *Prog, si: i64, fname: string) -> i64 {
+  let k: i64 = st_field_index(prog, si, fname);
+  if k >= 0 {
+    let ft: string = prog.structs[si as usize].types[k as usize];
+    if ft == "f64" {
+      return 1;
+    }
+    if ft == "f32" {
+      return 2;
+    }
+  }
+  return 0;
+}
+
 // the slot offset of field k (a pair field takes two)
 fn st_field_off(prog: *Prog, si: i64, k: i64) -> i64 {
   let mut off: i64 = 0;
@@ -1173,7 +1197,44 @@ fn expr_fkind(e: *Expr, env: *Env, prog: *Prog) -> i64 {
     return 1;
   }
   if e.tag == parse.EX_VAR {
-    return env_fkind_of(env, e.name);
+    let k: i64 = env_fkind_of(env, e.name);
+    if k > 0 {
+      return k;
+    }
+    // consts and statics carry their written type
+    let mut i: usize = 0;
+    while i < prog.nconsts {
+      if prog.consts[i] == e.name {
+        if prog.ctypes[i] == "f64" {
+          return 1;
+        }
+        if prog.ctypes[i] == "f32" {
+          return 2;
+        }
+        return 0;
+      }
+      i = i + 1;
+    }
+    return 0;
+  }
+  if e.tag == parse.EX_FIELD {
+    // a struct field's own width decides (Pair.a: f64 …)
+    match e.lhs {
+      Option.Some(b) => {
+        let bt: string = field_base_type(b, env, prog);
+        if len(bt) > 0 {
+          let si: i64 = st_index(prog, bt);
+          if si >= 0 {
+            let fk: i64 = st_field_fkind(prog, si, e.name);
+            if fk > 0 {
+              return fk;
+            }
+          }
+        }
+      },
+      Option.None => {},
+    }
+    return 0;
   }
   if e.tag == parse.EX_BIN && e.op == 11 {
     if e.name == "f64" {
@@ -1447,6 +1508,37 @@ fn name_is_const(prog: *Prog, name: string) -> bool {
   return false;
 }
 
+// a const/static's float kind by its written type, 0 when not float
+fn const_fkind(prog: *Prog, name: string) -> i64 {
+  let mut i: usize = 0;
+  while i < prog.nconsts {
+    if prog.consts[i] == name {
+      if prog.ctypes[i] == "f64" {
+        return 1;
+      }
+      if prog.ctypes[i] == "f32" {
+        return 2;
+      }
+      return 0;
+    }
+    i = i + 1;
+  }
+  return 0;
+}
+
+// a const/static's initializer expression (every const has one; a
+// missing name yields the harmless 0 literal)
+fn const_init_expr(prog: *Prog, name: string) -> *Expr {
+  let mut i: usize = 0;
+  while i < prog.nconsts {
+    if prog.consts[i] == name {
+      return prog.cexprs[i];
+    }
+    i = i + 1;
+  }
+  return parse.lit(0);
+}
+
 // the wat operator for an op code
 fn wat_op(op: i64) -> string {
   if op == 0 {
@@ -1611,6 +1703,18 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
     let slot: i64 = env_look(env, e.name);
     if slot < 0 {
       if name_is_const(prog, e.name) {
+        // a float-typed const's bits come from its literal's raw text
+        // (wat2wasm does the strtod, exactly like an EX_FLIT)
+        let ck: i64 = const_fkind(prog, e.name);
+        let ie: *Expr = const_init_expr(prog, e.name);
+        if ck == 2 && ie.tag == parse.EX_FLIT {
+          return "    (i64.reinterpret_f64 (f64.promote_f32 " +
+                 "(f32.demote_f64 (f64.const " + ie.name + "))))\n";
+        }
+        if ck == 1 && ie.tag == parse.EX_FLIT {
+          return "    (i64.reinterpret_f64 (f64.const " + ie.name +
+                 "))\n";
+        }
         return "    (i64.const " + const_value(prog, e.name).to_str() +
                ")\n";
       }
@@ -2137,7 +2241,11 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
         if expr_fkind(l8, env, prog) > 0 {
           out = out + "    (f64.reinterpret_i64)\n";
         } else {
-          out = out + "    (f64.convert_i64_s)\n";
+          if expr_width(l8, env, prog) < 0 {
+            out = out + "    (f64.convert_i64_u)\n";
+          } else {
+            out = out + "    (f64.convert_i64_s)\n";
+          }
         }
       },
       Option.None => {},
@@ -2148,7 +2256,11 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
         if expr_fkind(r8, env, prog) > 0 {
           out = out + "    (f64.reinterpret_i64)\n";
         } else {
-          out = out + "    (f64.convert_i64_s)\n";
+          if expr_width(r8, env, prog) < 0 {
+            out = out + "    (f64.convert_i64_u)\n";
+          } else {
+            out = out + "    (f64.convert_i64_s)\n";
+          }
         }
       },
       Option.None => {},
@@ -2449,7 +2561,20 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
       return out;
     }
     if e.name == "f64" || e.name == "f32" {
-      out = out + "    (f64.convert_i64_s)\n";
+      // an unsigned source converts unsigned (u64 max rides 1.8e19,
+      // not the signed -1 bits)
+      let mut sw: i64 = 0;
+      match e.lhs {
+        Option.Some(sr) => {
+          sw = expr_width(sr, env, prog);
+        },
+        Option.None => {},
+      }
+      if sw < 0 {
+        out = out + "    (f64.convert_i64_u)\n";
+      } else {
+        out = out + "    (f64.convert_i64_s)\n";
+      }
       if e.name == "f32" {
         out = out + "    (f64.promote_f32 (f32.demote_f64))\n";
       }
@@ -3060,6 +3185,30 @@ fn build_string_pair(e: *Expr, pool: *Pool, env: *Env, prog: *Prog,
               na = na + 1;
               nl.v = nl.v + 2;
             } else {
+              if expr_fkind(arg, env, prog) > 0 {
+                // a float hole rides the exact-decimal text
+                FLOAT_WANTED = 1;
+                let fk: i64 = expr_fkind(arg, env, prog);
+                text = text + emit_expr(pool, arg, env, prog, nl) +
+                       "    (local.set " + nl.v.to_str() + ")\n" +
+                       "    (local.get " + nl.v.to_str() + ")\n";
+                if fk == 2 {
+                  text = text + "    (f64.reinterpret_i64)\n" +
+                         "    (f32.demote_f64)\n" +
+                         "    (f64.promote_f32)\n" +
+                         "    (i64.reinterpret_f64)\n" +
+                         "    call $u___f32_text\n";
+                } else {
+                  text = text + "    call $u___f64_text\n";
+                }
+                text = text + "    (local.set " + (nl.v + 1).to_str() +
+                       ")\n" +
+                       "    (local.set " + nl.v.to_str() + ")\n";
+                chain_a[na] = nl.v;
+                chain_l[na] = nl.v + 1;
+                na = na + 1;
+                nl.v = nl.v + 2;
+              } else {
               if hole_boolish(arg, env, prog) {
                 text = text + emit_expr(pool, arg, env, prog, nl) +
                        "    call $w_bool\n" +
@@ -3086,6 +3235,7 @@ fn build_string_pair(e: *Expr, pool: *Pool, env: *Env, prog: *Prog,
                 chain_l[na] = nl.v + 1;
                 na = na + 1;
                 nl.v = nl.v + 2;
+              }
               }
             }
           },
@@ -3523,6 +3673,32 @@ fn emit_print_fd(pool: *Pool, fmt: string, args: []*Expr, env: *Env,
         kinds[q] = 3;
       },
       Option.None => {
+        let fk: i64 = expr_fkind(arg, env, prog);
+        if fk > 0 {
+          // a float hole prints through the exact-decimal text: the
+          // lane's bits ride the printer (f32 rounds through demote
+          // first, so a non-f32 literal narrows honestly)
+          FLOAT_WANTED = 1;
+          pre = pre + emit_expr(pool, arg, env, prog, nl);
+          let tb: i64 = nl.v;
+          nl.v = nl.v + 1;
+          pre = pre + "    (local.set " + tb.to_str() + ")\n" +
+                "    (local.get " + tb.to_str() + ")\n";
+          if fk == 2 {
+            pre = pre + "    (f64.reinterpret_i64)\n" +
+                  "    (f32.demote_f64)\n    (f64.promote_f32)\n" +
+                  "    (i64.reinterpret_f64)\n" +
+                  "    call $u___f32_text\n";
+          } else {
+            pre = pre + "    call $u___f64_text\n";
+          }
+          t_a[q] = nl.v;
+          t_l[q] = nl.v + 1;
+          nl.v = nl.v + 2;
+          pre = pre + "    (local.set " + t_l[q].to_str() + ")\n" +
+                "    (local.set " + t_a[q].to_str() + ")\n";
+          kinds[q] = 4;
+        } else {
         let sp = build_string_pair(arg, pool, env, prog, nl);
         if sp.ok {
           pre = pre + sp.text;
@@ -3570,6 +3746,7 @@ fn emit_print_fd(pool: *Pool, fmt: string, args: []*Expr, env: *Env,
               }
             }
           }
+        }
         }
       },
     }
@@ -3895,8 +4072,28 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
               match fold_string(e, env) {
                 Option.Some(raw) => {
                   let saddr: i64 = pool_intern(pool, raw);
-                  env_str_bind(env, st.name, saddr,
-                               pool_len(pool, raw), raw);
+                  if st.ret == 1 {
+                    // a MUT string let materializes its pair into
+                    // slots (kind 1): a later rebind writes them in
+                    // place, and readers after a never-entered loop
+                    // still see the initializer — the folded binding
+                    // would be clobbered by the rebind's fresh slots
+                    let a1: i64 = nl.v;
+                    nl.v = nl.v + 1;
+                    let l1: i64 = nl.v;
+                    nl.v = nl.v + 1;
+                    body = body + "    (i64.const " + saddr.to_str() +
+                           ")\n    (local.set " + a1.to_str() +
+                           ")\n" +
+                           "    (i64.const " +
+                           pool_len(pool, raw).to_str() +
+                           ")\n    (local.set " + l1.to_str() +
+                           ")\n";
+                    env_str_bind_runtime(env, st.name, a1, l1, 1);
+                  } else {
+                    env_str_bind(env, st.name, saddr,
+                                 pool_len(pool, raw), raw);
+                  }
                 },
                 Option.None => {
                   if e.tag == parse.EX_ARR {
@@ -3955,8 +4152,13 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
                     }
                     body = body + emit_expr(pool, e, env, prog, nl);
                     if expr_fkind(e, env, prog) == 0 {
-                      body = body + "    (i64.reinterpret_f64 " +
-                             "(f64.convert_i64_s))\n";
+                      if expr_width(e, env, prog) < 0 {
+                        body = body + "    (i64.reinterpret_f64 " +
+                               "(f64.convert_i64_u))\n";
+                      } else {
+                        body = body + "    (i64.reinterpret_f64 " +
+                               "(f64.convert_i64_s))\n";
+                      }
                     }
                     if fk0 == 2 {
                       body = body + "    (i64.reinterpret_f64 " +
@@ -4653,6 +4855,368 @@ fn env_bind_consts(env: *Env, prog: *Prog, pool: *Pool) {
   }
 }
 
+// the exact-decimal float text, as rho source the emitter compiles
+// through itself and appends to every program (the same algorithm
+// boot's prelude carries: m·2^e expanded exactly over base-1e9 limbs,
+// rounded half-to-even to the round-trip digit count — 17 f64, 9 f32
+// — then printed positionally or scientifically). The entry points
+// take the f64 BITS on the i64 lane (the emitter owns the only
+// reinterpret); limbs are i64 so the cluster rides the plain scalar
+// slice path.
+const FLOATSRC: string = """
+struct Dec {
+  limbs: []i64,
+  used: i64,
+}
+
+fn __dec_new() -> *Dec {
+  return new Dec { limbs: make([]i64, 96), used: 1 };
+}
+
+fn __dec_trim(d: *Dec) {
+  while d.used > 1 && d.limbs[d.used - 1] == 0 {
+    d.used = d.used - 1;
+  }
+  return;
+}
+
+fn __dec_set(d: *Dec, v: u64) {
+  d.limbs[0] = (v % 1000000000) as i64;
+  d.limbs[1] = ((v / 1000000000) % 1000000000) as i64;
+  d.limbs[2] = (v / 1000000000000000000) as i64;
+  d.used = 3;
+  __dec_trim(d);
+  return;
+}
+
+fn __dec_mul_small(d: *Dec, m: i64) {
+  let mut carry: u64 = 0;
+  let mut i: i64 = 0;
+  while i < d.used {
+    let cur: u64 = (d.limbs[i] as u64) * (m as u64) + carry;
+    d.limbs[i] = (cur % 1000000000) as i64;
+    carry = cur / 1000000000;
+    i = i + 1;
+  }
+  while carry > 0 {
+    d.limbs[d.used] = (carry % 1000000000) as i64;
+    carry = carry / 1000000000;
+    d.used = d.used + 1;
+  }
+  return;
+}
+
+fn __dec_to_u64(d: *Dec) -> u64 {
+  let mut v: u64 = 0;
+  let mut i: i64 = d.used;
+  while i > 0 {
+    i = i - 1;
+    v = v * 1000000000 + (d.limbs[i] as u64);
+  }
+  return v;
+}
+
+fn __dec_bump(d: *Dec) {
+  let mut i: i64 = 0;
+  loop {
+    if i >= d.used {
+      d.limbs[i] = 1;
+      d.used = d.used + 1;
+      return;
+    }
+    if d.limbs[i] + 1 < 1000000000 {
+      d.limbs[i] = d.limbs[i] + 1;
+      return;
+    }
+    d.limbs[i] = 0;
+    i = i + 1;
+  }
+}
+
+fn __dec_cmp(a: *Dec, b: *Dec) -> i32 {
+  if a.used != b.used {
+    if a.used < b.used {
+      return 0 - 1;
+    }
+    return 1;
+  }
+  let mut i: i64 = a.used;
+  while i > 0 {
+    i = i - 1;
+    if a.limbs[i] != b.limbs[i] {
+      if a.limbs[i] < b.limbs[i] {
+        return 0 - 1;
+      }
+      return 1;
+    }
+  }
+  return 0;
+}
+
+fn __pow10(k: i64) -> u64 {
+  let mut v: u64 = 1;
+  let mut i: i64 = 0;
+  while i < k {
+    v = v * 10;
+    i = i + 1;
+  }
+  return v;
+}
+
+fn __pow2s(k: i64) -> i64 {
+  let mut v: i64 = 1;
+  let mut i: i64 = 0;
+  while i < k {
+    v = v * 2;
+    i = i + 1;
+  }
+  return v;
+}
+
+fn __pow5s(k: i64) -> i64 {
+  let mut v: i64 = 1;
+  let mut i: i64 = 0;
+  while i < k {
+    v = v * 5;
+    i = i + 1;
+  }
+  return v;
+}
+
+fn __dec_top_digits(d: *Dec) -> i64 {
+  let mut x: i64 = d.limbs[d.used - 1];
+  let mut n: i64 = 1;
+  while x >= 10 {
+    x = x / 10;
+    n = n + 1;
+  }
+  return n;
+}
+
+// 5·10^(cut-1): half of the divisor 10^cut
+fn __dec_half_of(cut: i64) -> *Dec {
+  let h: *Dec = __dec_new();
+  let pos: i64 = cut - 1;
+  let l: i64 = pos / 9;
+  let r: i64 = pos % 9;
+  h.limbs[l] = (5 * __pow10(r)) as i64;
+  h.used = l + 1;
+  return h;
+}
+
+// q = d div 10^cut (returned); d keeps d mod 10^cut
+fn __dec_split(d: *Dec, cut: i64) -> *Dec {
+  let l: i64 = cut / 9;
+  let r: i64 = cut % 9;
+  let q: *Dec = __dec_new();
+  if d.used <= l {
+    return q;
+  }
+  let qn: i64 = d.used - l;
+  let p: u64 = __pow10(r);
+  let mut rem: u64 = 0;
+  let mut i: i64 = qn;
+  while i > 0 {
+    i = i - 1;
+    let cur: u64 = rem * 1000000000 + (d.limbs[l + i] as u64);
+    q.limbs[i] = (cur / p) as i64;
+    rem = cur % p;
+  }
+  q.used = qn;
+  __dec_trim(q);
+  if r > 0 {
+    d.limbs[l] = rem as i64;
+    d.used = l + 1;
+  } else {
+    d.used = l;
+  }
+  if d.used == 0 {
+    d.limbs[0] = 0;
+    d.used = 1;
+  }
+  __dec_trim(d);
+  return q;
+}
+
+fn __drop_zeros(s: string) -> string {
+  let mut k: i64 = len(s);
+  while k > 0 && s[k - 1] == 48 {
+    k = k - 1;
+  }
+  return s[0..k];
+}
+
+fn __sgn(neg: bool, body: string) -> string {
+  if neg {
+    return "-" + body;
+  }
+  return body;
+}
+
+fn __dec_text(bits: u64, prec: i64) -> string {
+  let neg: bool = (bits >> 63) == 1;
+  let mag: u64 = bits & 9223372036854775807;
+  let biased: u64 = (mag >> 52) & 2047;
+  if biased == 2047 {
+    if (mag & 4503599627370495) == 0 {
+      return __sgn(neg, "inf");
+    }
+    return "nan";
+  }
+  if (mag << 1) == 0 {
+    return __sgn(neg, "0.0");
+  }
+  let mut m: u64 = 0;
+  let mut e: i64 = 0;
+  if biased == 0 {
+    m = mag & 4503599627370495;
+    e = 0 - 1074;
+  } else {
+    m = (mag & 4503599627370495) | 4503599627370496;
+    e = (biased as i64) - 1075;
+  }
+  let d: *Dec = __dec_new();
+  __dec_set(d, m);
+  let mut sc: i64 = 0;
+  if e >= 0 {
+    let mut k: i64 = e;
+    while k >= 29 {
+      __dec_mul_small(d, 536870912);
+      k = k - 29;
+    }
+    if k > 0 {
+      __dec_mul_small(d, __pow2s(k));
+    }
+  } else {
+    let mut k: i64 = 0 - e;
+    while k >= 12 {
+      __dec_mul_small(d, 244140625);
+      sc = sc + 12;
+      k = k - 12;
+    }
+    if k > 0 {
+      __dec_mul_small(d, __pow5s(k));
+      sc = sc + k;
+    }
+  }
+  let topd: i64 = __dec_top_digits(d);
+  let mut n: i64 = (d.used - 1) * 9 + topd - sc;
+  let cut: i64 = sc + n - prec;
+  let mut qv: u64 = 0;
+  if cut > 0 {
+    let q: *Dec = __dec_split(d, cut);
+    let c: i64 = __dec_cmp(d, __dec_half_of(cut));
+    if c > 0 || (c == 0 && (q.limbs[0] & 1) == 1) {
+      __dec_bump(q);
+    }
+    qv = __dec_to_u64(q);
+  } else {
+    if cut == 0 {
+      qv = __dec_to_u64(d);
+    } else {
+      let mut k: i64 = 0 - cut;
+      while k >= 9 {
+        __dec_mul_small(d, 1000000000);
+        k = k - 9;
+      }
+      if k > 0 {
+        __dec_mul_small(d, __pow10(k) as i64);
+      }
+      qv = __dec_to_u64(d);
+    }
+  }
+  let mut ds: string = format("{}", qv);
+  if qv >= __pow10(prec) {
+    qv = qv / 10;
+    n = n + 1;
+    ds = format("{}", qv);
+  }
+  let e10: i64 = n - 1;
+  if e10 >= 0 - 4 && e10 < prec {
+    if e10 >= 0 {
+      let ip: i64 = e10 + 1;
+      let frac: string = __drop_zeros(ds[ip..prec]);
+      if len(frac) == 0 {
+        return __sgn(neg, ds[0..ip]);
+      }
+      return __sgn(neg, ds[0..ip] + "." + frac);
+    }
+    let all: string = __drop_zeros(ds);
+    if len(all) == 0 {
+      return __sgn(neg, "0");
+    }
+    let mut pre: string = "0.";
+    let mut j: i64 = (0 - e10) - 1;
+    while j > 0 {
+      pre = pre + "0";
+      j = j - 1;
+    }
+    return __sgn(neg, pre + all);
+  }
+  let mut out: string = ds[0..1];
+  let frac: string = __drop_zeros(ds[1..prec]);
+  if len(frac) > 0 {
+    out = out + "." + frac;
+  }
+  let mut ae: i64 = e10;
+  if ae < 0 {
+    ae = 0 - ae;
+  }
+  let mut es: string = format("{}", ae);
+  if ae < 10 {
+    es = "0" + es;
+  }
+  if e10 < 0 {
+    return __sgn(neg, out + "e-" + es);
+  }
+  return __sgn(neg, out + "e+" + es);
+}
+
+// integral floats keep a visible fraction ("4" reads as "4.0")
+fn __with_frac(s: string) -> string {
+  if s == "inf" || s == "nan" || s == "-inf" {
+    return s;
+  }
+  let mut i: i64 = 0;
+  while i < len(s) {
+    if s[i] == 46 || s[i] == 101 {
+      return s;
+    }
+    i = i + 1;
+  }
+  return s + ".0";
+}
+
+fn __f64_text(bits: u64) -> string {
+  return __with_frac(__dec_text(bits, 17));
+}
+
+fn __f32_text(bits: u64) -> string {
+  return __with_frac(__dec_text(bits, 9));
+}
+""";
+
+// the float cluster rides a program only when a float actually
+// prints (the flag is module state: body emission runs before the
+// module assembles, so the decision is made by then — deterministic
+// for the same source either way)
+static mut FLOAT_WANTED: i64 = 0;
+
+// the float cluster, compiled through the compiler's own front end and
+// emitted beside the program (its pool strings ride the same data
+// segment — one address space, one intern pass, deterministic)
+fn float_runtime_wat(pool: *Pool) -> string {
+  let toks: []*Tok = lex.lex(FLOATSRC);
+  let fprog: *Prog = parse.parse(toks, FLOATSRC);
+  let mut out: string = "";
+  let mut fi: usize = 0;
+  while fi < len(fprog.fns) {
+    out = out + emit_fn(fprog.fns[fi], pool, fprog);
+    fi = fi + 1;
+  }
+  return out;
+}
+
 pub fn emit(prog: *Prog) -> string {
   let pool = new_pool();
   let env = env_new(64);
@@ -4698,6 +5262,9 @@ pub fn emit(prog: *Prog) -> string {
   out = out + ENUQ;
   out = out + NONEBOX;
   out = out + BOOLTEXT;
+  if FLOAT_WANTED > 0 {
+    out = out + float_runtime_wat(pool);
+  }
   out = out + fntext;
   out = out + "  (export \"_start\" (func $_start))\n";
   out = out + "  (func $_start (local $a i32) (local $l i32) (local $rc i32) (local $t i64) (local $r i64) (local $d i64)\n";
@@ -4708,6 +5275,21 @@ pub fn emit(prog: *Prog) -> string {
   }
   out = out + "    (global.set $w_none_box (i64.extend_i32_u " +
               "(call $w_alloc (i32.const 2))))\n";
+  // a float-typed static's bits cannot ride a wasm global initializer
+  // (reinterpret is no const expr) — the value lands at _start
+  let mut fsi: usize = 0;
+  while fsi < prog.nconsts {
+    if prog.cstatic[fsi] &&
+        (prog.ctypes[fsi] == "f64" || prog.ctypes[fsi] == "f32") {
+      let ie: *Expr = prog.cexprs[fsi];
+      if ie.tag == parse.EX_FLIT {
+        out = out + "    (global.set $g_" + prog.consts[fsi] +
+               " (i64.reinterpret_f64 (f64.const " + ie.name +
+               ")))\n";
+      }
+    }
+    fsi = fsi + 1;
+  }
   out = out + body;
   out = out + "    (call $proc_exit (i32.and (local.get 2) " +
               "(i32.const 255)))\n";

@@ -240,7 +240,9 @@ pub fn lex(src: string) -> []*Tok {
           adv(c);
         }
       }
-      if !isf && c.pos < len(src) && (src[c.pos] == 101 ||
+      // an exponent may follow the fraction too (2.5e-9) — the raw
+      // text rides the whole literal
+      if c.pos < len(src) && (src[c.pos] == 101 ||
           src[c.pos] == 69) && c.pos + 1 < len(src) &&
           (is_digit(src[c.pos + 1]) || src[c.pos + 1] == 45 ||
            src[c.pos + 1] == 43) {
