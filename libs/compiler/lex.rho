@@ -48,6 +48,20 @@ fn is_ident(b: u8) -> bool {
   return is_ident_start(b) || is_digit(b);
 }
 
+fn is_hexdig(b: u8) -> bool {
+  return is_digit(b) || (b >= 97 && b <= 102) || (b >= 65 && b <= 70);
+}
+
+fn hexdig(b: u8) -> i64 {
+  if is_digit(b) {
+    return (b as i64) - 48;
+  }
+  if b >= 97 {
+    return (b as i64) - 87;
+  }
+  return (b as i64) - 55;
+}
+
 // the keyword set the skeleton grammar uses
 fn is_keyword(s: string) -> bool {
   if s == "fn" || s == "return" || s == "let" {
@@ -178,9 +192,38 @@ pub fn lex(src: string) -> []*Tok {
     if is_digit(b) {
       let start: usize = c.pos;
       let mut v: i64 = 0;
-      while c.pos < len(src) && is_digit(at(c)) {
-        v = v * 10 + (at(c) as i64 - 48);
+      // 0x hex and 0b bin literals (underscores carry no value)
+      if b == 48 && c.pos + 1 < len(src) &&
+          (src[c.pos + 1] == 120 || src[c.pos + 1] == 88) {
         adv(c);
+        adv(c);
+        while c.pos < len(src) &&
+            (is_hexdig(at(c)) || at(c) == 95) {
+          if at(c) != 95 {
+            v = v * 16 + hexdig(at(c));
+          }
+          adv(c);
+        }
+      } else {
+        if b == 48 && c.pos + 1 < len(src) &&
+            (src[c.pos + 1] == 98 || src[c.pos + 1] == 66) {
+          adv(c);
+          adv(c);
+          while c.pos < len(src) &&
+              (at(c) == 48 || at(c) == 49 || at(c) == 95) {
+            if at(c) != 95 {
+              v = v * 2 + (at(c) as i64 - 48);
+            }
+            adv(c);
+          }
+        } else {
+          while c.pos < len(src) && (is_digit(at(c)) || at(c) == 95) {
+            if at(c) != 95 {
+              v = v * 10 + (at(c) as i64 - 48);
+            }
+            adv(c);
+          }
+        }
       }
       toks[n] = new Tok { kind: TK_INT, text: src[start..c.pos],
                           ival: v, line: line };

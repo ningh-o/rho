@@ -987,11 +987,22 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog) -> string {
     out = out + "    i32.wrap_i64\n    i64.extend_i32_s\n";
     return out;
   }
+  let divish: bool = e.op == 3 || e.op == 4;
   match e.rhs {
     Option.Some(r) => {
       out = out + emit_expr(pool, r, env, prog);
     },
     Option.None => {},
+  }
+  if divish {
+    // /0 %0 panics (§11): the divisor parks in $t, the zero check
+    // fires before the op (evaluated exactly once)
+    let msg_addr: i64 = pool_intern(pool, "division by zero");
+    out = out + "    (local.set $t)\n";
+    out = out + "    (if (i64.eqz (local.get $t))\n" +
+           "      (then (call $w_panic (i32.const " +
+           msg_addr.to_str() + ") (i32.const 16))))\n";
+    out = out + "    (local.get $t)\n";
   }
   out = out + "    (" + wat_op(e.op) + ")\n";
   // comparisons yield i32 in wasm: extend back to the i64 lane
