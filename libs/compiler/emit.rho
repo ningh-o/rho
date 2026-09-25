@@ -3060,10 +3060,9 @@ fn build_string_pair(e: *Expr, pool: *Pool, env: *Env, prog: *Prog,
               na = na + 1;
               nl.v = nl.v + 2;
             } else {
-              if arg.tag == parse.EX_VAR && env_bool_is(env, arg.name) {
-                text = text + "    (local.get " +
-                       env_look(env, arg.name).to_str() +
-                       ")\n    call $w_bool\n" +
+              if hole_boolish(arg, env, prog) {
+                text = text + emit_expr(pool, arg, env, prog, nl) +
+                       "    call $w_bool\n" +
                        "    (local.set $l)\n" +
                        "    (i64.extend_i32_u)\n" +
                        "    (local.set " + nl.v.to_str() +
@@ -3470,6 +3469,35 @@ fn emit_eprintf(pool: *Pool, fmt: string, args: []*Expr, env: *Env,
   return emit_print_fd(pool, fmt, args, env, prog, nl, 2);
 }
 
+// a print/format hole holding a bool prints its word: comparisons and
+// logicals (incl. the ! desugar's eq-0, op 12), vars bound from one,
+// bool consts/statics by their written type, and the literals
+fn hole_boolish(arg: *Expr, env: *Env, prog: *Prog) -> bool {
+  if arg.tag == parse.EX_BIN &&
+      ((arg.op >= 5 && arg.op <= 10) || arg.op == 12 ||
+       arg.op == 13 || arg.op == 14) {
+    return true;
+  }
+  if arg.tag == parse.EX_VAR {
+    if env_bool_is(env, arg.name) {
+      return true;
+    }
+    let mut i: usize = 0;
+    while i < prog.nconsts {
+      if prog.consts[i] == arg.name && prog.ctypes[i] == "bool" {
+        return true;
+      }
+      i = i + 1;
+    }
+    return false;
+  }
+  if arg.tag == parse.EX_LIT &&
+      (arg.name == "true" || arg.name == "false") {
+    return true;
+  }
+  return false;
+}
+
 fn emit_print_fd(pool: *Pool, fmt: string, args: []*Expr, env: *Env,
                  prog: *Prog, nl: *NextLocal, fd: i64) -> string {
   let pieces: []string = parse.fmt_pieces(fmt);
@@ -3502,13 +3530,7 @@ fn emit_print_fd(pool: *Pool, fmt: string, args: []*Expr, env: *Env,
           t_l[q] = sp.l;
           kinds[q] = 4;
         } else {
-          if (arg.tag == parse.EX_BIN &&
-               ((arg.op >= 5 && arg.op <= 10) || arg.op == 13 ||
-                arg.op == 14)) ||
-              (arg.tag == parse.EX_VAR &&
-               env_bool_is(env, arg.name)) ||
-              (arg.tag == parse.EX_LIT &&
-               (arg.name == "true" || arg.name == "false")) {
+          if hole_boolish(arg, env, prog) {
             // a comparison or logical — or a var bound from one —
             // prints its spelled word
             pre = pre + emit_expr(pool, arg, env, prog, nl);
@@ -4045,9 +4067,12 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
                            nl.v.to_str() + ")\n";
                     env_bind_w(env, st.name, nl.v,
                                type_width(st.fmt));
-                    if e.tag == parse.EX_BIN &&
-                        ((e.op >= 5 && e.op <= 10) || e.op == 13 ||
-                         e.op == 14) {
+                    if st.fmt == "bool" ||
+                       (e.tag == parse.EX_BIN &&
+                        ((e.op >= 5 && e.op <= 10) || e.op == 12 ||
+                         e.op == 13 || e.op == 14)) ||
+                       (e.tag == parse.EX_LIT &&
+                        (e.name == "true" || e.name == "false")) {
                       env_bool_bind(env, st.name);
                     }
                     nl.v = nl.v + 1;
@@ -4498,6 +4523,7 @@ fn capture_at_after(fd: *FnDef) -> i64 {
 
 fn emit_fn(fd: *FnDef, pool: *Pool, prog: *Prog) -> string {
   let env = env_new(64);
+  env_bind_consts(env, prog, pool);
   let nl = new NextLocal { v: 0 };
   let param_slots: i64 = capture_at_after(fd);
   let mut nparams: i64 = 0;
@@ -4602,9 +4628,35 @@ fn emit_fn(fd: *FnDef, pool: *Pool, prog: *Prog) -> string {
   return out;
 }
 
+// module consts join a fresh env before any body emits (locals may
+// shadow them): string-typed consts bind their folded text — print
+// holes, len(), and concat folds read them like literals — and bool
+// consts/statics take the word-printing marker. Every env (main's and
+// each fn's) starts with the same table.
+fn env_bind_consts(env: *Env, prog: *Prog, pool: *Pool) {
+  let mut ci: usize = 0;
+  while ci < prog.nconsts {
+    let cn: string = prog.consts[ci];
+    if !prog.cstatic[ci] && prog.ctypes[ci] == "string" {
+      match fold_string(prog.cexprs[ci], env) {
+        Option.Some(raw) => {
+          let ca: i64 = pool_intern(pool, raw);
+          env_str_bind(env, cn, ca, pool_len(pool, raw), raw);
+        },
+        Option.None => {},
+      }
+    }
+    if prog.ctypes[ci] == "bool" {
+      env_bool_bind(env, cn);
+    }
+    ci = ci + 1;
+  }
+}
+
 pub fn emit(prog: *Prog) -> string {
   let pool = new_pool();
   let env = env_new(64);
+  env_bind_consts(env, prog, pool);
   let nl = new NextLocal { v: 6 }; // 0/1 capture, 2 exit, 3 $t, 4 $r, 5 $d
   let loops = loops_new();
   let dstack = dstack_new();
