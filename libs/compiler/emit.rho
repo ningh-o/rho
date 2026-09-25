@@ -1598,25 +1598,44 @@ fn build_string_pair(e: *Expr, pool: *Pool, env: *Env, prog: *Prog,
       },
       Option.None => {},
     }
-    if base.tag != parse.EX_VAR {
-      return bad;
+    // the base may itself be a slice: its pair computes first and
+    // the outer view reads those slots (strings only — a slice of a
+    // slice of a string is still a string view)
+    let mut base_a: i64 = 0;
+    let mut base_l: i64 = 0;
+    let mut pre: string = "";
+    let mut bkind: i64 = 0;
+    if base.tag == parse.EX_SLICE2 {
+      let inner = build_string_pair(base, pool, env, prog, next_local);
+      if !inner.ok {
+        return bad;
+      }
+      pre = inner.text;
+      base_a = inner.a;
+      base_l = inner.l;
+      bkind = 1;
+    } else {
+      if base.tag != parse.EX_VAR {
+        return bad;
+      }
+      let bname0: string = base.name;
+      bkind = env_kind_of(env, bname0);
+      if bkind == 2 {
+        return bad; // slicing a slice-of-ints inside a concat: later
+      }
+      if bkind == 1 {
+        let ba: i64 = env_str_look(env, bname0);
+        base_a = (0 - ba) - 1;
+        base_l = env_str_len_slot(env, bname0);
+      }
     }
-    let bname: string = base.name;
-    let bkind: i64 = env_kind_of(env, bname);
-    let mut kind: i64 = 2;
-    let mut esz: i64 = 8;
-    if bkind == 0 || bkind == 1 {
-      kind = 1;
-      esz = 1;
-    }
-    if kind != 1 {
-      return bad; // slicing a slice inside a concat: next cut
-    }
+    let kind: i64 = 1;
+    let esz: i64 = 1;
     let a_slot: i64 = next_local.v;
     next_local.v = next_local.v + 1;
     let l_slot: i64 = next_local.v;
     next_local.v = next_local.v + 1;
-    let mut text: string = "";
+    let mut text: string = pre;
     if e.op % 2 == 1 && len(e.args) > 0 {
       text = text + emit_expr(pool, e.args[0], env, prog);
     } else {
@@ -1628,18 +1647,17 @@ fn build_string_pair(e: *Expr, pool: *Pool, env: *Env, prog: *Prog,
     } else {
       if bkind == 0 {
         text = text + "    (i64.const " +
-               env_str_len(env, bname).to_str() + ")\n";
+               env_str_len(env, base.name).to_str() + ")\n";
       } else {
-        text = text + "    (local.get " +
-               env_str_len_slot(env, bname).to_str() + ")\n";
+        text = text + "    (local.get " + base_l.to_str() + ")\n";
       }
     }
     text = text + "    (local.set " + l_slot.to_str() + ")\n";
     let mut blen: string = "";
     if bkind == 0 {
-      blen = "(i64.const " + env_str_len(env, bname).to_str() + ")";
+      blen = "(i64.const " + env_str_len(env, base.name).to_str() + ")";
     } else {
-      blen = "(local.get " + env_str_len_slot(env, bname).to_str() + ")";
+      blen = "(local.get " + base_l.to_str() + ")";
     }
     text = text + "    (local.set $t (local.get " + a_slot.to_str() +
            "))\n";
@@ -1652,15 +1670,13 @@ fn build_string_pair(e: *Expr, pool: *Pool, env: *Env, prog: *Prog,
     text = text + "    (local.set " + l_slot.to_str() + ")\n";
     if bkind == 0 {
       text = text + "    (i64.add (i64.const " +
-             env_str_look(env, bname).to_str() +
+             env_str_look(env, base.name).to_str() +
              ") (i64.mul (local.get " + a_slot.to_str() +
              ") (i64.const " + esz.to_str() + ")))\n";
     } else {
-      let ba: i64 = env_str_look(env, bname);
-      text = text + "    (i64.add (local.get " +
-             ((0 - ba) - 1).to_str() + ") (i64.mul (local.get " +
-             a_slot.to_str() + ") (i64.const " + esz.to_str() +
-             ")))\n";
+      text = text + "    (i64.add (local.get " + base_a.to_str() +
+             ") (i64.mul (local.get " + a_slot.to_str() +
+             ") (i64.const " + esz.to_str() + ")))\n";
     }
     text = text + "    (local.set " + a_slot.to_str() + ")\n";
     let sps = new SPair { ok: true, text: text, a: a_slot, l: l_slot };
