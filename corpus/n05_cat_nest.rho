@@ -1,0 +1,24 @@
+// exit: 0
+// adapted: assert_eq lives in the file (string form)
+fn assert_eq(a: string, b: string) {
+  assert(a == b, "assert_eq failed");
+  return;
+}
+
+// 060 — string `+` nested deep: right-leaning, left-leaning and
+// balanced chains over the same eight leaves all spell one string,
+// and a sum may nest in its own trailing operand
+fn main() -> i32 {
+  let flat: string = "abcdefgh";
+  let right: string = "a" + ("b" + ("c" + ("d" + ("e" + ("f" + ("g" + "h"))))));
+  let left: string = ((((((("a" + "b") + "c") + "d") + "e") + "f") + "g") + "h");
+  let balanced: string = (("a" + "b") + ("c" + "d")) + (("e" + "f") + ("g" + "h"));
+  let tail: string = "abc" + ("def" + ("gh" + ""));
+  assert_eq(right, flat);
+  assert_eq(left, flat);
+  assert_eq(balanced, flat);
+  assert_eq(tail, flat);
+  printf("{}\n{}\n{}\n{}\n", right, left, balanced, tail);
+  printf("{}\n", flat + flat + flat);
+  return 0;
+}

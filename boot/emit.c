@@ -922,7 +922,7 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       op(cx, "(local.set %zu (i32.add (local.get %zu) (i32.const 24)))\n",
          blk, blk);
       op(cx, "(call $fb_copy_to (local.get %zu))\n", blk);
-      op(cx, "(local.set %zu (local.get %zu))\n", dst, L(cx, blk));
+      op(cx, "(local.set %zu %s)\n", dst, L(cx, blk));
       op(cx, "(local.set %zu %s)\n", dst + 1, L(cx, len));
       return;
     }
@@ -1774,7 +1774,7 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
     // value = (table idx, capture payload)
     size_t ti = closure_table_idx(cx->em, cname);
     op(cx, "(local.set %zu (i32.const %zu))\n", dst, ti);
-    op(cx, "(local.set %zu (local.get %zu))\n", dst + 1, blk);
+    op(cx, "(local.set %zu %s)\n", dst + 1, L(cx, blk));
     return;
   }
 
