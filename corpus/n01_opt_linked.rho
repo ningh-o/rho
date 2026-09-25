@@ -1,0 +1,34 @@
+// exit: 6
+// tranche-2 adaptation of 009_linked: null is gone — absence is ?*Node
+struct Node {
+  v: i32,
+  next: ?*Node,
+}
+
+fn push(head: ?*Node, v: i32) -> ?*Node {
+  return Option.Some(new Node { v: v, next: head });
+}
+
+fn main() -> i32 {
+  let mut list: ?*Node = Option.None;
+  let mut k: i32 = 3;
+  while k > 0 {
+    list = push(list, k);
+    k -= 1;
+  }
+  let mut total: i32 = 0;
+  let mut cur: ?*Node = list;
+  let mut go: bool = true;
+  while go {
+    match cur {
+      Option.Some(n) => {
+        total += n.v;
+        cur = n.next;
+      },
+      Option.None => {
+        go = false;
+      },
+    }
+  }
+  return total;
+}

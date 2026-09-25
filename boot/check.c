@@ -414,6 +414,14 @@ static bool load_one_use(Module *m, NodeRef d) {
 
 bool program_load_graph(Program *p, const char *entry_path) {
   g_program_for_load = p;
+  // the prelude exists before ANY collection (load-time preparation
+  // resolves ?T through it)
+  if (!g_prelude_mod) {
+    extern const char *prelude_src(void);
+    g_prelude_mod = module_parse_src("<prelude>", prelude_src());
+    program_add(p, g_prelude_mod, NULL);
+    module_prepare(p, g_prelude_mod);
+  }
   p->entry = module_load(g_arena, entry_path);
   program_add(p, p->entry, NULL);
 
@@ -855,9 +863,7 @@ bool check_program(Program *p) {
   g_program = p;
   g_program_ctx = p;
 
-  // the prelude module: first in load order, always in scope
-  g_prelude_mod = module_parse_src("<prelude>", prelude_src());
-  program_add(p, g_prelude_mod, NULL);
+  // the prelude module was created at graph-load time
   g_entry_mod = p->entry;
 
   // collect: prelude first so its types exist for everyone; modules

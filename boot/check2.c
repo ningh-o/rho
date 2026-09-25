@@ -1006,6 +1006,16 @@ static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
             if (strcmp(lk.edef->variants[v].name, e->name) == 0 &&
                 lk.edef->variants[v].form == VAR_UNIT) {
               node_get(er)->sem2 = &lk.edef->variants[v];
+              // generic enums instantiate from the expected type
+              if (expected && expected->kind == TY_ENUM &&
+                  expected->edef == lk.edef)
+                return expected;
+              if (lk.edef->ngparams == 0)
+                return type_enum(lk.edef, NULL, 0);
+              err_at(c, e,
+                     "cannot infer the generic arguments of %s.%s here "
+                     "— annotate the binding",
+                     lk.edef->name, e->name);
               return type_enum(lk.edef, NULL, lk.edef->ngparams);
             }
           err_at(c, e, "enum %s has no unit variant '%s'", recv->name,
