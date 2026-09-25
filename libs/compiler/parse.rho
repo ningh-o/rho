@@ -506,15 +506,41 @@ fn parse_stmt(c: *PCur) -> *Stmt {
     }
     return st;
   }
+  if t.kind == lex.TK_IDENT && c.pos + 1 < len(c.toks) &&
+      is_punct(c.toks[c.pos + 1], 58) && c.pos + 2 < len(c.toks) {
+    // LABEL: while / LABEL: loop — the label rides the loop statement
+    let after = c.toks[c.pos + 2];
+    if (after.kind == lex.TK_KEYWORD && after.text == "while") ||
+       (after.kind == lex.TK_KEYWORD && after.text == "loop") {
+      let label: string = t.text;
+      tkadv(c); // the ident
+      tkadv(c); // ':'
+      let st = parse_stmt(c);
+      st.name = label;
+      return st;
+    }
+  }
   if t.kind == lex.TK_KEYWORD && t.text == "break" {
     tkadv(c);
+    let st = mk_stmt(ST_BREAK);
+    let nt = tk(c);
+    if nt.kind == lex.TK_IDENT {
+      st.name = nt.text;
+      tkadv(c);
+    }
     eat_punct(c, 59);
-    return mk_stmt(ST_BREAK);
+    return st;
   }
   if t.kind == lex.TK_KEYWORD && t.text == "continue" {
     tkadv(c);
+    let st = mk_stmt(ST_CONT);
+    let nt = tk(c);
+    if nt.kind == lex.TK_IDENT {
+      st.name = nt.text;
+      tkadv(c);
+    }
     eat_punct(c, 59);
-    return mk_stmt(ST_CONT);
+    return st;
   }
   if t.kind == lex.TK_KEYWORD && t.text == "loop" {
     tkadv(c);

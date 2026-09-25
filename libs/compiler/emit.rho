@@ -620,9 +620,68 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog) -> string {
   return out;
 }
 
+// the loop-label context: every loop gets unique wasm labels; the
+// stack holds the enclosing loops so plain jumps hit the innermost
+// and named jumps resolve to their labeled loop
+struct Loops {
+  names: []string,
+  bks: []string,
+  ws: []string,
+  n: usize,
+  next_id: i64,
+}
+
+fn loops_new() -> *Loops {
+  return new Loops { names: make([]string, 32), bks: make([]string, 32),
+                     ws: make([]string, 32), n: 0, next_id: 0 };
+}
+
+fn loops_push_with(l: *Loops, name: string, bk: string, w: string) {
+  l.names[l.n] = name;
+  l.bks[l.n] = bk;
+  l.ws[l.n] = w;
+  l.n = l.n + 1;
+}
+
+fn loops_pop(l: *Loops) {
+  if l.n > 0 {
+    l.n = l.n - 1;
+  }
+}
+
+// the break (block) label for a jump: named resolves to the labeled
+// loop, plain to the innermost
+fn loops_break(l: *Loops, name: string) -> string {
+  if len(name) == 0 {
+    return l.bks[l.n - 1];
+  }
+  let mut i: usize = l.n;
+  while i > 0 {
+    if l.names[i - 1] == name {
+      return l.bks[i - 1];
+    }
+    i = i - 1;
+  }
+  return "$b?";
+}
+
+fn loops_cont(l: *Loops, name: string) -> string {
+  if len(name) == 0 {
+    return l.ws[l.n - 1];
+  }
+  let mut i: usize = l.n;
+  while i > 0 {
+    if l.names[i - 1] == name {
+      return l.ws[i - 1];
+    }
+    i = i - 1;
+  }
+  return "$w?";
+}
+
 fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
                next_local: *NextLocal, in_fn: bool, ret_slot: i64,
-               prog: *Prog) -> string {
+               prog: *Prog, loops: *Loops) -> string {
   let mut body: string = "";
   let mut i: usize = 0;
   while i < len(nodes) {
@@ -755,11 +814,11 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
           // flat if: the condition's stack code precedes the keyword
           body = body + emit_expr(pool, cond, env, prog);
           body = body + "    (i32.wrap_i64)\n    if\n";
-          body = body + emit_stmts(st.body, pool, env, next_local, in_fn, ret_slot, prog);
+          body = body + emit_stmts(st.body, pool, env, next_local, in_fn, ret_slot, prog, loops);
           if len(st.body2) > 0 {
             body = body + "    else\n";
             body = body + emit_stmts(st.body2, pool, env, next_local,
- in_fn, ret_slot, prog);
+ in_fn, ret_slot, prog, loops);
           }
           body = body + "    end\n";
         },
@@ -767,34 +826,43 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
       }
     }
     if st.tag == parse.ST_BREAK {
-      // named labels resolve lexically: $bk is the innermost loop's
-      // break block however deep the ifs nest
-      body = body + "    (br $bk)\n";
+      // named resolves to the labeled loop, plain to the innermost
+      body = body + "    (br " + loops_break(loops, st.name) + ")\n";
     }
     if st.tag == parse.ST_CONT {
-      // re-enter at the loop head: a while re-checks its condition
-      body = body + "    (br $w)\n";
+      // re-enter at the target's head: a while re-checks its condition
+      body = body + "    (br " + loops_cont(loops, st.name) + ")\n";
     }
     if st.tag == parse.ST_LOOP {
-      body = body + "    (block $bk\n";
-      body = body + "    (loop $w\n";
-      body = body + emit_stmts(st.body, pool, env, next_local, in_fn, ret_slot, prog);
-      body = body + "      (br $w)\n";
+      let bk: string = "$b" + loops.next_id.to_str();
+      let w: string = "$w" + loops.next_id.to_str();
+      loops.next_id = loops.next_id + 1;
+      loops_push_with(loops, st.name, bk, w);
+      body = body + "    (block " + bk + "\n";
+      body = body + "    (loop " + w + "\n";
+      body = body + emit_stmts(st.body, pool, env, next_local, in_fn, ret_slot, prog, loops);
+      body = body + "      (br " + w + ")\n";
       body = body + "    )\n";
       body = body + "    )\n";
+      loops_pop(loops);
     }
     if st.tag == parse.ST_WHILE {
       match st.val {
         Option.Some(cond) => {
-          body = body + "    (block $bk\n";
-          body = body + "    (loop $w\n";
+          let bk: string = "$b" + loops.next_id.to_str();
+          let w: string = "$w" + loops.next_id.to_str();
+          loops.next_id = loops.next_id + 1;
+          loops_push_with(loops, st.name, bk, w);
+          body = body + "    (block " + bk + "\n";
+          body = body + "    (loop " + w + "\n";
           body = body + emit_expr(pool, cond, env, prog);
           body = body + "    (i32.wrap_i64)\n    if\n";
-          body = body + emit_stmts(st.body, pool, env, next_local, in_fn, ret_slot, prog);
-          body = body + "      (br $w)\n";
+          body = body + emit_stmts(st.body, pool, env, next_local, in_fn, ret_slot, prog, loops);
+          body = body + "      (br " + w + ")\n";
           body = body + "    end\n";
           body = body + "    )\n";
           body = body + "    )\n";
+          loops_pop(loops);
         },
         Option.None => {},
       }
@@ -852,8 +920,9 @@ fn emit_fn(fd: *FnDef, pool: *Pool, prog: *Prog) -> string {
   }
   // the capture pair follows the params
   next_local.v = next_local.v + 2;
+  let loops = loops_new();
   let body: string = emit_stmts(fd.body, pool, env, next_local, true,
-                                0 - 1, prog);
+                                0 - 1, prog, loops);
   let mut out: string = "  (func $u_" + fd.name;
   // signature: every param slot is an i64 (a string param is a pair)
   let np: i64 = capture_at_after(fd);
@@ -879,8 +948,9 @@ pub fn emit(prog: *Prog) -> string {
   let pool = new_pool();
   let env = env_new(64);
   let next_local = new NextLocal { v: 3 }; // 0/1 capture, 2 = exit code
+  let loops = loops_new();
   let body: string = emit_stmts(prog.main, pool, env, next_local, false,
-                                2, prog); // slot 2: the exit code
+                                2, prog, loops); // slot 2: the exit code
   let next_local_n: i64 = next_local.v;
   let mut fntext: string = "";
   let mut fi: usize = 0;

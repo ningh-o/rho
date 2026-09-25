@@ -62,9 +62,22 @@ fn expr_walk(e: *Expr, prog: *Prog, bound: []string, nb: usize,
   }
 }
 
+fn label_known(labels: []string, nl: usize, name: string) -> bool {
+  let mut k: usize = 0;
+  while k < nl {
+    if labels[k] == name {
+      return true;
+    }
+    k = k + 1;
+  }
+  return false;
+}
+
 fn stmts_walk(nodes: []*Stmt, prog: *Prog, bound: []string,
-              nb0: usize, errs: *ErrBox) {
+              nb0: usize, labels: []string, nl0: usize,
+              errs: *ErrBox) {
   let mut nb: usize = nb0;
+  let mut nl: usize = nl0;
   let mut i: usize = 0;
   while i < len(nodes) {
     let st = nodes[i];
@@ -97,8 +110,8 @@ fn stmts_walk(nodes: []*Stmt, prog: *Prog, bound: []string,
         },
         Option.None => {},
       }
-      stmts_walk(st.body, prog, bound, nb, errs);
-      stmts_walk(st.body2, prog, bound, nb, errs);
+      stmts_walk(st.body, prog, bound, nb, labels, nl, errs);
+      stmts_walk(st.body2, prog, bound, nb, labels, nl, errs);
     }
     if st.tag == parse.ST_WHILE {
       match st.val {
@@ -107,12 +120,32 @@ fn stmts_walk(nodes: []*Stmt, prog: *Prog, bound: []string,
         },
         Option.None => {},
       }
-      stmts_walk(st.body, prog, bound, nb, errs);
+      if len(st.name) > 0 {
+        if nl < len(labels) {
+          labels[nl] = st.name;
+          nl = nl + 1;
+        }
+      }
+      stmts_walk(st.body, prog, bound, nb, labels, nl, errs);
     }
     if st.tag == parse.ST_LOOP {
-      stmts_walk(st.body, prog, bound, nb, errs);
+      if len(st.name) > 0 {
+        if nl < len(labels) {
+          labels[nl] = st.name;
+          nl = nl + 1;
+        }
+      }
+      stmts_walk(st.body, prog, bound, nb, labels, nl, errs);
     }
-    // ST_BREAK / ST_CONT carry no expressions and bind no names
+    // break/continue bind no names; a named jump must target an
+    // enclosing label (the stack holds exactly the enclosing ones)
+    if (st.tag == parse.ST_BREAK || st.tag == parse.ST_CONT) &&
+        len(st.name) > 0 {
+      if !label_known(labels, nl, st.name) {
+        eprintf("check: unknown label '{}'\n", st.name);
+        errs.n = errs.n + 1;
+      }
+    }
     i = i + 1;
   }
 }
@@ -128,11 +161,13 @@ pub fn check(prog: *Prog) -> i64 {
       bound[k] = prog.fns[nf].params[k];
       k = k + 1;
     }
-    stmts_walk(prog.fns[nf].body, prog, bound, k, errs_box);
+    let labels: []string = make([]string, 32);
+    stmts_walk(prog.fns[nf].body, prog, bound, k, labels, 0, errs_box);
     nf = nf + 1;
   }
   let bound: []string = make([]string, 64);
-  stmts_walk(prog.main, prog, bound, 0, errs_box);
+  let labels: []string = make([]string, 32);
+  stmts_walk(prog.main, prog, bound, 0, labels, 0, errs_box);
   return errs_box.n;
 }
 
