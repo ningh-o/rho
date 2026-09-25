@@ -739,15 +739,34 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
         Option.None => {},
       }
     }
+    if st.tag == parse.ST_BREAK {
+      // named labels resolve lexically: $bk is the innermost loop's
+      // break block however deep the ifs nest
+      body = body + "    (br $bk)\n";
+    }
+    if st.tag == parse.ST_CONT {
+      // re-enter at the loop head: a while re-checks its condition
+      body = body + "    (br $w)\n";
+    }
+    if st.tag == parse.ST_LOOP {
+      body = body + "    (block $bk\n";
+      body = body + "    (loop $w\n";
+      body = body + emit_stmts(st.body, pool, env, next_local, in_fn, ret_slot, prog);
+      body = body + "      (br $w)\n";
+      body = body + "    )\n";
+      body = body + "    )\n";
+    }
     if st.tag == parse.ST_WHILE {
       match st.val {
         Option.Some(cond) => {
+          body = body + "    (block $bk\n";
           body = body + "    (loop $w\n";
           body = body + emit_expr(pool, cond, env, prog);
           body = body + "    (i32.wrap_i64)\n    if\n";
           body = body + emit_stmts(st.body, pool, env, next_local, in_fn, ret_slot, prog);
           body = body + "      (br $w)\n";
           body = body + "    end\n";
+          body = body + "    )\n";
           body = body + "    )\n";
         },
         Option.None => {},

@@ -28,6 +28,9 @@ pub const ST_IF: i32 = 3;
 pub const ST_WHILE: i32 = 4;
 pub const ST_SET: i32 = 5;
 pub const ST_CALL: i32 = 6;
+pub const ST_LOOP: i32 = 7;
+pub const ST_BREAK: i32 = 8;
+pub const ST_CONT: i32 = 9;
 
 pub struct Stmt {
   tag: i32,        // ST_*
@@ -483,6 +486,22 @@ fn parse_stmt(c: *PCur) -> *Stmt {
         st.body2 = parse_block(c);
       }
     }
+    return st;
+  }
+  if t.kind == lex.TK_KEYWORD && t.text == "break" {
+    tkadv(c);
+    eat_punct(c, 59);
+    return mk_stmt(ST_BREAK);
+  }
+  if t.kind == lex.TK_KEYWORD && t.text == "continue" {
+    tkadv(c);
+    eat_punct(c, 59);
+    return mk_stmt(ST_CONT);
+  }
+  if t.kind == lex.TK_KEYWORD && t.text == "loop" {
+    tkadv(c);
+    let st = mk_stmt(ST_LOOP);
+    st.body = parse_block(c);
     return st;
   }
   if t.kind == lex.TK_KEYWORD && t.text == "while" {

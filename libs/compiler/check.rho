@@ -109,6 +109,10 @@ fn stmts_walk(nodes: []*Stmt, prog: *Prog, bound: []string,
       }
       stmts_walk(st.body, prog, bound, nb, errs);
     }
+    if st.tag == parse.ST_LOOP {
+      stmts_walk(st.body, prog, bound, nb, errs);
+    }
+    // ST_BREAK / ST_CONT carry no expressions and bind no names
     i = i + 1;
   }
 }

@@ -65,6 +65,9 @@ fn is_keyword(s: string) -> bool {
   if s == "true" || s == "false" {
     return true;
   }
+  if s == "break" || s == "continue" || s == "loop" {
+    return true;
+  }
   return false;
 }
 
