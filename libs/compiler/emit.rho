@@ -1453,6 +1453,143 @@ fn build_string_pair(e: *Expr, pool: *Pool, env: *Env, prog: *Prog,
     }
     return bad;
   }
+  // format("...", args): the pieces intern, the holes render — ints
+  // through $w_itoa, bools through $w_bool's words, strings as their
+  // pairs — then one $w_cat chain left to right
+  if e.tag == parse.EX_CALL && e.name == "format" &&
+      len(e.args) >= 1 && e.args[0].tag == parse.EX_STR {
+    let pieces: []string = parse.fmt_pieces(e.args[0].name);
+    if len(pieces) == 1 && len(e.args) == 1 {
+      let addr0: i64 = pool_intern(pool, pieces[0]);
+      let sp0 = new SPair { ok: true, text:
+        "    (i64.const " + addr0.to_str() + ")\n" +
+        "    (local.set " + next_local.v.to_str() + ")\n" +
+        "    (i64.const " + decoded_len(pieces[0]).to_str() +
+        ")\n" +
+        "    (local.set " + (next_local.v + 1).to_str() + ")\n",
+        a: next_local.v, l: next_local.v + 1 };
+      next_local.v = next_local.v + 2;
+      return sp0;
+    }
+    // collect the chain's pairs: piece0, arg0, piece1, arg1, ...
+    let mut text: string = "";
+    let mut na: usize = 0;
+    let mut chain_a: []i64 = make([]i64, 24);
+    let mut chain_l: []i64 = make([]i64, 24);
+    let mut ok: bool = true;
+    let mut pi: usize = 0;
+    while pi < len(pieces) {
+      if len(pieces[pi]) > 0 {
+        let pa: i64 = pool_intern(pool, pieces[pi]);
+        text = text + "    (i64.const " + pa.to_str() + ")\n" +
+               "    (local.set " + next_local.v.to_str() + ")\n" +
+               "    (i64.const " + decoded_len(pieces[pi]).to_str() +
+               ")\n" +
+               "    (local.set " + (next_local.v + 1).to_str() +
+               ")\n";
+        chain_a[na] = next_local.v;
+        chain_l[na] = next_local.v + 1;
+        na = na + 1;
+        next_local.v = next_local.v + 2;
+      }
+      if pi + 1 < len(pieces) && pi < len(e.args) - 1 {
+        // hole pi's argument
+        let arg = e.args[pi + 1];
+        match fold_string(arg, env) {
+          Option.Some(raw) => {
+            let ha: i64 = pool_intern(pool, raw);
+            text = text + "    (i64.const " + ha.to_str() + ")\n" +
+                   "    (local.set " + next_local.v.to_str() +
+                   ")\n" +
+                   "    (i64.const " + pool_len(pool, raw).to_str() +
+                   ")\n" +
+                   "    (local.set " + (next_local.v + 1).to_str() +
+                   ")\n";
+            chain_a[na] = next_local.v;
+            chain_l[na] = next_local.v + 1;
+            na = na + 1;
+            next_local.v = next_local.v + 2;
+          },
+          Option.None => {
+            let mut akind: i64 = 0 - 2;
+            if arg.tag == parse.EX_VAR {
+              akind = env_kind_of(env, arg.name);
+            }
+            if akind == 1 {
+              let ba: i64 = env_str_look(env, arg.name);
+              text = text + "    (local.get " +
+                     ((0 - ba) - 1).to_str() + ")\n" +
+                     "    (local.set " + next_local.v.to_str() +
+                     ")\n" +
+                     "    (local.get " +
+                     env_str_len_slot(env, arg.name).to_str() +
+                     ")\n" +
+                     "    (local.set " + (next_local.v + 1).to_str() +
+                     ")\n";
+              chain_a[na] = next_local.v;
+              chain_l[na] = next_local.v + 1;
+              na = na + 1;
+              next_local.v = next_local.v + 2;
+            } else {
+              if arg.tag == parse.EX_VAR && env_bool_is(env, arg.name) {
+                text = text + "    (local.get " +
+                       env_look(env, arg.name).to_str() +
+                       ")\n    call $w_bool\n" +
+                       "    (local.set $l)\n" +
+                       "    (i64.extend_i32_u)\n" +
+                       "    (local.set " + next_local.v.to_str() +
+                       ")\n" +
+                       "    (i64.extend_i32_u (local.get $l))\n" +
+                       "    (local.set " + (next_local.v + 1).to_str() +
+                       ")\n";
+                chain_a[na] = next_local.v;
+                chain_l[na] = next_local.v + 1;
+                na = na + 1;
+                next_local.v = next_local.v + 2;
+              } else {
+                // an integer expression renders via $w_itoa
+                text = text + emit_expr(pool, arg, env, prog) +
+                       "    call $w_itoa\n" +
+                       "    (local.set " + (next_local.v + 1).to_str() +
+                       ")\n" +
+                       "    (local.set " + next_local.v.to_str() +
+                       ")\n";
+                chain_a[na] = next_local.v;
+                chain_l[na] = next_local.v + 1;
+                na = na + 1;
+                next_local.v = next_local.v + 2;
+              }
+            }
+          },
+        }
+      }
+      pi = pi + 1;
+    }
+    if ok {
+      // cat the chain left to right, reusing two accumulator slots
+      let mut acc_a: i64 = chain_a[0];
+      let mut acc_l: i64 = chain_l[0];
+      let mut ci: usize = 1;
+      while ci < na {
+        let nxa: i64 = next_local.v;
+        let nxl: i64 = next_local.v + 1;
+        next_local.v = next_local.v + 2;
+        text = text + "    (local.get " + acc_a.to_str() + ")\n" +
+               "    (local.get " + acc_l.to_str() + ")\n" +
+               "    (local.get " + chain_a[ci].to_str() + ")\n" +
+               "    (local.get " + chain_l[ci].to_str() + ")\n" +
+               "    call $w_cat\n" +
+               "    (local.set " + nxl.to_str() + ")\n" +
+               "    (local.set " + nxa.to_str() + ")\n";
+        acc_a = nxa;
+        acc_l = nxl;
+        ci = ci + 1;
+      }
+      let spf = new SPair { ok: true, text: text, a: acc_a, l: acc_l };
+      return spf;
+    }
+    return bad;
+  }
   if e.tag == parse.EX_CALL && fn_returns_string(prog, e.name) {
     let mut text: string = "";
     let mut k: usize = 0;

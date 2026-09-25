@@ -50,6 +50,7 @@ run_one streq 'fn pick(s: string) -> i64 { if s == "yes" { return 1; } if s == "
 run_one boolprint 'fn main() -> i32 { let r = "x" == "x"; let q = "x" == "y"; let n = 5; printf("r={} q={} n={}\n", r, q, n); return 0; }' $'r=true q=false n=5'
 run_one escapes 'fn main() -> i32 { let s: string = "a\rb\0c\x41\u{e9}\u{1F600}z"; printf("len={} r=[{}] x=[{}] u2=[{}] u4=[{}]\n", len(s), "A\rB", "\x42\x7a", "\u{4e2d}\u{6587}", "\u{1F600}!"); return 0; }' $'len=13 r=[A\rB] x=[Bz] u2=[中文] u4=[😀!]'
 run_one widths 'fn main() -> i32 { let a8: i8 = 127; let m8: i8 = (-128); let a32: i32 = 2147483647; let m32: i32 = (-2147483648); let u: u32 = 4294967295; printf("i8: {} {}\n", a8 + 1, m8 - 1); printf("i32: {} {}\n", a32 + 1, m32 - 1); printf("u32+1={} eq={}\n", u + 1, u + 1 == 0); printf("mul={} div={} neg={}\n", m8 * (-1), m8 / (-1), -m8); return 0; }' $'i8: -128 127\ni32: -2147483648 2147483647\nu32+1=0 eq=true\nmul=-128 div=-128 neg=-128'
+run_one fmtfn 'fn main() -> i32 { let n = 15; let s = format("[{}]", n); printf("{}\n", s); let t = format("{}-{}-{}", 1, "mid", 2 + 3); printf("{}\n", t); let u = format("plain"); printf("{}\n", u); let v = "n=" + format("{}", n); printf("{}\n", v); return 0; }' $'[15]\n1-mid-5\nplain\nn=15'
 run_one strret 'fn join3(a: string, b: string, c: string) -> string { return a + b + c; } fn tag(s: string) -> string { if len(s) > 0 { return "[" + s + "]"; } printf("empty
 "); return s; } fn main() -> i32 { let s = join3("x", "-", "y"); printf("[{}]
 ", s); printf("[{}]
