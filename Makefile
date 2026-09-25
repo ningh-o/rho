@@ -20,6 +20,7 @@ test: selftest
 	./tests/run-check-tests.sh
 	./tests/run-emit-tests.sh
 	./tests/run-fmt-tests.sh
+	./tests/run-corpus-repo.sh
 
 clean:
 	rm -rf build

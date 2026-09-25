@@ -1,0 +1,32 @@
+// exit: 0
+// defer ordering: LIFO within a scope, each scope's stack unwinds before
+// the caller continues, defers at the end of main run before exit
+fn work(tag: i32) -> i32 {
+  defer printf("  work: third\n");
+  defer printf("  work: second\n");
+  defer printf("  work: first\n");
+  printf("  work: body\n");
+  return (tag * 100);
+}
+
+fn early() -> i32 {
+  defer printf("  early: deferred\n");
+  printf("  early: body\n");
+  if true {
+    return 7;
+  }
+  printf("  early: unreachable\n");
+  return 0;
+}
+
+fn main() -> i32 {
+  printf("main: begin\n");
+  let r: i32 = work(1);
+  printf("main: r={}\n", r);
+  let e: i32 = early();
+  printf("main: e={}\n", e);
+  defer printf("main: last defer\n");
+  defer printf("main: first defer\n");
+  printf("main: end\n");
+  return 0;
+}

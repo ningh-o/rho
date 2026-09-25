@@ -1,0 +1,41 @@
+// exit: 0
+// loops: continue skips a pass, break leaves early, nested loops break the
+// innermost one only, and a bare loop counts its way to an exit condition
+fn main() -> i32 {
+  let mut odds: i32 = 0;
+  let mut n: i32 = 0;
+  while (n < 20) {
+    n += 1;
+    if ((n % 2) == 0) {
+      continue;
+    }
+    if (n > 10) {
+      break;
+    }
+    odds += n;
+  }
+  printf("n={} odds={}\n", n, odds);
+  let mut grid: i32 = 0;
+  let mut i: i32 = 0;
+  while (i < 4) {
+    i += 1;
+    let mut j: i32 = 0;
+    while (j < 4) {
+      j += 1;
+      if (j == 3) {
+        break;
+      }
+      grid += 1;
+    }
+  }
+  printf("grid={}\n", grid);
+  let mut spins: i32 = 0;
+  loop {
+    spins += 1;
+    if ((spins * spins) >= 50) {
+      break;
+    }
+  }
+  printf("spins={}\n", spins);
+  return 0;
+}

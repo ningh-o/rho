@@ -1,0 +1,53 @@
+// exit: 0
+// copying an enum value copies the payload with it: a managed payload is
+// retained once per copy, so writes through either binding hit the same
+// object; match binds the payload by copy; equality compares tag then
+// payload. Held is a later variant, where boot (frozen) skips the
+// payload compare and the mirror compares the pointer by identity —
+// that disagreement is pinned in tests/lang/eq, and this record keeps
+// only what both compilers answer identically.
+struct Node {
+  v: i32,
+}
+
+enum Item {
+  Nothing,
+  Count(i32),
+  Held(*Node),
+}
+
+fn make_held() -> Item {
+  return Item.Held(new Node { v: 11 });
+}
+
+fn held_bump(n: *Node) -> i32 {
+  n.v = 110;
+  return n.v;
+}
+
+fn label(it: Item) -> string {
+  return match it {
+    Item.Nothing => "nothing",
+    Item.Count(_) => "count",
+    Item.Held(_) => "held",
+  };
+}
+
+fn main() -> i32 {
+  let it: Item = make_held();
+  let it2: Item = it;
+  let sum: i32 = match it2 {
+    Item.Held(n) => held_bump(n),
+    Item.Count(k) => k,
+    Item.Nothing => 0,
+  };
+  match it {
+    Item.Held(n) => printf("via original: v={} sum={}\n", n.v, sum),
+    _ => printf("other\n"),
+  }
+  printf("eq: same={}\n", (it == it2));
+  printf("count eq: {} {}\n", (Item.Count(3) == Item.Count(3)), (Item.Count(3) == Item.Count(4)));
+  printf("tags: {} {} {}\n", (Item.Nothing == Item.Nothing), (Item.Count(1) == Item.Nothing), (it != Item.Nothing));
+  printf("label: {}\n", label(it));
+  return 0;
+}

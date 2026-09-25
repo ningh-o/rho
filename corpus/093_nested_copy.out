@@ -1,0 +1,4 @@
+shared: b.xs[1]=60 b.node.v=90
+copy reads: st.xs[1]=60 st.node.v=90
+identity: node_eq=true name_eq=true
+field copies: b.xs[2]=70 same_node=true

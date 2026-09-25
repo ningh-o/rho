@@ -1,0 +1,11 @@
+// exit: 101
+// x / 0 panics with "division by zero" on stderr; stdout written before
+// the panic survives, the run stops at the division itself
+fn main() -> i32 {
+  printf("before\n");
+  printf("5/2={}\n", (5 / 2));
+  let z: i32 = 0;
+  let x: i32 = (5 / z);
+  printf("unreached {}\n", x);
+  return 0;
+}

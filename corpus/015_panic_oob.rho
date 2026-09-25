@@ -1,0 +1,5 @@
+// exit: 101
+fn main() -> i32 {
+  let xs: []i32 = make([]i32, 3);
+  return xs[7];
+}

@@ -1,0 +1,5 @@
+len=3 first=30 last=10
+xs[0]=30
+xs[1]=20
+xs[2]=10
+about to read xs[3] of 3

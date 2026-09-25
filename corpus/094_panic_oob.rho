@@ -1,0 +1,19 @@
+// exit: 101
+// indexing past the end panics: every line printed before the trap stays on
+// stdout, the process exits 101, and the panic text itself goes to stderr.
+fn main() -> i32 {
+  let xs: []i32 = make([]i32, 3);
+  xs[0] = 30;
+  xs[1] = 20;
+  xs[2] = 10;
+  printf("len={} first={} last={}\n", len(xs), xs[0], xs[2]);
+  let mut i: usize = 0;
+  while (i < len(xs)) {
+    printf("xs[{}]={}\n", i, xs[i]);
+    i += 1;
+  }
+  printf("about to read xs[3] of {}\n", len(xs));
+  printf("xs[3]={}\n", xs[3]);
+  printf("unreachable\n");
+  return 0;
+}

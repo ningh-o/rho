@@ -1,0 +1,24 @@
+// exit: 15
+fn main() -> i32 {
+  let mut r: i32 = 0;
+  let q: i32 = 17 / 5;
+  let m: i32 = 17 % 5;
+  if q == 3 && m == 2 {
+    r += 1;
+  }
+  let nq: i32 = 0 - 17;
+  let nqn: i32 = nq / 5;
+  let nmn: i32 = nq % 5;
+  if nqn == 0 - 3 && nmn == 0 - 2 {
+    r += 2;
+  }
+  let u: u32 = 4294967295;
+  if u + 1 == 0 {
+    r += 4;
+  }
+  let big: i32 = 1 << 10;
+  if big == 1024 && (big >> 3) == 128 {
+    r += 8;
+  }
+  return r;
+}

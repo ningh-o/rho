@@ -1,0 +1,10 @@
+// exit: 101
+// x % 0 panics the same way — the runtime reports both verbs as
+// "division by zero"; shown at i64
+fn main() -> i32 {
+  printf("before\n");
+  let z: i64 = 0;
+  let x: i64 = (5 % z);
+  printf("unreached {}\n", x);
+  return 0;
+}

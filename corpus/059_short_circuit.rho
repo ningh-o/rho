@@ -1,0 +1,46 @@
+// exit: 0
+// && and || short-circuit: the right operand is evaluated only when the
+// left does not already decide the result, left to right; the result is
+// an ordinary bool value (spec/syntax.md conditions; lower.c lowers both
+// through a branch plus phi). A static counter makes every call visible.
+static mut CALLS: i32 = 0;
+
+fn mark(r: bool) -> bool {
+  CALLS += 1;
+  return r;
+}
+
+fn main() -> i32 {
+  CALLS = 0;
+  let a: bool = (false && mark(true));
+  printf("false && f  -> {} calls={}\n", a, CALLS);
+  CALLS = 0;
+  let b: bool = (true || mark(true));
+  printf("true || f   -> {} calls={}\n", b, CALLS);
+  CALLS = 0;
+  let c: bool = (true && mark(false));
+  printf("true && f   -> {} calls={}\n", c, CALLS);
+  CALLS = 0;
+  let d: bool = (false || mark(true));
+  printf("false || f  -> {} calls={}\n", d, CALLS);
+  CALLS = 0;
+  let e: bool = (mark(true) && mark(false));
+  printf("t && f      -> {} calls={}\n", e, CALLS);
+  CALLS = 0;
+  let f: bool = (mark(false) || mark(true));
+  printf("f || t      -> {} calls={}\n", f, CALLS);
+  CALLS = 0;
+  let g: bool = ((mark(false) && mark(true)) || mark(true));
+  printf("f && t || t -> {} calls={}\n", g, CALLS);
+  CALLS = 0;
+  let h: bool = (mark(true) || (mark(false) && mark(true)));
+  printf("t || f && t -> {} calls={}\n", h, CALLS);
+  CALLS = 0;
+  if (mark(true) && (!mark(false))) {
+    printf("if body taken, calls={}\n", CALLS);
+  }
+  CALLS = 0;
+  let i: bool = (mark(true) && true);
+  printf("t && true   -> {} calls={}\n", i, CALLS);
+  return 0;
+}

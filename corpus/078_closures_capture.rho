@@ -1,0 +1,49 @@
+// exit: 0
+// closure capture: immutable locals ride along by copy, a heap cell gives
+// several closures shared mutable state, a static is reachable without
+// capture, and a factory hands out closures that own their parameter
+static mut TALLY: i32 = 0;
+
+struct Cell {
+  v: i32,
+}
+
+fn apply(f: fn(i32) -> i32, x: i32) -> i32 {
+  return f(x);
+}
+
+fn make_adder(k: i32) -> fn(i32) -> i32 {
+  return fn(x: i32) -> i32 {
+    return (x + k);
+  };
+}
+
+fn main() -> i32 {
+  let base: i32 = 10;
+  let add_base: fn(i32) -> i32 = fn(x: i32) -> i32 {
+    return (x + base);
+  };
+  printf("add_base={}\n", add_base(5));
+  let c: *Cell = new Cell { v: 1 };
+  let bump: fn(i32) -> i32 = fn(d: i32) -> i32 {
+    c.v += d;
+    return c.v;
+  };
+  let peek: fn() -> i32 = fn() -> i32 {
+    return c.v;
+  };
+  bump(4);
+  bump(10);
+  printf("cell={} seen={}\n", peek(), c.v);
+  printf("via-apply={}\n", apply(bump, 100));
+  let note: fn() -> i32 = fn() -> i32 {
+    TALLY += 7;
+    return TALLY;
+  };
+  note();
+  note();
+  printf("tally={}\n", TALLY);
+  let add9: fn(i32) -> i32 = make_adder(9);
+  printf("adder={} adder={}\n", add9(1), apply(make_adder(20), 2));
+  return 0;
+}

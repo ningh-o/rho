@@ -1,0 +1,48 @@
+// exit: 0
+// matches nested in expression positions: an arm body match, a scalar match
+// as a let initializer, one on an integer expression inside a loop, and a
+// string-valued match in return position (aggregate-valued matches only
+// work in return position on the frozen compiler)
+enum Wrap {
+  Some(i32),
+  Empty,
+}
+
+fn dig(w: Wrap) -> i32 {
+  return match w {
+    Wrap.Some(v) => match v {
+      0 => 100,
+      _ => v,
+    },
+    Wrap.Empty => (0 - 1),
+  };
+}
+
+fn word(n: i32) -> string {
+  return match n {
+    1 => "one",
+    _ => "not-one",
+  };
+}
+
+fn main() -> i32 {
+  printf("{} {} {}\n", dig(Wrap.Some(7)), dig(Wrap.Some(0)), dig(Wrap.Empty));
+  let code: i32 = match 3 {
+    1 => 10,
+    3 => 30,
+    _ => 99,
+  };
+  printf("code={}\n", code);
+  let mut i: i32 = 0;
+  while (i < 5) {
+    i += 1;
+    let piece: i32 = match (i % 3) {
+      0 => 10,
+      1 => 1,
+      _ => 3,
+    };
+    printf("i={} piece={}\n", i, piece);
+  }
+  printf("word={}\n", word(1));
+  return 0;
+}
