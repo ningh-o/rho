@@ -2214,7 +2214,7 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
     }
   }
   if (e.tag == parse.EX_CALL &&
-       fn_rtype_of(prog, e.name) == "string") ||
+       rtype_is_pair(fn_rtype_of(prog, e.name))) ||
      (e.tag == parse.EX_MCALL) {
     let mut sret: bool = false;
     if e.tag == parse.EX_CALL {
@@ -2919,11 +2919,16 @@ fn user_fn_exists(prog: *Prog, name: string) -> bool {
   return false;
 }
 
+fn rtype_is_pair(rt: string) -> bool {
+  return rt == "string" || (len(rt) >= 2 && rt[0] == 91 &&
+         rt[1] == 93);
+}
+
 fn fn_returns_string(prog: *Prog, name: string) -> bool {
   let mut i: usize = 0;
   while i < len(prog.fns) {
     if prog.fns[i].name == name {
-      return prog.fns[i].rtype == "string";
+      return rtype_is_pair(prog.fns[i].rtype);
     }
     i = i + 1;
   }
@@ -3643,7 +3648,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
       if !is_tail {
         match tfd {
           Option.Some(fdef) => {
-            if fdef.rtype == "string" {
+            if rtype_is_pair(fdef.rtype) {
               sret = true;
             }
           },
@@ -4571,7 +4576,7 @@ fn emit_fn(fd: *FnDef, pool: *Pool, prog: *Prog) -> string {
     out = out + " (param i64)";
     q = q + 1;
   }
-  if fd.rtype == "string" {
+  if rtype_is_pair(fd.rtype) {
     out = out + " (result i64) (result i64)\n";
   } else {
     out = out + " (result i64)\n";
@@ -4583,13 +4588,13 @@ fn emit_fn(fd: *FnDef, pool: *Pool, prog: *Prog) -> string {
     out = out + "    (local i64)\n";
     q = q + 1;
   }
-  if fd.rtype == "string" {
+  if rtype_is_pair(fd.rtype) {
     out = out + "    (loop $t (result i64) (result i64)\n";
   } else {
     out = out + "    (loop $t (result i64)\n";
   }
   out = out + body;
-  if fd.rtype == "string" {
+  if rtype_is_pair(fd.rtype) {
     out = out + "    (i64.const 0)\n    (i64.const 0)\n    )\n  )\n";
   } else {
     out = out + "    (i64.const 0)\n    )\n  )\n";
