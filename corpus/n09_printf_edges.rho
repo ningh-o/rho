@@ -1,0 +1,41 @@
+// exit: 0
+fn assert_eq(a: string, b: string) {
+  assert(a == b, "assert_eq failed");
+  return;
+}
+
+// 062 — the join helpers user code stacks on string `+` (the libs/json
+// idiom): left- and right-associated spellings agree, and a helper's
+// trailing argument may itself nest a sum or another helper
+fn join3(a: string, b: string, c: string) -> string {
+  return (a + b) + c;
+}
+
+fn join3r(a: string, b: string, c: string) -> string {
+  return a + (b + c);
+}
+
+fn join4(a: string, b: string, c: string, d: string) -> string {
+  return ((a + b) + c) + d;
+}
+
+fn join4r(a: string, b: string, c: string, d: string) -> string {
+  return a + (b + (c + d));
+}
+
+// 067 — printf placeholder boundaries: `{}` at the very start and the
+// very end, adjacent holes, doubled braces as literals (also flush
+// against the string edges), a holeless call, and a value whose own
+// text contains braces — only the literal is ever scanned
+fn main() -> i32 {
+  printf("{} first\n", 1);
+  printf("last {}\n", 2);
+  printf("{}{}\n", 3, 4);
+  printf("{{}} and {{{}}}\n", 5);
+  printf("end {{\n");
+  printf("close }}\n");
+  printf("[{}]\n", format("{{}}"));
+  printf("no holes at all\n");
+  printf("{}\n", "braced " + "{}");
+  return 0;
+}

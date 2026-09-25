@@ -2053,17 +2053,29 @@ size_t static_slot(Module *m, const char *name) {
 // printf/eprintf: literal chunks and per-hole to_str pushes, one write
 // build a format string into the fb scratch (shared by printf/format)
 static void emit_format_build(FnCx *cx, Node *call) {
-  op(cx, "(call $fb_reset)\n");
+  // phase 1: evaluate every value BEFORE touching the scratch —
+  // nested format/printf calls reset it (the fb is single-buffered)
   Node *fmtn = node_get(node_get(reflist_at(call->list, 0))->a);
   Str fmt = fmtn->sval;
-  size_t argi = 1;
+  size_t nvals = reflist_len(call->list) - 1;
+  size_t *valregs = nvals ? arena_alloc(g_arena, nvals * sizeof(size_t), 8)
+                          : NULL;
+  for (size_t i = 0; i < nvals; i++) {
+    Node *aw = node_get(reflist_at(call->list, i + 1));
+    Type *at = (Type *)node_get(aw->a)->sem;
+    valregs[i] = cx_fresh(cx, at);
+    emit_expr(cx, aw->a, valregs[i]);
+  }
+  // phase 2: reset and assemble
+  op(cx, "(call $fb_reset)\n");
+  size_t argi = 0;
   size_t i = 0;
   while (i < fmt.n) {
     if (i + 1 < fmt.n && fmt.p[i] == '{' && fmt.p[i + 1] == '}') {
-      Node *aw = node_get(reflist_at(call->list, argi++));
-      Type *at = (Type *)node_get(aw->a)->sem;
-      size_t v = cx_fresh(cx, at);
-      emit_expr(cx, aw->a, v);
+      Type *at = (Type *)node_get(
+                     node_get(reflist_at(call->list, argi + 1))->a)->sem;
+      size_t v = valregs[argi];
+      argi++;
       if (at->kind == TY_I64) {
         op(cx, "(call $fb_i64 %s)\n", L(cx, v));
       } else if (at->kind == TY_U64 || at->kind == TY_USIZE) {
