@@ -264,6 +264,13 @@ section — no placeholder stages. boot is the reference compiler.
       the new language, incl. the fixes the design mandates (aggregate
       let-position values are legal; `as` truncates constants like
       variables; bitwise compound assignments verified end-to-end).
+- [ ] **T3.5** The test protocol (§17): boot grows the `test` block and
+      the `rho test` verb — lex/parse/check/emit for the block form,
+      the runner (paths, directory scan, golden headers, per-test
+      isolation under the time cap, filter, honest zero-tests exit),
+      fixtures + a suite leg wired into make test. The self-hosted
+      compiler mirrors the surface when its CLI lands (a T2 dogfood
+      leg: rho's test suite running rho).
 
 ## Phase 4 — kernel boundary and the std library
 
@@ -527,3 +534,23 @@ One version: **0.1.0**, tagged when the wasm self-hosting gate is green.
 No other tags, no intermediate numbers, no evolution after the freeze —
 the design above is the whole language. Native compilation is
 post-0.1.0 std-library work, not a version of the language.
+
+### 17. The test protocol
+
+Two test forms, one verb. **File tests** — a file named `*_test.rho`
+is a program: `fn main` runs, exit 0 passes, anything else fails;
+`// out:` lines pin stdout byte-for-byte, `// exit:` pins the exit
+code, `// set:` feeds build parameters (the corpus's own headers).
+**Test blocks** — a top-level `test "name" { … }` is a synthesized
+void fn in its own module: it sees everything the module sees
+(white-box), judged by panic (assert) versus clean return. The verb
+`rho test <path>… [filter]` takes files or directories (a directory
+picks up `*_test.rho` files and files carrying test blocks, name
+sorted); every test compiles as its own program instance — one test's
+panic cannot fail another (the selection rides the emission side, the
+program is rebuilt per test) — runs under a hard time cap, and the
+verb exits 1 on any failure **including when nothing matched** (a
+fake green is a red). Test blocks are checked in every mode (a broken
+test is a compile error) and emitted only under the verb. No kernel
+growth, no new mechanisms: the whole protocol lowers through §7's
+build parameters and the existing panic law.
