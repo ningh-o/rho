@@ -135,6 +135,7 @@ extern Module *g_prelude_mod; // the <prelude> module
 extern Module *g_entry_mod;   // the entry module
 
 Type *resolve_type_pub(Module *m, NodeRef tr, GScope *g);
+Type *tsubst(Type *t, void *b); // TBind is checker-internal
 void for_each_live_use(Module *m, bool (*cb)(Module *, NodeRef));
 void const_resolve_module_pub(Module *m);
 void prune_dead_uses(Module *m);

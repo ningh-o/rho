@@ -82,6 +82,32 @@ __attribute__((unused)) static bool ty_narrow32(Type *t) {
          t->kind == TY_U16 || t->kind == TY_I32 || t->kind == TY_U32;
 }
 
+// substitute raw field/payload types through an instance's args
+typedef struct EBind {
+  const char **names;
+  Type **tys;
+  size_t n;
+} EBind;
+
+static Type *inst_ty(Type *inst, Type *raw) {
+  if (!inst || inst->nargs == 0 || !raw)
+    return raw;
+  EnumDef *ed = inst->kind == TY_ENUM ? inst->edef : NULL;
+  StructDef *sd = inst->kind == TY_STRUCT ? inst->sdef : NULL;
+  NodeRef gw = ed   ? node_get(ed->decl)->a
+               : sd ? node_get(sd->decl)->a
+                    : NO_REF;
+  if (gw == NO_REF)
+    return raw;
+  RefList *g = node_get(gw)->list;
+  size_t n = inst->nargs;
+  const char **names = arena_alloc(g_arena, (n ? n : 1) * sizeof(char *), 8);
+  for (size_t i = 0; i < n && g; i++)
+    names[i] = node_get(reflist_at(g, i))->name;
+  EBind b = {names, inst->args, n};
+  return tsubst(raw, &b);
+}
+
 static size_t shape_nlocals(Type *t) {
   switch (t->kind) {
   case TY_PTR: return 1;
@@ -89,7 +115,7 @@ static size_t shape_nlocals(Type *t) {
   case TY_STRUCT: {
     size_t n = 0;
     for (size_t i = 0; i < t->sdef->nfields; i++)
-      n += shape_nlocals(t->sdef->fields[i].ty);
+      n += shape_nlocals(inst_ty(t, t->sdef->fields[i].ty));
     return n ? n : 1;
   }
   case TY_ENUM: {
@@ -97,7 +123,7 @@ static size_t shape_nlocals(Type *t) {
     for (size_t i = 0; i < t->edef->nvariants; i++) {
       size_t n = 0;
       for (size_t k = 0; k < t->edef->variants[i].nfields; k++)
-        n += shape_nlocals(t->edef->variants[i].fields[k].ty);
+        n += shape_nlocals(inst_ty(t, t->edef->variants[i].fields[k].ty));
       if (n > max) max = n;
     }
     return 1 + max;
@@ -110,7 +136,7 @@ static WTy local_wty_rec(Type *t, size_t j, size_t *base) {
   switch (t->kind) {
   case TY_STRUCT:
     for (size_t i = 0; i < t->sdef->nfields; i++) {
-      WTy w = local_wty_rec(t->sdef->fields[i].ty, j, base);
+      WTy w = local_wty_rec(inst_ty(t, t->sdef->fields[i].ty), j, base);
       if (*base > j) return w;
     }
     return W_I32;
@@ -119,7 +145,8 @@ static WTy local_wty_rec(Type *t, size_t j, size_t *base) {
     (*base)++;
     for (size_t i = 0; i < t->edef->nvariants; i++)
       for (size_t k = 0; k < t->edef->variants[i].nfields; k++) {
-        WTy w = local_wty_rec(t->edef->variants[i].fields[k].ty, j, base);
+        WTy w = local_wty_rec(inst_ty(t, t->edef->variants[i].fields[k].ty),
+                              j, base);
         if (*base > j) return w;
       }
     return W_I32;
@@ -219,7 +246,8 @@ static void wat_escape(Buf *b, const void *bytes, size_t n) {
 // ================================================================ fn ctx
 
 typedef struct VarInfo {
-  NodeRef node;   // let/param decl node (name on it)
+  const char *name; // binding name (let/param/binder)
+  NodeRef node;     // originating decl node (0 for binders)
   size_t vreg;
   bool managed;   // needs release at scope exit
   size_t scope;   // scope level
@@ -280,7 +308,7 @@ static size_t cx_fresh(FnCx *cx, Type *t) {
 static VarInfo *cx_var(FnCx *cx, const char *name) {
   for (size_t i = VLEN(cx->vars); i > 0; i--) {
     VarInfo *v = VAT(cx->vars, VarInfo, i - 1);
-    if (strcmp(node_get(v->node)->name, name) == 0)
+    if (strcmp(v->name, name) == 0)
       return v;
   }
   return NULL;
@@ -320,6 +348,10 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst);
 size_t static_slot(Module *m, const char *name);
 static void emit_printf(FnCx *cx, Node *call, bool err);
 static void emit_call_args(FnCx *cx, FnDef *f, RefList *args);
+static void emit_match(FnCx *cx, NodeRef er, size_t dst);
+static void bind_pattern(FnCx *cx, Node *pat, Type *st, size_t *slot);
+static void register_pattern_binders(FnCx *cx, Node *pat, Type *st);
+#define MATCH_DISCARD ((size_t)-1)
 static void emit_stmt(FnCx *cx, NodeRef sr);
 static void emit_scope_exit(FnCx *cx, size_t to_scope);
 static const char *fn_wat_name(FnDef *f) __attribute__((unused));
@@ -853,10 +885,231 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
     return;
   }
 
+  case NT_METHOD: {
+    EnumVariant *var = (EnumVariant *)e->sem2;
+    if (var) {
+      // Enum.Variant(…) construction: tag + payload slots
+      op(cx, "(local.set %zu (i32.const %d))\n", dst, var->tag);
+      size_t slot = dst + 1;
+      for (size_t i = 0; i < reflist_len(e->list); i++) {
+        Node *aw = node_get(reflist_at(e->list, i));
+        Type *ft = NULL;
+        // positional or named — both map by field order
+        const char *want = NULL;
+        if (aw->kind == NT_FIELDINIT)
+          want = aw->name;
+        for (size_t k = 0; k < var->nfields; k++) {
+          if (want && strcmp(var->fields[k].name, want) != 0)
+            continue;
+          extern Type *variant_field_ty(EnumVariant *, Type *, size_t);
+          ft = variant_field_ty(var, t, k);
+          if (aw->kind == NT_FIELDINIT) {
+            size_t tmp = cx_fresh(cx, ft);
+            emit_expr(cx, aw->a, tmp);
+            size_t n = shape_nlocals(ft);
+            for (size_t j = 0; j < n; j++)
+              op(cx, "(local.set %zu %s)\n", slot + j, L(cx, tmp + j));
+          } else {
+            size_t n = shape_nlocals(ft);
+            emit_expr(cx, aw->a, slot);
+            (void)n;
+          }
+          slot += shape_nlocals(ft);
+          if (want)
+            break;
+        }
+      }
+      return;
+    }
+    op(cx, ";; method call (T1.7b)\n");
+    return;
+  }
+
+  case NT_FIELD_E: {
+    EnumVariant *var = (EnumVariant *)e->sem2;
+    if (var) { // unit variant value
+      op(cx, "(local.set %zu (i32.const %d))\n", dst, var->tag);
+      // payload slots zeroed by local default
+      return;
+    }
+    op(cx, ";; field access (T1.7b)\n");
+    return;
+  }
+
+  case NT_MATCH_EXPR: {
+    emit_match(cx, er, dst);
+    return;
+  }
+
+  case NT_QMARK: {
+    // operand Option/Result: tag at vreg; zero-payload = absence
+    Type *ot = (Type *)node_get(e->a)->sem;
+    size_t v = cx_fresh(cx, ot);
+    emit_expr(cx, e->a, v);
+    // find the "absent" variant tag (None / Err) — declared order: the
+    // prelude's second variant in both cases
+    EnumDef *ed = ot->edef;
+    int absent_tag = -1;
+    for (size_t i = 0; i < ed->nvariants; i++) {
+      const char *vn = ed->variants[i].name;
+      if (strcmp(vn, "None") == 0 || strcmp(vn, "Err") == 0)
+        absent_tag = ed->variants[i].tag;
+    }
+    op(cx, "(if (i32.eq (local.get %zu) (i32.const %d)) (then\n", v,
+       absent_tag);
+    // propagate: build the fn's error value from the operand payload
+    if (cx->ret && cx->ret->kind == TY_ENUM) {
+      size_t ev = cx_fresh(cx, cx->ret);
+      // copy the whole operand shape; retag with the absent tag
+      size_t n = shape_nlocals(ot);
+      for (size_t i = 0; i < n; i++)
+        op(cx, "(local.set %zu %s)\n", ev + i, L(cx, v + i));
+      op(cx, "(local.set %zu (i32.const %d))\n", ev, absent_tag);
+      emit_scope_exit(cx, 0);
+      n = shape_nlocals(cx->ret);
+      for (size_t i = 0; i < n; i++)
+        op(cx, "%s", L(cx, ev + i));
+      op(cx, "(return))\n");
+    } else {
+      op(cx, "(unreachable))\n");
+    }
+    op(cx, ")\n");
+    // value = payload slots
+    size_t n = shape_nlocals(ot);
+    for (size_t i = 1; i < n; i++)
+      op(cx, "(local.set %zu %s)\n", dst + i - 1, L(cx, v + i));
+    return;
+  }
+
   default:
     op(cx, ";; UNEMITTED %s\n", node_kind_name(e->kind));
     return;
   }
+}
+
+// match: if-chain over arms by tag (br_table is optimizer backlog);
+// literal/string arms compare values
+static void emit_match(FnCx *cx, NodeRef er, size_t dst) {
+  Node *m = node_get(er);
+  Type *st = (Type *)node_get(m->a)->sem;
+  size_t v = cx_fresh(cx, st);
+  emit_expr(cx, m->a, v);
+  bool is_enum = st->kind == TY_ENUM;
+  (void)is_enum;
+  for (size_t i = 0; i < reflist_len(m->list); i++) {
+    Node *arm = node_get(reflist_at(m->list, i));
+    Node *pat = node_get(arm->a);
+    bool wildcard = pat->kind == NT_PWILD;
+    if (!wildcard) {
+      if (pat->kind == NT_PVAR) {
+        EnumVariant *var = NULL;
+        for (size_t k = 0; k < st->edef->nvariants; k++)
+          if (strcmp(st->edef->variants[k].name,
+                     strchr(pat->name, '.') + 1) == 0)
+            var = &st->edef->variants[k];
+        op(cx, "(if (i32.eq (local.get %zu) (i32.const %d)) (then\n", v,
+           var ? var->tag : -1);
+      } else {
+        op(cx, ";; literal arm (T1.7c cont)\n");
+        continue;
+      }
+    }
+    // bind pattern locals from the payload run
+    cx->scope++;
+    size_t slot = v + 1;
+    register_pattern_binders(cx, pat, st);
+    bind_pattern(cx, pat, st, &slot);
+    // arm value
+    if (dst != SIZE_MAX) {
+      emit_expr(cx, arm->b, dst);
+    } else {
+      Node *ab = node_get(arm->b);
+      if (ab->kind == NT_EXPRSTMT && ab->op == 3)
+        emit_stmt(cx, arm->b);
+      else {
+        Type *at = (Type *)ab->sem;
+        size_t tmp = cx_fresh(cx, at);
+        emit_expr(cx, arm->b, tmp);
+        release(cx, at, tmp);
+      }
+    }
+    cx->scope--;
+    if (!wildcard)
+      op(cx, "))\n");
+  }
+}
+
+// register binder variables (payload shapes per the variant)
+static void register_pattern_binders(FnCx *cx, Node *pat, Type *st) {
+  if (pat->kind == NT_PBIND) {
+    // binder typed by the checker's sem annotation
+    Type *bt = (Type *)pat->sem;
+    if (!bt)
+      bt = ty_unit;
+    size_t v = cx_fresh(cx, bt);
+    VarInfo *vi = VPUSH(cx->vars, VarInfo);
+    vi->name = pat->name;
+    vi->node = NO_REF; // pattern binder
+    vi->vreg = v;
+    vi->managed = type_is_managed(bt);
+    vi->scope = cx->scope;
+    vi->ty = bt;
+    return;
+  }
+  if (pat->kind == NT_PVAR) {
+    for (size_t i = 0; i < reflist_len(pat->list); i++) {
+      Node *sub = node_get(reflist_at(pat->list, i));
+      if (pat->op == VAR_STRUCT && sub->kind == NT_FIELD)
+        register_pattern_binders(cx, node_get(sub->a), st);
+      else
+        register_pattern_binders(cx, sub, st);
+    }
+    return;
+  }
+}
+
+// bind pattern locals to the subject's payload slots
+static void bind_pattern(FnCx *cx, Node *pat, Type *st, size_t *slot) {
+  if (pat->kind == NT_PWILD)
+    return;
+  if (pat->kind == NT_PBIND) {
+    VarInfo *v = cx_var(cx, pat->name);
+    if (v) {
+      size_t n = shape_nlocals(v->ty);
+      for (size_t i = 0; i < n; i++)
+        op(cx, "(local.set %zu %s)\n", v->vreg + i, L(cx, *slot + i));
+      *slot += n;
+    }
+    return;
+  }
+  if (pat->kind == NT_PVAR) {
+    // variant pattern: sub-patterns bind the variant's fields in order
+    for (size_t i = 0; i < reflist_len(pat->list); i++) {
+      Node *sub = node_get(reflist_at(pat->list, i));
+      if (pat->op == VAR_STRUCT && sub->kind == NT_FIELD)
+        bind_pattern(cx, node_get(sub->a), st, slot);
+      else if (sub->kind == NT_PBIND || sub->kind == NT_PWILD ||
+               sub->kind == NT_PVAR)
+        bind_pattern(cx, sub, st, slot);
+      // literal sub-patterns consume their slots without binding
+      else {
+        extern size_t pattern_slot_size(Node *);
+        *slot += pattern_slot_size(sub);
+      }
+    }
+    return;
+  }
+}
+
+size_t pattern_slot_size(Node *p) {
+  (void)p;
+  return 1; // refined with variant field typing (T1.7c cont)
+}
+
+// the payload field type inside a CONSTRUCTED instance (params
+// substituted by the instance's args)
+Type *variant_field_ty(EnumVariant *var, Type *inst, size_t k) {
+  return inst_ty(inst, var->fields[k].ty);
 }
 
 // statics: memory slots assigned in module symbol order (deterministic);
@@ -996,6 +1249,7 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
     size_t v = cx_fresh(cx, t);
     emit_expr(cx, s->b, v);
     VarInfo *vi = VPUSH(cx->vars, VarInfo);
+    vi->name = s->name;
     vi->node = sr;
     vi->vreg = v;
     vi->managed = type_is_managed(t);
@@ -1230,6 +1484,11 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
     return;
   }
 
+  case NT_MATCH: {
+    emit_match(cx, sr, MATCH_DISCARD);
+    return;
+  }
+
   default:
     op(cx, ";; STMT-UNEMITTED %s\n", node_kind_name(s->kind));
   }
@@ -1267,12 +1526,16 @@ static void emit_fndef(Em *em, FnDef *f) {
     Type *pt = f->sig->params[i].ty ? f->sig->params[i].ty : ty_unit;
     size_t v = cx_fresh(&cx, pt);
     VarInfo *vi = VPUSH(cx.vars, VarInfo);
+    vi->name = node_get(f->sig->params[i].decl)->name;
     vi->node = f->sig->params[i].decl;
     vi->vreg = v;
     vi->managed = type_is_managed(pt);
     vi->scope = 0;
     vi->ty = pt;
   }
+  if (getenv("RHO_DEBUG_SHAPE"))
+    fprintf(stderr, "[shape] %s ret-kind=%d nlocals=%zu\n", f->name,
+            (int)cx.ret->kind, shape_nlocals(cx.ret));
   emit_stmt(&cx, f->body);
 
   // assemble: (func $name (param…) (result…) (local…) body)

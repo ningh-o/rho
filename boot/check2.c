@@ -480,7 +480,7 @@ typedef struct TBind {
   size_t n;
 } TBind;
 
-static Type *tsubst(Type *t, TBind *b) {
+static Type *tsubst_impl(Type *t, TBind *b) {
   if (!t)
     return t;
   if (t->kind == TY_PARAM) {
@@ -658,6 +658,7 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
                                            m->list);
         // bind the declaration's generic params to the instance args
         TBind tb = {edef_gnames(lk.edef), inst->args, lk.edef->ngparams};
+        node_get(er)->sem2 = var; // the chosen variant
         // tuple-form constructor: positional args (or named for struct
         // variants)
         size_t nfields = var->nfields;
@@ -915,8 +916,10 @@ static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
         if (lk.kind == LOOK_ENUM) {
           for (size_t v = 0; v < lk.edef->nvariants; v++)
             if (strcmp(lk.edef->variants[v].name, e->name) == 0 &&
-                lk.edef->variants[v].form == VAR_UNIT)
+                lk.edef->variants[v].form == VAR_UNIT) {
+              node_get(er)->sem2 = &lk.edef->variants[v];
               return type_enum(lk.edef, NULL, lk.edef->ngparams);
+            }
           err_at(c, e, "enum %s has no unit variant '%s'", recv->name,
                  e->name);
           return ty_unit;
@@ -1347,6 +1350,7 @@ static void check_pattern(FnCtx *c, Node *p, Type *st) {
     l->ty = st;
     l->mut = false;
     l->decl = NO_REF;
+    p->sem = st; // the emitter reads the binder's type
     return;
   }
   case NT_PLIT:
@@ -1692,3 +1696,6 @@ bool check_bodies(Program *p) {
   }
   return !g_had_error;
 }
+
+// public shim (sem.h): TBind is checker-internal
+Type *tsubst(Type *t, void *b) { return tsubst_impl(t, (TBind *)b); }

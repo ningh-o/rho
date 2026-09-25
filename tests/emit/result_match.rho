@@ -1,0 +1,11 @@
+// out: ok=5
+// out: err=neg
+fn parse(n: i32) -> Result[i32, string] {
+  if n < 0 { return Result.Err("neg"); }
+  return Result.Ok(n);
+}
+fn main() -> i32 {
+  match parse(5) { Result.Ok(v) => printf("ok={}\n", v), Result.Err(e) => printf("err={}\n", e), }
+  match parse((0 - 1)) { Result.Ok(v) => printf("ok={}\n", v), Result.Err(e) => printf("err={}\n", e), }
+  return 0;
+}
