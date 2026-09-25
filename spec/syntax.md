@@ -156,14 +156,11 @@ therefore come last when several parameters are declared.
 - Overloads: several functions may share one name in a module (and
   across modules — see `type-system.md` §5). Resolution is exact-match
   unique.
-- A `mut` parameter is a mutable local copy: the caller never sees
-  assignments to it (values copy at every boundary — `type-system.md`
-  §11); without `mut` a parameter is immutable, exactly like a `let`
-  without `mut`. A parameter holding a handle (`*T`, `[]T`, `string`,
-  `dyn`) is a copied handle over shared storage: the copy is the
-  binding, never the pointee, so writes through it (`p.x = 1`, a
-  slice-alias store) are caller-visible. Visibility follows the
-  storage, not the `mut`.
+- `mut` sits before the parameter name and is legal only on
+  handle-typed parameters (`*T`, `[]T`, `string`, `dyn`): it grants
+  write access to the shared view. Value parameters are immutable —
+  the body rebinds with `let mut p = p;` when it must mutate its
+  copy. The full view law is the design (TODO.md §18).
 - Closures are anonymous function expressions (§6.8).
 
 ### 4.2 Structs, enums, traits, impls
@@ -306,7 +303,10 @@ there is no truthiness.
 ### 6.2 Primary expressions
 
 - literals (§2), paths (`a` or `a.b` — module items and enum
-  constructors), calls `f(args)`, method calls `x.m(args)`,
+  constructors), calls `f(args)` — an argument may be prefixed `mut`
+  when, and only when, the callee's parameter is a `mut` view, and
+  the argument's own binding must be `mut` (TODO.md §18), method
+  calls `x.m(args)`,
   associated calls `T.m(args)`
 - field access `p.x`, indexing `s[i]` (index type `usize`)
 - slicing `s[a..b]` with either end open (`s[..n]`, `s[n..]`)

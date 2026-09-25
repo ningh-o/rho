@@ -51,7 +51,8 @@ Pointer types do not convert via `as`.
 
 A trait is a set of method signatures. Satisfaction is **name +
 signature match**: a type satisfies `trait Show { fn to_str(self) -> string }`
-when a method `to_str` with a matching signature exists for it. Impl
+when a method `to_str` with a matching signature exists for it
+(including the receiver's `mut` form, §14). Impl
 blocks (`impl Show for Pt { … }`) and bare methods
 (`fn Pt.to_str(self: *Pt) -> string`) both provide methods; multiple
 impl blocks may target the same trait; methods and impls may be
@@ -72,7 +73,9 @@ simultaneously with different interpretations — if two distinct
 signatures both exact-match after literal adaptation, it is ambiguous.
 
 Trait satisfaction uses the same rule: the satisfying method's
-signature must match the trait's signature exactly.
+signature must match the trait's signature exactly. Receiver
+`mut`-ness (§14) is not a resolution axis: two candidates differing
+only in `mut self` are an ambiguity.
 
 ## 6. Method visibility is import-scoped
 
@@ -174,3 +177,14 @@ a `bool`, neither converts).
 Integer semantics (wrap, `MIN / -1 = MIN`, `/0 %0` panic, shifts mask
 by the left width) and float semantics (IEEE-754, `/0.0` = inf) are
 specified in `spec.md` §4.
+
+## 14. The mut view
+
+Assignment through a handle binding — field stores, slice-element
+stores, `mut`-receiver method calls — requires the binding to be
+`mut` (TODO.md §18); a call-site argument marker pairs with a `mut`
+parameter in both directions. `mut` changes permission, never
+representation: copying, retain/release, and layout are §2's law
+unchanged. The view is shallow: a handle copied out of a non-`mut`
+binding is governed by its own binding's `mut` — the language never
+tracks read-only-ness transitively.
