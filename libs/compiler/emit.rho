@@ -174,21 +174,39 @@ fn env_bind(e: *Env, name: string, slot: i64) {
   e.n = e.n + 1;
 }
 
-// the wat operator for an expression's op byte
-fn wat_op(op: u8) -> string {
-  if op == 43 {
+// the wat operator for an op code
+fn wat_op(op: i64) -> string {
+  if op == 0 {
     return "i64.add";
   }
-  if op == 45 {
+  if op == 1 {
     return "i64.sub";
   }
-  if op == 42 {
+  if op == 2 {
     return "i64.mul";
   }
-  if op == 47 {
+  if op == 3 {
     return "i64.div_s";
   }
-  return "i64.rem_s";
+  if op == 4 {
+    return "i64.rem_s";
+  }
+  if op == 5 {
+    return "i64.lt_s";
+  }
+  if op == 6 {
+    return "i64.gt_s";
+  }
+  if op == 7 {
+    return "i64.le_s";
+  }
+  if op == 8 {
+    return "i64.ge_s";
+  }
+  if op == 9 {
+    return "i64.eq";
+  }
+  return "i64.ne";
 }
 
 // compile an expression: lines that leave one i64 on the stack
@@ -221,10 +239,8 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env) -> string {
   return out;
 }
 
-pub fn emit(nodes: []*Stmt) -> string {
-  let pool = new_pool();
-  let env = env_new(64);
-  let mut next_local: i64 = 2; // 0/1 are the $a/$l capture pair
+fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
+               next_local: *NextLocal) -> string {
   let mut body: string = "";
   let mut i: usize = 0;
   while i < len(nodes) {
@@ -258,15 +274,71 @@ pub fn emit(nodes: []*Stmt) -> string {
       match st.val {
         Option.Some(e) => {
           body = body + emit_expr(pool, e, env);
-          body = body + "    (local.set " + next_local.to_str() + ")\n";
-          env_bind(env, st.name, next_local);
-          next_local = next_local + 1;
+          body = body + "    (local.set " + next_local.v.to_str() + ")\n";
+          env_bind(env, st.name, next_local.v);
+          next_local.v = next_local.v + 1;
+        },
+        Option.None => {},
+      }
+    }
+    if st.tag == parse.ST_SET {
+      let slot: i64 = env_look(env, st.name);
+      match st.val {
+        Option.Some(e) => {
+          body = body + emit_expr(pool, e, env);
+          if slot >= 0 {
+            body = body + "    (local.set " + slot.to_str() + ")\n";
+          }
+        },
+        Option.None => {},
+      }
+    }
+    if st.tag == parse.ST_IF {
+      match st.val {
+        Option.Some(cond) => {
+          // flat if: the condition's stack code precedes the keyword
+          body = body + emit_expr(pool, cond, env);
+          body = body + "    if\n";
+          body = body + emit_stmts(st.body, pool, env, next_local);
+          if len(st.body2) > 0 {
+            body = body + "    else\n";
+            body = body + emit_stmts(st.body2, pool, env, next_local);
+          }
+          body = body + "    end\n";
+        },
+        Option.None => {},
+      }
+    }
+    if st.tag == parse.ST_WHILE {
+      match st.val {
+        Option.Some(cond) => {
+          body = body + "    (loop $w\n";
+          body = body + emit_expr(pool, cond, env);
+          body = body + "    if\n";
+          body = body + emit_stmts(st.body, pool, env, next_local);
+          body = body + "      (br $w)\n";
+          body = body + "    end\n";
+          body = body + "    )\n";
         },
         Option.None => {},
       }
     }
     i = i + 1;
   }
+  return body;
+}
+
+// the next-local counter threads through the recursion
+struct NextLocal {
+  v: i64,
+}
+
+pub fn emit(nodes: []*Stmt) -> string {
+  let pool = new_pool();
+  let env = env_new(64);
+  let next_local = new NextLocal { v: 2 }; // 0/1 are the $a/$l pair
+  let body: string = emit_stmts(nodes, pool, env, next_local);
+  let next_local_n: i64 = next_local.v;
   // assemble: header, memory, runtime, _start with the let locals
   let mut out: string = "";
   out = out + "(module\n";
@@ -280,8 +352,8 @@ pub fn emit(nodes: []*Stmt) -> string {
   out = out + RUNTIME;
   out = out + "  (export \"_start\" (func $_start))\n";
   out = out + "  (func $_start (local $a i32) (local $l i32)\n";
-  let mut li: i64 = 0;
-  while li < next_local {
+  let mut li: i64 = 2;
+  while li < next_local_n {
     out = out + "    (local $v" + li.to_str() + " i64)\n";
     li = li + 1;
   }

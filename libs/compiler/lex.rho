@@ -56,6 +56,9 @@ fn is_keyword(s: string) -> bool {
   if s == "i32" || s == "string" {
     return true;
   }
+  if s == "if" || s == "else" || s == "while" {
+    return true;
+  }
   return false;
 }
 
@@ -135,9 +138,29 @@ pub fn lex(src: string) -> []*Tok {
       n = n + 1;
       continue;
     }
-    // punctuation: one character carries the skeleton grammar
+    // punctuation: two-char operators first, then single characters
     let pstart: usize = c.pos;
+    let b2: u8 = b;
+    let mut two: bool = false;
+    if c.pos + 1 < len(src) {
+      let nx: u8 = src[c.pos + 1];
+      if b2 == 61 && nx == 61 {
+        two = true;
+      }
+      if b2 == 33 && nx == 61 {
+        two = true;
+      }
+      if b2 == 60 && nx == 61 {
+        two = true;
+      }
+      if b2 == 62 && nx == 61 {
+        two = true;
+      }
+    }
     adv(c);
+    if two {
+      adv(c);
+    }
     toks[n] = new Tok { kind: TK_PUNCT, text: src[pstart..c.pos],
                         ival: 0, line: line };
     n = n + 1;

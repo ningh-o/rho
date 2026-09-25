@@ -14,7 +14,7 @@ pub struct Expr {
   tag: i32,      // EX_*
   lit: i64,      // literal value
   name: string,  // variable name
-  op: u8,        // binary operator byte
+  op: i64,       // binary operator code
   lhs: ?*Expr,
   rhs: ?*Expr,
 }
@@ -22,14 +22,25 @@ pub struct Expr {
 pub const ST_PF: i32 = 0;
 pub const ST_LET: i32 = 1;
 pub const ST_RET: i32 = 2;
+pub const ST_IF: i32 = 3;
+pub const ST_WHILE: i32 = 4;
+pub const ST_SET: i32 = 5;
 
 pub struct Stmt {
-  tag: i32,      // ST_*
-  fmt: string,   // printf: the format text
-  args: []*Expr, // printf: one expr per hole
-  name: string,  // let: the bound name
-  val: ?*Expr,   // let: the bound expr
-  ret: i64,      // return: the value
+  tag: i32,        // ST_*
+  fmt: string,     // printf: the format text
+  args: []*Expr,   // printf: one expr per hole
+  name: string,    // let: the bound name
+  val: ?*Expr,     // let/if/while: the bound/cond expr
+  ret: i64,        // return: the value
+  body: []*Stmt,   // if/while: the statements
+  body2: []*Stmt,  // if: the else statements
+}
+
+fn mk_stmt(tag: i32) -> *Stmt {
+  return new Stmt { tag: tag, fmt: "", args: make([]*Expr, 0),
+                    name: "", val: Option.None, ret: 0,
+                    body: make([]*Stmt, 0), body2: make([]*Stmt, 0) };
 }
 
 pub fn lit(v: i64) -> *Expr {
@@ -47,7 +58,43 @@ pub fn strlit(text: string) -> *Expr {
                      lhs: Option.None, rhs: Option.None };
 }
 
-pub fn bin(op: u8, lhs: *Expr, rhs: *Expr) -> *Expr {
+// operator codes: 0=+ 1=- 2=* 3=/ 4=% 5=< 6=> 7=<= 8=>= 9=== 10=!=
+pub fn op_code(t: *Tok) -> i64 {
+  let a: u8 = t.text[0];
+  if len(t.text) == 2 {
+    if a == 61 {
+      return 9;
+    }
+    if a == 33 {
+      return 10;
+    }
+    if a == 60 {
+      return 7;
+    }
+    return 8;
+  }
+  if a == 43 {
+    return 0;
+  }
+  if a == 45 {
+    return 1;
+  }
+  if a == 42 {
+    return 2;
+  }
+  if a == 47 {
+    return 3;
+  }
+  if a == 37 {
+    return 4;
+  }
+  if a == 60 {
+    return 5;
+  }
+  return 6;
+}
+
+pub fn bin(op: i64, lhs: *Expr, rhs: *Expr) -> *Expr {
   return new Expr { tag: EX_BIN, lit: 0, name: "", op: op,
                      lhs: Option.Some(lhs), rhs: Option.Some(rhs) };
 }
@@ -78,20 +125,58 @@ fn is_punct(t: *Tok, ch: u8) -> bool {
   return t.kind == lex.TK_PUNCT && len(t.text) == 1 && t.text[0] == ch;
 }
 
-// precedence: 1 = + -, 2 = * / %
-fn prec(op: u8) -> i32 {
-  if op == 43 || op == 45 {
+// precedence: 0 comparisons, 1 = + -, 2 = * / %
+fn prec_of(t: *Tok) -> i32 {
+  if len(t.text) == 2 {
+    return 0;
+  }
+  let b: u8 = t.text[0];
+  if b == 60 || b == 62 {
+    return 0;
+  }
+  if b == 43 || b == 45 {
     return 1;
   }
   return 2;
 }
 
 fn is_binop(t: *Tok) -> bool {
-  if t.kind != lex.TK_PUNCT || len(t.text) != 1 {
+  if t.kind != lex.TK_PUNCT {
+    return false;
+  }
+  if len(t.text) == 2 {
+    // == != <= >=
+    let a: u8 = t.text[0];
+    let b: u8 = t.text[1];
+    return b == 61 && (a == 61 || a == 33 || a == 60 || a == 62);
+  }
+  if len(t.text) != 1 {
     return false;
   }
   let b: u8 = t.text[0];
-  return b == 43 || b == 45 || b == 42 || b == 47 || b == 37;
+  return b == 43 || b == 45 || b == 42 || b == 47 || b == 37 ||
+         b == 60 || b == 62;
+}
+
+// the wasm compare for an operator pair (spelling, is_eq_family)
+fn cmp_wat(t: *Tok) -> string {
+  let a: u8 = t.text[0];
+  if len(t.text) == 2 {
+    if a == 61 {
+      return "i64.eq";
+    }
+    if a == 33 {
+      return "i64.ne";
+    }
+    if a == 60 {
+      return "i64.le_s";
+    }
+    return "i64.ge_s";
+  }
+  if a == 60 {
+    return "i64.lt_s";
+  }
+  return "i64.gt_s";
 }
 
 // split a format literal into its text pieces around {} holes
@@ -153,11 +238,11 @@ fn parse_bin(c: *PCur, min_prec: i32) -> *Expr {
     if !is_binop(t) {
       break;
     }
-    let p: i32 = prec(t.text[0]);
+    let p: i32 = prec_of(t);
     if p < min_prec {
       break;
     }
-    let op: u8 = t.text[0];
+    let op: i64 = op_code(t);
     tkadv(c);
     let rhs: *Expr = parse_bin(c, p + 1);
     lhs = bin(op, lhs, rhs);
@@ -165,7 +250,25 @@ fn parse_bin(c: *PCur, min_prec: i32) -> *Expr {
   return lhs;
 }
 
-// one statement: printf(..); | let name = expr; | return expr?;
+// a { stmt* } block
+fn parse_block(c: *PCur) -> []*Stmt {
+  let out: []*Stmt = make([]*Stmt, 64);
+  let mut n: usize = 0;
+  if !eat_punct(c, 123) {
+    return out[0..0];
+  }
+  while tk(c).kind != lex.TK_EOF {
+    if is_punct(tk(c), 125) {
+      tkadv(c);
+      break;
+    }
+    out[n] = parse_stmt(c);
+    n = n + 1;
+  }
+  return out[0..n];
+}
+
+// one statement: printf/let/return/if/while
 fn parse_stmt(c: *PCur) -> *Stmt {
   let t = tk(c);
   if t.kind == lex.TK_KEYWORD && t.text == "return" {
@@ -177,8 +280,9 @@ fn parse_stmt(c: *PCur) -> *Stmt {
       tkadv(c);
     }
     eat_punct(c, 59);
-    return new Stmt { tag: ST_RET, fmt: "", args: make([]*Expr, 0),
-                      name: "", val: Option.None, ret: v };
+    let st = mk_stmt(ST_RET);
+    st.ret = v;
+    return st;
   }
   if t.kind == lex.TK_KEYWORD && t.text == "let" {
     tkadv(c);
@@ -188,31 +292,43 @@ fn parse_stmt(c: *PCur) -> *Stmt {
       nm = nt.text;
       tkadv(c);
     }
+    if nm == "mut" {
+      let mt = tk(c);
+      if mt.kind == lex.TK_IDENT || mt.kind == lex.TK_KEYWORD {
+        nm = mt.text;
+        tkadv(c);
+      }
+    }
     // optional : type
     if is_punct(tk(c), 58) {
       tkadv(c);
       tkadv(c);
     }
     if !eat_punct(c, 61) {
-      return new Stmt { tag: ST_RET, fmt: "", args: make([]*Expr, 0),
-                        name: "", val: Option.None, ret: 0 - 21 };
+      let bad = mk_stmt(ST_RET);
+      bad.ret = 0 - 21;
+      return bad;
     }
     let e = parse_bin(c, 1);
     eat_punct(c, 59);
-    return new Stmt { tag: ST_LET, fmt: "", args: make([]*Expr, 0),
-                      name: nm, val: Option.Some(e), ret: 0 };
+    let st = mk_stmt(ST_LET);
+    st.name = nm;
+    st.val = Option.Some(e);
+    return st;
   }
   if (t.kind == lex.TK_IDENT || t.kind == lex.TK_KEYWORD) &&
       t.text == "printf" {
     tkadv(c);
     if !eat_punct(c, 40) {
-      return new Stmt { tag: ST_RET, fmt: "", args: make([]*Expr, 0),
-                        name: "", val: Option.None, ret: 0 - 22 };
+      let bad = mk_stmt(ST_RET);
+      bad.ret = 0 - 22;
+      return bad;
     }
     let ft = tk(c);
     if ft.kind != lex.TK_STR {
-      return new Stmt { tag: ST_RET, fmt: "", args: make([]*Expr, 0),
-                        name: "", val: Option.None, ret: 0 - 23 };
+      let bad = mk_stmt(ST_RET);
+      bad.ret = 0 - 23;
+      return bad;
     }
     tkadv(c);
     let args: []*Expr = make([]*Expr, 8);
@@ -223,13 +339,49 @@ fn parse_stmt(c: *PCur) -> *Stmt {
     }
     eat_punct(c, 41);
     eat_punct(c, 59);
-    return new Stmt { tag: ST_PF, fmt: ft.text, args: args[0..na],
-                      name: "", val: Option.None, ret: 0 };
+    let st = mk_stmt(ST_PF);
+    st.fmt = ft.text;
+    st.args = args[0..na];
+    return st;
+  }
+  if t.kind == lex.TK_IDENT && c.pos + 1 < len(c.toks) &&
+      is_punct(c.toks[c.pos + 1], 61) {
+    // name = expr;
+    tkadv(c); // the name
+    eat_punct(c, 61); // '='
+    let e = parse_bin(c, 1);
+    eat_punct(c, 59);
+    let st = mk_stmt(ST_SET);
+    st.name = t.text;
+    st.val = Option.Some(e);
+    return st;
+  }
+  if t.kind == lex.TK_KEYWORD && t.text == "if" {
+    tkadv(c);
+    let st = mk_stmt(ST_IF);
+    let cond = parse_bin(c, 0);
+    st.val = Option.Some(cond);
+    st.body = parse_block(c);
+    let t2 = tk(c);
+    if t2.kind == lex.TK_KEYWORD && t2.text == "else" {
+      tkadv(c);
+      st.body2 = parse_block(c);
+    }
+    return st;
+  }
+  if t.kind == lex.TK_KEYWORD && t.text == "while" {
+    tkadv(c);
+    let st = mk_stmt(ST_WHILE);
+    let cond = parse_bin(c, 0);
+    st.val = Option.Some(cond);
+    st.body = parse_block(c);
+    return st;
   }
   // unknown statement: skip a token so the walk makes progress
   tkadv(c);
-  return new Stmt { tag: ST_RET, fmt: "", args: make([]*Expr, 0),
-                    name: "", val: Option.None, ret: 0 - 100 };
+  let bad = mk_stmt(ST_RET);
+  bad.ret = 0 - 100;
+  return bad;
 }
 
 pub fn parse(toks: []*Tok, src: string) -> []*Stmt {
