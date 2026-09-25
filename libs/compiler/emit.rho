@@ -368,6 +368,12 @@ const RUNTIME: string = """
 // the zeroed bump allocator and the panic exit (allocations grow
 // down from 65528; the digit scratch owns [~4076, 4096) and the
 // string pool grows up from 1024 — corpus scale never crosses)
+// the shared zeroed None box: every fresh Option slot points at it
+// (immutable payloads make sharing safe)
+const NONEBOX: string = """
+  (global $w_none_box (mut i64) (i64.const 0))
+""";
+
 const ALLOC: string = """
   (global $w_alloc_top (mut i32) (i32.const 65528))
   (func $w_alloc (param $n i32) (result i32)
@@ -480,6 +486,8 @@ struct Env {
   sraws: []string,
   skinds: []i64, // 0 folded string, 1 runtime string pair, 2 slice pair
   sn: usize,
+  selnames: []string, // slice bindings whose ELEMENTS are enums
+  selvals: []string,  // the element's enum name
   // the enclosing fn context (an expression-position match emits
   // statement-bearing arm bodies through it)
   infn: bool,
@@ -521,6 +529,8 @@ fn env_new(cap: usize) -> *Env {
                    saddrs: make([]i64, cap), slens: make([]i64, cap),
                    sraws: make([]string, cap),
                    skinds: make([]i64, cap), sn: 0,
+                   selnames: make([]string, 16),
+                   selvals: make([]string, 16),
                    infn: false, retslot: 0 - 1,
                    loops: loops_new(), dstack: dstack_new(),
                    tfd: Option.None };
@@ -741,12 +751,12 @@ fn decoded_text(raw: string) -> string {
 }
 
 fn env_look(e: *Env, name: string) -> i64 {
-  let mut i: usize = 0;
-  while i < e.n {
-    if e.names[i] == name {
-      return e.slots[i];
+  let mut i: usize = e.n;
+  while i > 0 {
+    if e.names[i - 1] == name {
+      return e.slots[i - 1];
     }
-    i = i + 1;
+    i = i - 1;
   }
   return 0 - 1;
 }
@@ -810,45 +820,71 @@ fn env_bind_enum(e: *Env, name: string, slot: i64, ename: string) {
 }
 
 fn env_enum_of(e: *Env, name: string) -> string {
-  let mut i: usize = 0;
-  while i < e.n {
-    if e.names[i] == name {
-      return e.senum[i];
+  let mut i: usize = e.n;
+  while i > 0 {
+    if e.names[i - 1] == name {
+      return e.senum[i - 1];
     }
-    i = i + 1;
+    i = i - 1;
+  }
+  return "";
+}
+
+fn env_bind_sliceelem(e: *Env, name: string, etext: string) {
+  e.selnames[0] = name;
+  e.selvals[0] = etext;
+}
+
+// the element text's pointer target — Some/Ok binder type
+fn env_slicept_of(e: *Env, name: string) -> string {
+  if e.selnames[0] == name {
+    return type_ptr_target(e.selvals[0]);
+  }
+  return "";
+}
+
+fn env_sliceelem_of(e: *Env, name: string, prog: *Prog) -> string {
+  if e.selnames[0] == name {
+    let t: string = e.selvals[0];
+    if len(t) >= 1 && (t[0] == 63 || t[0] == 79) {
+      return "Option";
+    }
+    if en_index(prog, t) >= 0 {
+      return t;
+    }
   }
   return "";
 }
 
 fn env_val_of(e: *Env, name: string) -> string {
-  let mut i: usize = 0;
-  while i < e.n {
-    if e.names[i] == name {
-      return e.sval[i];
+  let mut i: usize = e.n;
+  while i > 0 {
+    if e.names[i - 1] == name {
+      return e.sval[i - 1];
     }
-    i = i + 1;
+    i = i - 1;
   }
   return "";
 }
 
 fn env_val_base(e: *Env, name: string) -> i64 {
-  let mut i: usize = 0;
-  while i < e.n {
-    if e.names[i] == name {
-      return e.vbases[i];
+  let mut i: usize = e.n;
+  while i > 0 {
+    if e.names[i - 1] == name {
+      return e.vbases[i - 1];
     }
-    i = i + 1;
+    i = i - 1;
   }
   return 0 - 1;
 }
 
 fn env_ptr_of(e: *Env, name: string) -> string {
-  let mut i: usize = 0;
-  while i < e.n {
-    if e.names[i] == name {
-      return e.sptr[i];
+  let mut i: usize = e.n;
+  while i > 0 {
+    if e.names[i - 1] == name {
+      return e.sptr[i - 1];
     }
-    i = i + 1;
+    i = i - 1;
   }
   return "";
 }
@@ -929,12 +965,12 @@ fn bin_width(e: *Expr, env: *Env, prog: *Prog) -> i64 {
 }
 
 fn env_width_of(e: *Env, name: string) -> i64 {
-  let mut i: usize = 0;
-  while i < e.n {
-    if e.names[i] == name {
-      return e.vwidths[i];
+  let mut i: usize = e.n;
+  while i > 0 {
+    if e.names[i - 1] == name {
+      return e.vwidths[i - 1];
     }
-    i = i + 1;
+    i = i - 1;
   }
   return 0;
 }
@@ -1084,6 +1120,17 @@ fn en_vslots(prog: *Prog, ei: i64, vname: string) -> i64 {
   return 0;
 }
 
+// Option[..]/Result[..] collapse to the builtin name
+fn norm_enum(rt: string) -> string {
+  if len(rt) >= 7 && rt[0] == 79 && rt[1] == 112 && rt[2] == 116 {
+    return "Option";
+  }
+  if len(rt) >= 7 && rt[0] == 82 && rt[1] == 101 && rt[2] == 115 {
+    return "Result";
+  }
+  return rt;
+}
+
 // the enum an expression's value belongs to, "" when none
 fn expr_enum_type(e: *Expr, env: *Env, prog: *Prog) -> string {
   if e.tag == parse.EX_VAR {
@@ -1113,9 +1160,24 @@ fn expr_enum_type(e: *Expr, env: *Env, prog: *Prog) -> string {
     return "";
   }
   if e.tag == parse.EX_CALL {
-    let rt: string = fn_rtype_of(prog, e.name);
-    if len(rt) > 0 && en_index(prog, rt) >= 0 {
+    let rt: string = norm_enum(fn_rtype_of(prog, e.name));
+    if len(rt) > 0 && (en_index(prog, rt) >= 0 || rt == "Option" ||
+        rt == "Result") {
       return rt;
+    }
+    return "";
+  }
+  if e.tag == parse.EX_IDX {
+    // an enum-element slice's indexing yields the element's enum
+    let mut b5: *Expr = parse.lit(0);
+    match e.lhs {
+      Option.Some(x5) => {
+        b5 = x5;
+      },
+      Option.None => {},
+    }
+    if b5.tag == parse.EX_VAR {
+      return env_sliceelem_of(env, b5.name, prog);
     }
     return "";
   }
@@ -1191,6 +1253,10 @@ fn expr_ptr_type(e: *Expr, env: *Env, prog: *Prog) -> string {
     if len(bt) > 0 {
       return type_ptr_target(fn_rtype_of(prog, bt + "." + e.name));
     }
+    return "";
+  }
+  if e.tag == parse.EX_Q {
+    // e? unwraps — the payload's type is the raw value
     return "";
   }
   if e.tag == parse.EX_FIELD {
@@ -1712,19 +1778,26 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
       },
       Option.None => {},
     }
-    // an enum constructor: Enum.Var / Enum.Var(args) / Option.*
+    // an enum constructor: Enum.Var / Enum.Var(args) / Option.* /
+    // Result.* (Ok rides tag 1, Err tag 2; a string payload parks
+    // its address)
     if recv.tag == parse.EX_VAR &&
-        (en_index(prog, recv.name) >= 0 || recv.name == "Option") {
+        (en_index(prog, recv.name) >= 0 || recv.name == "Option" ||
+         recv.name == "Result") {
       let mut tag: i64 = 0 - 1;
       let mut nsl: i64 = 0;
       let mut nbox: i64 = 1;
-      if recv.name == "Option" {
-        if e.name == "Some" {
+      if recv.name == "Option" || recv.name == "Result" {
+        if e.name == "Some" || e.name == "Ok" {
           tag = 1;
           nsl = 1;
         } else {
-          tag = 0;
           nsl = 0;
+          if recv.name == "Result" {
+            tag = 2;
+          } else {
+            tag = 0;
+          }
         }
         nbox = 2;
       } else {
@@ -1757,15 +1830,22 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
     }
     let mut target: string = "";
     let mut out: string = "";
+    let ret: string = expr_enum_type(recv, env, prog);
     if recv.tag == parse.EX_VAR && st_index(prog, recv.name) >= 0 {
       target = recv.name + "_" + e.name;
     } else {
-      let bt: string = expr_ptr_type(recv, env, prog);
-      if len(bt) == 0 {
-        return "    (i64.const 0)\n";
+      if len(ret) > 0 {
+        // an enum-typed receiver: its methods ride the same ABI
+        target = ret + "_" + e.name;
+        out = out + emit_expr(pool, recv, env, prog, nl);
+      } else {
+        let bt: string = expr_ptr_type(recv, env, prog);
+        if len(bt) == 0 {
+          return "    (i64.const 0)\n";
+        }
+        target = bt + "_" + e.name;
+        out = out + emit_expr(pool, recv, env, prog, nl);
       }
-      target = bt + "_" + e.name;
-      out = out + emit_expr(pool, recv, env, prog, nl);
     }
     let mut k: usize = 0;
     while k < len(e.args) {
@@ -1848,6 +1928,32 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
       },
     }
   }
+  if e.tag == parse.EX_Q {
+    // e? — the box parks in a temp; Ok/Some unwraps the payload,
+    // anything else returns the box through the enclosing fn (the
+    // open defers unwind first, like every return)
+    let mut inner: *Expr = parse.lit(0);
+    match e.lhs {
+      Option.Some(x) => {
+        inner = x;
+      },
+      Option.None => {},
+    }
+    let bx: i64 = nl.v;
+    nl.v = nl.v + 1;
+    let mut out: string = emit_expr(pool, inner, env, prog, nl);
+    out = out + "    (local.set " + bx.to_str() + ")\n" +
+           "    (if (result i64) (i64.eq (i64.load (i32.wrap_i64 " +
+           "(local.get " + bx.to_str() + "))) (i64.const 1))\n" +
+           "      (then (i64.load (i32.add (i32.wrap_i64 (local.get " +
+           bx.to_str() + ")) (i32.const 8))))\n" +
+           "      (else\n" +
+           dunwind_emit(env.dstack) +
+           "        (local.get " + bx.to_str() + ")\n" +
+           "        return\n" +
+           "      ))\n";
+    return out;
+  }
   if e.tag == parse.EX_MATCH {
     // the scrutinee parks in a temp (the box for enums, the value
     // for scalars); the discriminator rides $d; arms chain as
@@ -1871,8 +1977,30 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
       out = out + "    (local.get " + bx.to_str() + ")\n";
     }
     out = out + "    (local.set $d)\n";
-    out = out + match_chain(pool, e.marms, 0, bx, env, prog, nl, true);
+    let mut optpt: string = "";
+    if sc.tag == parse.EX_IDX {
+      let mut b6: *Expr = parse.lit(0);
+      match sc.lhs {
+        Option.Some(x6) => {
+          b6 = x6;
+        },
+        Option.None => {},
+      }
+      if b6.tag == parse.EX_VAR {
+        optpt = env_slicept_of(env, b6.name);
+      }
+    }
+    out = out + match_chain_m(pool, e.marms, 0, bx, env, prog, nl,
+                              true, false, optpt);
     return out;
+  }
+  if e.tag == parse.EX_CALL && e.name == "printf" &&
+      len(e.args) >= 1 && e.args[0].tag == parse.EX_STR {
+    // printf riding an expression (an arm value): the writes happen,
+    // a zero rides the lane
+    let rest: []*Expr = e.args[1..len(e.args)];
+    return emit_printf(pool, e.args[0].name, rest, env, prog, nl) +
+           "    (i64.const 0)\n";
   }
   if e.tag == parse.EX_CALL {
     let mut out: string = "";
@@ -2112,14 +2240,18 @@ fn match_chain(pool: *Pool, arms: []*MatchArm, i: usize, bx: i64,
                env: *Env, prog: *Prog, nl: *NextLocal,
                as_expr: bool) -> string {
   return match_chain_m(pool, arms, i, bx, env, prog, nl, as_expr,
-                       false);
+                       false, "");
 }
+
+// the Option/Result binder payload target (from the scrutinee's
+// element text) — "" leaves the plain lane
 
 // pair mode: every arm's tail rides a {addr,len} pair and the chain
 // results are two i64s (a string-valued match)
 fn match_chain_m(pool: *Pool, arms: []*MatchArm, i: usize, bx: i64,
                  env: *Env, prog: *Prog, nl: *NextLocal,
-                 as_expr: bool, as_pair: bool) -> string {
+                 as_expr: bool, as_pair: bool,
+                 optpt: string) -> string {
   if i >= len(arms) {
     if as_expr {
       if as_pair {
@@ -2131,9 +2263,29 @@ fn match_chain_m(pool: *Pool, arms: []*MatchArm, i: usize, bx: i64,
   }
   let a: *MatchArm = arms[i];
   let cond: string = arm_cond(a, prog, 0);
-  // the arm's code: binders load from the box, then the statements,
-  // then the tail expression
+  // the arm's code: binders load from the box (a *T payload binds
+  // as a struct pointer — its fields stay reachable), then the
+  // statements, then the tail expression
   let mut armcode: string = "";
+  let mut vi: i64 = 0 - 1;
+  let mut ptys: []string = make([]string, 0);
+  if a.pat.kind == 2 && a.pat.ename != "Option" &&
+      a.pat.ename != "Result" {
+    let ei3: i64 = en_index(prog, a.pat.ename);
+    vi = en_vtag(prog, ei3, a.pat.vname);
+    if vi >= 0 {
+      let vb: usize = (vi as usize) * 8;
+      let mut vend: usize = vb;
+      while vend < len(prog.enums[ei3 as usize].vtpool) &&
+          vend < vb + 8 {
+        if len(prog.enums[ei3 as usize].vtpool[vend]) == 0 {
+          break;
+        }
+        vend = vend + 1;
+      }
+      ptys = prog.enums[ei3 as usize].vtpool[vb..vend];
+    }
+  }
   let mut k: usize = 0;
   while k < len(a.pat.binders) {
     let bslot: i64 = nl.v;
@@ -2142,7 +2294,23 @@ fn match_chain_m(pool: *Pool, arms: []*MatchArm, i: usize, bx: i64,
               "(local.get " + bx.to_str() + ")) (i32.const " +
               ((k + 1) * 8).to_str() + ")))\n" +
               "    (local.set " + bslot.to_str() + ")\n";
-    env_bind(env, a.pat.binders[k], bslot);
+    let mut pty: string = "";
+    if k < len(ptys) {
+      pty = ptys[k];
+    }
+    let ptgt: string = type_ptr_target(pty);
+    if len(ptgt) > 0 && st_index(prog, ptgt) >= 0 {
+      env_bind_ptr(env, a.pat.binders[k], bslot, ptgt);
+    } else {
+      if (a.pat.ename == "Option" || a.pat.ename == "Result") &&
+          len(optpt) > 0 && st_index(prog, optpt) >= 0 {
+        // a Some/Ok binder over a *T element: the pointer lane keeps
+        // its fields reachable
+        env_bind_ptr(env, a.pat.binders[k], bslot, optpt);
+      } else {
+        env_bind(env, a.pat.binders[k], bslot);
+      }
+    }
     k = k + 1;
   }
   armcode = armcode + emit_stmts(a.body, pool, env, nl, env.infn,
@@ -2163,11 +2331,15 @@ fn match_chain_m(pool: *Pool, arms: []*MatchArm, i: usize, bx: i64,
     Option.None => {},
   }
   if len(cond) == 0 {
-    // the wildcard arm closes the chain
-    return armcode + tail;
+    // the wildcard arm closes the chain (the statement form keeps
+    // the tail's effects and drops its value)
+    if as_expr {
+      return armcode + tail;
+    }
+    return armcode + tail + "    drop\n";
   }
   let rest: string = match_chain_m(pool, arms, i + 1, bx, env, prog,
-                                   nl, as_expr, as_pair);
+                                   nl, as_expr, as_pair, optpt);
   if as_expr {
     if as_pair {
       return "    (if (result i64) (result i64) " + cond + "\n" +
@@ -2179,7 +2351,8 @@ fn match_chain_m(pool: *Pool, arms: []*MatchArm, i: usize, bx: i64,
            "      (else\n" + rest + "      ))\n";
   }
   return "    (if " + cond + "\n" +
-         "      (then\n" + armcode + "      )\n" +
+         "      (then\n" + armcode + tail + "    drop\n" +
+         "      )\n" +
          "      (else\n" + rest + "      ))\n";
 }
 
@@ -2195,11 +2368,15 @@ fn arm_cond(a: *MatchArm, prog: *Prog, dslot: i64) -> string {
            "))";
   }
   let mut tag: i64 = 0;
-  if a.pat.ename == "Option" {
-    if a.pat.vname == "Some" {
+  if a.pat.ename == "Option" || a.pat.ename == "Result" {
+    if a.pat.vname == "Some" || a.pat.vname == "Ok" {
       tag = 1;
     } else {
-      tag = 0;
+      if a.pat.ename == "Result" {
+        tag = 2;
+      } else {
+        tag = 0;
+      }
     }
   } else {
     let ei: i64 = en_index(prog, a.pat.ename);
@@ -2627,7 +2804,7 @@ fn build_string_pair(e: *Expr, pool: *Pool, env: *Env, prog: *Prog,
       let t_l: i64 = nl.v + 1;
       nl.v = nl.v + 2;
       text = text + match_chain_m(pool, e.marms, 0, bx, env, prog,
-                                  nl, true, true);
+                                  nl, true, true, "");
       text = text + "    (local.set " + t_l.to_str() + ")\n" +
              "    (local.set " + t_a.to_str() + ")\n";
       let spm = new SPair { ok: true, text: text, a: t_a, l: t_l };
@@ -2848,6 +3025,122 @@ fn emit_assert(pool: *Pool, call: *Expr, env: *Env,
   return out;
 }
 
+// printf's hole emission (the statement form and the expression
+// form share it): pieces intern, holes render by kind
+fn emit_printf(pool: *Pool, fmt: string, args: []*Expr, env: *Env,
+               prog: *Prog, nl: *NextLocal) -> string {
+  let mut out: string = "";
+
+      let pieces: []string = parse.fmt_pieces(fmt);
+      let mut pi: usize = 0;
+      let mut ai: usize = 0;
+      while pi < len(pieces) {
+        if len(pieces[pi]) > 0 {
+          let addr: i64 = pool_intern(pool, pieces[pi]);
+          out = out + write_call(addr, pool_len(pool, pieces[pi]));
+        }
+        if pi + 1 < len(pieces) {
+          if ai < len(args) {
+            let arg = args[ai];
+            let mut folded: bool = false;
+            if arg.tag == parse.EX_VAR &&
+                env_str_is_runtime(env, arg.name) {
+              let a: i64 = env_str_look(env, arg.name);
+              out = out + write_runtime((0 - a) - 1,
+                                          env_str_len_slot(env,
+                                                           arg.name));
+              folded = true;
+            }
+            if !folded && arg.tag == parse.EX_VAR &&
+                env_bool_is(env, arg.name) {
+              let bslot: i64 = env_look(env, arg.name);
+              out = out + "    (local.get " + bslot.to_str() +
+                     ")\n    call $w_bool\n" +
+                     "    (local.set $l)\n    (local.set $a)\n" +
+                     "    (i32.store (i32.const 64) (local.get $a))\n" +
+                     "    (i32.store (i32.const 68) (local.get $l))\n" +
+                     "    (drop (call $fd_write (i32.const 1) " +
+                     "(i32.const 64) (i32.const 1) (i32.const 96)))\n";
+              folded = true;
+            }
+            if !folded {
+              match fold_string(arg, env) {
+                Option.Some(raw) => {
+                  let saddr: i64 = pool_intern(pool, raw);
+                  out = out + write_call(saddr, pool_len(pool, raw));
+                  folded = true;
+                },
+                Option.None => {},
+              }
+            }
+            if !folded {
+              // a runtime string build (concat, a string-returning
+              // call) prints its pair directly
+              let sp = build_string_pair(arg, pool, env, prog,
+                                         nl);
+              if sp.ok {
+                out = out + sp.text;
+                out = out + "    (local.get " + sp.a.to_str() +
+                       ")\n    (i32.wrap_i64)\n    (local.set $a)\n" +
+                       "    (local.get " + sp.l.to_str() +
+                       ")\n    (i32.wrap_i64)\n    (local.set $l)\n" +
+                       "    (i32.store (i32.const 64) " +
+                       "(local.get $a))\n" +
+                       "    (i32.store (i32.const 68) " +
+                       "(local.get $l))\n" +
+                       "    (drop (call $fd_write (i32.const 1) " +
+                       "(i32.const 64) (i32.const 1) " +
+                       "(i32.const 96)))\n";
+                folded = true;
+              }
+            }
+            if !folded && arg.tag == parse.EX_BIN &&
+                ((arg.op >= 5 && arg.op <= 10) || arg.op == 13 ||
+                 arg.op == 14) {
+              // a comparison or logical in hole position prints as
+              // true/false, not 0/1 — string equality included (its
+              // $w_streq leaves the same 0/1 i64)
+              out = out + emit_expr(pool, arg, env, prog, nl);
+              out = out + write_bool_top();
+              folded = true;
+            }
+            if !folded {
+              let mut boolish: bool = false;
+              if arg.tag == parse.EX_CALL {
+                boolish = fn_rtype_of(prog, arg.name) == "bool";
+              }
+              if arg.tag == parse.EX_MCALL {
+                let mut recv0: *Expr = parse.lit(0);
+                match arg.lhs {
+                  Option.Some(r4) => {
+                    recv0 = r4;
+                  },
+                  Option.None => {},
+                }
+                if recv0.tag == parse.EX_VAR {
+                  boolish = fn_rtype_of(prog, recv0.name + "." +
+                                        arg.name) == "bool";
+                }
+              }
+              out = out + emit_expr(pool, arg, env, prog, nl);
+              if boolish {
+                out = out + write_bool_top();
+              } else {
+                if expr_width(arg, env, prog) < 0 {
+                  out = out + write_uint();
+                } else {
+                  out = out + write_int();
+                }
+              }
+            }
+            ai = ai + 1;
+          }
+        }
+        pi = pi + 1;
+      }
+      return out;
+}
+
 fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
                nl: *NextLocal, in_fn: bool, ret_slot: i64,
                prog: *Prog, loops: *Loops, dstack: *DStack,
@@ -2974,103 +3267,21 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
       }
     }
     if st.tag == parse.ST_PF {
-      let pieces: []string = parse.fmt_pieces(st.fmt);
-      let mut pi: usize = 0;
-      let mut ai: usize = 0;
-      while pi < len(pieces) {
-        if len(pieces[pi]) > 0 {
-          let addr: i64 = pool_intern(pool, pieces[pi]);
-          body = body + write_call(addr, pool_len(pool, pieces[pi]));
-        }
-        if pi + 1 < len(pieces) {
-          if ai < len(st.args) {
-            let arg = st.args[ai];
-            let mut folded: bool = false;
-            if arg.tag == parse.EX_VAR &&
-                env_str_is_runtime(env, arg.name) {
-              let a: i64 = env_str_look(env, arg.name);
-              body = body + write_runtime((0 - a) - 1,
-                                          env_str_len_slot(env,
-                                                           arg.name));
-              folded = true;
-            }
-            if !folded && arg.tag == parse.EX_VAR &&
-                env_bool_is(env, arg.name) {
-              let bslot: i64 = env_look(env, arg.name);
-              body = body + "    (local.get " + bslot.to_str() +
-                     ")\n    call $w_bool\n" +
-                     "    (local.set $l)\n    (local.set $a)\n" +
-                     "    (i32.store (i32.const 64) (local.get $a))\n" +
-                     "    (i32.store (i32.const 68) (local.get $l))\n" +
-                     "    (drop (call $fd_write (i32.const 1) " +
-                     "(i32.const 64) (i32.const 1) (i32.const 96)))\n";
-              folded = true;
-            }
-            if !folded {
-              match fold_string(arg, env) {
-                Option.Some(raw) => {
-                  let saddr: i64 = pool_intern(pool, raw);
-                  body = body + write_call(saddr, pool_len(pool, raw));
-                  folded = true;
-                },
-                Option.None => {},
-              }
-            }
-            if !folded {
-              // a runtime string build (concat, a string-returning
-              // call) prints its pair directly
-              let sp = build_string_pair(arg, pool, env, prog,
-                                         nl);
-              if sp.ok {
-                body = body + sp.text;
-                body = body + "    (local.get " + sp.a.to_str() +
-                       ")\n    (i32.wrap_i64)\n    (local.set $a)\n" +
-                       "    (local.get " + sp.l.to_str() +
-                       ")\n    (i32.wrap_i64)\n    (local.set $l)\n" +
-                       "    (i32.store (i32.const 64) " +
-                       "(local.get $a))\n" +
-                       "    (i32.store (i32.const 68) " +
-                       "(local.get $l))\n" +
-                       "    (drop (call $fd_write (i32.const 1) " +
-                       "(i32.const 64) (i32.const 1) " +
-                       "(i32.const 96)))\n";
-                folded = true;
-              }
-            }
-            if !folded && arg.tag == parse.EX_BIN &&
-                ((arg.op >= 5 && arg.op <= 10) || arg.op == 13 ||
-                 arg.op == 14) {
-              // a comparison or logical in hole position prints as
-              // true/false, not 0/1 — string equality included (its
-              // $w_streq leaves the same 0/1 i64)
-              body = body + emit_expr(pool, arg, env, prog, nl);
-              body = body + write_bool_top();
-              folded = true;
-            }
-            if !folded {
-              body = body + emit_expr(pool, arg, env, prog, nl);
-              if expr_width(arg, env, prog) < 0 {
-                body = body + write_uint();
-              } else {
-                body = body + write_int();
-              }
-            }
-            ai = ai + 1;
-          }
-        }
-        pi = pi + 1;
-      }
+      body = body + emit_printf(pool, st.fmt, st.args, env, prog, nl);
     }
     if st.tag == parse.ST_LET {
       match st.val {
         Option.Some(e) => {
           if e.tag == parse.EX_MAKE {
             // make([]T, n): the count rides $t once, the allocation
-            // and the len slot both read it
+            // and the len slot both read it; an Option-element slice
+            // fills with the shared None box (the zeroed form)
             let mut cnt: *Expr = parse.lit(0);
             if len(e.args) > 0 {
               cnt = e.args[0];
             }
+            let optelem: bool = len(e.name) >= 1 &&
+                (e.name[0] == 63 || e.name[0] == 79);
             body = body + emit_expr(pool, cnt, env, prog, nl);
             body = body + "    (local.set $t)\n";
             body = body + "    (i64.extend_i32_u (call $w_alloc " +
@@ -3084,7 +3295,28 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
                    ")\n";
             let l_slot: i64 = nl.v;
             nl.v = nl.v + 1;
+            if optelem {
+              let fi: i64 = nl.v;
+              nl.v = nl.v + 1;
+              body = body + "    (i64.const 0)\n" +
+                     "    (local.set " + fi.to_str() + ")\n" +
+                     "    (loop $mo" + fi.to_str() + "\n" +
+                     "    (if (i64.lt_u (local.get " + fi.to_str() +
+                     ") (local.get $t))\n" +
+                     "      (then (i64.store (i32.add (i32.wrap_i64 " +
+                     "(local.get " + a_slot.to_str() + "))\n" +
+                     "                     (i32.mul (i32.wrap_i64 " +
+                     "(local.get " + fi.to_str() + ")) (i32.const 8)))\n" +
+                     "                     (global.get $w_none_box))\n" +
+                     "            (local.set " + fi.to_str() +
+                     " (i64.add (local.get " + fi.to_str() +
+                     ") (i64.const 1)))\n" +
+                     "            (br $mo" + fi.to_str() + "))))\n";
+            }
             env_str_bind_runtime(env, st.name, a_slot, l_slot, 2);
+            if optelem {
+              env_bind_sliceelem(env, st.name, e.name);
+            }
           } else {
             if e.tag == parse.EX_SLICE2 {
               // base[a..b]: a view — addr' = addr + lo*esz, len' =
@@ -3212,13 +3444,13 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
                   } else {
                   // an enum-typed value (the annotation names an
                   // enum, or the init constructs one) binds the box
-                  let mut es: string = st.fmt;
+                  let mut es: string = norm_enum(st.fmt);
                   if len(es) == 0 || (en_index(prog, es) < 0 &&
-                      es != "Option") {
+                      es != "Option" && es != "Result") {
                     es = expr_enum_type(e, env, prog);
                   }
                   if len(es) > 0 && (en_index(prog, es) >= 0 ||
-                      es == "Option") {
+                      es == "Option" || es == "Result") {
                     body = body + emit_expr(pool, e, env, prog, nl);
                     body = body + "    (local.set " + nl.v.to_str() +
                            ")\n";
@@ -3633,8 +3865,21 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
             body = body + "    (local.get " + bx.to_str() + ")\n";
           }
           body = body + "    (local.set $d)\n";
-          body = body + match_chain(pool, st.marms, 0, bx, env, prog,
-                                     nl, false);
+          let mut optpt: string = "";
+          if sc.tag == parse.EX_IDX {
+            let mut b7: *Expr = parse.lit(0);
+            match sc.lhs {
+              Option.Some(x7) => {
+                b7 = x7;
+              },
+              Option.None => {},
+            }
+            if b7.tag == parse.EX_VAR {
+              optpt = env_slicept_of(env, b7.name);
+            }
+          }
+          body = body + match_chain_m(pool, st.marms, 0, bx, env,
+                                      prog, nl, false, false, optpt);
         },
         Option.None => {},
       }
@@ -3790,13 +4035,10 @@ fn emit_fn(fd: *FnDef, pool: *Pool, prog: *Prog) -> string {
         if len(ename) >= 2 && ename[0] == 63 {
           ename = "Option";
         } else {
-          if len(ename) >= 7 && ename[0] == 79 &&
-              ename[1] == 112 && ename[2] == 116 {
-            ename = "Option";
-          }
+          ename = norm_enum(ename);
         }
         if len(ename) > 0 && (en_index(prog, ename) >= 0 ||
-            ename == "Option") {
+            ename == "Option" || ename == "Result") {
           env_bind_enum(env, fd.params[k], nl.v, ename);
         } else {
           env_bind_w(env, fd.params[k], nl.v, pw);
@@ -3890,6 +4132,7 @@ pub fn emit(prog: *Prog) -> string {
   out = out + ALLOC;
   out = out + STREQ;
   out = out + ENUQ;
+  out = out + NONEBOX;
   out = out + BOOLTEXT;
   out = out + fntext;
   out = out + "  (export \"_start\" (func $_start))\n";
@@ -3899,6 +4142,8 @@ pub fn emit(prog: *Prog) -> string {
     out = out + "    (local $v" + li.to_str() + " i64)\n";
     li = li + 1;
   }
+  out = out + "    (global.set $w_none_box (i64.extend_i32_u " +
+              "(call $w_alloc (i32.const 2))))\n";
   out = out + body;
   out = out + "    (call $proc_exit (local.get 2))\n";
   out = out + "  )\n";

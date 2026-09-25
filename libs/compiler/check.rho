@@ -6,7 +6,8 @@
 use parse;
 
 pub fn name_known(prog: *Prog, name: string) -> bool {
-  if name == "len" || name == "assert" || name == "format" || name == "assert_eq" {
+  if name == "len" || name == "assert" || name == "format" ||
+      name == "assert_eq" || name == "printf" || name == "eprintf" {
     return true;
   }
   let mut i: usize = 0;
@@ -153,7 +154,8 @@ fn expr_walk(e: *Expr, prog: *Prog, bound: []string, nb: usize,
     if e.tag == parse.EX_FIELD {
       match e.lhs {
         Option.Some(b) => {
-          if b.tag == parse.EX_VAR && enum_known(prog, b.name) {
+          if b.tag == parse.EX_VAR && (enum_known(prog, b.name) ||
+              b.name == "Option" || b.name == "Result") {
             if enum_variant(prog, b.name, e.name) < 0 &&
                 !(b.name == "Option" || b.name == "Result") {
               eprintf("check: unknown variant '{}.{}'\n", b.name, e.name);
@@ -168,6 +170,15 @@ fn expr_walk(e: *Expr, prog: *Prog, bound: []string, nb: usize,
     match e.lhs {
       Option.Some(b) => {
         expr_walk(b, prog, bound, nb, errs);
+      },
+      Option.None => {},
+    }
+    return;
+  }
+  if e.tag == parse.EX_Q {
+    match e.lhs {
+      Option.Some(inner) => {
+        expr_walk(inner, prog, bound, nb, errs);
       },
       Option.None => {},
     }
@@ -191,8 +202,10 @@ fn expr_walk(e: *Expr, prog: *Prog, bound: []string, nb: usize,
     let mut assoc: bool = false;
     match e.lhs {
       Option.Some(r) => {
-        if r.tag == parse.EX_VAR && enum_known(prog, r.name) {
-          // Enum.Var / Enum.Var(args) — the constructor call
+        if r.tag == parse.EX_VAR && (enum_known(prog, r.name) ||
+            r.name == "Option" || r.name == "Result") {
+          // Enum.Var / Enum.Var(args) — the constructor call (the
+          // two builtins ride the same path)
           assoc = true;
           if enum_variant(prog, r.name, e.name) < 0 &&
               !(r.name == "Option" || r.name == "Result") {

@@ -14,6 +14,7 @@ pub const EX_MAKE: i32 = 5;  // make([]T, n): args[0] = the count
 pub const EX_IDX: i32 = 6;   // base[idx]: lhs = base, rhs = index
 pub const EX_SLICE2: i32 = 7; // base[a..b]: lhs = base, args = lo/hi;
                               // op bit0 = lo present, bit1 = hi present
+pub const EX_Q: i32 = 13;    // e? — the propagate-and-unwrap
 pub const EX_MATCH: i32 = 12; // match scrut { arms }: scrut rides
                                // lhs, the arms ride marms
 pub const EX_FIELD: i32 = 8;  // base.name: lhs = base (a *T receiver)
@@ -278,6 +279,13 @@ pub fn field_expr(base: *Expr, fname: string) -> *Expr {
                     marms: make([]*MatchArm, 0) };
 }
 
+pub fn q_expr(inner: *Expr) -> *Expr {
+  return new Expr { tag: EX_Q, lit: 0, name: "", op: 0,
+                    lhs: Option.Some(inner), rhs: Option.None,
+                    args: make([]*Expr, 0), fnames: make([]string, 0),
+                    marms: make([]*MatchArm, 0) };
+}
+
 pub fn match_expr(scrut: *Expr, arms: []*MatchArm) -> *Expr {
   return new Expr { tag: EX_MATCH, lit: 0, name: "", op: 0,
                     lhs: Option.Some(scrut), rhs: Option.None,
@@ -318,6 +326,7 @@ pub struct EnumDef {
   name: string,
   vnames: []string,   // variant names, declaration order = tags
   vslots: []i64,      // per variant: the payload slot count
+  vtpool: []string,  // payload types, 8 slots per variant in order
   nv: usize,
 }
 
@@ -393,10 +402,17 @@ fn eat_type(c: *PCur) -> string {
     tkadv(c);
     if (name == "weak" || name == "Option" || name == "Result") &&
        is_punct(tk(c), 91) {
+      // the bracketed payload(s): consumed whole, the builtin name
+      // rides on (norm_enum collapses the text downstream)
       tkadv(c); // [
-      let inner: string = eat_type(c);
+      while tk(c).kind != lex.TK_EOF && !is_punct(tk(c), 93) {
+        eat_type(c);
+        if !eat_punct(c, 44) {
+          break;
+        }
+      }
       eat_punct(c, 93); // ]
-      return pre + name + "[" + inner + "]";
+      return pre + name;
     }
     return pre + name;
   }
@@ -608,6 +624,12 @@ fn parse_postfix(c: *PCur, e0: *Expr) -> *Expr {
       e = idx_expr(e, inner);
       continue;
     }
+    if is_punct(tk(c), 63) {
+      // e? — the Result/Option unwrap-and-propagate
+      tkadv(c);
+      e = q_expr(e);
+      continue;
+    }
     if is_punct(tk(c), 46) && !(c.pos + 1 < len(c.toks) &&
         is_punct(c.toks[c.pos + 1], 46)) {
       // .name — a field read, or a method call when '(' follows
@@ -695,17 +717,12 @@ fn parse_atom(c: *PCur) -> *Expr {
     // rides the i64 lane, the count is the live part
     if t.text == "make" && is_punct(tk(c), 40) {
       tkadv(c); // (
-      // []elem — the element rides after ]; capture its name
+      // []elem — the composed element type rides after ]
       let mut elem: string = "";
       if is_punct(tk(c), 91) {
         tkadv(c);
         eat_punct(c, 93);
-        if is_punct(tk(c), 91) {
-          elem = "[]";
-        } else {
-          elem = tk(c).text;
-          tkadv(c);
-        }
+        elem = eat_type(c);
       }
       eat_punct(c, 44); // ,
       let n = parse_bin(c, 0);
@@ -1517,6 +1534,7 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
       tkadv(c);
       let vnames: []string = make([]string, 16);
       let vslots: []i64 = make([]i64, 16);
+      let vtpool: []string = make([]string, 128);
       let mut nv: usize = 0;
       if eat_punct(c, 123) {
         while tk(c).kind != lex.TK_EOF {
@@ -1529,14 +1547,21 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
             vnames[nv] = vt.text;
             vslots[nv] = 0;
             tkadv(c);
+            let vbase: usize = nv * 8;
+            let mut npt: usize = 0;
             if is_punct(tk(c), 40) {
-              // tuple payload: count the types
+              // tuple payload: the types in order
               tkadv(c);
               let mut nsl: i64 = 0;
               while tk(c).kind != lex.TK_EOF && !is_punct(tk(c), 41) {
                 let eaten: string = eat_type(c);
                 if len(eaten) == 0 {
                   tkadv(c);
+                } else {
+                  if npt < 8 {
+                    vtpool[vbase + npt] = eaten;
+                    npt = npt + 1;
+                  }
                 }
                 nsl = nsl + 1;
                 if !eat_punct(c, 44) {
@@ -1547,7 +1572,7 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
               vslots[nv] = nsl;
             } else {
               if is_punct(tk(c), 123) {
-                // struct payload: count the named fields
+                // struct payload: the named fields' types in order
                 tkadv(c);
                 let mut nsl2: i64 = 0;
                 while tk(c).kind != lex.TK_EOF && !is_punct(tk(c), 125) {
@@ -1556,7 +1581,11 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
                       ft.kind == lex.TK_KEYWORD {
                     tkadv(c);
                     eat_punct(c, 58);
-                    eat_type(c);
+                    let eaten2: string = eat_type(c);
+                    if len(eaten2) > 0 && npt < 8 {
+                      vtpool[vbase + npt] = eaten2;
+                      npt = npt + 1;
+                    }
                     nsl2 = nsl2 + 1;
                   } else {
                     tkadv(c);
@@ -1580,7 +1609,8 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
         }
       }
       let ed = new EnumDef { name: ename, vnames: vnames[0..nv],
-                             vslots: vslots[0..nv], nv: nv };
+                             vslots: vslots[0..nv],
+                             vtpool: vtpool[0..(nv * 8)], nv: nv };
       enums[ne] = ed;
       ne = ne + 1;
       continue;
