@@ -554,10 +554,14 @@ fn parse_stmt(c: *PCur) -> *Stmt {
         tkadv(c);
       }
     }
-    // optional : type ([]T eats the bracketed element form)
+    // optional : type ([]T eats the bracketed element form; a
+    // scalar annotation rides the fmt slot for width fidelity)
+    let mut tyname: string = "";
     if is_punct(tk(c), 58) {
       tkadv(c);
       if !eat_slice_type(c) {
+        let tt = tk(c);
+        tyname = tt.text;
         tkadv(c);
       }
     }
@@ -570,6 +574,7 @@ fn parse_stmt(c: *PCur) -> *Stmt {
     eat_punct(c, 59);
     let st = mk_stmt(ST_LET);
     st.name = nm;
+    st.fmt = tyname;
     st.val = Option.Some(e);
     return st;
   }

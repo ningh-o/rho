@@ -243,6 +243,7 @@ fn write_int() -> string {
 struct Env {
   names: []string,
   slots: []i64,
+  vwidths: []i64, // per local: 0 lane-wide, else ±8/±16/±32 (neg = unsigned)
   n: usize,
   snames: []string,
   saddrs: []i64,
@@ -275,6 +276,7 @@ fn env_bool_is(e: *Env, name: string) -> bool {
 
 fn env_new(cap: usize) -> *Env {
   return new Env { names: make([]string, cap), slots: make([]i64, cap),
+                   vwidths: make([]i64, cap),
                    n: 0, snames: make([]string, cap),
                    saddrs: make([]i64, cap), slens: make([]i64, cap),
                    sraws: make([]string, cap),
@@ -472,7 +474,66 @@ fn env_look(e: *Env, name: string) -> i64 {
 fn env_bind(e: *Env, name: string, slot: i64) {
   e.names[e.n] = name;
   e.slots[e.n] = slot;
+  e.vwidths[e.n] = 0;
   e.n = e.n + 1;
+}
+
+fn env_bind_w(e: *Env, name: string, slot: i64, w: i64) {
+  e.names[e.n] = name;
+  e.slots[e.n] = slot;
+  e.vwidths[e.n] = w;
+  e.n = e.n + 1;
+}
+
+fn env_width_of(e: *Env, name: string) -> i64 {
+  let mut i: usize = 0;
+  while i < e.n {
+    if e.names[i] == name {
+      return e.vwidths[i];
+    }
+    i = i + 1;
+  }
+  return 0;
+}
+
+// the annotation's width code: ±8/±16/±32 (negative = unsigned),
+// 0 = the full lane
+fn type_width(tyname: string) -> i64 {
+  if tyname == "i8" { return 8; }
+  if tyname == "i16" { return 16; }
+  if tyname == "i32" { return 32; }
+  if tyname == "u8" { return 0 - 8; }
+  if tyname == "u16" { return 0 - 16; }
+  if tyname == "u32" { return 0 - 32; }
+  return 0;
+}
+
+// wrap the stack's i64 to the width: two's complement makes
+// wrap-after-op equal the width-native op on the sign-/zero-extended
+// representation
+fn wrap_snippet(w: i64) -> string {
+  if w == 0 {
+    return "";
+  }
+  let mut bits: i64 = w;
+  if bits < 0 {
+    bits = 0 - bits;
+  }
+  if bits >= 32 {
+    if w < 0 {
+      return "    (i32.wrap_i64)\n    (i64.extend_i32_u)\n";
+    }
+    return "    (i32.wrap_i64)\n    (i64.extend_i32_s)\n";
+  }
+  let sh: i64 = 32 - bits;
+  let mask: i64 = (1 << bits) - 1;
+  if w < 0 {
+    return "    (i32.wrap_i64)\n    (i32.and (i32.const " +
+           mask.to_str() + "))\n    (i64.extend_i32_u)\n";
+  }
+  return "    (i32.wrap_i64)\n    (i32.shl (i32.const " + sh.to_str() +
+         "))\n    (i32.shr_s (i32.const " + sh.to_str() +
+         "))\n    (i64.extend_i32_s)\n";
 }
 
 // a module-level name's global form, "" when absent
@@ -830,6 +891,31 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog) -> string {
   // comparisons yield i32 in wasm: extend back to the i64 lane
   if e.op >= 5 && e.op <= 10 {
     out = out + "    (i64.extend_i32_s)\n";
+    return out;
+  }
+  // arithmetic/bitwise at a narrow operand's width wraps after the
+  // op (either operand carries the width; literals adapt)
+  let mut w: i64 = 0;
+  match e.lhs {
+    Option.Some(l) => {
+      if l.tag == parse.EX_VAR {
+        w = env_width_of(env, l.name);
+      }
+    },
+    Option.None => {},
+  }
+  if w == 0 {
+    match e.rhs {
+      Option.Some(r) => {
+        if r.tag == parse.EX_VAR {
+          w = env_width_of(env, r.name);
+        }
+      },
+      Option.None => {},
+    }
+  }
+  if w != 0 && e.op != 11 && e.op != 12 {
+    out = out + wrap_snippet(w);
   }
   return out;
 }
@@ -1195,10 +1281,12 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
                                pool_len(pool, raw), raw);
                 },
                 Option.None => {
+                  let w: i64 = type_width(st.fmt);
                   body = body + emit_expr(pool, e, env, prog);
+                  body = body + wrap_snippet(w);
                   body = body + "    (local.set " +
                          next_local.v.to_str() + ")\n";
-                  env_bind(env, st.name, next_local.v);
+                  env_bind_w(env, st.name, next_local.v, w);
                   if e.tag == parse.EX_BIN &&
                       ((e.op >= 5 && e.op <= 10) || e.op == 13 ||
                        e.op == 14) {
@@ -1247,6 +1335,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
         Option.Some(e) => {
           body = body + emit_expr(pool, e, env, prog);
           if slot >= 0 {
+            body = body + wrap_snippet(env_width_of(env, st.name));
             body = body + "    (local.set " + slot.to_str() + ")\n";
           } else {
             let g: string = static_global(prog, st.name);
