@@ -17,13 +17,65 @@ pub fn new_pool() -> *Pool {
                     addrs: make([]i64, 64), n: 0, next: 1024 };
 }
 
-// decoded byte count of a raw span
+// a hex digit's value, -1 when not hex
+fn hex_val(b: u8) -> i64 {
+  if b >= 48 && b <= 57 {
+    return (b as i64) - 48;
+  }
+  if b >= 97 && b <= 102 {
+    return (b as i64) - 87;
+  }
+  if b >= 65 && b <= 70 {
+    return (b as i64) - 55;
+  }
+  return 0 - 1;
+}
+
+// the utf-8 byte length of a code point
+fn utf8_len(cp: i64) -> i64 {
+  if cp < 128 {
+    return 1;
+  }
+  if cp < 2048 {
+    return 2;
+  }
+  if cp < 65536 {
+    return 3;
+  }
+  return 4;
+}
+
+// decoded byte count of a raw span (the full escape law: \n \r \t
+// \\ \" \0 \xHH \u{…})
 fn decoded_len(raw: string) -> i64 {
   let mut n: i64 = 0;
   let mut i: usize = 0;
   while i < len(raw) {
     if raw[i] == 92 && i + 1 < len(raw) {
-      i = i + 2;
+      let e: u8 = raw[i + 1];
+      if e == 120 && i + 3 < len(raw) {
+        i = i + 4; // \xHH
+      } else {
+        if e == 117 {
+          // \u{hex…}
+          let mut j: usize = i + 3;
+          let mut cp: i64 = 0;
+          while j < len(raw) && raw[j] != 125 {
+            let h: i64 = hex_val(raw[j]);
+            if h < 0 {
+              break;
+            }
+            cp = cp * 16 + h;
+            j = j + 1;
+          }
+          n = n + utf8_len(cp) - 1;
+          i = j + 1;
+          n = n + 1;
+          continue;
+        } else {
+          i = i + 2;
+        }
+      }
     } else {
       i = i + 1;
     }
@@ -70,6 +122,27 @@ fn byte_escape(b: u8) -> string {
   return "\\" + hex_digit(b >> 4) + hex_digit(b & 15);
 }
 
+// one code point's utf-8 bytes as \\xx escapes
+fn utf8_escape(cp: i64) -> string {
+  let out: string = "";
+  if cp < 128 {
+    return byte_escape((cp as u8));
+  }
+  if cp < 2048 {
+    return byte_escape(((((cp >> 6) as u64) as u8)) | 192) +
+           byte_escape(((cp & 63) as u8) | 128);
+  }
+  if cp < 65536 {
+    return byte_escape(((cp >> 12) as u8) | 224) +
+           byte_escape((((cp >> 6) & 63) as u8) | 128) +
+           byte_escape(((cp & 63) as u8) | 128);
+  }
+  return byte_escape(((cp >> 18) as u8) | 240) +
+         byte_escape((((cp >> 12) & 63) as u8) | 128) +
+         byte_escape((((cp >> 6) & 63) as u8) | 128) +
+         byte_escape(((cp & 63) as u8) | 128);
+}
+
 pub fn wat_data_body(raw: string) -> string {
   let mut out: string = "";
   let mut i: usize = 0;
@@ -77,6 +150,39 @@ pub fn wat_data_body(raw: string) -> string {
     let b: u8 = raw[i];
     if b == 92 && i + 1 < len(raw) {
       let e: u8 = raw[i + 1];
+      if e == 114 {
+        out = out + byte_escape(13); // \r
+        i = i + 2;
+        continue;
+      }
+      if e == 48 {
+        out = out + byte_escape(0); // \0
+        i = i + 2;
+        continue;
+      }
+      if e == 120 && i + 3 < len(raw) {
+        let hi: i64 = hex_val(raw[i + 2]);
+        let lo: i64 = hex_val(raw[i + 3]);
+        let v: i64 = hi * 16 + lo;
+        out = out + byte_escape((v as u8)); // \xHH
+        i = i + 4;
+        continue;
+      }
+      if e == 117 {
+        let mut j: usize = i + 3;
+        let mut cp: i64 = 0;
+        while j < len(raw) && raw[j] != 125 {
+          let h: i64 = hex_val(raw[j]);
+          if h < 0 {
+            break;
+          }
+          cp = cp * 16 + h;
+          j = j + 1;
+        }
+        out = out + utf8_escape(cp); // \u{…}
+        i = j + 1;
+        continue;
+      }
       let v: u8 = match e {
         110 => 10,
         116 => 9,
