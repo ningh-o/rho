@@ -460,6 +460,40 @@ fn env_bind(e: *Env, name: string, slot: i64) {
   e.n = e.n + 1;
 }
 
+// a module-level name's global form, "" when absent
+fn static_global(prog: *Prog, name: string) -> string {
+  let mut i: usize = 0;
+  while i < prog.nconsts {
+    if prog.consts[i] == name && prog.cstatic[i] {
+      return "$g_" + name;
+    }
+    i = i + 1;
+  }
+  return "";
+}
+
+fn const_value(prog: *Prog, name: string) -> i64 {
+  let mut i: usize = 0;
+  while i < prog.nconsts {
+    if prog.consts[i] == name && !prog.cstatic[i] {
+      return prog.cvals[i];
+    }
+    i = i + 1;
+  }
+  return 0;
+}
+
+fn name_is_const(prog: *Prog, name: string) -> bool {
+  let mut i: usize = 0;
+  while i < prog.nconsts {
+    if prog.consts[i] == name && !prog.cstatic[i] {
+      return true;
+    }
+    i = i + 1;
+  }
+  return false;
+}
+
 // the wat operator for an op code
 fn wat_op(op: i64) -> string {
   if op == 0 {
@@ -604,6 +638,13 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog) -> string {
   if e.tag == parse.EX_VAR {
     let slot: i64 = env_look(env, e.name);
     if slot < 0 {
+      if name_is_const(prog, e.name) {
+        return "    (i64.const " + const_value(prog, e.name).to_str() +
+               ")\n";
+      }
+      if len(static_global(prog, e.name)) > 0 {
+        return "    (global.get " + static_global(prog, e.name) + ")\n";
+      }
       return "    (i64.const 0)\n";
     }
     return "    (local.get " + slot.to_str() + ")\n";
@@ -1093,6 +1134,11 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
           body = body + emit_expr(pool, e, env, prog);
           if slot >= 0 {
             body = body + "    (local.set " + slot.to_str() + ")\n";
+          } else {
+            let g: string = static_global(prog, st.name);
+            if len(g) > 0 {
+              body = body + "    (global.set " + g + ")\n";
+            }
           }
         },
         Option.None => {},
@@ -1272,6 +1318,15 @@ pub fn emit(prog: *Prog) -> string {
   out = out + "    (func $proc_exit (param i32)))\n";
   out = out + "  (memory 1)\n";
   out = out + "  (export \"memory\" (memory 0))\n";
+  let mut gi: usize = 0;
+  while gi < prog.nconsts {
+    if prog.cstatic[gi] {
+      out = out + "  (global $g_" + prog.consts[gi] +
+             " (mut i64) (i64.const " + prog.cvals[gi].to_str() +
+             "))\n";
+    }
+    gi = gi + 1;
+  }
   out = out + RUNTIME;
   out = out + ALLOC;
   out = out + STREQ;

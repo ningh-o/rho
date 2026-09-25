@@ -153,6 +153,10 @@ pub struct FnDef {
 pub struct Prog {
   fns: []*FnDef,
   main: []*Stmt,
+  consts: []string, // module-level const/static names
+  cvals: []i64,     // their folded initializer values
+  cstatic: []bool,  // true = a static mut (a wasm global), false = a const
+  nconsts: usize,
 }
 
 pub fn make_expr(count: *Expr) -> *Expr {
@@ -813,14 +817,99 @@ fn eat_arrow(c: *PCur) {
   }
 }
 
+// fold a const initializer: literals, earlier names, arithmetic and
+// the bitwise ladder (comparison folds are not const contexts)
+pub fn fold_const(e: *Expr, names: []string, vals: []i64,
+                  n: usize) -> i64 {
+  if e.tag == EX_LIT {
+    return e.lit;
+  }
+  if e.tag == EX_VAR {
+    let mut k: usize = 0;
+    while k < n {
+      if names[k] == e.name {
+        return vals[k];
+      }
+      k = k + 1;
+    }
+    return 0;
+  }
+  if e.tag == EX_BIN {
+    let mut l: i64 = 0;
+    match e.lhs {
+      Option.Some(x) => {
+        l = fold_const(x, names, vals, n);
+      },
+      Option.None => {},
+    }
+    let mut r: i64 = 0;
+    match e.rhs {
+      Option.Some(y) => {
+        r = fold_const(y, names, vals, n);
+      },
+      Option.None => {},
+    }
+    if e.op == 0 { return l + r; }
+    if e.op == 1 { return l - r; }
+    if e.op == 2 { return l * r; }
+    if e.op == 3 { return l / r; }
+    if e.op == 4 { return l % r; }
+    if e.op == 15 { return l & r; }
+    if e.op == 16 { return l | r; }
+    if e.op == 17 { return l ^ r; }
+    if e.op == 18 { return l << r; }
+    if e.op == 19 { return l >> r; }
+    return 0;
+  }
+  return 0;
+}
+
 pub fn parse(toks: []*Tok, src: string) -> *Prog {
   let fns: []*FnDef = make([]*FnDef, 16);
   let mut nf: usize = 0;
   let nodes: []*Stmt = make([]*Stmt, len(src) + 4);
   let mut n: usize = 0;
   let c = new PCur { toks: toks, pos: 0 };
+  let cnames: []string = make([]string, 64);
+  let cvals: []i64 = make([]i64, 64);
+  let cstatic: []bool = make([]bool, 64);
+  let mut nc: usize = 0;
   while tk(c).kind != lex.TK_EOF {
     let t = tk(c);
+    if (t.kind == lex.TK_KEYWORD && t.text == "const") ||
+       (t.kind == lex.TK_KEYWORD && t.text == "static") {
+      let is_static: bool = t.text == "static";
+      tkadv(c);
+      // static mut NAME — the mut is a soft word here too
+      let nt = tk(c);
+      if nt.text == "mut" &&
+          (nt.kind == lex.TK_IDENT || nt.kind == lex.TK_KEYWORD) {
+        tkadv(c);
+      }
+      let nt2 = tk(c);
+      if nt2.kind == lex.TK_IDENT || nt2.kind == lex.TK_KEYWORD {
+        let nm: string = nt2.text;
+        tkadv(c);
+        // optional : type
+        if is_punct(tk(c), 58) {
+          tkadv(c);
+          if !eat_slice_type(c) {
+            tkadv(c);
+          }
+        }
+        if eat_punct(c, 61) {
+          let ie = parse_bin(c, 0);
+          cnames[nc] = nm;
+          cvals[nc] = fold_const(ie, cnames, cvals, nc);
+          cstatic[nc] = is_static;
+          nc = nc + 1;
+        }
+        eat_punct(c, 59);
+        continue;
+      }
+      tkadv(c);
+      continue;
+    }
     if t.kind == lex.TK_KEYWORD && t.text == "fn" {
       tkadv(c);
       let nm = tk(c);
@@ -871,6 +960,8 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
     }
     tkadv(c);
   }
-  let prog = new Prog { fns: fns[0..nf], main: nodes[0..n] };
+  let prog = new Prog { fns: fns[0..nf], main: nodes[0..n],
+                        consts: cnames[0..nc], cvals: cvals[0..nc],
+                        cstatic: cstatic[0..nc], nconsts: nc };
   return prog;
 }

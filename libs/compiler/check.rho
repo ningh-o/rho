@@ -79,6 +79,13 @@ fn expr_walk(e: *Expr, prog: *Prog, bound: []string, nb: usize,
       }
       k = k + 1;
     }
+    let mut g: usize = 0;
+    while g < prog.nconsts {
+      if prog.consts[g] == e.name {
+        hit = true;
+      }
+      g = g + 1;
+    }
     if !hit {
       eprintf("check: unknown name '{}'\n", e.name);
       errs.n = errs.n + 1;
