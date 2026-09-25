@@ -99,14 +99,13 @@ triple-quoted string that never closes is a compile error.
 ## 3. Types
 
 ```
-type      := builtin | ptr | opt | slice | fn_type | path | app
+type      := builtin | ptr | opt | slice | fn_type | app
 builtin   := i8|i16|i32|i64|u8|u16|u32|u64|usize|f32|f64|bool|string
 ptr       := '*' type            (*T — non-null heap pointer)
 opt       := '?' type            (?T — sugar for Option[T])
-slice     := '[' type ']'        ([T] — slice of T)
-fn_type   := 'fn' '(' [params] ')' ['->' type]
-path      := ident ['.' ident]   (a struct/enum/trait name, or Option/Result)
-app       := path '[' types ']'  (generic instantiation: Pair[i32, f64])
+slice     := '[' ']' type        ([]T — slice of T, Go style)
+fn_type   := 'fn' '(' [types] ')' ['->' type]   (unnamed param types)
+app       := ident ['[' types ']']  (Pair[i32, f64]; bare ident = named type)
 ```
 
 `?T` parses as `Option[T]` before type checking sees it; there is one
@@ -197,7 +196,7 @@ extern    := 'extern' name ':' fn_type ';'
 ### 4.4 use and pub use
 
 ```
-use       := 'use' segs ';'
+use       := 'use' segs ['as' ident] ';'
 segs      := ident ('.' ident)*
 pub_use   := 'pub' 'use' useform ';'
 useform   := segs                       (re-export a module/package)
@@ -206,10 +205,11 @@ useform   := segs                       (re-export a module/package)
            | segs '.' '*'               (flatten all public items)
 ```
 
-Plain `use` has exactly one form: dotted path, segments are plain
-identifiers. No `as`, no `*` on plain use. Use bindings are private to
-the importing module. `pub use` is legal only in a facade (`lib.rho`)
-and has exactly the four forms above (see `module-system.md`).
+Plain `use` takes a dotted path (the one path form) with an optional
+`as` alias that renames the binding; no `*` on plain use. Use bindings
+are private to the importing module. `pub use` is legal only in a
+facade (`lib.rho`) and has exactly the four forms above (see
+`module-system.md`).
 
 ## 5. Statements
 
@@ -239,8 +239,9 @@ loop      := [ident ':'] 'loop' block
   `continue L;` jump out of / re-enter the labeled loop. Labels are
   function-unique and live in their own namespace (a label may share a
   name with a variable). No goto.
-- `defer expr;` — the expression (a call) runs when the enclosing scope
-  exits, LIFO across defers, on **every** exit path except panic.
+- `defer expr;` or `defer lvalue op= expr;` — the deferred action (a
+  call or an assignment) runs when the enclosing scope exits, LIFO
+  across defers, on **every** exit path except panic.
 - Compound assignment is defined for every arithmetic/bitwise operator
   (`<<`/`>>` included) on mutable lvalues of matching type; both sides
   same type; bitwise compound assignments are verified end-to-end.
@@ -276,9 +277,16 @@ there is no truthiness.
   constructors), calls `f(args)`, method calls `x.m(args)`,
   associated calls `T.m(args)`
 - field access `p.x`, indexing `s[i]` (index type `usize`)
+- slicing `s[a..b]` with either end open (`s[..n]`, `s[n..]`)
 - parenthesized `(e)`
-- `new` expressions: `new T { f: e, ... }`, `new T(args)` (enum
-  variants), with explicit generics `new Pair[i32, i64] { … }`
+- `new T { f: e, ... }` with optional explicit generics
+  (`new Pair[i32, i64] { … }`); `*new T { … }` copies the value inline
+- unary `*p` dereferences a pointer (yields a copy of the pointee
+  value); unary `~` is integer bitwise-not
+- `make([]T, n)` — the builtin zeroed-slice allocation (n elements of
+  type T); `make` is syntax, not a function
+- enum variant constructors by path: `Shape.Circle(r)`,
+  `Shape.Rect(w: 7, h: 3)` — tuple position or named fields
 - slice literals `[a, b, c]` (type `[]T`), empty `[]` with consumer
 - `if`/`match` expressions (same-type arms; `if` as an expression
   requires `else`)

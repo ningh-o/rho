@@ -52,6 +52,8 @@ static void dump_opt_node(FILE *out, NodeRef r) {
 }
 
 static void dump_list(FILE *out, RefList *l) {
+  if (!l)
+    return;
   for (size_t i = 0; i < reflist_len(l); i++) {
     fputc(' ', out);
     dump_node(out, node_get(reflist_at(l, i)));
@@ -127,13 +129,23 @@ void dump_node(FILE *out, Node *n) {
     dump_list(out, n->list);
     fputs("])", out);
     return;
+  case NT_DYN:
+    fprintf(out, "(dyn %s)", n->name);
+    return;
 
   // ---- declarations
   case NT_FN:
-    if (n->name2)
+    if (n->op == 2)
+      fprintf(out, "(impl-fn %s (", n->name);
+    else if (n->name2)
       fprintf(out, "(fn %s.%s (", n->name2, n->name);
     else
       fprintf(out, "(fn %s (", n->name);
+    if (n->a != NO_REF && node_get(n->a)->list) {
+      fputs("[", out);
+      dump_list(out, node_get(n->a)->list);
+      fputs("] ", out);
+    }
     dump_list(out, n->list); // params
     fputs(") ", out);
     dump_opt_node(out, n->c); // ret
@@ -236,9 +248,13 @@ void dump_node(FILE *out, Node *n) {
     dump_opt_node(out, n->a);
     return;
   case NT_PARAM:
-    fprintf(out, "(param %s ", n->name);
+    if (n->op == 1) { // bare self
+      fputs("(param self)", out);
+      return;
+    }
+    fprintf(out, "(param %s%s ", n->name, n->bval ? " mut" : "");
     dump_opt_node(out, n->a);
-    if (n->bval)
+    if (n->op == 2)
       fputs(" ...", out);
     fputc(')', out);
     return;
@@ -305,6 +321,12 @@ void dump_node(FILE *out, Node *n) {
     fprintf(out, "(continue %s)", n->name ? n->name : "-");
     return;
   case NT_EXPRSTMT:
+    if (n->op == 3) { // block wrapper
+      fputs("(block", out);
+      dump_list(out, n->list);
+      fputc(')', out);
+      return;
+    }
     dump_opt_node(out, n->a);
     return;
 
@@ -371,11 +393,17 @@ void dump_node(FILE *out, Node *n) {
     fputc(')', out);
     return;
   case NT_NEW: {
-    static const char *forms[] = {"new", "new-variant"};
-    fprintf(out, "(%s %s", forms[n->op], n->name);
-    if (n->list && reflist_len(n->list)) {
-      fputc(' ', out);
-      dump_list(out, n->list);
+    fprintf(out, "(new %s", n->name);
+    if (n->a != NO_REF && node_get(n->a)->list) {
+      fputs(" [", out);
+      dump_list(out, node_get(n->a)->list);
+      fputc(']', out);
+    }
+    if (n->b != NO_REF && node_get(n->b)->list &&
+        reflist_len(node_get(n->b)->list)) {
+      fputs(" {", out);
+      dump_list(out, node_get(n->b)->list);
+      fputc('}', out);
     }
     fputc(')', out);
     return;
@@ -384,6 +412,15 @@ void dump_node(FILE *out, Node *n) {
     fputs("[", out);
     dump_list(out, n->list);
     fputc(']', out);
+    return;
+  case NT_SLICE_E:
+    fputs("(slice ", out);
+    dump_opt_node(out, n->a);
+    fputc(' ', out);
+    dump_opt_node(out, n->b);
+    fputc(' ', out);
+    dump_opt_node(out, n->c);
+    fputc(')', out);
     return;
   case NT_CLOSURE:
     fputs("(closure (", out);
@@ -413,6 +450,13 @@ void dump_node(FILE *out, Node *n) {
     dump_opt_node(out, n->a);
     dump_list(out, n->list);
     fputc(')', out);
+    return;
+
+  case NT_PLIT:
+  case NT_PBIND:
+  case NT_PWILD:
+  case NT_PVAR:
+    dump_pattern(out, n);
     return;
 
   default:

@@ -419,13 +419,20 @@ static void lex_oper(Lexer *lx) {
     k = T_COLON;
     break;
   case '.':
-    if (c2 == '.' && lx->pos + 1 < lx->len && lx->src[lx->pos + 1] == '.') {
+    if (c2 == '.') {
       advance(lx);
-      advance(lx);
-      k = T_ELLIPSIS;
+      if (peek(lx) == '.') {
+        advance(lx);
+        k = T_ELLIPSIS;
+      } else {
+        k = T_DOTDOT;
+      }
     } else {
       k = T_DOT;
     }
+    break;
+  case '~':
+    k = T_TILDE;
     break;
   case '+':
     k = c2 == '=' ? (advance(lx), T_PLUSEQ) : T_PLUS;

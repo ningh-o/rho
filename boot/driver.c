@@ -38,7 +38,11 @@ int cmd_check(int argc, char **argv) {
 }
 
 int cmd_dump_ast(const char *path) {
-  (void)path;
-  fprintf(stderr, "rho dump-ast: not implemented yet (Phase 1, T1.3)\n");
-  return EXIT_USAGE;
+  Module *m = module_load(g_arena, path);
+  if (g_had_error) {
+    diags_print(stderr);
+    return EXIT_COMPILE;
+  }
+  dump_module(stdout, m);
+  return 0;
 }

@@ -86,7 +86,8 @@ typedef enum {
   T_LPAREN, T_RPAREN, T_LBRACE, T_RBRACE, T_LBRACK, T_RBRACK,
   T_COMMA, T_SEMI, T_COLON, T_DOT, T_ELLIPSIS,
   T_ARROW, T_FATARROW, T_PLUS, T_DASH, T_STAR, T_SLASH, T_PERCENT,
-  T_AMP, T_PIPE, T_CARET, T_BANG, T_QUESTION, T_ANDAND, T_OROR,
+  T_AMP, T_PIPE, T_CARET, T_BANG, T_TILDE, T_QUESTION, T_ANDAND, T_OROR,
+  T_DOTDOT,
   T_SHL, T_SHR,
   T_EQ, T_EQEQ, T_NE, T_LT, T_LE, T_GT, T_GE,
   T_PLUSEQ, T_DASHEQ, T_STAREQ, T_SLASHEQ, T_PCTEQ,
@@ -128,7 +129,7 @@ typedef size_t NodeRef; // index into g_nodes; 0 = none
 
 typedef enum {
   // types
-  NT_BUILTIN, NT_PTR, NT_OPT, NT_SLICE, NT_FNTYPE, NT_APP,
+  NT_BUILTIN, NT_PTR, NT_OPT, NT_SLICE, NT_FNTYPE, NT_APP, NT_DYN,
   // declarations
   NT_FN, NT_STRUCT, NT_ENUM, NT_TRAIT, NT_IMPL, NT_CONST, NT_STATIC,
   NT_EXTERN, NT_USE,
@@ -141,7 +142,8 @@ typedef enum {
   // expressions
   NT_INT, NT_FLOAT, NT_BOOL, NT_STR, NT_PATH, NT_CALL, NT_METHOD,
   NT_FIELD_E, NT_INDEX, NT_UNARY, NT_BINARY, NT_AS, NT_NEW,
-  NT_SLICE_LIT, NT_CLOSURE, NT_QMARK, NT_IF_EXPR, NT_MATCH_EXPR,
+  NT_SLICE_LIT, NT_SLICE_E, NT_CLOSURE, NT_QMARK, NT_IF_EXPR,
+  NT_MATCH_EXPR,
   // patterns
   NT_PLIT, NT_PBIND, NT_PWILD, NT_PVAR,
 } NodeKind;
@@ -195,7 +197,7 @@ enum {
 
 // operator payloads for NT_UNARY/NT_BINARY/NT_ASSIGN (op field)
 enum {
-  OP_NEG = 1, OP_NOT,
+  OP_NEG = 1, OP_NOT, OP_BITNOT, OP_DEREF,
   OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_MOD,
   OP_BAND, OP_BOR, OP_BXOR, OP_SHL, OP_SHR,
   OP_EQ, OP_NE, OP_LT, OP_LE, OP_GT, OP_GE,
@@ -215,7 +217,8 @@ typedef struct Module {
   struct Module *next;
 } Module;
 
-Module *module_load(Arena *a, const char *path); // lex + parse
+Module *module_load(Arena *a, const char *path);       // read + lex + parse
+Module *module_parse_src(const char *path, const char *src); // lex + parse
 
 // ---------------------------------------------------------------- dump
 

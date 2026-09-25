@@ -278,6 +278,7 @@ static const struct { NodeKind k; const char *s; } k_node_names[] = {
     {NT_INDEX, "index"},            {NT_UNARY, "unary"},
     {NT_BINARY, "binary"},          {NT_AS, "as"},
     {NT_NEW, "new"},                {NT_SLICE_LIT, "slice-lit"},
+    {NT_SLICE_E, "slice-expr"},     {NT_DYN, "dyn"},
     {NT_CLOSURE, "closure"},        {NT_QMARK, "qmark"},
     {NT_IF_EXPR, "if-expr"},        {NT_MATCH_EXPR, "match-expr"},
     {NT_PLIT, "pattern-lit"},       {NT_PBIND, "pattern-bind"},
@@ -294,6 +295,8 @@ const char *node_kind_name(NodeKind k) {
 
 static const struct { int op; const char *s; } k_op_names[] = {
     {OP_NEG, "-"},   {OP_NOT, "!"},
+    {OP_BITNOT, "~"},
+    {OP_DEREF, "*"},
     {OP_ADD, "+"},   {OP_SUB, "-"},
     {OP_MUL, "*"},   {OP_DIV, "/"},
     {OP_MOD, "%"},   {OP_BAND, "&"},
@@ -370,8 +373,11 @@ const char *tok_spell(TokKind k) {
 }
 
 bool tok_is_builtin_type(TokKind k, const char **spell) {
+  static const char *spells[] = {"i8",  "i16", "i32", "i64",  "u8",
+                                 "u16", "u32", "u64", "usize", "f32",
+                                 "f64", "bool", "string"};
   if (k >= K_I8 && k <= K_STRING) {
-    *spell = tok_spell(k) + 1; // strip quotes
+    *spell = spells[k - K_I8];
     return true;
   }
   return false;

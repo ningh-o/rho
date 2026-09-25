@@ -84,7 +84,7 @@ section — no placeholder stages. boot is the reference compiler.
       integer/float literals (default lanes i32/f64), string escapes,
       **fully verbatim triple-quoted strings**, dotted `use`, labels,
       `?T` notation.
-- [ ] **T1.3** Parser: declarations (fn/methods/associated/generic,
+- [x] **T1.3** Parser: declarations (fn/methods/associated/generic,
       struct, enum, trait, impl, const/static/extern, use/as/pub use),
       overloads (same name, many signatures), patterns, labels on
       `while`/`loop`.
