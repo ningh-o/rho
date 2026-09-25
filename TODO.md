@@ -292,11 +292,19 @@ section — no placeholder stages. boot is the reference compiler.
       fixtures + a suite leg wired into make test. The self-hosted
       compiler mirrors the surface when its CLI lands (a T2 dogfood
       leg: rho's test suite running rho).
-- [ ] **T3.6** The mut view law (§18) + the usize lane: boot gates
-      stores through handle bindings, `mut`-receiver method calls, and
-      the call-site `mut` marker on the binding's mut-ness (value
-      parameters stay immutable — current behavior becomes lawful);
-      the corpus adapts mechanically (`let` → `let mut` on
+- [ ] **T3.6** The mut view law (§18) + the usize lane. Boot surface
+      map: parse grows the `mut` argument prefix in call argument
+      lists (params already carry the flag); check_fn_body keeps the
+      parameter's declared mut instead of forcing false; dotted,
+      indexed, and compound stores through handle bindings gate on
+      the root binding's mut; mut-receiver method calls gate the same
+      way; argument markers pair with the parameter in both
+      directions and require the argument's root binding to be mut;
+      sig_same and impl/trait matching join receiver mut-ness (two
+      candidates differing only in `mut self` are ambiguous); fmt
+      renders the argument marker (it already prints param/let/static
+      mut). Emitter and kernel: zero — permission never layout. The
+      corpus adapts mechanically (`let` → `let mut` on
       through-written bindings) in the same commit, plus the leg
       pinning that a value receiver cannot call a pointer-receiver
       method. The usize lane comes home to the address width (u32 on
