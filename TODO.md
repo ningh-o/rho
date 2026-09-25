@@ -223,19 +223,16 @@ section — no placeholder stages. boot is the reference compiler.
       closures/traits/dyn/generics/variadics; floats (the f64 lane);
       runtime string concat/format/to_str; module loading; the set
       face in the differential runner. Later growths: the assert
-      builtin (eqz-gated panic), runtime string concatenation
-      ($w_cat + a build_string_pair lowering over literal/var/call
-      leaves, rebinds gaining fresh pair slots with backward-scanning
-      lookups), the complete escape law, hex/bin literals, /0 %0 and
-      MIN/-1 panics, the string-return ABI (pair results), and $w_itoa
-      (ready for the format work). TWO boot quirks the growths
-      recorded for the T3.4 suite: --set overrides used to fold
-      against the DECLARED value (fixed — overrides now land before
-      the load-time dead-branch fold), and continue inside a match arm
-      does not skip the enclosing loop's tail (the self-hosted code
-      avoids match-arm continues entirely; whether boot's own lowering
-      of the shape is lawful needs the suite's probe — §9 says
-      continue binds the loop).)*
+      builtin (eqz-gated panic; assert_eq compares strings content-wise
+      with a user's same-name fn winning), runtime string concat
+      ($w_cat + build_string_pair over literal/var/slice/call leaves,
+      chained slices, loop rebinds binding slots BEFORE the tree
+      builds), the string-return ABI, format() and $w_itoa, brace
+      escapes in format strings, and len(base[a..b]) computed directly
+      (bounds-checked, hi - lo, no view built). fmt parity breadth:
+      31 of the 46 compile-passing corpus files also format
+      byte-identically; the other 15 mark the parse-retention gaps
+      (escape spellings, shapes) the subset fmt has yet to learn)*
 - [ ] **T2.x** Optimizer in the mirror: constant folding, dead-code
       elimination, globals tree-shaking, tail-call→loop — with the
       language suites (opt/eq/params/modsys/strops/multiline) rebuilt
