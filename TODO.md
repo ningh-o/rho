@@ -242,18 +242,27 @@ section — no placeholder stages. boot is the reference compiler.
       shared zeroed None box filling fresh ?T slices, payload-typed
       binders, printf in expression position). The names-table
       lookups scan backward now — match binders shadow across arms.
-      55 of 108 behavioral, floor 55. The thirty-ninth cut: stringly
-      scalar lanes (literals/concats/format/string-returning calls
-      ride their ADDRESS through emit_expr — enum ctor payloads
-      carrying strings unblock) and printf's evaluation order (every
-      hole evaluates into temps before the first byte writes; an oob
-      used to leave a half-printed line). 055 and 094 join: 56 of
-      108, floor 56. Remain: floats (the f64 lane — the exact-decimal
-      formatter is the deep end, the literals can ride their text
-      into f64.const); string statics (the {addr,len} pair needs two
-      globals); slice-returning fns; closures/traits/dyn/generics/
-      variadics; overloads; module loading; weak/rc; the set face in
-      the differential runner)*
+      55 of 108 behavioral, floor 55. The thirty-ninth through
+      forty-third cuts (2026-09-26, one session): stringly scalar
+      lanes and printf's evaluation order (56); the f64 lane WITHOUT
+      the printer — literals ride their raw text into f64.const
+      (wat2wasm does the strtod), values live as bits in the i64
+      locals with reinterpret round-trips, f32 demotes after every
+      op, float→int saturates AT THE TARGET WIDTH through exact f64
+      boundary compares (59, plus float-typed enum payload binders
+      at 60); the exit code masks at 0xff like boot's kernel (61
+      with 022/058); eprintf on fd 2, if-expressions (the match-arm
+      block tail parses one naturally — 076's burn recursion), and
+      honest bool holes (63); aggregate let completes — slice
+      literals [a,b,c], string-valued ifs, and the make builtin
+      demanding 'make([' so a user fn may own the name (64);
+      slice-returning fns ride the pair ABI. Remain: the
+      exact-decimal float to_str (the deep end — every
+      float-PRINTING program); string elements in slices and string
+      payloads in enums (two-slot elements, pair binders); string
+      statics; closures/traits/dyn/generics/variadics; overloads;
+      module loading; weak/rc; the set face in the differential
+      runner)*
 - [ ] **T2.x** Optimizer in the mirror: constant folding, dead-code
       elimination, globals tree-shaking, tail-call→loop — with the
       language suites (opt/eq/params/modsys/strops/multiline) rebuilt
