@@ -176,6 +176,83 @@ fn env_str_look(e: *Env, name: string) -> i64 {
   return 0 - 1;
 }
 
+// a runtime string binding: addr/len ride a LOCAL PAIR (slots are
+// negative markers: the pair starts at -1 - addr)
+fn env_str_bind_runtime(e: *Env, name: string, addr_slot: i64,
+                        len_slot: i64) {
+  e.snames[e.sn] = name;
+  e.saddrs[e.sn] = (0 - addr_slot) - 1; // negative: runtime pair
+  e.slens[e.sn] = len_slot;
+  e.sraws[e.sn] = "";
+  e.sn = e.sn + 1;
+}
+
+fn env_str_is_runtime(e: *Env, name: string) -> bool {
+  let mut i: usize = 0;
+  while i < e.sn {
+    if e.snames[i] == name {
+      return e.saddrs[i] < 0; // negative marker = runtime pair
+    }
+    i = i + 1;
+  }
+  return false; // not a string at all
+}
+
+// one fd_write from a runtime {ptr, len} local pair
+fn write_runtime(a_slot: i64, l_slot: i64) -> string {
+  let out: string = "    (i32.store (i32.const 64) " +
+                    "(i32.wrap_i64 (local.get " + a_slot.to_str() +
+                    ")))\n" +
+                    "    (i32.store (i32.const 68) " +
+                    "(i32.wrap_i64 (local.get " + l_slot.to_str() +
+                    ")))\n" +
+                    "    (drop (call $fd_write (i32.const 1) " +
+                    "(i32.const 64) (i32.const 1) (i32.const 96)))\n";
+  return out;
+}
+
+// push a string expression's {addr, len} pair onto the i64 stack:
+// folded literals become constants; runtime vars local.get the pair
+fn push_string(pool: *Pool, e: *Expr, env: *Env) -> string {
+  match fold_string(e, env) {
+    Option.Some(raw) => {
+      let saddr: i64 = pool_intern(pool, raw);
+      return "    (i64.const " + saddr.to_str() + ")\n" +
+             "    (i64.const " + pool_len(pool, raw).to_str() + ")\n";
+    },
+    Option.None => {
+      let a: i64 = env_str_look(env, e.name);
+      if a < 0 {
+        let lslot: i64 = env_str_len_slot(env, e.name);
+        return "    (local.get " + ((0 - a) - 1).to_str() + ")\n" +
+               "    (local.get " + lslot.to_str() + ")\n";
+      }
+      return "    (i64.const 0)\n    (i64.const 0)\n";
+    },
+  }
+}
+
+// one call argument: a string parameter takes the {addr,len} pair,
+// everything else is the plain i64 expression
+fn emit_arg(pool: *Pool, e: *Expr, env: *Env, prog: *Prog) -> string {
+  if e.tag == parse.EX_STR || e.tag == parse.EX_VAR ||
+      (e.tag == parse.EX_BIN && e.op == 0) {
+    return push_string(pool, e, env);
+  }
+  return emit_expr(pool, e, env, prog);
+}
+
+fn env_str_len_slot(e: *Env, name: string) -> i64 {
+  let mut i: usize = 0;
+  while i < e.sn {
+    if e.snames[i] == name {
+      return e.slens[i];
+    }
+    i = i + 1;
+  }
+  return 0;
+}
+
 fn env_str_len(e: *Env, name: string) -> i64 {
   let mut i: usize = 0;
   while i < e.sn {
@@ -333,7 +410,7 @@ fn fold_string(e: *Expr, env: *Env) -> ?string {
 }
 
 // compile an expression: lines that leave one i64 on the stack
-fn emit_expr(pool: *Pool, e: *Expr, env: *Env) -> string {
+fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog) -> string {
   if e.tag == parse.EX_LIT {
     return "    (i64.const " + e.lit.to_str() + ")\n";
   }
@@ -345,7 +422,12 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env) -> string {
     return "    (local.get " + slot.to_str() + ")\n";
   }
   if e.tag == parse.EX_CALL && e.name == "len" && len(e.args) == 1 {
-    match fold_string(e.args[0], env) {
+    let a0 = e.args[0];
+    if a0.tag == parse.EX_VAR && env_str_is_runtime(env, a0.name) {
+      return "    (local.get " +
+             env_str_len_slot(env, a0.name).to_str() + ")\n";
+    }
+    match fold_string(a0, env) {
       Option.Some(raw) => {
         return "    (i64.const " + decoded_len(raw).to_str() + ")\n";
       },
@@ -356,7 +438,7 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env) -> string {
     let mut out: string = "";
     let mut k: usize = 0;
     while k < len(e.args) {
-      out = out + emit_expr(pool, e.args[k], env);
+      out = out + emit_arg(pool, e.args[k], env, prog);
       k = k + 1;
     }
     out = out + "    call $u_" + e.name + "\n";
@@ -366,13 +448,13 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env) -> string {
   let mut out: string = "";
   match e.lhs {
     Option.Some(l) => {
-      out = out + emit_expr(pool, l, env);
+      out = out + emit_expr(pool, l, env, prog);
     },
     Option.None => {},
   }
   match e.rhs {
     Option.Some(r) => {
-      out = out + emit_expr(pool, r, env);
+      out = out + emit_expr(pool, r, env, prog);
     },
     Option.None => {},
   }
@@ -381,7 +463,8 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env) -> string {
 }
 
 fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
-               next_local: *NextLocal, in_fn: bool, ret_slot: i64) -> string {
+               next_local: *NextLocal, in_fn: bool, ret_slot: i64,
+               prog: *Prog) -> string {
   let mut body: string = "";
   let mut i: usize = 0;
   while i < len(nodes) {
@@ -390,7 +473,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
       // a fn's return: the value rides when the statement carries one
       match st.val {
         Option.Some(rv) => {
-          body = body + emit_expr(pool, rv, env);
+          body = body + emit_expr(pool, rv, env, prog);
           body = body + "    return\n";
         },
         Option.None => {
@@ -402,7 +485,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
       // main's return: the value lands in the exit slot (i32)
       match st.val {
         Option.Some(rv) => {
-          body = body + emit_expr(pool, rv, env);
+          body = body + emit_expr(pool, rv, env, prog);
           body = body + "    (i32.wrap_i64)\n";
           body = body + "    (local.set " + ret_slot.to_str() + ")\n";
         },
@@ -422,16 +505,26 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
           if ai < len(st.args) {
             let arg = st.args[ai];
             let mut folded: bool = false;
-            match fold_string(arg, env) {
-              Option.Some(raw) => {
-                let saddr: i64 = pool_intern(pool, raw);
-                body = body + write_call(saddr, pool_len(pool, raw));
-                folded = true;
-              },
-              Option.None => {},
+            if arg.tag == parse.EX_VAR &&
+                env_str_is_runtime(env, arg.name) {
+              let a: i64 = env_str_look(env, arg.name);
+              body = body + write_runtime((0 - a) - 1,
+                                          env_str_len_slot(env,
+                                                           arg.name));
+              folded = true;
             }
             if !folded {
-              body = body + emit_expr(pool, arg, env);
+              match fold_string(arg, env) {
+                Option.Some(raw) => {
+                  let saddr: i64 = pool_intern(pool, raw);
+                  body = body + write_call(saddr, pool_len(pool, raw));
+                  folded = true;
+                },
+                Option.None => {},
+              }
+            }
+            if !folded {
+              body = body + emit_expr(pool, arg, env, prog);
               body = body + write_int();
             }
             ai = ai + 1;
@@ -450,7 +543,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
                            raw);
             },
             Option.None => {
-              body = body + emit_expr(pool, e, env);
+              body = body + emit_expr(pool, e, env, prog);
               body = body + "    (local.set " + next_local.v.to_str() +
                      ")\n";
               env_bind(env, st.name, next_local.v);
@@ -465,7 +558,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
       let slot: i64 = env_look(env, st.name);
       match st.val {
         Option.Some(e) => {
-          body = body + emit_expr(pool, e, env);
+          body = body + emit_expr(pool, e, env, prog);
           if slot >= 0 {
             body = body + "    (local.set " + slot.to_str() + ")\n";
           }
@@ -476,7 +569,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
     if st.tag == parse.ST_CALL {
       match st.val {
         Option.Some(e) => {
-          body = body + emit_expr(pool, e, env);
+          body = body + emit_expr(pool, e, env, prog);
           body = body + "    drop\n";
         },
         Option.None => {},
@@ -486,13 +579,13 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
       match st.val {
         Option.Some(cond) => {
           // flat if: the condition's stack code precedes the keyword
-          body = body + emit_expr(pool, cond, env);
+          body = body + emit_expr(pool, cond, env, prog);
           body = body + "    if\n";
-          body = body + emit_stmts(st.body, pool, env, next_local, in_fn, ret_slot);
+          body = body + emit_stmts(st.body, pool, env, next_local, in_fn, ret_slot, prog);
           if len(st.body2) > 0 {
             body = body + "    else\n";
             body = body + emit_stmts(st.body2, pool, env, next_local,
-                                     in_fn, ret_slot);
+ in_fn, ret_slot, prog);
           }
           body = body + "    end\n";
         },
@@ -503,9 +596,9 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
       match st.val {
         Option.Some(cond) => {
           body = body + "    (loop $w\n";
-          body = body + emit_expr(pool, cond, env);
+          body = body + emit_expr(pool, cond, env, prog);
           body = body + "    if\n";
-          body = body + emit_stmts(st.body, pool, env, next_local, in_fn, ret_slot);
+          body = body + emit_stmts(st.body, pool, env, next_local, in_fn, ret_slot, prog);
           body = body + "      (br $w)\n";
           body = body + "    end\n";
           body = body + "    )\n";
@@ -524,32 +617,66 @@ struct NextLocal {
 }
 
 // one user fn: params as i64 locals, an i64 result
-fn emit_fn(fd: *FnDef, pool: *Pool) -> string {
-  let _ = 0;
-  let env = env_new(64);
-  let next_local = new NextLocal { v: 0 };
+fn capture_at_after(fd: *FnDef) -> i64 {
+  let mut n: i64 = 0;
   let mut k: usize = 0;
   while k < len(fd.params) {
-    env_bind(env, fd.params[k], next_local.v);
-    next_local.v = next_local.v + 1;
+    if k < len(fd.pstr) && fd.pstr[k] {
+      n = n + 2;
+    } else {
+      n = n + 1;
+    }
     k = k + 1;
   }
+  return n;
+}
+
+fn emit_fn(fd: *FnDef, pool: *Pool, prog: *Prog) -> string {
+  let env = env_new(64);
+  let next_local = new NextLocal { v: 0 };
+  let param_slots: i64 = capture_at_after(fd);
+  let mut nparams: i64 = 0;
+  let mut k0: usize = 0;
+  while k0 < len(fd.params) {
+    if k0 < len(fd.pstr) && fd.pstr[k0] {
+      nparams = nparams + 2;
+    } else {
+      nparams = nparams + 1;
+    }
+    k0 = k0 + 1;
+  }
+  let mut k: usize = 0;
+  while k < len(fd.params) {
+    if k < len(fd.pstr) && fd.pstr[k] {
+      env_str_bind_runtime(env, fd.params[k], next_local.v,
+                           next_local.v + 1);
+      next_local.v = next_local.v + 2;
+    } else {
+      env_bind(env, fd.params[k], next_local.v);
+      next_local.v = next_local.v + 1;
+    }
+    k = k + 1;
+  }
+  // the capture pair follows the params
+  next_local.v = next_local.v + 2;
   let body: string = emit_stmts(fd.body, pool, env, next_local, true,
-                                0 - 1);
+                                0 - 1, prog);
   let mut out: string = "  (func $u_" + fd.name;
+  // signature: every param slot is an i64 (a string param is a pair)
+  let np: i64 = capture_at_after(fd);
   let mut q: i64 = 0;
-  while q < next_local.v {
+  while q < np {
     out = out + " (param i64)";
     q = q + 1;
   }
   out = out + " (result i64)\n";
-  out = out + "    (local $a i32) (local $l i32)\n";
-  q = 0;
+  // locals: the capture pair, then the walk's lets
+  out = out + "\n    (local $a i32) (local $l i32)\n";
+  q = param_slots;
   while q < next_local.v {
-    out = out + "    (local $p" + q.to_str() + " i64)\n";
+    out = out + "    (local i64)\n";
     q = q + 1;
   }
-  // local indices: params already occupy 0..n; lets continue after
   out = out + body;
   out = out + "    (i64.const 0)\n  )\n";
   return out;
@@ -560,12 +687,12 @@ pub fn emit(prog: *Prog) -> string {
   let env = env_new(64);
   let next_local = new NextLocal { v: 3 }; // 0/1 capture, 2 = exit code
   let body: string = emit_stmts(prog.main, pool, env, next_local, false,
-                                2); // slot 2: the exit code
+                                2, prog); // slot 2: the exit code
   let next_local_n: i64 = next_local.v;
   let mut fntext: string = "";
   let mut fi: usize = 0;
   while fi < len(prog.fns) {
-    fntext = fntext + emit_fn(prog.fns[fi], pool);
+    fntext = fntext + emit_fn(prog.fns[fi], pool, prog);
     fi = fi + 1;
   }
   // assemble: header, memory, runtime, _start with the let locals

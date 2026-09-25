@@ -109,6 +109,7 @@ pub fn bin(op: i64, lhs: *Expr, rhs: *Expr) -> *Expr {
 pub struct FnDef {
   name: string,
   params: []string,
+  pstr: []bool, // true where the parameter is : string
   body: []*Stmt,
 }
 
@@ -449,8 +450,9 @@ fn parse_stmt(c: *PCur) -> *Stmt {
   return bad;
 }
 
-// ( params ) — names only; the skeleton is i64-typed throughout
-fn parse_params(c: *PCur) -> []string {
+// ( params ) — names plus a string flag per parameter (': string');
+// everything else is i64
+fn parse_params2(c: *PCur, pstr: []bool) -> []string {
   let names: []string = make([]string, 8);
   let mut n: usize = 0;
   if !eat_punct(c, 40) {
@@ -464,11 +466,16 @@ fn parse_params(c: *PCur) -> []string {
     let pt = tk(c);
     if pt.kind == lex.TK_IDENT || pt.kind == lex.TK_KEYWORD {
       names[n] = pt.text;
+      pstr[n] = false;
       n = n + 1;
       tkadv(c);
       // optional : type
       if is_punct(tk(c), 58) {
         tkadv(c);
+        let tt = tk(c);
+        if tt.kind == lex.TK_KEYWORD && tt.text == "string" {
+          pstr[n - 1] = true;
+        }
         tkadv(c);
       }
     } else {
@@ -522,7 +529,8 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
         continue;
       }
       // a user fn: params, arrow, body
-      let params = parse_params(c);
+      let pstr: []bool = make([]bool, 8);
+      let params = parse_params2(c, pstr);
       eat_arrow(c);
       let mut body: []*Stmt = make([]*Stmt, 0);
       if eat_punct(c, 123) {
@@ -538,7 +546,8 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
         }
         body = bstmts[0..bn];
       }
-      let fd = new FnDef { name: nm.text, params: params, body: body };
+      let fd = new FnDef { name: nm.text, params: params,
+                           pstr: pstr[0..len(params)], body: body };
       fns[nf] = fd;
       nf = nf + 1;
       continue;
