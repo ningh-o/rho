@@ -103,6 +103,15 @@ else
   echo "FAIL selfhost/badsrc: rc=$brc err=[$berr]"
   FAILED=1
 fi
+# by-value structs: nested layout, *new field inits, chain reads,
+# by-value params/returns, struct-element slices, string-element
+# compares, two slices with different element types in one scope
+run_one byval1 'struct Pair { a: f64, b: f32, tag: i32, } fn scale(p: Pair, k: f64) -> Pair { return *new Pair { a: p.a * k, b: p.b * 2.0, tag: p.tag }; } fn main() -> i32 { let q: Pair = *new Pair { a: 0.25, b: 0.5, tag: 7 }; printf("a={} b={} tag={}\n", q.a, q.b, q.tag as i64); let r: Pair = scale(q, 4.0); printf("r.a={} r.tag={}\n", r.a, r.tag as i64); return 0; }' $'a=0.25 b=0.5 tag=7\nr.a=1.0 r.tag=7'
+run_one byval2 'struct Pair { a: f64, tag: i32, } struct Holder { p: Pair, seed: f64, } fn main() -> i32 { let h: *Holder = new Holder { p: *new Pair { a: 0.25, tag: 7 }, seed: 1.5 }; printf("a={} tag={} seed={}\n", h.p.a, h.p.tag as i64, h.seed); let c: Holder = *h; printf("flat: {} {}\n", c.p.a, c.seed); return 0; }' $'a=0.25 tag=7 seed=1.5\nflat: 0.25 1.5'
+run_test_slice='struct Pair { a: i64, tag: i32, } fn sum(ps: []Pair) -> i64 { let mut s: i64 = 0; let mut i: usize = 0; while i < len(ps) { s = s + ps[i].a; i += 1; } return s; } fn main() -> i32 { let ps: []Pair = make([]Pair, 3); ps[0] = *new Pair { a: 5, tag: 1 }; ps[1] = *new Pair { a: 6, tag: 2 }; ps[2] = *new Pair { a: 7, tag: 3 }; printf("sum={} a1={}\n", sum(ps), ps[1].a); return 0; }'
+run_one byval3 "$run_test_slice" $'sum=18 a1=6'
+run_one byval4 'struct N { v: i64, } fn drain(ns: []string) -> i64 { let mut c: i64 = 0; let mut i: usize = 0; while i < len(ns) { if ns[i] != "" { c += 1; } i += 1; } return c; } fn main() -> i32 { let xs: []?*N = make([]?*N, 4); let ss: []string = make([]string, 4); xs[0] = Option.Some(new N { v: 9 }); match xs[0] { Option.Some(h) => printf("v={} nonempty={}\n", h.v, drain(ss)), Option.None => printf("none nonempty={}\n", drain(ss)), }; return 0; }' 'v=9 nonempty=0'
+run_one byval5 'fn main() -> i32 { let mut t: i64 = 0; let mut i: i32 = 0; while i < 1200 { let a: []i64 = make([]i64, 64); let mut k: usize = 0; while k < len(a) { a[k] = (i as i64) + (k as i64); k += 1; } t += a[63]; i += 1; } printf("t={}\n", t); return 0; }' 't=795000'
 if [ "$FAILED" -eq 0 ]; then
   echo "selfhost: ok (boot → rho compiler → program → run)"
 else

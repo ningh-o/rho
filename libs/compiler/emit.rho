@@ -419,6 +419,19 @@ const ALLOC: string = """
     (global.set $w_alloc_top
       (i32.sub (global.get $w_alloc_top)
                (i32.mul (local.get $n) (i32.const 8))))
+    (if (i32.lt_u (global.get $w_alloc_top) (i32.const 4096))
+      (then
+        (local.set $k
+          (i32.add
+            (i32.div_u
+              (i32.add (i32.mul (local.get $n) (i32.const 8))
+                       (i32.const 4096))
+              (i32.const 65536))
+            (i32.const 1)))
+        (drop (memory.grow (local.get $k)))
+        (global.set $w_alloc_top
+          (i32.sub (i32.mul (memory.size) (i32.const 65536))
+                   (i32.mul (local.get $n) (i32.const 8))))))
     (local.set $p (global.get $w_alloc_top))
     (local.set $k (i32.const 0))
     (loop $z
@@ -530,8 +543,9 @@ struct Env {
   skinds: []i64, // 0 folded string, 1 runtime string pair, 2 slice pair
   sn: usize,
   fkind: []i64,     // per binding: 0 int, 1 f64, 2 f32
-  selnames: []string, // slice bindings whose ELEMENTS are enums
-  selvals: []string,  // the element's enum name
+  selnames: []string, // slice bindings' element texts (a small stack)
+  selvals: []string,  // the element's type text
+  sel_n: usize,       // the slice-element stack depth
   // the enclosing fn context (an expression-position match emits
   // statement-bearing arm bodies through it)
   infn: bool,
@@ -576,6 +590,7 @@ fn env_new(cap: usize) -> *Env {
                    fkind: make([]i64, cap),
                    selnames: make([]string, 16),
                    selvals: make([]string, 16),
+                   sel_n: 0,
                    infn: false, retslot: 0 - 1,
                    loops: loops_new(), dstack: dstack_new(),
                    tfd: Option.None };
@@ -633,6 +648,16 @@ fn write_runtime(a_slot: i64, l_slot: i64) -> string {
 // folded literals become constants; runtime vars local.get the pair
 fn push_string(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
                 nl: *NextLocal) -> string {
+  // a string ELEMENT: the pair loads at the slice's 16-byte stride
+  // (bounds-checked like every element read)
+  if e.tag == parse.EX_IDX {
+    let spx = build_string_pair(e, pool, env, prog, nl);
+    if spx.ok {
+      return spx.text + "    (local.get " + spx.a.to_str() +
+             ")\n    (local.get " + spx.l.to_str() + ")\n";
+    }
+    return "    (i64.const 0)\n    (i64.const 0)\n";
+  }
   // a string FIELD: the pair rides the value frame or the heap
   if e.tag == parse.EX_FIELD {
     let mut base: *Expr = parse.lit(0);
@@ -983,35 +1008,62 @@ fn env_enum_of(e: *Env, name: string) -> string {
 }
 
 fn env_bind_sliceelem(e: *Env, name: string, etext: string) {
-  e.selnames[0] = name;
-  e.selvals[0] = etext;
+  // a small stack: later bindings shadow, but a second slice in the
+  // same scope never clobbers the first's element text (selnames[0]
+  // alone died the day two slices shared a fn)
+  let mut i: usize = 0;
+  while i < e.sel_n {
+    if e.selnames[i] == name {
+      e.selvals[i] = etext;
+      return;
+    }
+    i = i + 1;
+  }
+  if e.sel_n < len(e.selnames) {
+    e.selnames[e.sel_n] = name;
+    e.selvals[e.sel_n] = etext;
+    e.sel_n = e.sel_n + 1;
+  }
 }
 
 // the element text's pointer target — Some/Ok binder type
 fn env_slicept_of(e: *Env, name: string) -> string {
-  if e.selnames[0] == name {
-    return type_ptr_target(e.selvals[0]);
+  let mut i: usize = e.sel_n;
+  while i > 0 {
+    if e.selnames[i - 1] == name {
+      return type_ptr_target(e.selvals[i - 1]);
+    }
+    i = i - 1;
   }
   return "";
 }
 
 fn env_sliceelem_of(e: *Env, name: string, prog: *Prog) -> string {
-  if e.selnames[0] == name {
-    let t: string = e.selvals[0];
-    if len(t) >= 1 && (t[0] == 63 || t[0] == 79) {
-      return "Option";
+  let mut i: usize = e.sel_n;
+  while i > 0 {
+    if e.selnames[i - 1] == name {
+      let t: string = e.selvals[i - 1];
+      if len(t) >= 1 && (t[0] == 63 || t[0] == 79) {
+        return "Option";
+      }
+      if en_index(prog, t) >= 0 {
+        return t;
+      }
+      return "";
     }
-    if en_index(prog, t) >= 0 {
-      return t;
-    }
+    i = i - 1;
   }
   return "";
 }
 
 // the element text of a slice binding, "" when unbound
 fn env_slice_elemtext(e: *Env, name: string) -> string {
-  if e.selnames[0] == name {
-    return e.selvals[0];
+  let mut i: usize = e.sel_n;
+  while i > 0 {
+    if e.selnames[i - 1] == name {
+      return e.selvals[i - 1];
+    }
+    i = i - 1;
   }
   return "";
 }
@@ -1152,15 +1204,28 @@ fn type_width(tyname: string) -> i64 {
 
 // ---- the struct table ----
 
-// a field type's slot count: string and slice fields ride pairs
-fn type_slots(ty: string) -> i64 {
+// a field type's slot count: string and slice fields ride pairs; a
+// by-value struct field inlines the nested struct's own slots (a
+// depth cap keeps a self-referential declaration from looping — boot's
+// checker rejects those, the corpus never carries one)
+fn type_slots_d(prog: *Prog, ty: string, depth: i64) -> i64 {
   if len(ty) >= 2 && ty[0] == 91 && ty[1] == 93 {
     return 2;
   }
   if ty == "string" {
     return 2;
   }
+  if depth < 8 {
+    let si: i64 = st_index(prog, ty);
+    if si >= 0 {
+      return st_nslots_d(prog, si, depth + 1);
+    }
+  }
   return 1;
+}
+
+fn type_slots(prog: *Prog, ty: string) -> i64 {
+  return type_slots_d(prog, ty, 0);
 }
 
 // a field type's kind: 0 scalar, 1 string, 2 slice, 3 pointer
@@ -1228,25 +1293,33 @@ fn st_field_fkind(prog: *Prog, si: i64, fname: string) -> i64 {
   return 0;
 }
 
-// the slot offset of field k (a pair field takes two)
+// the slot offset of field k (a pair field takes two, an inlined
+// struct as many as it owns)
 fn st_field_off(prog: *Prog, si: i64, k: i64) -> i64 {
   let mut off: i64 = 0;
   let mut j: i64 = 0;
   while j < k {
-    off = off + type_slots(prog.structs[si as usize].types[j as usize]);
+    off = off + type_slots(prog,
+                           prog.structs[si as usize].types[j as usize]);
+    j = j + 1;
+  }
+  return off;
+}
+
+fn st_nslots_d(prog: *Prog, si: i64, depth: i64) -> i64 {
+  let mut off: i64 = 0;
+  let mut j: usize = 0;
+  while j < len(prog.structs[si as usize].types) {
+    off = off + type_slots_d(prog,
+                             prog.structs[si as usize].types[j as usize],
+                             depth);
     j = j + 1;
   }
   return off;
 }
 
 fn st_nslots(prog: *Prog, si: i64) -> i64 {
-  let mut off: i64 = 0;
-  let mut j: usize = 0;
-  while j < len(prog.structs[si as usize].types) {
-    off = off + type_slots(prog.structs[si as usize].types[j as usize]);
-    j = j + 1;
-  }
-  return off;
+  return st_nslots_d(prog, si, 0);
 }
 
 pub fn en_index(prog: *Prog, name: string) -> i64 {
@@ -1526,6 +1599,153 @@ fn field_base_type(e: *Expr, env: *Env, prog: *Prog) -> string {
   return expr_ptr_type(e, env, prog);
 }
 
+// a by-value struct expression's own struct name, "" when the
+// expression is not struct-typed
+fn struct_type_of(e: *Expr, env: *Env, prog: *Prog) -> string {
+  if e.tag == parse.EX_VAR {
+    return env_val_of(env, e.name);
+  }
+  if e.tag == parse.EX_DEREF {
+    let mut inner: *Expr = parse.lit(0);
+    match e.lhs {
+      Option.Some(x) => {
+        inner = x;
+      },
+      Option.None => {},
+    }
+    let it: string = expr_ptr_type(inner, env, prog);
+    if st_index(prog, it) >= 0 {
+      return it;
+    }
+    return "";
+  }
+  if e.tag == parse.EX_NEW {
+    return e.name;
+  }
+  if e.tag == parse.EX_FIELD {
+    let mut base: *Expr = parse.lit(0);
+    match e.lhs {
+      Option.Some(b) => {
+        base = b;
+      },
+      Option.None => {},
+    }
+    let bt: string = field_base_type(base, env, prog);
+    if len(bt) > 0 {
+      let si: i64 = st_index(prog, bt);
+      let fi: i64 = st_field_index(prog, si, e.name);
+      if fi >= 0 {
+        let fty: string = prog.structs[si as usize].types[fi as usize];
+        if st_index(prog, fty) >= 0 {
+          return fty;
+        }
+      }
+    }
+    return "";
+  }
+  if e.tag == parse.EX_IDX {
+    let mut base: *Expr = parse.lit(0);
+    match e.lhs {
+      Option.Some(b) => {
+        base = b;
+      },
+      Option.None => {},
+    }
+    if base.tag == parse.EX_VAR {
+      let et: string = env_slice_elemtext(env, base.name);
+      if st_index(prog, et) >= 0 {
+        return et;
+      }
+    }
+    return "";
+  }
+  if e.tag == parse.EX_CALL {
+    let rt: string = call_fn_rtype(prog, e, env);
+    if st_index(prog, rt) >= 0 {
+      return rt;
+    }
+  }
+  return "";
+}
+
+// a struct-typed expression's frame base when the whole chain is
+// frame-resident (a value binding root, struct-typed fields within);
+// -1 when the value lives behind an address
+fn val_chain_slot(e: *Expr, env: *Env, prog: *Prog) -> i64 {
+  if e.tag == parse.EX_VAR {
+    if len(env_val_of(env, e.name)) > 0 {
+      return env_val_base(env, e.name);
+    }
+    return 0 - 1;
+  }
+  if e.tag == parse.EX_FIELD {
+    let mut base: *Expr = parse.lit(0);
+    match e.lhs {
+      Option.Some(b) => {
+        base = b;
+      },
+      Option.None => {},
+    }
+    let root: i64 = val_chain_slot(base, env, prog);
+    if root < 0 {
+      return 0 - 1;
+    }
+    let bt: string = field_base_type(base, env, prog);
+    if len(bt) == 0 {
+      return 0 - 1;
+    }
+    let si: i64 = st_index(prog, bt);
+    let fi: i64 = st_field_index(prog, si, e.name);
+    if fi < 0 {
+      return 0 - 1;
+    }
+    // only a by-value struct field continues the frame chain; a
+    // pointer field holds an address — the chain leaves the frame
+    // and the generic path loads through it
+    let fty: string = prog.structs[si as usize].types[fi as usize];
+    if st_index(prog, fty) < 0 {
+      return 0 - 1;
+    }
+    return root + st_field_off(prog, si, fi);
+  }
+  if e.tag == parse.EX_IDX {
+    // a slice's elements live in the slice's own storage — behind
+    // its address, never in the frame
+    return 0 - 1;
+  }
+  return 0 - 1;
+}
+
+// a by-value struct expression evaluates to an address: heap
+// expressions already are one; a frame-resident chain copies into a
+// fresh zeroed box first (a wasm local frame has no address to borrow)
+fn struct_addr_of(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
+                  nl: *NextLocal) -> string {
+  let sname: string = struct_type_of(e, env, prog);
+  if len(sname) == 0 {
+    return emit_expr(pool, e, env, prog, nl);
+  }
+  let si: i64 = st_index(prog, sname);
+  let vn: i64 = st_nslots(prog, si);
+  let fb: i64 = val_chain_slot(e, env, prog);
+  if fb >= 0 {
+    let b: i64 = nl.v;
+    nl.v = nl.v + 1;
+    let mut out: string = "    (i64.extend_i32_u (call $w_alloc (i32.const " +
+           vn.to_str() + ")))\n" +
+           "    (local.set " + b.to_str() + ")\n";
+    let mut j: i64 = 0;
+    while j < vn {
+      out = out + "    (i64.store (i32.add (i32.wrap_i64 (local.get " +
+             b.to_str() + ")) (i32.const " + (j * 8).to_str() +
+             ")) (local.get " + (fb + j).to_str() + "))\n";
+      j = j + 1;
+    }
+    return out + "    (local.get " + b.to_str() + ")\n";
+  }
+  return emit_expr(pool, e, env, prog, nl);
+}
+
 // the struct a pointer-valued expression references, "" when none:
 // vars by their binding, new by its name, calls and methods by the
 // written return type, fields by the field's own type
@@ -1535,6 +1755,23 @@ fn expr_ptr_type(e: *Expr, env: *Env, prog: *Prog) -> string {
   }
   if e.tag == parse.EX_NEW {
     return e.name;
+  }
+  if e.tag == parse.EX_IDX {
+    // a struct-element slice's indexing: the element's struct
+    let mut base: *Expr = parse.lit(0);
+    match e.lhs {
+      Option.Some(b12) => {
+        base = b12;
+      },
+      Option.None => {},
+    }
+    if base.tag == parse.EX_VAR {
+      let et: string = env_slice_elemtext(env, base.name);
+      if st_index(prog, et) >= 0 {
+        return et;
+      }
+    }
+    return "";
   }
   if e.tag == parse.EX_CALL {
     return type_ptr_target(fn_rtype_of(prog, e.name));
@@ -1573,7 +1810,13 @@ fn expr_ptr_type(e: *Expr, env: *Env, prog: *Prog) -> string {
       let si: i64 = st_index(prog, bt);
       let fi: i64 = st_field_index(prog, si, e.name);
       if fi >= 0 {
-        return type_ptr_target(prog.structs[si as usize].types[fi as usize]);
+        let fty: string = prog.structs[si as usize].types[fi as usize];
+        // a by-value struct field continues the chain under its own
+        // name; everything else resolves through its pointer target
+        if st_index(prog, fty) >= 0 {
+          return fty;
+        }
+        return type_ptr_target(fty);
       }
     }
     return "";
@@ -1828,6 +2071,21 @@ fn is_stringy(e: *Expr, env: *Env, prog: *Prog) -> bool {
     return env_str_is_runtime(env, e.name) &&
            env_kind_of(env, e.name) == 1;
   }
+  if e.tag == parse.EX_IDX {
+    // a string element's pair loads at the 16-byte stride
+    let mut base: *Expr = parse.lit(0);
+    match e.lhs {
+      Option.Some(b) => {
+        base = b;
+      },
+      Option.None => {},
+    }
+    if base.tag == parse.EX_VAR {
+      return env_kind_of(env, base.name) == 2 &&
+             env_slice_elemtext(env, base.name) == "string";
+    }
+    return false;
+  }
   if e.tag == parse.EX_FIELD {
     let mut base: *Expr = parse.lit(0);
     match e.lhs {
@@ -1994,6 +2252,18 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
         out = out + oob_check(pool, "(local.get " + len_slot.to_str() +
                               ")");
         if env_kind_of(env, base.name) == 2 {
+          let et0: string = env_slice_elemtext(env, base.name);
+          if st_index(prog, et0) >= 0 {
+            // a struct element: the element's ADDRESS rides (a slot
+            // block of the struct's own width; leaf fields and whole
+            // copies load above it)
+            let esz0: i64 =
+                st_nslots(prog, st_index(prog, et0));
+            out = out + "    (i64.add (local.get " + addr_slot.to_str() +
+                   ") (i64.mul (local.get $t) (i64.const " +
+                   (esz0 * 8).to_str() + ")))\n";
+            return out;
+          }
           out = out + "    (i64.load (i32.add (i32.wrap_i64 (local.get " +
                  addr_slot.to_str() + "))\n" +
                  "                     (i32.mul (i32.wrap_i64 " +
@@ -2127,10 +2397,25 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
     }
     let fty: string = prog.structs[si as usize].types[fi as usize];
     let off: i64 = st_field_off(prog, si, fi);
-    if base.tag == parse.EX_VAR && len(env_val_of(env, base.name)) > 0 {
-      // the value frame: scalar and pointer fields are one local
-      return "    (local.get " + (env_val_base(env, base.name) + off).to_str() +
-             ")\n" + wrap_snippet(type_width(fty));
+    // a chain rooted in the frame flattens: every link resolves to
+    // frame slots, so the read is one local.get however deep
+    let fb2: i64 = val_chain_slot(base, env, prog);
+    if fb2 >= 0 {
+      if st_index(prog, fty) >= 0 {
+        // a by-value struct field: the chain continues from here
+        return "    (local.get " + (fb2 + off).to_str() + ")\n";
+      }
+      return "    (local.get " + (fb2 + off).to_str() + ")\n" +
+             wrap_snippet(type_width(fty));
+    }
+    if st_index(prog, fty) >= 0 {
+      // a by-value struct field over an address base: expose the
+      // sub-struct's ADDRESS (leaf fields load above it)
+      let mut out: string = emit_expr(pool, base, env, prog, nl);
+      out = out + "    (i32.wrap_i64)\n" +
+             "    (i32.add (i32.const " + (off * 8).to_str() + "))\n" +
+             "    (i64.extend_i32_u)\n";
+      return out;
     }
     let mut out: string = emit_expr(pool, base, env, prog, nl);
     out = out + "    (i32.add (i32.wrap_i64) (i32.const " + (off * 8).to_str() +
@@ -2301,7 +2586,29 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
         let fty: string = prog.structs[si as usize].types[fi as usize];
         let off: i64 = st_field_off(prog, si, fi) * 8;
         let kind: i64 = type_kind(fty);
-        if kind == 1 || kind == 2 {
+        if st_index(prog, fty) >= 0 {
+          // a by-value struct field: the init's slots copy in through
+          // one source address (a frame-resident chain materializes
+          // a box first — struct_addr_of)
+          let nsn: i64 = st_nslots(prog, st_index(prog, fty));
+          let tsrc: i64 = nl.v;
+          nl.v = nl.v + 1;
+          let tv0: i64 = nl.v;
+          nl.v = nl.v + 1;
+          out = out + struct_addr_of(pool, e.args[k], env, prog, nl);
+          out = out + "    (local.set " + tsrc.to_str() + ")\n";
+          let mut vj: i64 = 0;
+          while vj < nsn {
+            out = out + "    (i64.load (i32.add (i32.wrap_i64 (local.get " +
+                   tsrc.to_str() + ")) (i32.const " + (vj * 8).to_str() +
+                   ")))\n" +
+                   "    (local.set " + tv0.to_str() + ")\n" +
+                   "    (i64.store (i32.add (i32.wrap_i64 (local.get " +
+                   a_slot.to_str() + ")) (i32.const " + (off + vj * 8).to_str() +
+                   ")) (local.get " + tv0.to_str() + "))\n";
+            vj = vj + 1;
+          }
+        } else if kind == 1 || kind == 2 {
           let ta: i64 = nl.v;
           let tl: i64 = nl.v + 1;
           nl.v = nl.v + 2;
@@ -4652,7 +4959,13 @@ fn emit_call_args(pool: *Pool, prog: *Prog, fd: *FnDef, e: *Expr,
   if vp < 0 {
     let mut k: usize = 0;
     while k < len(e.args) {
-      out = out + emit_arg(pool, e.args[k], env, prog, nl);
+      if k < len(fd.ptypes) &&
+          st_index(prog, fd.ptypes[k]) >= 0 {
+        // a by-value struct param: the argument rides its address
+        out = out + struct_addr_of(pool, e.args[k], env, prog, nl);
+      } else {
+        out = out + emit_arg(pool, e.args[k], env, prog, nl);
+      }
       k = k + 1;
     }
     return out;
@@ -4669,7 +4982,13 @@ fn emit_call_args(pool: *Pool, prog: *Prog, fd: *FnDef, e: *Expr,
   }
   let mut k: usize = 0;
   while (k as i64) < vp && k < len(e.args) {
-    out = out + emit_arg(pool, e.args[k], env, prog, nl);
+    if k < len(fd.ptypes) &&
+        st_index(prog, fd.ptypes[k]) >= 0 {
+      // a by-value struct param: the argument rides its address
+      out = out + struct_addr_of(pool, e.args[k], env, prog, nl);
+    } else {
+      out = out + emit_arg(pool, e.args[k], env, prog, nl);
+    }
     k = k + 1;
   }
   let rest: i64 = (len(e.args) as i64) - vp;
@@ -5304,17 +5623,36 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
           } else if e.tag == parse.EX_MAKE {
             // make([]T, n): the count rides $t once, the allocation
             // and the len slot both read it; an Option-element slice
-            // fills with the shared None box (the zeroed form)
+            // fills with the shared None box (the zeroed form); a
+            // struct-element slice allocates n*slots (an element is
+            // the struct's whole slot block)
             let mut cnt: *Expr = parse.lit(0);
             if len(e.args) > 0 {
               cnt = e.args[0];
             }
             let optelem: bool = len(e.name) >= 1 &&
                 (e.name[0] == 63 || e.name[0] == 79);
+            let stelem: i64 = st_index(prog, e.name);
+            let elesz: i64 = 1;
+            let mut esz: i64 = elesz;
+            if stelem >= 0 {
+              esz = st_nslots(prog, stelem);
+            } else {
+              if e.name == "string" {
+                // a string element rides its pair: 16 bytes each
+                esz = 2;
+              }
+            }
             body = body + emit_expr(pool, cnt, env, prog, nl);
             body = body + "    (local.set $t)\n";
-            body = body + "    (i64.extend_i32_u (call $w_alloc " +
-                   "(i32.wrap_i64 (local.get $t))))\n";
+            if esz != 1 {
+              body = body + "    (i64.extend_i32_u (call $w_alloc " +
+                     "(i32.wrap_i64 (i64.mul (local.get $t) (i64.const " +
+                     esz.to_str() + ")))))\n";
+            } else {
+              body = body + "    (i64.extend_i32_u (call $w_alloc " +
+                     "(i32.wrap_i64 (local.get $t))))\n";
+            }
             body = body + "    (local.set " + nl.v.to_str() +
                    ")\n";
             let a_slot: i64 = nl.v;
@@ -5477,26 +5815,23 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
                            "    (local.set " + aa.to_str() + ")\n";
                     env_str_bind_runtime(env, st.name, aa, al, 2);
                   } else {
-                  if e.tag == parse.EX_DEREF && len(st.fmt) > 0 &&
-                      st_index(prog, st.fmt) >= 0 {
-                    // (*p) under a struct annotation: the heap block
-                    // copies into a fresh local frame (shallow — pair
-                    // fields copy their slots, so writes through the
-                    // copy's slices alias the same storage)
+                  if len(st.fmt) > 0 &&
+                      st_index(prog, st.fmt) >= 0 &&
+                      len(struct_type_of(e, env, prog)) > 0 {
+                    // a by-value struct binding (annotation naming a
+                    // struct, init struct-typed — (*p), a call's
+                    // returned box, a field chain, a slice element):
+                    // the source's slots copy into a fresh local frame
+                    // (shallow — pair fields copy their slots, so
+                    // writes through the copy's slices alias the same
+                    // storage)
                     let vsi: i64 = st_index(prog, st.fmt);
                     let vn: i64 = st_nslots(prog, vsi);
                     let vbase: i64 = nl.v;
                     nl.v = nl.v + vn;
                     let tsrc: i64 = nl.v;
                     nl.v = nl.v + 1;
-                    match e.lhs {
-                      Option.Some(src) => {
-                        body = body + emit_expr(pool, src, env, prog, nl);
-                      },
-                      Option.None => {
-                        body = body + "    (i64.const 0)\n";
-                      },
-                    }
+                    body = body + struct_addr_of(pool, e, env, prog, nl);
                     body = body + "    (local.set " + tsrc.to_str() + ")\n";
                     let mut vj: i64 = 0;
                     while vj < vn {
@@ -5707,6 +6042,36 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
             Option.None => {},
           }
         } else {
+        let stelem2: i64 = st_index(prog,
+                                    env_slice_elemtext(env, st.name));
+        if stelem2 >= 0 {
+          // a struct element: the whole slot block copies from the
+          // value's address (a frame-resident chain materializes a
+          // box first — struct_addr_of)
+          let ssn: i64 = st_nslots(prog, stelem2);
+          body = body + "    (i32.add (i32.wrap_i64 (local.get " +
+                 addr_slot.to_str() + ")) (i32.mul (i32.wrap_i64 " +
+                 "(local.get $t)) (i32.const " + (ssn * 8).to_str() +
+                 ")))\n";
+          body = body + "    (local.set $a)\n";
+          match st.val {
+            Option.Some(e13) => {
+              body = body + struct_addr_of(pool, e13, env, prog, nl);
+            },
+            Option.None => {},
+          }
+          body = body + "    (local.set $t)\n";
+          let mut sj: i64 = 0;
+          while sj < ssn {
+            body = body + "    (i64.load (i32.add (i32.wrap_i64 " +
+                   "(local.get $t)) (i32.const " + (sj * 8).to_str() +
+                   ")))\n" +
+                   "    (local.set $r)\n" +
+                   "    (i64.store (i32.add (local.get $a) (i32.const " +
+                   (sj * 8).to_str() + ")) (local.get $r))\n";
+            sj = sj + 1;
+          }
+        } else {
         body = body + "    (i32.add (i32.wrap_i64 (local.get " +
                addr_slot.to_str() + "))\n" +
                "                     (i32.mul (i32.wrap_i64 " +
@@ -5720,6 +6085,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
         }
         body = body + "    (local.set $t)\n";
         body = body + "    (i64.store (local.get $a) (local.get $t))\n";
+        }
         }
       }
     }
@@ -6173,6 +6539,13 @@ fn emit_fn(fd: *FnDef, pool: *Pool, prog: *Prog,
     k0 = k0 + 1;
   }
   let mut k: usize = 0;
+  let mut pre: string = "";
+  // by-value struct params record here; their frames allocate after
+  // the $a..$d reservation (fresh locals start past it)
+  let svp_names: []string = make([]string, 8);
+  let svp_types: []string = make([]string, 8);
+  let svp_srcs: []i64 = make([]i64, 8);
+  let mut svp_n: usize = 0;
   while k < len(fd.params) {
     if k < len(fd.ptypes) && is_fn_type(fd.ptypes[k]) {
       // a closure-typed param: (idx, box) slots, kind 3
@@ -6207,7 +6580,16 @@ fn emit_fn(fd: *FnDef, pool: *Pool, prog: *Prog,
         pt = fd.ptypes[k];
       }
       let target: string = type_ptr_target(pt);
-      if len(target) > 0 && st_index(prog, target) >= 0 {
+      if len(pt) > 0 && st_index(prog, pt) >= 0 && svp_n < 8 {
+        // a by-value struct param: the lane carries the source's
+        // address; the prologue (emitted past the $a..$d reservation)
+        // copies the slots into a fresh frame the binding reads
+        // (the loop tail advances the lane)
+        svp_names[svp_n] = fd.params[k];
+        svp_types[svp_n] = pt;
+        svp_srcs[svp_n] = nl.v;
+        svp_n = svp_n + 1;
+      } else if len(target) > 0 && st_index(prog, target) >= 0 {
         env_bind_ptr(env, fd.params[k], nl.v, target);
       } else {
         if pt == "f64" || pt == "f32" {
@@ -6239,9 +6621,28 @@ fn emit_fn(fd: *FnDef, pool: *Pool, prog: *Prog,
   // the capture pair follows the params; the named $a/$l/$t/$r/$d
   // locals occupy that reservation's index space in the module
   nl.v = nl.v + 5;
+  // the struct-param frames copy in here — past the reservation
+  let mut svp_i: usize = 0;
+  while svp_i < svp_n {
+    let psi: i64 = st_index(prog, svp_types[svp_i]);
+    let pn: i64 = st_nslots(prog, psi);
+    let psrc: i64 = svp_srcs[svp_i];
+    let vbase: i64 = nl.v;
+    nl.v = nl.v + pn;
+    let mut pj: i64 = 0;
+    while pj < pn {
+      pre = pre + "    (i64.load (i32.add (i32.wrap_i64 (local.get " +
+             psrc.to_str() + ")) (i32.const " + (pj * 8).to_str() +
+             ")))\n" +
+             "    (local.set " + (vbase + pj).to_str() + ")\n";
+      pj = pj + 1;
+    }
+    env_bind_val(env, svp_names[svp_i], vbase, svp_types[svp_i]);
+    svp_i = svp_i + 1;
+  }
   let loops = loops_new();
   let dstack = dstack_new();
-  let body: string = emit_stmts(fd.body, pool, env, nl, true,
+  let body: string = pre + emit_stmts(fd.body, pool, env, nl, true,
                                 0 - 1, prog, loops, dstack,
                                 Option.Some(fd));
   let mut out: string = "";

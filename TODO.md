@@ -285,10 +285,41 @@ section — no placeholder stages. boot is the reference compiler.
       trampolines as values, and fn-typed params/returns ride the
       pair ABI as a third kind (eat_type consuming 'fn' as a bare
       name was the silent killer underneath every fn-typed
-      annotation). 84 of 108 behavioral, floor 84. Remain:
-      traits/impl/dyn; generic structs/enums/methods; module
+      annotation). 84 of 108 behavioral, floor 84. The fifty-fifth
+      and fifty-sixth cuts (2026-09-26): the parser's silent
+      truncations die — bare unary `*` parses (only `(*e)` did; the
+      fallback ate the star and the leaked field block's `}` closed
+      the enclosing fn early), bare `{ stmts }` blocks parse (boot's
+      T_LBRACE form), the match statement eats its trailing `;`, and
+      every parse fallback counts PCur.perrs which main refuses
+      before emitting — a clean exit-1 refusal instead of a hollow
+      program; the match-arm tail probe restores the count on rewind
+      (a statement head probed as an expression is not an error).
+      Then by-value structs land whole: a struct-typed field inlines
+      the nested struct's slots; `h.p.a` chains expose the
+      sub-struct's ADDRESS (frame-rooted chains flatten to one
+      local.get); `new T { f: *new U{...} }` copies the slots in;
+      a by-value param rides one address lane whose callee prologue
+      copies into a fresh frame; a struct-typed return rides its
+      box address; `let q: Pair = <any struct expr>` copies through
+      struct_addr_of (frame-resident chains materialize a box — a
+      wasm frame has no address); `make([]T, n)` sizes struct
+      elements by their slot block and string elements at their
+      16-byte pairs (a pre-existing under-allocation read past the
+      block); struct-element slices index/store the whole block;
+      string-element compares ride push_string (a pre-existing bug
+      compared the pair's ADDRESS against the literal's — every
+      element of a fresh slice read non-empty); the slice-element
+      table becomes a real stack (a pre-existing one-slot clobber:
+      the second slice binding in a scope erased the first's element
+      type — 102's match then compared a box pointer against tag 1);
+      and $w_alloc grows memory past the 64KB first page (a
+      pre-existing exhaustion crash — 400 allocation rounds faulted
+      at 0xffffff68). 101, 102, and 093 land byte-exact. 87 of 108
+      behavioral, floor 87; five byval selfhost legs pin the wave.
+      Remain: traits/impl/dyn; generic structs/enums/methods; module
       loading; weak/rc; the mut law and usize lane (T3.6's mirror
-      side); the set face in the differential runner)*
+      side)*
 - [ ] **T2.x** Optimizer in the mirror: constant folding, dead-code
       elimination, globals tree-shaking, tail-call→loop — with the
       language suites (opt/eq/params/modsys/strops/multiline) rebuilt
