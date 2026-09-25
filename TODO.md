@@ -187,7 +187,7 @@ section — no placeholder stages. boot is the reference compiler.
       *(growth so far, each pinned by tests/run-selfhost.sh, the
       boot-vs-self differential, and — since the twenty-sixth growth —
       tests/run-corpus-diff.sh running the WHOLE corpus through both
-      compilers (36 of 108 behavioral today, pinned floor 36): integer
+      compilers (41 of 108 behavioral today, pinned floor 41): integer
       printing with a decimal runtime; string hole args; let bindings,
       arithmetic with precedence, variables; while/if/else-if/assignment
       with comparisons and unary minus; user fns with parameters, call
@@ -222,7 +222,20 @@ section — no placeholder stages. boot is the reference compiler.
       failing-corpus clusters: enums/match/Option/?; structs/new/rc;
       closures/traits/dyn/generics/variadics; floats (the f64 lane);
       runtime string concat/format/to_str; module loading; the set
-      face in the differential runner.)*
+      face in the differential runner. Later growths: the assert
+      builtin (eqz-gated panic), runtime string concatenation
+      ($w_cat + a build_string_pair lowering over literal/var/call
+      leaves, rebinds gaining fresh pair slots with backward-scanning
+      lookups), the complete escape law, hex/bin literals, /0 %0 and
+      MIN/-1 panics, the string-return ABI (pair results), and $w_itoa
+      (ready for the format work). TWO boot quirks the growths
+      recorded for the T3.4 suite: --set overrides used to fold
+      against the DECLARED value (fixed — overrides now land before
+      the load-time dead-branch fold), and continue inside a match arm
+      does not skip the enclosing loop's tail (the self-hosted code
+      avoids match-arm continues entirely; whether boot's own lowering
+      of the shape is lawful needs the suite's probe — §9 says
+      continue binds the loop).)*
 - [ ] **T2.x** Optimizer in the mirror: constant folding, dead-code
       elimination, globals tree-shaking, tail-call→loop — with the
       language suites (opt/eq/params/modsys/strops/multiline) rebuilt
