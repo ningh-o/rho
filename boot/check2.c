@@ -430,9 +430,14 @@ static Type *check_format_call(FnCtx *c, Node *call, Type *expected) {
   }
   Node *fmt = node_get(node_get(reflist_at(args, 0))->a);
   size_t holes = 0;
-  for (size_t i = 0; i + 1 < fmt->sval.n; i++)
-    if (fmt->sval.p[i] == '{' && fmt->sval.p[i + 1] == '}')
+  for (size_t i = 0; i + 1 < fmt->sval.n; i++) {
+    if (fmt->sval.p[i] == '{' && fmt->sval.p[i + 1] == '{')
+      i++; // {{ escape
+    else if (fmt->sval.p[i] == '{' && fmt->sval.p[i + 1] == '}')
       holes++;
+    else if (fmt->sval.p[i] == '}' && fmt->sval.p[i + 1] == '}')
+      i++; // }} escape
+  }
   if (holes != reflist_len(args) - 1) {
     err_at(c, call,
            "format string has %zu {} hole(s) but %zu value(s) given",
@@ -1488,9 +1493,9 @@ static void check_assign_target(FnCtx *c, Node *lv) {
     return;
   }
   case NT_INDEX:
-    check_expr(c, ((Node *)lv)->a, NULL);
+    // element stores through a slice mutate the view, not the binding
+    check_expr(c, lv->a, NULL);
     check_expr(c, lv->b, ty_usize);
-    check_assign_target_base(c, lv->a);
     return;
   default:
     err_at(c, lv, "invalid assignment target");

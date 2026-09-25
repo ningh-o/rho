@@ -1524,14 +1524,33 @@ static void emit_printf(FnCx *cx, Node *call, bool err) {
       }
       i += 2;
     } else {
-      // literal run up to the next hole
+      // literal run up to the next hole; {{ }} collapse to one brace
       size_t j = i;
       while (j < fmt.n &&
-             !(j + 1 < fmt.n && fmt.p[j] == '{' && fmt.p[j + 1] == '}'))
-        j++;
-      size_t at = data_intern(fmt.p + i, j - i);
-      op(cx, "(call %s (i32.const %zu) (i32.const %zu))\n", sink, at,
-         j - i);
+             !(j + 1 < fmt.n && fmt.p[j] == '{' && fmt.p[j + 1] == '}')) {
+        if (j + 1 < fmt.n && fmt.p[j] == '{' && fmt.p[j + 1] == '{')
+          j += 2;
+        else if (j + 1 < fmt.n && fmt.p[j] == '}' && fmt.p[j + 1] == '}')
+          j += 2;
+        else
+          j++;
+      }
+      // materialize the collapsed literal
+      char *collapsed = arena_alloc(g_arena, (j - i) + 1, 1);
+      size_t cn = 0;
+      for (size_t q = i; q < j; q++) {
+        if (q + 1 < j && fmt.p[q] == '{' && fmt.p[q + 1] == '{') {
+          collapsed[cn++] = '{';
+          q++;
+        } else if (q + 1 < j && fmt.p[q] == '}' && fmt.p[q + 1] == '}') {
+          collapsed[cn++] = '}';
+          q++;
+        } else {
+          collapsed[cn++] = fmt.p[q];
+        }
+      }
+      size_t at = data_intern(collapsed, cn);
+      op(cx, "(call %s (i32.const %zu) (i32.const %zu))\n", sink, at, cn);
       i = j;
     }
   }
