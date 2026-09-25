@@ -1,0 +1,7 @@
+// out: a=5
+fn main() -> i32 {
+  let a: i32 = 5;
+  assert(a == 5, "a must be 5");
+  printf("a={}\n", a);
+  return 0;
+}

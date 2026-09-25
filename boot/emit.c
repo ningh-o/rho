@@ -961,6 +961,26 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       }
       return;
     }
+    if (is_pre && strcmp(callee->name, "assert") == 0) {
+      size_t cnd = cx_fresh(cx, ty_bool);
+      Node *aw0 = reflist_len(e->list) ? node_get(reflist_at(e->list, 0))
+                                       : NULL;
+      if (aw0 && aw0->kind == NT_POSARG)
+        emit_expr(cx, aw0->a, cnd);
+      size_t msgv = cx_fresh(cx, ty_string);
+      Node *aw1 = reflist_len(e->list) > 1
+                      ? node_get(reflist_at(e->list, 1))
+                      : NULL;
+      size_t dflt = data_intern("assertion failed", 16);
+      op(cx, "(local.set %zu (i32.const %zu))\n", msgv, dflt);
+      op(cx, "(local.set %zu (i32.const 16))\n", msgv + 1);
+      if (aw1 && aw1->kind == NT_POSARG)
+        emit_expr(cx, aw1->a, msgv);
+      op(cx, "(if (i32.eqz (local.get %zu)) (then\n", cnd);
+      op(cx, "  (call $rho_panic %s %s)))\n", L(cx, msgv),
+         L(cx, msgv + 1));
+      return;
+    }
     if (is_pre && strcmp(callee->name, "len") == 0) {
       Node *aw = reflist_len(e->list) ? node_get(reflist_at(e->list, 0))
                                       : NULL;
