@@ -1,0 +1,41 @@
+// exit: 5
+// adapted from 021_weak: the weak outlives its storage; a 10000-round
+// slice churn runs between the two observations
+struct Node {
+  v: i32,
+}
+
+fn observe(w: weak[Node]) -> i32 {
+  return match w.get() {
+    Option.Some(p) => p.v,
+    Option.None => 0 - 1,
+  };
+}
+
+fn churn() -> i32 {
+  let mut acc: i32 = 0;
+  let mut i: i32 = 0;
+  while i < 10000 {
+    let xs: []i32 = make([]i32, 8);
+    xs[0] = i;
+    acc = acc + xs[0] - i;
+    i += 1;
+  }
+  return acc;
+}
+
+fn main() -> i32 {
+  let mut n: ?*Node = Option.Some(new Node { v: 5 });
+  let w: weak[Node] = weak.from(deref(n));
+  let alive: i32 = observe(w);
+  n = Option.None;
+  let dead: i32 = observe(w);
+  return alive + dead + 1 + churn();
+}
+
+fn deref(o: ?*Node) -> *Node {
+  return match o {
+    Option.Some(p) => p,
+    Option.None => new Node { v: 0 },
+  };
+}
