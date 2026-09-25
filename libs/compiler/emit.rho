@@ -145,16 +145,91 @@ fn write_int() -> string {
   return out;
 }
 
-// the let environment: names to _start local slots
+// the let environment: names to _start local slots, plus a string
+// table (immutable strings pool; a binding remembers addr and len)
 struct Env {
   names: []string,
   slots: []i64,
   n: usize,
+  snames: []string,
+  saddrs: []i64,
+  slens: []i64,
+  sraws: []string,
+  sn: usize,
 }
 
 fn env_new(cap: usize) -> *Env {
   return new Env { names: make([]string, cap), slots: make([]i64, cap),
-                   n: 0 };
+                   n: 0, snames: make([]string, cap),
+                   saddrs: make([]i64, cap), slens: make([]i64, cap),
+                   sraws: make([]string, cap), sn: 0 };
+}
+
+fn env_str_look(e: *Env, name: string) -> i64 {
+  let mut i: usize = 0;
+  while i < e.sn {
+    if e.snames[i] == name {
+      return e.saddrs[i];
+    }
+    i = i + 1;
+  }
+  return 0 - 1;
+}
+
+fn env_str_len(e: *Env, name: string) -> i64 {
+  let mut i: usize = 0;
+  while i < e.sn {
+    if e.snames[i] == name {
+      return e.slens[i];
+    }
+    i = i + 1;
+  }
+  return 0;
+}
+
+fn env_str_raw(e: *Env, name: string) -> ?string {
+  let mut i: usize = 0;
+  while i < e.sn {
+    if e.snames[i] == name {
+      return Option.Some(e.sraws[i]);
+    }
+    i = i + 1;
+  }
+  return Option.None;
+}
+
+fn env_str_bind(e: *Env, name: string, addr: i64, ln: i64, raw: string) {
+  e.snames[e.sn] = name;
+  e.saddrs[e.sn] = addr;
+  e.slens[e.sn] = ln;
+  e.sraws[e.sn] = raw;
+  e.sn = e.sn + 1;
+}
+
+// decoded text of a raw span (for folding literal concatenations)
+fn decoded_text(raw: string) -> string {
+  let buf: []u8 = make([]u8, len(raw));
+  let mut o: usize = 0;
+  let mut i: usize = 0;
+  while i < len(raw) {
+    if raw[i] == 92 && i + 1 < len(raw) {
+      let e2: u8 = raw[i + 1];
+      buf[o] = match e2 {
+        110 => 10,
+        116 => 9,
+        92 => 92,
+        34 => 34,
+        _ => e2,
+      };
+      i = i + 2;
+    } else {
+      buf[o] = raw[i];
+      i = i + 1;
+    }
+    o = o + 1;
+  }
+  // re-encode as a raw span (identities round-trip)
+  return raw;
 }
 
 fn env_look(e: *Env, name: string) -> i64 {
@@ -207,6 +282,54 @@ fn wat_op(op: i64) -> string {
     return "i64.eq";
   }
   return "i64.ne";
+}
+
+// the raw text when an expr is a string literal, a string variable,
+// or a + concatenation of those; absent otherwise
+fn fold_string(e: *Expr, env: *Env) -> ?string {
+  if e.tag == parse.EX_STR {
+    return Option.Some(e.name);
+  }
+  if e.tag == parse.EX_VAR {
+    return env_str_raw(env, e.name);
+  }
+  if e.tag == parse.EX_BIN && e.op == 0 {
+    let mut lraw: string = "";
+    let mut have: bool = false;
+    match e.lhs {
+      Option.Some(l) => {
+        match fold_string(l, env) {
+          Option.Some(ls) => {
+            lraw = ls;
+            have = true;
+          },
+          Option.None => {},
+        }
+      },
+      Option.None => {},
+    }
+    if !have {
+      return Option.None;
+    }
+    let mut rraw: string = "";
+    match e.rhs {
+      Option.Some(r) => {
+        match fold_string(r, env) {
+          Option.Some(rs) => {
+            rraw = rs;
+          },
+          Option.None => {
+            return Option.None;
+          },
+        }
+      },
+      Option.None => {
+        return Option.None;
+      },
+    }
+    return Option.Some(lraw + rraw);
+  }
+  return Option.None;
 }
 
 // compile an expression: lines that leave one i64 on the stack
@@ -279,10 +402,16 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
         if pi + 1 < len(pieces) {
           if ai < len(st.args) {
             let arg = st.args[ai];
-            if arg.tag == parse.EX_STR {
-              let saddr: i64 = pool_intern(pool, arg.name);
-              body = body + write_call(saddr, pool_len(pool, arg.name));
-            } else {
+            let mut folded: bool = false;
+            match fold_string(arg, env) {
+              Option.Some(raw) => {
+                let saddr: i64 = pool_intern(pool, raw);
+                body = body + write_call(saddr, pool_len(pool, raw));
+                folded = true;
+              },
+              Option.None => {},
+            }
+            if !folded {
               body = body + emit_expr(pool, arg, env);
               body = body + write_int();
             }
@@ -295,10 +424,20 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
     if st.tag == parse.ST_LET {
       match st.val {
         Option.Some(e) => {
-          body = body + emit_expr(pool, e, env);
-          body = body + "    (local.set " + next_local.v.to_str() + ")\n";
-          env_bind(env, st.name, next_local.v);
-          next_local.v = next_local.v + 1;
+          match fold_string(e, env) {
+            Option.Some(raw) => {
+              let saddr: i64 = pool_intern(pool, raw);
+              env_str_bind(env, st.name, saddr, pool_len(pool, raw),
+                           raw);
+            },
+            Option.None => {
+              body = body + emit_expr(pool, e, env);
+              body = body + "    (local.set " + next_local.v.to_str() +
+                     ")\n";
+              env_bind(env, st.name, next_local.v);
+              next_local.v = next_local.v + 1;
+            },
+          }
         },
         Option.None => {},
       }
