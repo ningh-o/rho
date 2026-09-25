@@ -54,7 +54,7 @@ to wasm → gate green → 0.1.0. Native compilation is **not** part of
       contains the final old-implementation state (HEAD b348133 plus the
       working tree). This is the only lifeline for all prior material —
       verify before touching anything else.
-- [ ] **T0.2 Fresh history.** Recreate `master` from an orphan branch:
+- [x] **T0.2 Fresh history.** Recreate `master` from an orphan branch:
       no commits carried over. The fresh tree holds only this TODO.md, a
       README stub, and LICENSE (MIT). Everything else — the old
       compiler, corpus, spec, site, tools — lives on the archive branch:
@@ -194,10 +194,18 @@ section — no placeholder stages. boot is the reference compiler.
       parameters over a pair-passing ABI; len(); main's return as the
       exit code; the checker module seeds the pipeline's fourth layer
       (unknown fns/names refuse emission); the compiler streams its
-      WAT in slices past the format scratch. The differential
-      (tests/run-diff.sh) runs eight programs through both compilers —
-      byte- and rc-identical. Remain: the type layer, fmt, module
-      loading, the kernel parity surface.)*
+      WAT in slices past the format scratch. The fourteenth growth
+      lands verbatim triple-quoted strings in the self-hosted lexer
+      (content rides raw to the first `"""`; the one escape-sensitive
+      byte — the backslash — is doubled at the token boundary so every
+      downstream decoder yields the exact byte back), and emit.rho's
+      WAT runtime templates trade their `+`-chained lines for single
+      verbatim literals; the runner and differential gain the verbatim
+      program, and the differential now refuses loudly when the
+      compiler build or the WAT assembly fails. The differential
+      (tests/run-diff.sh) runs thirteen programs through both
+      compilers — byte- and rc-identical. Remain: the type layer, fmt,
+      module loading, the kernel parity surface.)*
 - [ ] **T2.x** Optimizer in the mirror: constant folding, dead-code
       elimination, globals tree-shaking, tail-call→loop — with the
       language suites (opt/eq/params/modsys/strops/multiline) rebuilt

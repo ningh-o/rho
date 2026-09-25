@@ -43,6 +43,9 @@ run_one bools 'fn main() -> i32 { let flag = true; let off = false; if flag { pr
 run_one compound 'fn main() -> i32 { let mut total = 0; let mut i = 0; while i < 5 { total += i; i += 1; } total *= 3; total -= 2; printf("total={} i={}\n", total, i); return 0; }' 'total=28 i=5'
 run_one streq 'fn pick(s: string) -> i64 { if s == "yes" { return 1; } if s == "no" { return 2; } return 0; } fn main() -> i32 { let a = pick("yes"); let b = pick("no"); let c = pick("maybe"); printf("a={} b={} c={}\n", a, b, c); if "x" == "x" { printf("eq\n"); } if "x" == "y" { printf("bug\n"); } return 0; }' $'a=1 b=2 c=0\neq'
 run_one boolprint 'fn main() -> i32 { let r = "x" == "x"; let q = "x" == "y"; let n = 5; printf("r={} q={} n={}\n", r, q, n); return 0; }' $'r=true q=false n=5'
+run_one verbatim 'fn main() -> i32 { let v: string = """ab""cd"""; printf("[{}] {}\n", v, len(v)); let multi: string = """
+line1
+line2"""; printf("[{}]\n", multi); printf("len={}\n", len(multi)); let rawslash: string = """x\ty\nz"""; printf("[{}] {}\n", rawslash, len(rawslash)); return 0; }' $'[ab""cd] 6\n[\nline1\nline2]\nlen=12\n[x\\ty\\nz] 7'
 # the checker rejects unknown names with diagnostics and exit 1
 "$RHO" build libs/compiler/main.rho -o /tmp/rhoc-bad.wasm \
   --set 'SRC=fn main() -> i32 { let x = mystery(1); return 0; }' >/dev/null 2>&1

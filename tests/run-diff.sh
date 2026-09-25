@@ -12,10 +12,21 @@ diff_one() { # name, src
   local bgot brc sgot src_rc
   bgot=$("$RHO" run /tmp/diff-$name.rho 2>/dev/null)
   brc=$?
-  "$RHO" build libs/compiler/main.rho -o /tmp/diffc-$name.wasm \
-    --set "SRC=$src" >/dev/null 2>&1
+  if ! "$RHO" build libs/compiler/main.rho -o /tmp/diffc-$name.wasm \
+      --set "SRC=$src" >/tmp/diff-$name.build 2>&1; then
+    echo "FAIL diff/$name: boot could not build the compiler"
+    head -3 /tmp/diff-$name.build
+    FAILED=1
+    return
+  fi
   wasmtime /tmp/diffc-$name.wasm >/tmp/diff-$name.wat 2>/dev/null
-  wat2wasm /tmp/diff-$name.wat -o /tmp/diff-$name.self.wasm 2>/dev/null
+  if ! wat2wasm /tmp/diff-$name.wat -o /tmp/diff-$name.self.wasm \
+      2>/tmp/diff-$name.w2w; then
+    echo "FAIL diff/$name: the self-hosted output does not assemble"
+    head -3 /tmp/diff-$name.w2w
+    FAILED=1
+    return
+  fi
   sgot=$(perl -e 'alarm 10; exec @ARGV' -- wasmtime \
     /tmp/diff-$name.self.wasm 2>/dev/null)
   src_rc=$?
@@ -38,6 +49,9 @@ diff_one bools 'fn main() -> i32 { let flag = true; let off = false; if flag { p
 diff_one compound 'fn main() -> i32 { let mut total = 0; let mut i = 0; while i < 5 { total += i; i += 1; } total *= 3; total -= 2; printf("total={} i={}\n", total, i); return 0; }'
 diff_one streq 'fn pick(s: string) -> i64 { if s == "yes" { return 1; } if s == "no" { return 2; } return 0; } fn main() -> i32 { let a = pick("yes"); let b = pick("no"); let c = pick("maybe"); printf("a={} b={} c={}\n", a, b, c); if "x" == "x" { printf("eq\n"); } if "x" == "y" { printf("bug\n"); } return 0; }'
 diff_one boolprint 'fn main() -> i32 { let r = "x" == "x"; let q = "x" == "y"; let n = 5; printf("r={} q={} n={}\\n", r, q, n); return 0; }'
+diff_one verbatim 'fn main() -> i32 { let v: string = """ab""cd"""; printf("[{}] {}\\n", v, len(v)); let multi: string = """
+line1
+line2"""; printf("[{}]\\n", multi); printf("len={}\\n", len(multi)); return 0; }'
 if [ "$FAILED" -eq 0 ]; then
   echo "differential: ok (boot == self-hosted on the growing subset)"
 else

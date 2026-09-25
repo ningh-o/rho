@@ -68,6 +68,51 @@ fn is_keyword(s: string) -> bool {
   return false;
 }
 
+// a triple-quoted span's end: the first subsequent """ closes it
+// (mid-line closers included); the newline count rides the cursor
+fn scan_verbatim_end(c: *Cur) -> usize {
+  while c.pos + 2 < len(c.src) {
+    if c.src[c.pos] == 34 && c.src[c.pos + 1] == 34 &&
+       c.src[c.pos + 2] == 34 {
+      let end: usize = c.pos;
+      adv(c);
+      adv(c);
+      adv(c);
+      return end;
+    }
+    if c.src[c.pos] == 10 {
+      c.line = c.line + 1;
+    }
+    adv(c);
+  }
+  while c.pos < len(c.src) {
+    if c.src[c.pos] == 10 {
+      c.line = c.line + 1;
+    }
+    adv(c);
+  }
+  return len(c.src);
+}
+
+// the verbatim span as a raw span: every byte rides as written — the
+// one byte the escape convention would eat is the backslash itself,
+// so it alone is doubled (decoders yield it back as a single byte)
+fn verbatim_text(s: string, start: usize, end: usize) -> string {
+  let mut out: string = "";
+  let mut i: usize = start;
+  let mut run: usize = start;
+  while i < end {
+    if s[i] == 92 {
+      out = out + s[run..i] + "\\\\";
+      i = i + 1;
+      run = i;
+    } else {
+      i = i + 1;
+    }
+  }
+  return out + s[run..end];
+}
+
 // a string literal's raw span, quotes stripped: src[a..b]
 fn scan_string_span(c: *Cur) -> usize {
   adv(c); // the opening quote
@@ -137,6 +182,21 @@ pub fn lex(src: string) -> []*Tok {
       continue;
     }
     if b == 34 {
+      // """ opens a fully verbatim span (spec §2.5): no escape
+      // decodes, content runs to the first subsequent """
+      if c.pos + 2 < len(src) && src[c.pos + 1] == 34 &&
+         src[c.pos + 2] == 34 {
+        adv(c);
+        adv(c);
+        adv(c);
+        let vstart: usize = c.pos;
+        let vend: usize = scan_verbatim_end(c);
+        toks[n] = new Tok { kind: TK_STR,
+                            text: verbatim_text(src, vstart, vend),
+                            ival: 0, line: line };
+        n = n + 1;
+        continue;
+      }
       let start: usize = c.pos + 1;
       let end: usize = scan_string_span(c);
       toks[n] = new Tok { kind: TK_STR, text: src[start..end],
