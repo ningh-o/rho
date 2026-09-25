@@ -352,6 +352,7 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst);
 size_t static_slot(Module *m, const char *name);
 static void emit_printf(FnCx *cx, Node *call, bool err);
 static void emit_format_build(FnCx *cx, Node *call);
+static void enum_payload_rc(FnCx *cx, Type *t, size_t vreg, bool do_retain);
 static void emit_call_args(FnCx *cx, FnDef *f, RefList *args);
 static void pass_arg_own(FnCx *cx, NodeRef arg, Type *pt, size_t v);
 static void emit_match(FnCx *cx, NodeRef er, size_t dst);
@@ -363,18 +364,54 @@ static void emit_scope_exit(FnCx *cx, size_t to_scope);
 static const char *fn_wat_name(FnDef *f) __attribute__((unused));
 
 // move/copy helpers for managed values
-__attribute__((unused)) static void retain(FnCx *cx, Type *t, size_t vreg) {
+static void retain(FnCx *cx, Type *t, size_t vreg) {
   if (!t)
     return;
   switch (t->kind) {
   case TY_PTR: case TY_STRING: case TY_SLICE: case TY_DYN:
     op(cx, "(call $rho_retain %s)\n", L(cx, vreg));
     break;
+  case TY_ENUM:
+    enum_payload_rc(cx, t, vreg, true);
+    break;
   default:
     break;
   }
 }
 static void release(FnCx *cx, Type *t, size_t vreg); // fwd
+
+// enums with managed payloads own those refs: rc walks the live
+// variant's fields (spec §1.4 — container ownership at the death check)
+static void enum_payload_rc(FnCx *cx, Type *t, size_t vreg, bool do_retain) {
+  if (t->kind != TY_ENUM)
+    return;
+  for (size_t vi = 0; vi < t->edef->nvariants; vi++) {
+    EnumVariant *var = &t->edef->variants[vi];
+    bool any = false;
+    for (size_t k = 0; k < var->nfields; k++)
+      if (type_is_managed(inst_ty(t, var->fields[k].ty)))
+        any = true;
+    if (!any)
+      continue;
+    op(cx, "(if (i32.eq (local.get %zu) (i32.const %d)) (then\n", vreg,
+       var->tag);
+    size_t slot = vreg + 1;
+    for (size_t k = 0; k < var->nfields; k++) {
+      Type *ft = inst_ty(t, var->fields[k].ty);
+      size_t n = shape_nlocals(ft);
+      if (type_is_managed(ft)) {
+        if (do_retain)
+          retain(cx, ft, slot);
+        else
+          release(cx, ft, slot);
+      }
+      slot += n;
+    }
+    op(cx, "))\n");
+  }
+}
+
+
 
 static void release_var(FnCx *cx, VarInfo *v) {
   if (v->moved)
@@ -388,6 +425,9 @@ static void release(FnCx *cx, Type *t, size_t vreg) {
   switch (t->kind) {
   case TY_PTR: case TY_STRING: case TY_SLICE: case TY_DYN:
     op(cx, "(call $rho_release %s)\n", L(cx, vreg));
+    break;
+  case TY_ENUM:
+    enum_payload_rc(cx, t, vreg, false);
     break;
   default:
     break;
@@ -2106,6 +2146,9 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
     Type *t = (Type *)node_get(s->b)->sem;
     size_t v = cx_fresh(cx, t);
     emit_expr(cx, s->b, v);
+    if (node_get(s->b)->kind == NT_PATH &&
+        cx_var(cx, node_get(s->b)->name))
+      retain(cx, t, v); // copying a variable owns a new reference
     VarInfo *vi = VPUSH(cx->vars, VarInfo);
     vi->name = s->name;
     vi->node = sr;
@@ -2354,6 +2397,9 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
       }
       size_t rhs = cx_fresh(cx, lt);
       emit_expr(cx, s->b, rhs);
+      if (node_get(s->b)->kind == NT_PATH &&
+          cx_var(cx, node_get(s->b)->name))
+        retain(cx, lt, rhs); // copy-in on assignment owns a new ref
       if (s->op != OP_NONE) {
         // compound: op(old, rhs) into a fresh result
         size_t res = cx_fresh(cx, lt);

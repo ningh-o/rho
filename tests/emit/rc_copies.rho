@@ -1,0 +1,9 @@
+// out: a-b a-b ok
+fn id(s: string) -> string { return s; }
+fn main() -> i32 {
+  let a: string = "a" + "-" + "b";
+  let b: string = a;
+  let c: string = id(a);
+  printf("{} {} ok\n", b, c);
+  return 0;
+}
