@@ -12,8 +12,10 @@ use lex;
 use parse;
 use check;
 use emit;
+use fmt;
 
 const SRC: string = "fn main() -> i32 { printf(\"hello, self\\n\"); return 0; }";
+const FMT: i64 = 0; // 1 = print the canonical formatting instead
 
 fn main() -> i32 {
   let toks: []*Tok = lex.lex(SRC);
@@ -22,6 +24,19 @@ fn main() -> i32 {
   if errs > 0 {
     eprintf("check: {} error(s)\n", errs);
     return 1;
+  }
+  if FMT == 1 {
+    let text: string = fmt.fmt_prog(prog);
+    let mut off: usize = 0;
+    while off < len(text) {
+      let mut end: usize = off + 512;
+      if end > len(text) {
+        end = len(text);
+      }
+      printf("{}", text[off..end]);
+      off = end;
+    }
+    return 0;
   }
   let wat: string = emit.emit(prog);
   // stream in slices: the format scratch is bounded, programs are not

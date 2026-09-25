@@ -1,0 +1,34 @@
+const BASE: i64 = 10;
+const SCALED: i64 = BASE * 2 + 1;
+static mut HITS: i64 = 0;
+static mut MASK: i64 = 255;
+
+fn sum(xs: []i32) -> i32 {
+  let mut total: i32 = 0;
+  let mut i: usize = 0;
+  while i < len(xs) {
+    total += xs[i];
+    i += 1;
+  }
+  return total;
+}
+fn main() -> i32 {
+  let xs: []i32 = make([]i32, 5);
+  let mut i: usize = 0;
+  while i < len(xs) {
+    xs[i] = (i as i32) * 2 + 2;
+    i += 1;
+  }
+  let part: []i32 = xs[0..3];
+  let tail: []i32 = xs[2..];
+  HITS += 1;
+  MASK &= 240;
+  let a8: i8 = 127;
+  let m8: i8 = (-128);
+  let u: u32 = 4294967295;
+  let big = ((3000000000 as i32) as i64);
+  printf("sum={} part={} alias={}\n", sum(xs), sum(part), xs[0]);
+  printf("bits {} {} {}\n", 1 | 2 & 3, m8 >> 2, 1 << 40);
+  defer HITS += 100;
+  return 0;
+}

@@ -1,0 +1,23 @@
+fn greet(s: string) -> i64 {
+  printf("hello {}! len={}\n", s, len(s));
+  return len(s) as i64;
+}
+fn main() -> i32 {
+  let a = "one";
+  let b = a + "-" + "two" + "!";
+  let v: string = """ab""cd""";
+  let multi: string = """
+line1
+line2""";
+  let rawslash: string = """x\ty\nz""";
+  let esc = "a\rb\0c\x41\u{e9}\u{1F600}z";
+  let head = b[0..3];
+  printf("{} {} [{}] {} {}\n", a, b, v, head[1], "hi"[0]);
+  printf("lens {} {} {}\n", len(multi), len(rawslash), len(esc));
+  let n = greet("world");
+  let q = "x" == "x";
+  if q {
+    printf("eq={} bytes={}\n", q == q, v[2] == 34);
+  }
+  return 0;
+}

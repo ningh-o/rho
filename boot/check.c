@@ -449,8 +449,11 @@ static Module *resolve_use(Program *p, Module *importer, NodeRef use_r,
 }
 
 // load-time module preparation: collect symbols, resolve consts, fold
-// dead branches — so a use inside a comptime-dead branch never loads
+// dead branches — so a use inside a comptime-dead branch never loads.
+// The unpruned variant stops before the fold (the load BFS applies
+// --set overrides between the entry's resolve and its prune)
 void module_prepare(Program *p, Module *m);
+static void module_prepare_unpruned(Program *p, Module *m);
 
 static Program *g_program_for_load;
 
@@ -595,12 +598,31 @@ bool program_load_graph(Program *p, const char *entry_path) {
   }
   p->entry = module_load(g_arena, entry_path);
   program_add(p, p->entry, NULL);
+  // the entry is the fold root from load time on: body folds during
+  // the BFS read root consts through it
+  g_entry_mod = p->entry;
 
   // BFS in load order (deterministic); each module is prepared (consts
-  // folded, dead branches marked) before its uses are resolved
-  for (Module *m = p->modules; m; m = m->next) {
-    module_prepare(p, m);
-    for_each_live_use(m, load_one_use);
+  // folded, dead branches marked) before its uses are resolved. The
+  // --set overrides land the moment the entry's consts exist — before
+  // ANY body fold runs — so comptime conditions see the overridden
+  // values, not the declared ones (§7)
+  {
+    extern int sets_apply(Program *p);
+    extern bool g_set_refused;
+    bool sets_done = false;
+    for (Module *m = p->modules; m; m = m->next) {
+      module_prepare_unpruned(p, m);
+      if (!sets_done && m == p->entry) {
+        if (sets_apply(p) != 0) {
+          g_set_refused = true;
+          return false;
+        }
+        sets_done = true;
+      }
+      prune_dead_uses(m);
+      for_each_live_use(m, load_one_use);
+    }
   }
   // facades re-export now — every target is loaded and prepared
   expand_pub_uses(p);
@@ -1120,6 +1142,19 @@ void module_prepare(Program *p, Module *m) {
   m->prepared = true;
 }
 
+// collect + const resolve WITHOUT the dead-branch fold: the load BFS
+// applies --set overrides between the entry's resolve and its prune
+// (the fold must see the overridden values, §7)
+static void module_prepare_unpruned(Program *p, Module *m) {
+  if (m->prepared)
+    return;
+  g_program = p;
+  collect_module(p, m);
+  collect_fns(p, m);
+  const_resolve_module_pub(m);
+  m->prepared = true;
+}
+
 bool check_program(Program *p) {
   g_program = p;
   g_program_ctx = p;
@@ -1137,16 +1172,6 @@ bool check_program(Program *p) {
     if (m->prepared)
       continue; // fns collected at load time
     collect_fns(p, m);
-  }
-
-  // --set overrides land after inference, before bodies see them
-  {
-    extern int sets_apply(Program *p);
-    extern bool g_set_refused;
-    if (sets_apply(p) != 0) {
-      g_set_refused = true;
-      return false;
-    }
   }
 
   // fn signatures (needs struct/enum/trait tables complete)
