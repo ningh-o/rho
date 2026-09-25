@@ -1563,6 +1563,39 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
         },
         Option.None => {},
       }
+      // a string fn's return rides its pair (else-chained, never a
+      // match-arm continue — boot's match continue does not skip the
+      // enclosing loop's tail and the old path would append junk)
+      let mut sret: bool = false;
+      if !is_tail {
+        match tfd {
+          Option.Some(fdef) => {
+            if fdef.rtype == "string" {
+              sret = true;
+            }
+          },
+          Option.None => {},
+        }
+      }
+      let mut sret_done: bool = false;
+      if sret {
+        match st.val {
+          Option.Some(rv) => {
+            let sp = build_string_pair(rv, pool, env, prog,
+                                       next_local);
+            if sp.ok {
+              body = body + sp.text;
+              body = body + dunwind_emit(dstack);
+              body = body + "    (local.get " + sp.a.to_str() +
+                     ")\n    (local.get " + sp.l.to_str() +
+                     ")\n    return\n";
+              sret_done = true;
+            }
+          },
+          Option.None => {},
+        }
+      }
+      if !sret_done {
       if is_tail {
         match st.val {
           Option.Some(rv) => {
@@ -1608,6 +1641,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
             body = body + "    (i64.const 0)\n    return\n";
           },
         }
+      }
       }
     }
     if st.tag == parse.ST_RET && !in_fn {
@@ -2103,7 +2137,11 @@ fn emit_fn(fd: *FnDef, pool: *Pool, prog: *Prog) -> string {
     out = out + " (param i64)";
     q = q + 1;
   }
-  out = out + " (result i64)\n";
+  if fd.rtype == "string" {
+    out = out + " (result i64) (result i64)\n";
+  } else {
+    out = out + " (result i64)\n";
+  }
   // locals: the capture pair and the expression temp, then the lets
   out = out + "\n    (local $a i32) (local $l i32) (local $t i64) (local $r i64)\n";
   q = param_slots;
@@ -2111,9 +2149,17 @@ fn emit_fn(fd: *FnDef, pool: *Pool, prog: *Prog) -> string {
     out = out + "    (local i64)\n";
     q = q + 1;
   }
-  out = out + "    (loop $t (result i64)\n";
+  if fd.rtype == "string" {
+    out = out + "    (loop $t (result i64) (result i64)\n";
+  } else {
+    out = out + "    (loop $t (result i64)\n";
+  }
   out = out + body;
-  out = out + "    (i64.const 0)\n    )\n  )\n";
+  if fd.rtype == "string" {
+    out = out + "    (i64.const 0)\n    (i64.const 0)\n    )\n  )\n";
+  } else {
+    out = out + "    (i64.const 0)\n    )\n  )\n";
+  }
   return out;
 }
 

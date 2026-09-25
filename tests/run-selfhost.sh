@@ -50,6 +50,11 @@ run_one streq 'fn pick(s: string) -> i64 { if s == "yes" { return 1; } if s == "
 run_one boolprint 'fn main() -> i32 { let r = "x" == "x"; let q = "x" == "y"; let n = 5; printf("r={} q={} n={}\n", r, q, n); return 0; }' $'r=true q=false n=5'
 run_one escapes 'fn main() -> i32 { let s: string = "a\rb\0c\x41\u{e9}\u{1F600}z"; printf("len={} r=[{}] x=[{}] u2=[{}] u4=[{}]\n", len(s), "A\rB", "\x42\x7a", "\u{4e2d}\u{6587}", "\u{1F600}!"); return 0; }' $'len=13 r=[A\rB] x=[Bz] u2=[中文] u4=[😀!]'
 run_one widths 'fn main() -> i32 { let a8: i8 = 127; let m8: i8 = (-128); let a32: i32 = 2147483647; let m32: i32 = (-2147483648); let u: u32 = 4294967295; printf("i8: {} {}\n", a8 + 1, m8 - 1); printf("i32: {} {}\n", a32 + 1, m32 - 1); printf("u32+1={} eq={}\n", u + 1, u + 1 == 0); printf("mul={} div={} neg={}\n", m8 * (-1), m8 / (-1), -m8); return 0; }' $'i8: -128 127\ni32: -2147483648 2147483647\nu32+1=0 eq=true\nmul=-128 div=-128 neg=-128'
+run_one strret 'fn join3(a: string, b: string, c: string) -> string { return a + b + c; } fn tag(s: string) -> string { if len(s) > 0 { return "[" + s + "]"; } printf("empty
+"); return s; } fn main() -> i32 { let s = join3("x", "-", "y"); printf("[{}]
+", s); printf("[{}]
+", join3(s, "!", s)); let a = tag("q"); let b = tag(""); printf("{}{}
+", a, b); return 0; }' $'[x-y]\n[x-y!x-y]\nempty\n[q]'
 run_one cat 'fn main() -> i32 { let a: string = "con"; let b: string = "cat"; let mut c: string = ""; c = a + b + "!"; printf("[{}]\n", c); let d = a + "-" + (b + "?"); printf("[{}]\n", d); printf("[{}|{}]\n", a + b, c + c); let mut e = ""; e = e + "[" + a + "]"; printf("{}\n", e); return 0; }' $'[concat!]\n[con-cat?]\n[concat|concat!concat!]\n[con]'
 run_one tco 'fn down(n: i64) -> i64 { if n == 0 { return 7; } return down(n - 1); } fn sumto(n: i64, acc: i64) -> i64 { if n == 0 { return acc; } return sumto(n - 1, acc + n); } fn main() -> i32 { printf("down={} sum={}\n", down(2000000), sumto(1000000, 0)); return 0; }' 'down=7 sum=500000500000'
 run_one defer 'static mut LOG: i64 = 0; fn work() -> i64 { defer LOG += 1; defer LOG += 10; LOG += 100; return 0; } fn two() -> i64 { defer LOG += 1000; if LOG >= 0 { defer LOG += 5; } return LOG; } fn main() -> i32 { let r = work(); printf("log={} r={}\n", LOG, r); let t = two(); printf("log={} t={}\n", LOG, t); return 0; }' $'log=111 r=0\nlog=1116 t=116'
