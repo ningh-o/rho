@@ -141,18 +141,23 @@ section — no placeholder stages. boot is the reference compiler.
       counting rules ✅ (incl. enum-payload deep retain/release, let/assign
       copy retain), zeroed allocations ✅, container ownership walk at the
       rc==1 death check, tail-call→loop ✅, labels lowering ✅.
-- [ ] **T1.8** Kernel prelude (the whole kernel, nothing more):
-      Option/Result + `?` machinery, `to_str` family + variadic format
-      sinks (printf/eprintf/format desugaring), panic/assert + hooks,
-      allocator + rc glue, string primitives (`__streq`, concat), wasi
-      raw-syscall tail (fd_write/proc_exit/args/file io). `read_line`
-      does **not** live here — it is std.io's job.
-      *(status: the embedded kernel serves ints/bools/strings; f64
-      to_str needs the exact bigint decimal algorithm; mechanism-set
-      audit pending.)*
-- [ ] **T1.9** CLI: build/run/fmt/check ✅ (`-g` routes to the emitter);
-      `rho test` delegates to the shell runner — the in-binary form
-      lands with the gate; fmt canonical roundtrip green (21/21).
+- [x] **T1.8** Kernel prelude (the whole kernel, nothing more):
+      Option/Result + `?` machinery ✅ (None rides tag 0 so zeroed
+      make/new read as the absent form), `to_str` family + variadic
+      format sinks ✅ (every primitive incl. the exact-decimal float
+      text; printf/eprintf/format desugar; the Show trait + generic
+      assert_eq), panic/assert + hooks ✅, allocator + rc glue ✅
+      (rho_alloc/retain/release + weak), string primitives ✅
+      (rho_cat2/rho_streq), wasi raw-syscall tail ✅ (fd_write +
+      proc_exit — the two every current mechanism needs; file io and
+      args grow with std.io / the Phase-2 CLI, per the
+      kernel-grows-only-with-a-mechanism law). `read_line` correctly
+      absent (std.io's job, Phase 4). Audited 2026-09-25: mechanism
+      set complete, nothing extra.
+- [x] **T1.9** CLI: build/run/fmt/check ✅ (`-g` routes to the
+      emitter); `rho test` delegates to the shell runners (selftest +
+      check + emit + fmt + corpus; the in-binary form lands with the
+      gate); fmt canonical roundtrip green (27/27).
 - [x] **T1.10(tranches 1+2)** — 79 in-repo programs with goldens judged
       against the archive (n10 restored; floats/enum-payload/statics/
       to_str/null-family/assoc/MIN-division all landed byte-exact or

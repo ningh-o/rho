@@ -125,13 +125,30 @@ int cmd_run(int argc, char **argv) {
 int cmd_test(int argc, char **argv) {
   (void)argc;
   (void)argv;
-  // behavioral testing runs through tests/run-corpus-repo.sh (stdout +
-  // exit vs recorded goldens); the in-binary runner arrives with the
-  // gate (T3.1)
-  fprintf(stderr,
-          "rho test: use tests/run-corpus-repo.sh (in-binary runner "
-          "arrives with the gate, T3.1)\n");
-  return EXIT_USAGE;
+  // delegates to the shell runners next to the source tree: the
+  // behavioral suites live as scripts (compile + run + golden
+  // compare); the in-binary form lands with the gate (T3.1)
+  const char *suites[] = {"tests/run-check-tests.sh",
+                          "tests/run-emit-tests.sh",
+                          "tests/run-fmt-tests.sh",
+                          "tests/run-corpus-repo.sh", NULL};
+  for (size_t i = 0; suites[i]; i++) {
+    if (access(suites[i], R_OK) != 0) {
+      fprintf(stderr, "rho test: %s not found (run from the repo root)\n",
+              suites[i]);
+      return EXIT_USAGE;
+    }
+  }
+  int bad = 0;
+  if (cmd_selftest() != 0)
+    bad++;
+  for (size_t i = 0; suites[i]; i++) {
+    char cmd[256];
+    snprintf(cmd, sizeof cmd, "zsh %s", suites[i]);
+    if (system(cmd) != 0)
+      bad++;
+  }
+  return bad ? 1 : 0;
 }
 
 // canonical formatter (T1.9): prints the checked AST back in canonical
