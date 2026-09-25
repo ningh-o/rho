@@ -1,0 +1,7 @@
+// a loose file module, two segments deep
+pub fn dup(s: string) -> string {
+  return s + s;
+}
+pub fn tag() -> string {
+  return "strs";
+}

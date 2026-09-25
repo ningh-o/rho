@@ -1,0 +1,51 @@
+// exit: 0
+// 0.3.3: variadic parameters (`rest: T...` — a []T in the body), spread
+// calls (`xs...`), and variadic fns that return values
+fn sum(ns: i64...) -> i64 {
+  let mut total: i64 = 0;
+  let mut i: usize = 0;
+  while i < len(ns) {
+    total += ns[i];
+    i += 1;
+  }
+  return total;
+}
+
+fn max_of(first: i64, rest: i64...) -> i64 {
+  let mut best: i64 = first;
+  let mut i: usize = 0;
+  while i < len(rest) {
+    if rest[i] > best {
+      best = rest[i];
+    }
+    i += 1;
+  }
+  return best;
+}
+
+fn join(sep: string, parts: string...) -> string {
+  let mut out: string = "";
+  let mut i: usize = 0;
+  while i < len(parts) {
+    if i > 0 {
+      out = out + sep;
+    }
+    out = out + parts[i];
+    i += 1;
+  }
+  return out;
+}
+
+fn main() -> i32 {
+  printf("sum0={}\n", sum());
+  printf("sum={}\n", sum(1, 2, 3, 4, 5));
+  printf("max={}\n", max_of(3, 9, 2, 7));
+  let xs: []i64 = make([]i64, 3);
+  xs[0] = 10;
+  xs[1] = 20;
+  xs[2] = 30;
+  printf("spread={}\n", sum(xs...));
+  printf("joined={}\n", join("-", "a", "b", "c"));
+  printf("join0=[{}]\n", join(","));
+  return 0;
+}

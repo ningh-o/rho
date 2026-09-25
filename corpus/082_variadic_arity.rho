@@ -1,0 +1,49 @@
+// exit: 10
+// slice 082: variadic arity 0..4 — zero through four extra arguments,
+// fixed+variadic mixes whose rest arity also varies, and variadic
+// results fed back into further variadic calls
+fn total(ns: i64...) -> i64 {
+  let mut t: i64 = 0;
+  let mut i: usize = 0;
+  while i < len(ns) {
+    t += ns[i];
+    i += 1;
+  }
+  return t;
+}
+
+// the rest slice spreads onward into another variadic call
+fn tagged(name: string, ns: i64...) -> string {
+  return format("{}:{}", name, total(ns...));
+}
+
+fn bracketed(parts: string...) -> string {
+  let mut out: string = "[";
+  let mut i: usize = 0;
+  while i < len(parts) {
+    if i > 0 {
+      out = out + ",";
+    }
+    out = out + parts[i];
+    i += 1;
+  }
+  return out + "]";
+}
+
+fn main() -> i32 {
+  printf("t0={}\n", total());
+  printf("t1={}\n", total(5));
+  printf("t2={}\n", total(1, 2));
+  printf("t3={}\n", total(1, 2, 3));
+  printf("t4={}\n", total(1, 2, 3, 4));
+  printf("b0={}\n", bracketed());
+  printf("b1={}\n", bracketed("a"));
+  printf("b2={}\n", bracketed("a", "b"));
+  printf("b3={}\n", bracketed("a", "b", "c"));
+  printf("b4={}\n", bracketed("w", "x", "y", "z"));
+  printf("g0={}\n", tagged("zero"));
+  printf("g1={}\n", tagged("one", 7));
+  printf("g4={}\n", tagged("four", 1, 2, 3, 4));
+  printf("nest={}\n", total(total(1, 2), total(3), 40));
+  return (total(1, 2, 3, 4) % 97) as i32;
+}

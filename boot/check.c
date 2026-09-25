@@ -317,13 +317,13 @@ static bool dir_exists(const char *path) {
 // Ambiguity (dir has lib.rho AND sibling file module could match at a
 // later base) is handled by the caller comparing bases.
 static int resolve_under_base(Arena *a, const char *base, RefList *segs,
-                              char **out) {
+                              size_t nsegs, char **out) {
   char *cur = astrdup(a, base);
-  for (size_t i = 0; i < reflist_len(segs); i++) {
+  for (size_t i = 0; i < nsegs; i++) {
     const char *seg = node_get(reflist_at(segs, i))->name;
     char *as_dir = aprintf(a, "%s/%s", cur, seg);
     char *as_file = aprintf(a, "%s/%s.rho", cur, seg);
-    bool last = i == reflist_len(segs) - 1;
+    bool last = i == nsegs - 1;
     if (last) {
       // file module wins only if no package facade exists; both = the
       // exactly-one-real-body law checked by the caller via two probes
@@ -354,13 +354,15 @@ static int resolve_under_base(Arena *a, const char *base, RefList *segs,
 
 // Load (or find) the module a use-declaration names. Applies the two
 // lookup bases in order, then std, and enforces the facade law.
-static Module *resolve_use(Program *p, Module *importer, NodeRef use_r) {
+static Module *resolve_use(Program *p, Module *importer, NodeRef use_r,
+                           size_t nsegs) {
   Node *u = node_get(use_r);
   RefList *segs = u->list;
 
   // std/ is the reserved directory (Phase 4 wires the real packages;
   // until then the name is reserved)
   const char *first = node_get(reflist_at(segs, 0))->name;
+  (void)nsegs;
   if (strcmp(first, "std") == 0) {
     diag_at(DIAG_ERROR, importer->path, u->line, u->col,
             "'std' is reserved; std packages arrive with the std library "
@@ -373,7 +375,7 @@ static Module *resolve_use(Program *p, Module *importer, NodeRef use_r) {
   bases[1] = dir_of(g_arena, p->entry->path);
   for (int b = 0; b < 2; b++) {
     char *path = NULL;
-    int r = resolve_under_base(g_arena, bases[b], segs, &path);
+    int r = resolve_under_base(g_arena, bases[b], segs, nsegs, &path);
     if (r == 0)
       continue;
     if (r == 3) {
@@ -404,7 +406,16 @@ static Program *g_program_for_load;
 
 static bool load_one_use(Module *m, NodeRef d) {
   Node *n = node_get(d);
-  Module *t = resolve_use(g_program_for_load, m, d);
+  int form = n->op & 7;
+  if (form == USE_PUB_ITEM || form == USE_PUB_AS) {
+    // an item re-export: load the MODULE PREFIX so the item's owner
+    // exists; no use binding (the facade exports the item, not the
+    // module name)
+    if (reflist_len(n->list) > 1)
+      resolve_use(g_program_for_load, m, d, reflist_len(n->list) - 1);
+    return true;
+  }
+  Module *t = resolve_use(g_program_for_load, m, d, reflist_len(n->list));
   if (!t)
     return true; // reported; keep walking for more diagnostics
   UseBind *ub = vec_push(&m->uses);
@@ -417,6 +428,87 @@ static bool load_one_use(Module *m, NodeRef d) {
   return true;
 }
 
+
+// copy one pub symbol into a facade's namespace (re-export); the
+// facade's own declarations win; the copy shares the underlying def
+static void reexport_sym(Module *facade, const char *as, Sym *s,
+                         Node *u) {
+  if (!s || !s->pub)
+    return;
+  if (symtab_get(facade->syms, as))
+    return; // the facade's own name (or an earlier re-export) wins
+  Sym *c = symtab_add(facade->syms, as);
+  c->kind = s->kind;
+  c->pub = true;
+  c->u = s->u;
+  (void)u;
+}
+
+// expand every live pub use in every module: the facade law (§10) —
+// flatten re-exports the target's public items, item forms bring one
+// (optionally renamed)
+static void expand_pub_uses(Program *p) {
+  for (Module *m = p->modules; m; m = m->next) {
+    if (!m->decls)
+      continue;
+    for (size_t i = 0; i < reflist_len(m->decls); i++) {
+      NodeRef dr = reflist_at(m->decls, i);
+      Node *u = node_get(dr);
+      if (u->kind != NT_USE || (u->op & USE_DEAD))
+        continue;
+      int form = u->op & 7;
+      if (form != USE_PUB_MOD && form != USE_PUB_ITEM &&
+          form != USE_PUB_AS && form != USE_PUB_STAR)
+        continue;
+      if (!m->syms)
+        continue;
+      // find the binding this pub use created (load_one_use ran first)
+      const char *alias = u->name2
+                              ? u->name2
+                              : node_get(reflist_at(
+                                            u->list, reflist_len(u->list) - 1))
+                                    ->name;
+      Module *tgt = NULL;
+      for (size_t k = 0; k < VLEN(m->uses); k++) {
+        UseBind *ub = VAT(m->uses, UseBind, k);
+        if (ub->decl == dr) {
+          tgt = ub->target;
+          alias = ub->alias;
+          break;
+        }
+      }
+      if (form == USE_PUB_ITEM || form == USE_PUB_AS) {
+        // the target module is segs[0..n-1), the item is the last seg
+        const char *item = node_get(reflist_at(
+                                        u->list, reflist_len(u->list) - 1))
+                               ->name;
+        Module *owner = NULL;
+        if (reflist_len(u->list) > 1) {
+          const char *mod0 = node_get(reflist_at(u->list, 0))->name;
+          for (size_t k = 0; k < VLEN(m->uses); k++) {
+            UseBind *ub = VAT(m->uses, UseBind, k);
+            if (strcmp(ub->alias, mod0) == 0)
+              owner = ub->target;
+          }
+        } else
+          owner = tgt; // one seg: item of the same path
+        if (owner && owner->syms)
+          reexport_sym(m, alias, symtab_get(owner->syms, item), u);
+        continue;
+      }
+      // flatten (mod or star): every pub item of the target rides
+      Module *src = NULL;
+      for (size_t k = 0; k < VLEN(m->uses); k++) {
+        UseBind *ub = VAT(m->uses, UseBind, k);
+        if (ub->decl == dr)
+          src = ub->target;
+      }
+      if (src && src->syms)
+        for (Sym *s = src->syms->order_head; s; s = s->order_next)
+          reexport_sym(m, s->name, s, u);
+    }
+  }
+}
 
 bool program_load_graph(Program *p, const char *entry_path) {
   g_program_for_load = p;
@@ -437,6 +529,8 @@ bool program_load_graph(Program *p, const char *entry_path) {
     module_prepare(p, m);
     for_each_live_use(m, load_one_use);
   }
+  // facades re-export now — every target is loaded and prepared
+  expand_pub_uses(p);
   return !g_had_error;
 }
 

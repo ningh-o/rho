@@ -682,7 +682,9 @@ void for_each_live_use(Module *m, bool (*cb)(Module *, NodeRef)) {
     NodeRef dr = reflist_at(m->decls, i);
     Node *d = node_get(dr);
     if (d->kind == NT_USE) {
-      if (d->op == USE_PLAIN)
+      // plain and pub forms both bind (pub uses are top-level only;
+      // dead ones never load)
+      if ((d->op & USE_DEAD) == 0)
         cb(m, dr);
       continue;
     }

@@ -1,0 +1,14 @@
+t0=0
+t1=5
+t2=3
+t3=6
+t4=10
+b0=[]
+b1=[a]
+b2=[a,b]
+b3=[a,b,c]
+b4=[w,x,y,z]
+g0=zero:0
+g1=one:7
+g4=four:10
+nest=46

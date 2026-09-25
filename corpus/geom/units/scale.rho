@@ -1,0 +1,7 @@
+// the units subpackage's interior
+pub fn factor() -> i32 {
+  return 10;
+}
+pub fn apply(v: i32) -> i32 {
+  return v * factor();
+}

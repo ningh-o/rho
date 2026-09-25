@@ -1,0 +1,37 @@
+// exit: 0
+// adapted for the fully-verbatim law: triple-quoted strings decode NO
+// escapes (a \n inside is its two bytes; a """ run always closes the
+// literal), so quote-carrying values moved to single-line strings —
+// the one place escapes decode — and the verbatim body grew the
+// raw-backslash cases the new law pins
+fn main() -> i32 {
+  let doc: string = """
+first line
+  indented second
+third""";
+  printf("[{}]\n", doc);
+  printf("len={}\n", len(doc));
+  // byte 0 is the newline that follows the opening """
+  printf("first byte={}\n", doc[0]);
+  let nl: string = "\n";
+  assert_eq(doc[0..1], nl);
+  // interior indentation is content, not structure
+  assert_eq(doc[12..14], "  ");
+  // verbatim: backslash sequences stay their raw bytes (no decoding)
+  let raw: string = """
+a\tb
+c\n""";
+  printf("[{}]\n", raw);
+  printf("rawlen={}\n", len(raw));
+  assert_eq(raw[2..3], "\\");
+  assert_eq(raw[3..4], "t");
+  // quotes ride single-line escapes (a """ run inside a verbatim
+  // literal always terminates it)
+  let quotes: string = "say \"\" then";
+  printf("[{}]\n", quotes);
+  // an empty literal is the empty string
+  let empty: string = "";
+  printf("empty len={}\n", len(empty));
+  assert_eq(empty, "");
+  return 0;
+}

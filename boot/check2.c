@@ -387,6 +387,10 @@ static bool sig_matches(FnCtx *c, FnSig *sig, NodeRef call_r,
     Node *a = node_get(reflist_at(args, i + first));
     if (a->kind != NT_POSARG)
       return false; // named args only valid on constructors
+    // a trailing spread passes the whole slice: it matches the FULL
+    // variadic param type, not the element type (spec §12)
+    if (a->bval && variadic && i == napplied - 1)
+      pt = vt;
     if (pt && ty_has_param(pt))
       continue; // generic pattern: binds at instantiation
     if (pt && pt->kind == TY_PARAM)
@@ -1192,6 +1196,8 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
             check_expr(c, aw->a,
                        i < f->sig->nparams ? f->sig->params[i].ty : NULL);
         }
+        node_get(er)->op = 5; // a plain call on the module's namespace
+        node_get(er)->sem2 = f;
         return f->sig->ret;
       }
       err_at(c, m, "module %s has no public fn '%s'", recv->name, m->name);

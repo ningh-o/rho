@@ -1,0 +1,12 @@
+[
+first line
+  indented second
+third]
+len=35
+first byte=10
+[
+a\tb
+c\n]
+rawlen=9
+[say "" then]
+empty len=0

@@ -1,0 +1,82 @@
+// exit: 0
+// adapted for ?T: null slots ride Option — pointer fields hold ?*N,
+// fresh slices read as None (tag 0 is the zeroed form), and the
+// null checks became matches. The pinned behavior is unchanged:
+// churn pointer-carrying slices through the freelist, reallocate the
+// same classes, and every fresh slice must read as all-absent — then
+// die cleanly through the very walk that used to chase the junk.
+struct N {
+  v: i64,
+  next: ?*N,
+}
+
+fn drain(ns: []string) -> i64 {
+  let mut c: i64 = 0;
+  let mut i: usize = 0;
+  while i < len(ns) {
+    if ns[i] != "" {
+      c += 1;
+    }
+    i += 1;
+  }
+  return c;
+}
+
+fn main() -> i32 {
+  let mut rounds: i64 = 0;
+  let mut nonempty: i64 = 0;
+  let mut live_total: i64 = 0;
+  let mut i: i32 = 0;
+  while i < 400 {
+    // phase A: allocate pointer-carrying slices, let some die in-scope
+    let a: []?*N = make([]?*N, 32);
+    let b: []string = make([]string, 24);
+    nonempty += drain(b);
+    // fill a with real nodes, then overwrite the slice binding so the
+    // elements' rc drops hit the walk while the class block is hot
+    let mut k: usize = 0;
+    while k < len(a) {
+      a[k] = Option.Some(new N { v: k as i64, next: Option.None });
+      k += 1;
+    }
+    match a[0] {
+      Option.Some(h) => match a[31] {
+        Option.Some(t) => { live_total += (h.v + t.v) as i64; },
+        Option.None => {},
+      },
+      Option.None => {},
+    }
+    // phase B: same classes again — these pulls come from the freelists
+    // phase A just fed; every element must read as None
+    let c: []?*N = make([]?*N, 32);
+    let d: []string = make([]string, 24);
+    let mut zeros: i32 = 1;
+    let mut j: usize = 0;
+    while j < len(c) {
+      match c[j] {
+        Option.Some(_) => { zeros = 0; },
+        Option.None => {},
+      }
+      j += 1;
+    }
+    if drain(d) != 0 {
+      zeros = 0;
+    }
+    if zeros == 0 {
+      printf("JUNK at round {}\n", i as i64);
+      return 1;
+    }
+    rounds += 1;
+    i += 1;
+  }
+  // keep a later-generation slice alive past the loop: its elements were
+  // written by real allocations, its neighbors died around it
+  let tail: []?*N = make([]?*N, 32);
+  tail[5] = Option.Some(new N { v: 55, next: Option.None });
+  match tail[5] {
+    Option.Some(n) => printf("rounds={} nonempty={} live={} tail5={}\n",
+                             rounds, nonempty, live_total, n.v),
+    Option.None => printf("tail5 absent\n"),
+  }
+  return 0;
+}

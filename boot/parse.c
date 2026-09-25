@@ -20,6 +20,13 @@ static Token *at(Parser *p, size_t off) {
   return (Token *)&p->m->toks[i];
 }
 static TokKind kind(Parser *p) { return cur(p)->kind; }
+
+// assignment operators (statement heads; never expressions)
+static bool is_assign_tok(TokKind k) {
+  return k == T_EQ || k == T_PLUSEQ || k == T_DASHEQ || k == T_STAREQ ||
+         k == T_SLASHEQ || k == T_PCTEQ || k == T_AMPEQ || k == T_PIPEEQ ||
+         k == T_CARETEQ || k == T_SHLEQ || k == T_SHREQ;
+}
 static bool is(Parser *p, TokKind k) { return kind(p) == k; }
 static bool is2(Parser *p, TokKind k, size_t off) {
   return at(p, off)->kind == k;
@@ -534,8 +541,18 @@ static NodeRef parse_primary(Parser *p) {
         expect(p, T_FATARROW, "in match arm");
         if (is(p, T_LBRACE))
           node_get(arm)->b = parse_block(p);
-        else
+        else {
           node_get(arm)->b = parse_expr(p);
+          // an assignment is a statement: an arm body that is one
+          // needs a block — diagnose instead of derailing the parse
+          if (is_assign_tok(kind(p))) {
+            diag_at(DIAG_ERROR, p->m->path, cur(p)->line, cur(p)->col,
+                    "an assignment arm body needs a block: "
+                    "pat => { x = …; }");
+            while (!is(p, T_COMMA) && !is(p, T_RBRACE) && !is(p, T_EOF))
+              eat(p);
+          }
+        }
         reflist_add(node_get(r)->list, arm);
         if (!accept(p, T_COMMA))
           break;

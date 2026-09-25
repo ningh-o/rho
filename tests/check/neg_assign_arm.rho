@@ -1,0 +1,9 @@
+// expect: an assignment arm body needs a block
+fn main() -> i32 {
+  let o: ?i32 = Option.Some(3);
+  match o {
+    Option.Some(v) => v = 4,
+    Option.None => {},
+  }
+  return 0;
+}

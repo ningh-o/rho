@@ -1,0 +1,94 @@
+// exit: 0
+// adapted for ?T: null slots ride Option — the table's slot slices are
+// []?*Ent, fresh slots read as None (tag 0 is the zeroed form), the
+// null probes became matches, and puts wrap in Option.Some. The pinned
+// behavior is unchanged: a by-value slice binding must not own the
+// array's CURRENT elements — the rehash binds `old`, replaces m.slots,
+// re-puts entries, and the binding's release must not free elements
+// its retain never saw (the container-ownership law: release walks
+// elements only at the last-reference death check).
+struct Ent {
+  key: string,
+  val: i64,
+}
+struct M {
+  slots: []?*Ent,
+  cap: usize,
+  n: usize,
+}
+fn hsh(s: string) -> usize {
+  let mut h: u64 = 1469598103934665603;
+  let mut i: usize = 0;
+  while i < len(s) {
+    h ^= s[i] as u64;
+    h *= 1099511628211;
+    i += 1;
+  }
+  return h as usize;
+}
+fn eq(a: string, b: string) -> bool {
+  if len(a) != len(b) {
+    return false;
+  }
+  let mut i: usize = 0;
+  while i < len(a) {
+    if a[i] != b[i] {
+      return false;
+    }
+    i += 1;
+  }
+  return true;
+}
+fn mput(m: *M, key: string, val: i64) {
+  if m.n * 10 >= m.cap * 7 {
+    let ncap: usize = if m.cap == 0 { 16 } else { m.cap * 2 };
+    let slots: []?*Ent = make([]?*Ent, ncap);
+    let old: []?*Ent = m.slots;
+    let oldn: usize = m.cap;
+    m.slots = slots;
+    m.cap = ncap;
+    m.n = 0;
+    let mut i: usize = 0;
+    while i < oldn {
+      match old[i] {
+        Option.Some(e) => { mput(m, e.key, e.val); },
+        Option.None => {},
+      }
+      i += 1;
+    }
+  }
+  let mut i: usize = hsh(key) & (m.cap - 1);
+  let mut occupied: bool = true;
+  match m.slots[i] {
+    Option.Some(_) => {},
+    Option.None => { occupied = false; },
+  }
+  while occupied {
+    match m.slots[i] {
+      Option.Some(e) => {
+        if eq(e.key, key) {
+          e.val = val;
+          return;
+        }
+      },
+      Option.None => {},
+    }
+    i = (i + 1) & (m.cap - 1);
+    match m.slots[i] {
+      Option.Some(_) => {},
+      Option.None => { occupied = false; },
+    }
+  }
+  m.slots[i] = Option.Some(new Ent { key: key, val: val });
+  m.n += 1;
+}
+fn main() -> i32 {
+  let m: *M = new M { slots: make([]?*Ent, 0), cap: 0, n: 0 };
+  let mut k: i32 = 0;
+  while k < 24 {
+    mput(m, "key-" + k.to_str(), k as i64);
+    k += 1;
+  }
+  printf("n={} cap={}\n", m.n as i64, m.cap as i64);
+  return 0;
+}

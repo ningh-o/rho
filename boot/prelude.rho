@@ -13,9 +13,11 @@ pub trait Show {
   fn to_str(self) -> string,
 }
 
+// None rides tag 0: zeroed allocations (make/new, §2) read as the
+// absent form — a fresh []?T slot is None, not Some(junk)
 pub enum Option[T] {
-  Some(T),
   None,
+  Some(T),
 }
 
 pub enum Result[T, E] {

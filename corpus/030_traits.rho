@@ -1,0 +1,67 @@
+// exit: 0
+// 0.4.0: traits and dyn — name-satisfied requirements, `impl` blocks as
+// eager checks, `dyn Trait` fat pointers with runtime dispatch
+trait Show {
+  fn to_str(self) -> string,
+}
+
+trait Describable {
+  fn describe(self) -> string,
+  fn size_hint(self) -> i32,
+}
+
+struct Point {
+  x: i32,
+  y: i32,
+}
+
+impl Show for Point {
+  fn to_str(self: *Point) -> string {
+    return format("({}, {})", self.x, self.y);
+  }
+}
+
+impl Describable for Point {
+  fn describe(self: *Point) -> string {
+    return format("a point at ({}, {})", self.x, self.y);
+  }
+  fn size_hint(self: *Point) -> i32 {
+    return 2;
+  }
+}
+
+// computed satisfaction: to_str alone implements Show, no impl block
+struct Bare {
+  n: i64,
+}
+
+fn Bare.to_str(self: *Bare) -> string {
+  return format("bare {}", self.n);
+}
+
+fn show_twice[T: Show](v: *T) {
+  printf("{}|{}\n", v, v);
+}
+
+fn main() -> i32 {
+  let p = new Point { x: 3, y: 0 - 4 };
+  // static dispatch through the bound
+  show_twice(p);
+  // dyn: one fat value, three traits' worth of dispatch
+  let d: dyn Show = p;
+  printf("{}\n", d);
+  let b: dyn Describable = p;
+  printf("{} hint={}\n", b.describe(), b.size_hint());
+  // heterogeneous collection of dyn values
+  let bare = new Bare { n: 7 };
+  let items: []dyn Show = make([]dyn Show, 2);
+  items[0] = p;
+  items[1] = bare;
+  let mut i: usize = 0;
+  while i < len(items) {
+    printf("[{}]\n", items[i]);
+    i += 1;
+  }
+  assert_eq(format("{}", d), "(3, -4)");
+  return 0;
+}
