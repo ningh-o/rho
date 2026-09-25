@@ -215,7 +215,18 @@ static CVal fold_binop(int op, CVal a, CVal b) {
     break;
   }
   case OP_EQ: case OP_NE: case OP_LT: case OP_LE: case OP_GT: case OP_GE: {
+    // signed types compare at their own width (sign-extended)
     int64_t sx = (int64_t)x, sy = (int64_t)y;
+    if (a.ty->kind == TY_I8) {
+      sx = (int8_t)x;
+      sy = (int8_t)y;
+    } else if (a.ty->kind == TY_I16) {
+      sx = (int16_t)x;
+      sy = (int16_t)y;
+    } else if (a.ty->kind == TY_I32) {
+      sx = (int32_t)x;
+      sy = (int32_t)y;
+    }
     // unsigned types compare unsigned
     bool uu = a.ty->kind >= TY_U8;
     bool bv;
