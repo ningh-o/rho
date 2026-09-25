@@ -983,8 +983,9 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog) -> string {
     Option.None => {},
   }
   if e.op == 11 {
-    // 'as i32': wrap for the truncation, extend back to the i64 lane
-    out = out + "    i32.wrap_i64\n    i64.extend_i32_s\n";
+    // 'as T': wrap at the TARGET width (the name the parser kept),
+    // extend back to the i64 lane
+    out = out + wrap_snippet(type_width(e.name));
     return out;
   }
   let divish: bool = e.op == 3 || e.op == 4;
