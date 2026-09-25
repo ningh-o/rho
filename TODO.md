@@ -365,7 +365,9 @@ section — no placeholder stages. boot is the reference compiler.
       still unreported — minimize and report upstream); phase-split caps
       120/20/10 s; fat functions to linear memory (`w_memmode`); deploy
       asset = one generation past the seed + `wasm-opt -Oz
-      --enable-bulk-memory`.
+      --enable-bulk-memory` — wasm-opt stays the site-asset shrinker
+      until the in-compiler optimizer (§13) demonstrably matches its
+      effect, then retires.
 - [ ] **T5.2** Course (the bilingual app): all live blocks re-pinned to
       the new language; the honest-limitation notes rewrite (aggregate
       let-position now legal; `?T` non-null taught as the one true
@@ -568,7 +570,16 @@ lib artifacts keep public names and minify internals; cli/app artifacts
 minify everything but `main`/`_start`; diagnostics never reference
 mangled names; `-g` keeps full names. Optimizer backlog (ordered at
 implementation time): operand-stack emission, string pooling, linear-scan
-register allocation, escape analysis / rc-pair elimination.
+register allocation, escape analysis / rc-pair elimination. The
+optimizer lives **in the compiler pipeline** — passes over the module
+IR before serialization, rc-pairs first-class — never as an external
+binary post-processor: binaryen cannot know the rc-pair law
+(weak-observable death timing), so wasm-opt is not a long-term
+dependency. It remains the site-asset shrinker (T5.1) until the
+in-compiler optimizer demonstrably matches its effect, then retires.
+The in-tree assembler/decoder (`std.wasm` + boot's C counterpart,
+byte-pinned against each other) retires wat2wasm once the corpus
+differential closes (T3.8).
 
 ### 14. Kernel and std
 
