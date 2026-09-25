@@ -1002,9 +1002,53 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog) -> string {
       },
       Option.None => {},
     }
-    // any string-built operand (a slice view, a concat): its pair's
-    // len slot is the answer — the builder runs inside the caller's
-    // next_local
+    // len(base[a..b]): the view's length without building it — both
+    // ends bounds-check against the base's length (the same panics
+    // the view would raise), then the difference
+    if a0.tag == parse.EX_SLICE2 && a0.lhs != Option.None {
+      let mut base: *Expr = parse.lit(0);
+      match a0.lhs {
+        Option.Some(bb) => {
+          base = bb;
+        },
+        Option.None => {},
+      }
+      if base.tag == parse.EX_VAR {
+        let bk: i64 = env_kind_of(env, base.name);
+        if bk == 0 || bk == 1 {
+          let mut blen: string = "";
+          if bk == 0 {
+            blen = "(i64.const " + env_str_len(env, base.name).to_str() +
+                   ")";
+          } else {
+            blen = "(local.get " +
+                   env_str_len_slot(env, base.name).to_str() + ")";
+          }
+          let mut out: string = "";
+          // lo parks in $r through its check
+          if a0.op % 2 == 1 && len(a0.args) > 0 {
+            out = out + emit_expr(pool, a0.args[0], env, prog);
+          } else {
+            out = out + "    (i64.const 0)\n";
+          }
+          out = out + "    (local.set $r)\n";
+          out = out + "    (local.set $t (local.get $r))\n";
+          out = out + oob_check_at(pool, blen, false);
+          // hi rides $t through its check
+          if (a0.op / 2) % 2 == 1 && len(a0.args) > 1 {
+            out = out + emit_expr(pool, a0.args[1], env, prog);
+          } else {
+            out = out + "    " + blen + "\n";
+          }
+          out = out + "    (local.set $t)\n";
+          out = out + oob_check_at(pool, blen, false);
+          // hi - lo
+          out = out + "    (local.get $t)\n    (local.get $r)\n" +
+                 "    (i64.sub)\n";
+          return out;
+        }
+      }
+    }
   }
   if e.tag == parse.EX_IDX {
     // base[i] — byte loads for strings, i64 loads for slices; the
