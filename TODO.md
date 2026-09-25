@@ -317,9 +317,35 @@ section — no placeholder stages. boot is the reference compiler.
       pre-existing exhaustion crash — 400 allocation rounds faulted
       at 0xffffff68). 101, 102, and 093 land byte-exact. 87 of 108
       behavioral, floor 87; five byval selfhost legs pin the wave.
-      Remain: traits/impl/dyn; generic structs/enums/methods; module
-      loading; weak/rc; the mut law and usize lane (T3.6's mirror
-      side)*
+      The fifty-seventh cut (2026-09-26): generic structs, enums,
+      and methods. Declarations parse their type parameters; eat_type
+      and `new T[a, b]` normalize explicit instantiations into the
+      type text (`Pair[i32,i64]`); st_index/en_index instantiate
+      lazily under the full text (fields and payload types substitute,
+      variant slots recompute, the tables double through parse's
+      registration constructors — parse owns every `new`). tsub_type
+      substitutes inside prefixes and bracket args alike (`*T` ->
+      `*Pt` — the silent killer: it only matched whole texts, so
+      generic params never became real types); T binds directly or
+      structurally (`*Pair[A,B]` unified with `*Pair[i32,i64]`); a
+      generic fn's clone rewrites its ABI flags when a parameter
+      binds to string/[]T; methods clone per receiver binding (the
+      receiver's written type takes the full instantiation so field
+      reads key on true layouts), and a generic enum's method return
+      substitutes through the receiver. Along the way: mangle_type
+      sanitizes bracketed args (a `Pair[*Pair[...]]` id once carried
+      raw `[`/`,` into the wasm name); expr_ptr_type resolves slice
+      elements (pointer elements strip their star) and enum-receiver
+      method returns; build_string_pair grew a string-FIELD branch
+      (a pre-existing gap — `outer.b` printed its pool address) and
+      the primitive to_str yields when the receiver's own type
+      carries one; bool-typed params print their words; norm_enum no
+      longer collapses a user `Opt[i32]` into Option; call_fn_rtype
+      guards the empty fn table (len() on a fn-less program
+      panicked the compiler). 018, 080, 081, and 083 land byte-exact:
+      91 of 108 behavioral, floor 91; gens1-3 selfhost legs pin the
+      wave. Remain: traits/impl/dyn; module loading; weak/rc; the
+      mut law and usize lane (T3.6's mirror side)*
 - [ ] **T2.x** Optimizer in the mirror: constant folding, dead-code
       elimination, globals tree-shaking, tail-call→loop — with the
       language suites (opt/eq/params/modsys/strops/multiline) rebuilt

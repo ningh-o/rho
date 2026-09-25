@@ -59,7 +59,55 @@ pub fn struct_known(prog: *Prog, name: string) -> bool {
     }
     i = i + 1;
   }
+  // Name[args] — the base must be a generic struct and the argument
+  // count must match its declaration (the emitter instantiates)
+  let ob: i64 = bracket_at(name);
+  if ob >= 0 && name[len(name) - 1..len(name)] == "]" {
+    let base: string = name[0..(ob as usize)];
+    let mut j: usize = 0;
+    while j < prog.nstructs {
+      if prog.structs[j].name == base &&
+          len(prog.structs[j].tparams) > 0 {
+        return arg_count(name, ob) ==
+            (len(prog.structs[j].tparams) as i64);
+      }
+      j = j + 1;
+    }
+  }
   return false;
+}
+
+// the index of the first '[' in a text, -1 when none
+fn bracket_at(s: string) -> i64 {
+  let mut i: usize = 0;
+  while i < len(s) {
+    if s[i] == 91 {
+      return i as i64;
+    }
+    i = i + 1;
+  }
+  return 0 - 1;
+}
+
+// depth-0 commas inside name[(ob+1)..len-1], plus one
+fn arg_count(name: string, ob: i64) -> i64 {
+  let mut n: i64 = 1;
+  let mut depth: i64 = 0;
+  let mut i: usize = (ob as usize) + 1;
+  while i < len(name) - 1 {
+    let b: u8 = name[i];
+    if b == 91 {
+      depth = depth + 1;
+    }
+    if b == 93 {
+      depth = depth - 1;
+    }
+    if b == 44 && depth == 0 {
+      n = n + 1;
+    }
+    i = i + 1;
+  }
+  return n;
 }
 
 fn fn_named(prog: *Prog, name: string) -> bool {

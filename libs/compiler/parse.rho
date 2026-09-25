@@ -480,12 +480,63 @@ pub struct EnumDef {
   vslots: []i64,      // per variant: the payload slot count
   vtpool: []string,  // payload types, 8 slots per variant in order
   nv: usize,
+  tparams: []string, // the declared type parameters, in order
 }
 
 pub struct StructDef {
   name: string,
   fields: []string,
   types: []string,
+  tparams: []string, // the declared type parameters, in order
+}
+
+// parse owns the constructors: the other modules build table entries
+// through these, never through raw new (the checker's new is the
+// user-struct surface)
+pub fn mk_structdef(name: string, fields: []string, types: []string,
+                    tparams: []string) -> *StructDef {
+  return new StructDef { name: name, fields: fields, types: types,
+                         tparams: tparams };
+}
+
+pub fn mk_enumdef(name: string, vnames: []string, vslots: []i64,
+                  vtpool: []string, nv: usize,
+                  tparams: []string) -> *EnumDef {
+  return new EnumDef { name: name, vnames: vnames, vslots: vslots,
+                       vtpool: vtpool, nv: nv, tparams: tparams };
+}
+
+// append a table entry, growing the table when full (instantiations
+// are unbounded; the slice doubles)
+pub fn reg_struct_inst(prog: *Prog, inst: *StructDef) -> i64 {
+  if prog.nstructs >= len(prog.structs) {
+    let bigger: []*StructDef = make([]*StructDef,
+                                    len(prog.structs) * 2);
+    let mut q: usize = 0;
+    while q < prog.nstructs {
+      bigger[q] = prog.structs[q];
+      q = q + 1;
+    }
+    prog.structs = bigger;
+  }
+  prog.structs[prog.nstructs] = inst;
+  prog.nstructs = prog.nstructs + 1;
+  return (prog.nstructs as i64) - 1;
+}
+
+pub fn reg_enum_inst(prog: *Prog, inst: *EnumDef) -> i64 {
+  if prog.nenums >= len(prog.enums) {
+    let bigger: []*EnumDef = make([]*EnumDef, len(prog.enums) * 2);
+    let mut q: usize = 0;
+    while q < prog.nenums {
+      bigger[q] = prog.enums[q];
+      q = q + 1;
+    }
+    prog.enums = bigger;
+  }
+  prog.enums[prog.nenums] = inst;
+  prog.nenums = prog.nenums + 1;
+  return (prog.nenums as i64) - 1;
 }
 
 struct PCur {
@@ -586,6 +637,24 @@ fn eat_type(c: *PCur) -> string {
       }
       eat_punct(c, 93); // ]
       return pre + name;
+    }
+    if is_punct(tk(c), 91) && c.pos + 1 < len(c.toks) &&
+        !is_punct(c.toks[c.pos + 1], 93) {
+      // Name[T1, T2] — explicit generic arguments; the normalized
+      // full text rides as the type (instantiations key on it)
+      tkadv(c); // [
+      let mut args: string = "";
+      while tk(c).kind != lex.TK_EOF && !is_punct(tk(c), 93) {
+        if len(args) > 0 {
+          args = args + ",";
+        }
+        args = args + eat_type(c);
+        if !eat_punct(c, 44) {
+          break;
+        }
+      }
+      eat_punct(c, 93); // ]
+      return pre + name + "[" + args + "]";
     }
     return pre + name;
   }
@@ -996,11 +1065,28 @@ fn parse_atom(c: *PCur) -> *Expr {
     if t.text == "new" && c.pos < len(c.toks) &&
         (tk(c).kind == lex.TK_IDENT ||
          tk(c).kind == lex.TK_KEYWORD) {
-      // new T { field: expr, ... } — the zeroed allocation ('new'
-      // already rode the branch-top advance; the cursor sits on T)
+      // new T[A, B] { field: expr, ... } — the zeroed allocation
+      // ('new' already rode the branch-top advance; the cursor sits
+      // on T); explicit generic args normalize into the name text
       let st = tk(c);
-      let sname: string = st.text;
+      let mut sname: string = st.text;
       tkadv(c);
+      if is_punct(tk(c), 91) && c.pos + 1 < len(c.toks) &&
+          !is_punct(c.toks[c.pos + 1], 93) {
+        tkadv(c); // [
+        let mut gargs: string = "";
+        while tk(c).kind != lex.TK_EOF && !is_punct(tk(c), 93) {
+          if len(gargs) > 0 {
+            gargs = gargs + ",";
+          }
+          gargs = gargs + eat_type(c);
+          if !eat_punct(c, 44) {
+            break;
+          }
+        }
+        eat_punct(c, 93);
+        sname = sname + "[" + gargs + "]";
+      }
       let fnames: []string = make([]string, 8);
       let fargs: []*Expr = make([]*Expr, 8);
       let mut nf: usize = 0;
@@ -1800,11 +1886,33 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
        c.pos + 1 < len(c.toks) &&
        (c.toks[c.pos + 1].kind == lex.TK_IDENT ||
         c.toks[c.pos + 1].kind == lex.TK_KEYWORD) {
-      // struct Name { field: type, ... }
+      // struct Name[T1, T2] { field: type, ... }
       tkadv(c); // struct
       let nt = tk(c);
       let sname: string = nt.text;
       tkadv(c);
+      let tps: []string = make([]string, 8);
+      let mut ntp: usize = 0;
+      if is_punct(tk(c), 91) {
+        // the declared type parameters
+        tkadv(c);
+        while tk(c).kind != lex.TK_EOF && !is_punct(tk(c), 93) {
+          let tt = tk(c);
+          if tt.kind == lex.TK_IDENT || tt.kind == lex.TK_KEYWORD {
+            if ntp < 8 {
+              tps[ntp] = tt.text;
+              ntp = ntp + 1;
+            }
+            tkadv(c);
+          } else {
+            tkadv(c);
+          }
+          if !eat_punct(c, 44) {
+            break;
+          }
+        }
+        eat_punct(c, 93);
+      }
       let fnames: []string = make([]string, 16);
       let ftypes: []string = make([]string, 16);
       let mut nfl: usize = 0;
@@ -1831,7 +1939,8 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
         }
       }
       let sd = new StructDef { name: sname, fields: fnames[0..nfl],
-                               types: ftypes[0..nfl] };
+                               types: ftypes[0..nfl],
+                               tparams: tps[0..ntp] };
       structs[ns] = sd;
       ns = ns + 1;
       continue;
@@ -1840,12 +1949,33 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
        c.pos + 1 < len(c.toks) &&
        (c.toks[c.pos + 1].kind == lex.TK_IDENT ||
         c.toks[c.pos + 1].kind == lex.TK_KEYWORD) {
-      // enum Name { Var, Var(T, ...), Var { f: T, ... } } — the
+      // enum Name[T] { Var, Var(T, ...), Var { f: T, ... } } — the
       // declaration order is the tag order (0, 1, 2, ...)
       tkadv(c); // enum
       let nt = tk(c);
       let ename: string = nt.text;
       tkadv(c);
+      let etps: []string = make([]string, 8);
+      let mut etp: usize = 0;
+      if is_punct(tk(c), 91) {
+        tkadv(c);
+        while tk(c).kind != lex.TK_EOF && !is_punct(tk(c), 93) {
+          let tt2 = tk(c);
+          if tt2.kind == lex.TK_IDENT || tt2.kind == lex.TK_KEYWORD {
+            if etp < 8 {
+              etps[etp] = tt2.text;
+              etp = etp + 1;
+            }
+            tkadv(c);
+          } else {
+            tkadv(c);
+          }
+          if !eat_punct(c, 44) {
+            break;
+          }
+        }
+        eat_punct(c, 93);
+      }
       let vnames: []string = make([]string, 16);
       let vslots: []i64 = make([]i64, 16);
       let vtpool: []string = make([]string, 128);
@@ -1924,7 +2054,8 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
       }
       let ed = new EnumDef { name: ename, vnames: vnames[0..nv],
                              vslots: vslots[0..nv],
-                             vtpool: vtpool[0..(nv * 8)], nv: nv };
+                             vtpool: vtpool[0..(nv * 8)], nv: nv,
+                             tparams: etps[0..etp] };
       enums[ne] = ed;
       ne = ne + 1;
       continue;

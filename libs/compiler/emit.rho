@@ -1264,6 +1264,28 @@ pub fn st_index(prog: *Prog, name: string) -> i64 {
     }
     i = i + 1;
   }
+  // Name[a1,a2] — instantiate the generic declaration under the full
+  // text (idempotent: the scan above finds it on later calls)
+  let ob: i64 = open_bracket(name);
+  if ob >= 0 && name[(len(name) - 1)..len(name)] == "]" {
+    let base: string = name[0..(ob as usize)];
+    let inner: string = name[((ob as usize) + 1)..(len(name) - 1)];
+    let bi: i64 = st_index(prog, base);
+    if bi >= 0 && len(prog.structs[bi as usize].tparams) > 0 {
+      let sd = prog.structs[bi as usize];
+      let tys: []string = split_type_args(inner);
+      let nf: usize = len(sd.types);
+      let ntypes: []string = make([]string, nf);
+      let mut j: usize = 0;
+      while j < nf {
+        ntypes[j] = tsub_type(sd.types[j], sd.tparams, tys);
+        j = j + 1;
+      }
+      let inst = parse.mk_structdef(name, sd.fields, ntypes,
+                                    make([]string, 0));
+      return parse.reg_struct_inst(prog, inst);
+    }
+  }
   return 0 - 1;
 }
 
@@ -1329,6 +1351,43 @@ pub fn en_index(prog: *Prog, name: string) -> i64 {
       return i as i64;
     }
     i = i + 1;
+  }
+  // Enum[T1,T2] — instantiate the generic declaration (payload types
+  // substitute; the box slots recompute over them)
+  let ob: i64 = open_bracket(name);
+  if ob >= 0 && name[(len(name) - 1)..len(name)] == "]" {
+    let base: string = name[0..(ob as usize)];
+    let inner: string = name[((ob as usize) + 1)..(len(name) - 1)];
+    let bi: i64 = en_index(prog, base);
+    if bi >= 0 && len(prog.enums[bi as usize].tparams) > 0 {
+      let ed = prog.enums[bi as usize];
+      let tys: []string = split_type_args(inner);
+      let pooln: usize = len(ed.vtpool);
+      let npool: []string = make([]string, pooln);
+      let mut j: usize = 0;
+      while j < pooln {
+        npool[j] = tsub_type(ed.vtpool[j], ed.tparams, tys);
+        j = j + 1;
+      }
+      // recompute each variant's slot count over substituted payloads
+      let nv: usize = ed.nv;
+      let nslots: []i64 = make([]i64, nv);
+      let mut v: usize = 0;
+      while v < nv {
+        let mut sl: i64 = 0;
+        let mut p: usize = 0;
+        while p < (ed.vslots[v] as usize) &&
+            (v * 8 + p) < pooln {
+          sl = sl + type_slots(prog, npool[v * 8 + p]);
+          p = p + 1;
+        }
+        nslots[v] = sl;
+        v = v + 1;
+      }
+      let inst = parse.mk_enumdef(name, ed.vnames, nslots, npool, nv,
+                                  make([]string, 0));
+      return parse.reg_enum_inst(prog, inst);
+    }
   }
   return 0 - 1;
 }
@@ -1406,15 +1465,31 @@ fn en_vslots(prog: *Prog, ei: i64, vname: string) -> i64 {
   return 0;
 }
 
-// Option[..]/Result[..] collapse to the builtin name
+// Option[..]/Result[..] collapse to the builtin name — the EXACT
+// builtin or its bracketed form; a user enum (Opt[i32]) never
 fn norm_enum(rt: string) -> string {
-  if len(rt) >= 7 && rt[0] == 79 && rt[1] == 112 && rt[2] == 116 {
+  if rt == "Option" || starts_open(rt, "Option") {
     return "Option";
   }
-  if len(rt) >= 7 && rt[0] == 82 && rt[1] == 101 && rt[2] == 115 {
+  if rt == "Result" || starts_open(rt, "Result") {
     return "Result";
   }
   return rt;
+}
+
+// text == prefix, or text = prefix + "[" + args (and nothing between)
+fn starts_open(t: string, prefix: string) -> bool {
+  if len(t) < len(prefix) + 2 {
+    return false;
+  }
+  let mut i: usize = 0;
+  while i < len(prefix) {
+    if t[i] != prefix[i] {
+      return false;
+    }
+    i = i + 1;
+  }
+  return t[len(prefix)] == 91 && t[len(t) - 1] == 93;
 }
 
 // the float kind of an expression: 0 int, 1 f64, 2 f32
@@ -1757,7 +1832,8 @@ fn expr_ptr_type(e: *Expr, env: *Env, prog: *Prog) -> string {
     return e.name;
   }
   if e.tag == parse.EX_IDX {
-    // a struct-element slice's indexing: the element's struct
+    // a struct-element slice's indexing: the element's struct — a
+    // pointer element's target when the elements are pointers
     let mut base: *Expr = parse.lit(0);
     match e.lhs {
       Option.Some(b12) => {
@@ -1766,7 +1842,10 @@ fn expr_ptr_type(e: *Expr, env: *Env, prog: *Prog) -> string {
       Option.None => {},
     }
     if base.tag == parse.EX_VAR {
-      let et: string = env_slice_elemtext(env, base.name);
+      let mut et: string = env_slice_elemtext(env, base.name);
+      if len(et) >= 1 && et[0] == 42 {
+        et = type_ptr_target(et);
+      }
       if st_index(prog, et) >= 0 {
         return et;
       }
@@ -1786,6 +1865,26 @@ fn expr_ptr_type(e: *Expr, env: *Env, prog: *Prog) -> string {
     }
     if recv.tag == parse.EX_VAR && st_index(prog, recv.name) >= 0 {
       return type_ptr_target(fn_rtype_of(prog, recv.name + "." + e.name));
+    }
+    // an enum-typed receiver: the method's return substitutes the
+    // enum's own type parameters from the receiver's instantiation
+    let et15: string = expr_enum_type(recv, env, prog);
+    if len(et15) > 0 {
+      let eb: i64 = open_bracket(et15);
+      if eb >= 0 {
+        let ei15: i64 = en_index(prog, et15[0..(eb as usize)]);
+        if ei15 >= 0 &&
+            len(prog.enums[ei15 as usize].tparams) > 0 {
+          let rt15: string = fn_rtype_of(prog,
+              et15[0..(eb as usize)] + "." + e.name);
+          let tys15: []string = split_type_args(
+              et15[((eb as usize) + 1)..(len(et15) - 1)]);
+          return type_ptr_target(tsub_type(rt15,
+              prog.enums[ei15 as usize].tparams, tys15));
+        }
+      }
+      return type_ptr_target(fn_rtype_of(prog,
+          type_base(et15) + "." + e.name));
     }
     let bt: string = expr_ptr_type(recv, env, prog);
     if len(bt) > 0 {
@@ -2543,11 +2642,13 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
     let mut target: string = "";
     let mut out: string = "";
     let ret: string = expr_enum_type(recv, env, prog);
+    let mut rtype_full: string = "";
     if recv.tag == parse.EX_VAR && st_index(prog, recv.name) >= 0 {
       target = recv.name + "_" + e.name;
     } else {
       if len(ret) > 0 {
         // an enum-typed receiver: its methods ride the same ABI
+        rtype_full = ret;
         target = ret + "_" + e.name;
         out = out + emit_expr(pool, recv, env, prog, nl);
       } else {
@@ -2555,8 +2656,18 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
         if len(bt) == 0 {
           return "    (i64.const 0)\n";
         }
+        rtype_full = bt;
         target = bt + "_" + e.name;
         out = out + emit_expr(pool, recv, env, prog, nl);
+      }
+    }
+    if len(rtype_full) > 0 &&
+        open_bracket(rtype_full) >= 0 {
+      // a generic instantiation receiver: the method clones per bind
+      let gi_m: string = ginst_method_target(pool, prog,
+                                             rtype_full, e.name);
+      if len(gi_m) > 0 {
+        target = gi_m[3..len(gi_m)];
       }
     }
     let mut k: usize = 0;
@@ -3655,6 +3766,21 @@ fn fn_returns_string(prog: *Prog, name: string) -> bool {
 fn build_string_pair(e: *Expr, pool: *Pool, env: *Env, prog: *Prog,
                      nl: *NextLocal) -> *SPair {
   let bad = new SPair { ok: false, text: "", a: 0, l: 0 };
+  // a string FIELD through a pointer or value frame: the pair rides
+  // the field's slots
+  if e.tag == parse.EX_FIELD && is_stringy(e, env, prog) {
+    let spf = new SPair { ok: false, text: "", a: 0, l: 0 };
+    spf.text = push_string(pool, e, env, prog, nl);
+    let fa: i64 = nl.v;
+    let fl: i64 = nl.v + 1;
+    nl.v = nl.v + 2;
+    spf.text = spf.text + "    (local.set " + fl.to_str() + ")\n" +
+               "    (local.set " + fa.to_str() + ")\n";
+    spf.ok = true;
+    spf.a = fa;
+    spf.l = fl;
+    return spf;
+  }
   // a folded literal
   match fold_string(e, env) {
     Option.Some(raw) => {
@@ -4216,7 +4342,31 @@ fn build_string_pair(e: *Expr, pool: *Pool, env: *Env, prog: *Prog,
     let spc = new SPair { ok: true, text: text, a: ta, l: tl };
     return spc;
   }
+  // does this receiver's own type carry a to_str method? (the
+  // primitive branch below must yield to it)
+  let mut own_tostr: bool = false;
   if e.tag == parse.EX_MCALL && e.name == "to_str" {
+    let mut ro: *Expr = parse.lit(0);
+    match e.lhs {
+      Option.Some(r10b) => {
+        ro = r10b;
+      },
+      Option.None => {},
+    }
+    if ro.tag == parse.EX_VAR {
+      let mut tn0: string = env_ptr_of(env, ro.name);
+      if len(tn0) == 0 {
+        tn0 = env_val_of(env, ro.name);
+      }
+      if len(tn0) == 0 {
+        tn0 = env_enum_of(env, ro.name);
+      }
+      if len(tn0) > 0 && user_fn_exists(prog, tn0 + ".to_str") {
+        own_tostr = true;
+      }
+    }
+  }
+  if e.tag == parse.EX_MCALL && e.name == "to_str" && !own_tostr {
     // the prelude's to_str on a primitive: ints through $w_itoa,
     // floats through the exact-decimal text, bools their words,
     // strings themselves
@@ -4486,6 +4636,23 @@ fn mangle_type(t: string) -> string {
   if len(t) >= 1 && t[0] == 63 {
     return "o" + mangle_type(t[1..len(t)]);
   }
+  // Name[a,b] — the instantiation's args ride in the mangle too
+  let ob: i64 = open_bracket(t);
+  if ob >= 0 && t[len(t) - 1..len(t)] == "]" {
+    let base: string = t[0..(ob as usize)];
+    let parts: []string = split_type_args(
+        t[((ob as usize) + 1)..(len(t) - 1)]);
+    let mut out: string = mangle_type(base) + "x";
+    let mut k: usize = 0;
+    while k < len(parts) {
+      if k > 0 {
+        out = out + "y";
+      }
+      out = out + mangle_type(parts[k]);
+      k = k + 1;
+    }
+    return out + "z";
+  }
   return t;
 }
 
@@ -4512,7 +4679,136 @@ fn tsub_type(t: string, tps: []string, tys: []string) -> string {
       k = k + 1;
     }
   }
+  // the substitution rides inside prefixes (*T, ?T, []T) and bracket
+  // args (Name[a,b]) alike
+  if len(t) >= 2 && t[0] == 91 && t[1] == 93 {
+    return "[]" + tsub_type(t[2..len(t)], tps, tys);
+  }
+  if len(t) >= 1 && (t[0] == 42 || t[0] == 63) {
+    return t[0..1] + tsub_type(t[1..len(t)], tps, tys);
+  }
+  // Name[a1,a2] — the substitution rides inside the brackets
+  let ob: i64 = open_bracket(t);
+  if ob >= 0 && len(t) > 0 && t[len(t) - 1] == 93 {
+    let base: string = t[0..(ob as usize)];
+    let inner: string = t[((ob as usize) + 1)..(len(t) - 1)];
+    let parts: []string = split_type_args(inner);
+    let mut outp: string = "";
+    let mut k2: usize = 0;
+    while k2 < len(parts) {
+      if k2 > 0 {
+        outp = outp + ",";
+      }
+      outp = outp + tsub_type(parts[k2], tps, tys);
+      k2 = k2 + 1;
+    }
+    return tsub_type(base, tps, tys) + "[" + outp + "]";
+  }
   return t;
+}
+
+// the index of the FIRST '[' in a type text, -1 when none
+fn open_bracket(t: string) -> i64 {
+  let mut i: usize = 0;
+  while i < len(t) {
+    if t[i] == 91 {
+      return i as i64;
+    }
+    if t[i] == 93 {
+      return 0 - 1;
+    }
+    i = i + 1;
+  }
+  return 0 - 1;
+}
+
+// split "a,b,c" at depth-0 commas (bracketed args nest)
+fn split_type_args(s: string) -> []string {
+  let parts: []string = make([]string, 8);
+  let mut n: usize = 0;
+  let mut depth: i64 = 0;
+  let mut cur: string = "";
+  let mut i: usize = 0;
+  while i < len(s) {
+    let b: u8 = s[i];
+    if b == 91 {
+      depth = depth + 1;
+    }
+    if b == 93 {
+      depth = depth - 1;
+    }
+    if b == 44 && depth == 0 && n < 7 {
+      parts[n] = cur;
+      n = n + 1;
+      cur = "";
+      i = i + 1;
+      continue;
+    }
+    cur = cur + s[i..(i + 1)];
+    i = i + 1;
+  }
+  if len(cur) > 0 || n > 0 {
+    if n < 8 {
+      parts[n] = cur;
+      n = n + 1;
+    }
+  }
+  return parts[0..n];
+}
+
+// the base name of a type text (everything before the first '[')
+fn type_base(t: string) -> string {
+  let ob: i64 = open_bracket(t);
+  if ob >= 0 {
+    return t[0..(ob as usize)];
+  }
+  return t;
+}
+
+// unify a written param type with an argument's type, recording each
+// type-parameter binding ("*Pair[A,B]" against "*Pair[i32,i64]" binds
+// A=i32 B=i64; "?*T" against "?*Node" binds T=Node)
+fn unify_type_bind(want: string, got: string, tps: []string,
+                   tys: []string) {
+  if is_tparam(want, tps) {
+    let mut k: usize = 0;
+    while k < len(tps) {
+      if tps[k] == want && k < len(tys) {
+        tys[k] = got;
+      }
+      k = k + 1;
+    }
+    return;
+  }
+  let ow: i64 = open_bracket(want);
+  let og: i64 = open_bracket(got);
+  if ow >= 0 && og >= 0 && want[len(want) - 1..len(want)] == "]" &&
+      got[len(got) - 1..len(got)] == "]" {
+    let bw: string = want[0..(ow as usize)];
+    let bg: string = got[0..(og as usize)];
+    if bw == bg {
+      let pw: []string = split_type_args(
+          want[((ow as usize) + 1)..(len(want) - 1)]);
+      let pg: []string = split_type_args(
+          got[((og as usize) + 1)..(len(got) - 1)]);
+      let mut k2: usize = 0;
+      while k2 < len(pw) && k2 < len(pg) {
+        unify_type_bind(pw[k2], pg[k2], tps, tys);
+        k2 = k2 + 1;
+      }
+      return;
+    }
+  }
+  // prefix peeling: *T/?T one char, []T two
+  if len(want) >= 2 && len(got) >= 2 && want[0] == 91 &&
+      want[1] == 93 && got[0] == 91 && got[1] == 93 {
+    unify_type_bind(want[2..len(want)], got[2..len(got)], tps, tys);
+    return;
+  }
+  if len(want) >= 1 && len(got) >= 1 && want[0] == got[0] &&
+      (want[0] == 42 || want[0] == 63) {
+    unify_type_bind(want[1..len(want)], got[1..len(got)], tps, tys);
+  }
 }
 
 // an expression's canonical type (best effort, exactly what binding
@@ -4609,6 +4905,10 @@ fn subst_expr(e: *Expr, tps: []string, tys: []string) -> *Expr {
 
 fn subst_in_expr(e: *Expr, tps: []string, tys: []string) {
   if e.tag == parse.EX_BIN && e.op == 11 {
+    e.name = tsub_type(e.name, tps, tys);
+  }
+  if e.tag == parse.EX_NEW {
+    // new Pair[T,T] — the instantiation's args substitute
     e.name = tsub_type(e.name, tps, tys);
   }
   match e.lhs {
@@ -4805,12 +5105,56 @@ fn resolve_call_fd(prog: *Prog, e: *Expr, env: *Env) -> *FnDef {
   return prog.fns[best as usize];
 }
 
+// a generic fn's type bindings from its call's arguments: directly
+// when a param IS the parameter, structurally when the param mentions
+// it (*Pair[A,B] against *Pair[i32,i64])
+fn ginst_bind_tys(fd: *FnDef, e: *Expr, env: *Env,
+                  prog: *Prog) -> []string {
+  let nt: usize = len(fd.tparams);
+  let tys: []string = make([]string, nt);
+  let mut ti: usize = 0;
+  while ti < nt {
+    tys[ti] = "i64";
+    ti = ti + 1;
+  }
+  let mut pk: usize = 0;
+  while pk < len(fd.params) {
+    if pk < len(fd.ptypes) && pk < len(e.args) {
+      let pt3: string = fd.ptypes[pk];
+      let at2: string = expr_type(e.args[pk], env, prog);
+      if len(at2) > 0 {
+        if is_tparam(pt3, fd.tparams) {
+          let mut wi: usize = 0;
+          while wi < nt {
+            if fd.tparams[wi] == pt3 {
+              tys[wi] = at2;
+            }
+            wi = wi + 1;
+          }
+        } else {
+          unify_type_bind(pt3, at2, fd.tparams, tys);
+        }
+      }
+    }
+    pk = pk + 1;
+  }
+  return tys;
+}
+
 // a call's return type, overload-aware
 fn call_fn_rtype(prog: *Prog, e: *Expr, env: *Env) -> string {
   if fn_overload_count(prog, e.name) > 1 {
     let fd3: *FnDef = resolve_call_fd(prog, e, env);
     if len(fd3.rtype) > 0 {
       return fd3.rtype;
+    }
+  }
+  if user_fn_exists(prog, e.name) {
+    // a user fn; a generic's return rides its instantiation's bind
+    let fd0: *FnDef = fn_def_of(prog, e.name);
+    if len(fd0.tparams) > 0 {
+      let tys: []string = ginst_bind_tys(fd0, e, env, prog);
+      return tsub_type(fd0.rtype, fd0.tparams, tys);
     }
   }
   return fn_rtype_of(prog, e.name);
@@ -4829,26 +5173,8 @@ fn ginst_call_name(pool: *Pool, prog: *Prog, e: *Expr,
   if nt == 0 {
     return wasm_fn_name(prog, fd);
   }
-  // bind each T from the param whose written type names it
-  let tys: []string = make([]string, nt);
-  let mut ti: usize = 0;
-  while ti < nt {
-    let want: string = fd.tparams[ti];
-    let mut pk: usize = 0;
-    let mut got: string = "i64";
-    while pk < len(fd.params) {
-      if pk < len(fd.ptypes) && fd.ptypes[pk] == want &&
-          pk < len(e.args) {
-        let at: string = expr_type(e.args[pk], env, prog);
-        if len(at) > 0 {
-          got = at;
-        }
-      }
-      pk = pk + 1;
-    }
-    tys[ti] = got;
-    ti = ti + 1;
-  }
+  // bind each T from the call's arguments
+  let tys: []string = ginst_bind_tys(fd, e, env, prog);
   let mut key: string = "";
   let mut ki: usize = 0;
   while ki < nt {
@@ -4867,12 +5193,22 @@ fn ginst_call_name(pool: *Pool, prog: *Prog, e: *Expr,
   clone.name = e.name + key;
   let npt: usize = len(fd.ptypes);
   let ntypes: []string = make([]string, npt);
+  let npstr: []bool = make([]bool, npt);
+  let npslc: []bool = make([]bool, npt);
   let mut pi: usize = 0;
   while pi < npt {
-    ntypes[pi] = tsub_type(fd.ptypes[pi], fd.tparams, tys);
+    let subbed: string = tsub_type(fd.ptypes[pi], fd.tparams, tys);
+    ntypes[pi] = subbed;
+    // the substituted kind rewrites the ABI flags: a T bound to
+    // string rides its pair, a []T as a slice pair
+    npstr[pi] = subbed == "string";
+    npslc[pi] = len(subbed) >= 2 && subbed[0] == 91 &&
+        subbed[1] == 93;
     pi = pi + 1;
   }
   clone.ptypes = ntypes;
+  clone.pstr = npstr;
+  clone.pslc = npslc;
   clone.rtype = tsub_type(fd.rtype, fd.tparams, tys);
   clone.tparams = fd.tparams[0..0];
   let nb2: usize = len(clone.body);
@@ -4887,6 +5223,98 @@ fn ginst_call_name(pool: *Pool, prog: *Prog, e: *Expr,
   pool.gi.fds[pool.gi.n] = clone;
   pool.gi.n = pool.gi.n + 1;
   return "$u_" + sym_name(e.name) + key;
+}
+
+// a method on a generic type instantiates per receiver binding: the
+// type's declared params ride implicitly, bound from the receiver's
+// bracket args (boot's law); the receiver param's written type takes
+// the full instantiated text so field reads key on true layouts
+fn ginst_method_target(pool: *Pool, prog: *Prog, rtype: string,
+                       mname: string) -> string {
+  let base: string = type_base(rtype);
+  let ob: i64 = open_bracket(rtype);
+  if ob < 0 {
+    return "";
+  }
+  let mut gtps: []string = make([]string, 0);
+  let si: i64 = st_index(prog, base);
+  if si >= 0 && len(prog.structs[si as usize].tparams) > 0 {
+    gtps = prog.structs[si as usize].tparams;
+  } else {
+    let ei: i64 = en_index(prog, base);
+    if ei >= 0 && len(prog.enums[ei as usize].tparams) > 0 {
+      gtps = prog.enums[ei as usize].tparams;
+    }
+  }
+  if len(gtps) == 0 {
+    return "";
+  }
+  let mfull: string = base + "." + mname;
+  if !user_fn_exists(prog, mfull) {
+    return "";
+  }
+  let tys: []string = split_type_args(
+      rtype[((ob as usize) + 1)..(len(rtype) - 1)]);
+  let mut key: string = "";
+  let mut ki: usize = 0;
+  while ki < len(gtps) {
+    key = key + "_" + mangle_type(tys[ki]);
+    ki = ki + 1;
+  }
+  let mut i: usize = 0;
+  while i < pool.gi.n {
+    if pool.gi.bases[i] == mfull && pool.gi.keys[i] == key {
+      return "$u_" + sym_name(mfull) + pool.gi.sufs[i];
+    }
+    i = i + 1;
+  }
+  let fdm: *FnDef = fn_def_of(prog, mfull);
+  let clone = parse.clone_fndef(fdm);
+  clone.name = mfull + key;
+  let npt: usize = len(fdm.ptypes);
+  let ntypes: []string = make([]string, npt);
+  let npstr: []bool = make([]bool, npt);
+  let npslc: []bool = make([]bool, npt);
+  let mut pi: usize = 0;
+  while pi < npt {
+    let mut pt4: string = tsub_type(fdm.ptypes[pi], gtps, tys);
+    if len(pt4) > 0 {
+      // the receiver's bare base becomes the full instantiation
+      let pb: string = type_base(pt4);
+      if pb == base && pt4 == pb {
+        pt4 = rtype;
+      } else {
+        if pb == base && pt4 == "*" + pb {
+          pt4 = "*" + rtype;
+        } else {
+          if pb == base && pt4 == "?" + pb {
+            pt4 = "?" + rtype;
+          }
+        }
+      }
+    }
+    ntypes[pi] = pt4;
+    npstr[pi] = pt4 == "string";
+    npslc[pi] = len(pt4) >= 2 && pt4[0] == 91 && pt4[1] == 93;
+    pi = pi + 1;
+  }
+  clone.ptypes = ntypes;
+  clone.pstr = npstr;
+  clone.pslc = npslc;
+  clone.rtype = tsub_type(fdm.rtype, gtps, tys);
+  clone.tparams = fdm.tparams[0..0];
+  let nb3: usize = len(clone.body);
+  let mut ci: usize = 0;
+  while ci < nb3 {
+    subst_in_stmt(clone.body[ci], gtps, tys);
+    ci = ci + 1;
+  }
+  pool.gi.bases[pool.gi.n] = mfull;
+  pool.gi.keys[pool.gi.n] = key;
+  pool.gi.sufs[pool.gi.n] = key;
+  pool.gi.fds[pool.gi.n] = clone;
+  pool.gi.n = pool.gi.n + 1;
+  return "$u_" + sym_name(mfull) + key;
 }
 
 // a value whose type owns a to_str method prints through it (the
@@ -6610,6 +7038,10 @@ fn emit_fn(fd: *FnDef, pool: *Pool, prog: *Prog,
           env_bind_enum(env, fd.params[k], nl.v, ename);
         } else {
           env_bind_w(env, fd.params[k], nl.v, pw);
+          if pt == "bool" {
+            // a bool-typed param prints its words in holes
+            env_bool_bind(env, fd.params[k]);
+          }
         }
         }
       }

@@ -112,6 +112,12 @@ run_test_slice='struct Pair { a: i64, tag: i32, } fn sum(ps: []Pair) -> i64 { le
 run_one byval3 "$run_test_slice" $'sum=18 a1=6'
 run_one byval4 'struct N { v: i64, } fn drain(ns: []string) -> i64 { let mut c: i64 = 0; let mut i: usize = 0; while i < len(ns) { if ns[i] != "" { c += 1; } i += 1; } return c; } fn main() -> i32 { let xs: []?*N = make([]?*N, 4); let ss: []string = make([]string, 4); xs[0] = Option.Some(new N { v: 9 }); match xs[0] { Option.Some(h) => printf("v={} nonempty={}\n", h.v, drain(ss)), Option.None => printf("none nonempty={}\n", drain(ss)), }; return 0; }' 'v=9 nonempty=0'
 run_one byval5 'fn main() -> i32 { let mut t: i64 = 0; let mut i: i32 = 0; while i < 1200 { let a: []i64 = make([]i64, 64); let mut k: usize = 0; while k < len(a) { a[k] = (i as i64) + (k as i64); k += 1; } t += a[63]; i += 1; } printf("t={}\n", t); return 0; }' 't=795000'
+# generic structs/enums/methods: declaration tparams, explicit and
+# inferred instantiations, methods cloned per receiver, structural
+# T-binds, and the Show-bound format hole through a generic fn
+run_one gens1 'struct Pair[A, B] { a: A, b: B, } fn swap[A, B](p: *Pair[A, B]) -> *Pair[B, A] { return new Pair[B, A] { a: p.b, b: p.a }; } fn Pair.sum(self: *Pair) -> i64 { return (self.a as i64) + (self.b as i64); } fn main() -> i32 { let p: *Pair[i32, i64] = new Pair[i32, i64] { a: 3, b: 4 }; let q: *Pair[i64, i32] = swap(p); printf("q.a={} q.b={} sum={}\n", q.a, q.b as i64, p.sum()); return 0; }' 'q.a=4 q.b=3 sum=7'
+run_one gens2 'enum Opt[T] { Some(T), None, } fn Opt.or(self: Opt, alt: T) -> T { return match self { Opt.Some(v) => v, Opt.None => alt, }; } fn main() -> i32 { let o: Opt[i32] = Opt.Some(9); let n: Opt[i32] = Opt.None; printf("r={}\n", (o.or(1) + n.or(2)) as i64); return 0; }' 'r=11'
+run_one gens3 'trait Show { fn to_str(self) -> string, } struct Pt { x: i32, y: i32, } fn Pt.to_str(self: *Pt) -> string { return format("pt({}, {})", self.x, self.y); } fn label[T: Show](v: *T) -> string { return format("[{}]", v); } fn main() -> i32 { let p: *Pt = new Pt { x: 1, y: 2 }; printf("{} {}\n", label(p), p.to_str()); return 0; }' $'[pt(1, 2)] pt(1, 2)'
 if [ "$FAILED" -eq 0 ]; then
   echo "selfhost: ok (boot → rho compiler → program → run)"
 else
