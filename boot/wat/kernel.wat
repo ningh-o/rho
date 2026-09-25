@@ -95,6 +95,61 @@
     (drop (call $fd_write (i32.const 2) (i32.const 0)
                           (i32.const 1) (i32.const 16))))
 
+  ;; format-build scratch: [64, 2048); overflow = defined panic
+  (global $fb (mut i32) (i32.const 64))
+  (func $fb_reset
+    (global.set $fb (i32.const 64)))
+  (func $fb_push (param $p i32) (param $n i32)
+    (local $i i32)
+    (if (i32.gt_u (i32.add (global.get $fb) (local.get $n))
+                  (i32.const 2048))
+      (then (call $rho_panic (i32.const 2048) (i32.const 7))))
+    (local.set $i (i32.const 0))
+    (block $d (loop $c
+      (br_if $d (i32.ge_u (local.get $i) (local.get $n)))
+      (i32.store8 (i32.add (global.get $fb) (local.get $i))
+        (i32.load8_u (i32.add (local.get $p) (local.get $i))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $c)))
+    (global.set $fb (i32.add (global.get $fb) (local.get $n))))
+  (func $fb_u64 (param $v i64)
+    (local $i i32)
+    (local.set $i (i32.const 0))
+    (if (i64.eqz (local.get $v))
+      (then
+        (i32.store8 (i32.const 1023) (i32.const 48))
+        (call $fb_push (i32.const 1023) (i32.const 1))
+        (return)))
+    (block $done (loop $d2
+      (br_if $done (i64.eqz (local.get $v)))
+      (i32.store8 (i32.sub (i32.const 1023) (local.get $i))
+        (i32.add (i32.wrap_i64 (i64.rem_u (local.get $v) (i64.const 10)))
+                 (i32.const 48)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (local.set $v (i64.div_u (local.get $v) (i64.const 10)))
+      (br $d2)))
+    (call $fb_push (i32.sub (i32.const 1024) (local.get $i))
+                   (local.get $i)))
+  (func $fb_i64 (param $v i64)
+    (if (i64.lt_s (local.get $v) (i64.const 0))
+      (then
+        (i32.store8 (i32.const 1024) (i32.const 45))
+        (call $fb_push (i32.const 1024) (i32.const 1))
+        (call $fb_u64 (i64.sub (i64.const 0) (local.get $v))))
+      (else (call $fb_u64 (local.get $v)))))
+
+  ;; copy the current scratch contents to a block payload
+  (func $fb_copy_to (param $dst i32)
+    (local $i i32)
+    (local.set $i (i32.const 0))
+    (block $d (loop $c
+      (br_if $d (i32.ge_u (i32.add (i32.const 64) (local.get $i))
+                          (global.get $fb)))
+      (i32.store8 (i32.add (local.get $dst) (local.get $i))
+        (i32.load8_u (i32.add (i32.const 64) (local.get $i))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $c))))
+
   ;; decimal u64 into the fmt buffer end [fmt_lo, fmt_hi)
   (func $fmt_u64 (param $v i64)
     (local $i i32)

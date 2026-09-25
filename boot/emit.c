@@ -351,6 +351,7 @@ static const char *L(FnCx *cx, size_t v) {
 static void emit_expr(FnCx *cx, NodeRef er, size_t dst);
 size_t static_slot(Module *m, const char *name);
 static void emit_printf(FnCx *cx, Node *call, bool err);
+static void emit_format_build(FnCx *cx, Node *call);
 static void emit_call_args(FnCx *cx, FnDef *f, RefList *args);
 static void pass_arg_own(FnCx *cx, NodeRef arg, Type *pt, size_t v);
 static void emit_match(FnCx *cx, NodeRef er, size_t dst);
@@ -868,6 +869,21 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
                   ps->u.fns->mod == g_prelude_mod;
     if (is_pre && strcmp(callee->name, "printf") == 0) {
       emit_printf(cx, e, false);
+      return;
+    }
+    if (is_pre && strcmp(callee->name, "format") == 0) {
+      emit_format_build(cx, e);
+      size_t len = cx_fresh(cx, ty_i32);
+      op(cx, "(local.set %zu (i32.sub (global.get $fb) (i32.const 64)))\n",
+         len);
+      size_t blk = cx_fresh(cx, ty_i32);
+      op(cx, "(local.set %zu (call $rho_alloc (local.get %zu)))\n", blk,
+         len);
+      op(cx, "(local.set %zu (i32.add (local.get %zu) (i32.const 24)))\n",
+         blk, blk);
+      op(cx, "(call $fb_copy_to (local.get %zu))\n", blk);
+      op(cx, "(local.set %zu (local.get %zu))\n", dst, L(cx, blk));
+      op(cx, "(local.set %zu %s)\n", dst + 1, L(cx, len));
       return;
     }
     if (is_pre && strcmp(callee->name, "eprintf") == 0) {
@@ -1882,8 +1898,9 @@ size_t static_slot(Module *m, const char *name) {
 // ============================================================ printf desugar
 
 // printf/eprintf: literal chunks and per-hole to_str pushes, one write
-static void emit_printf(FnCx *cx, Node *call, bool err) {
-  const char *sink = err ? "$eprint_mem" : "$print_mem";
+// build a format string into the fb scratch (shared by printf/format)
+static void emit_format_build(FnCx *cx, Node *call) {
+  op(cx, "(call $fb_reset)\n");
   Node *fmtn = node_get(node_get(reflist_at(call->list, 0))->a);
   Str fmt = fmtn->sval;
   size_t argi = 1;
@@ -1894,45 +1911,30 @@ static void emit_printf(FnCx *cx, Node *call, bool err) {
       Type *at = (Type *)node_get(aw->a)->sem;
       size_t v = cx_fresh(cx, at);
       emit_expr(cx, aw->a, v);
-      switch (at->kind) {
-      case TY_I64:
-        op(cx, "(call $print_i64 %s)\n", L(cx, v));
-        break;
-      case TY_U64: case TY_USIZE:
-        op(cx, "(call $print_u64 %s)\n", L(cx, v));
-        break;
-      case TY_F32: case TY_F64:
-        // float printing lands with the rho-source prelude (T1.8);
-        // until then floats through {} are a compile error (checker
-        // allows; emitter reports) — keep honest:
-        op(cx, "(call $print_f64_placeholder %s)\n", L(cx, v));
-        break;
-      case TY_BOOL: {
+      if (at->kind == TY_I64) {
+        op(cx, "(call $fb_i64 %s)\n", L(cx, v));
+      } else if (at->kind == TY_U64 || at->kind == TY_USIZE) {
+        op(cx, "(call $fb_u64 %s)\n", L(cx, v));
+      } else if (at->kind == TY_BOOL) {
         size_t t1 = data_intern("true", 4);
         size_t t0 = data_intern("false", 5);
-        op(cx, "(if (local.get %zu) (then (call %s (i32.const %zu)"
-               " (i32.const 4))) (else (call %s (i32.const %zu)"
-               " (i32.const 5))))\n", v, sink, t1, sink, t0);
-        break;
-      }
-      case TY_STRING:
-        op(cx, "(call %s %s %s)\n", sink, L(cx, v), L(cx, v + 1));
-        break;
-      default: // 32-bit ints widen to i64 prints
-        if (scalar_wty(at) == W_I64) {
-          op(cx, "(call $print_i64 %s)\n", L(cx, v));
-        } else {
-          size_t wide = cx_fresh(cx, ty_i64);
-          bool uns = at->kind >= TY_U8;
-          op(cx, "(local.set %zu (%s.%s (local.get %zu)))\n", wide,
-             "i64", uns ? "extend_i32_u" : "extend_i32_s", v);
-          op(cx, "(call $print_i64 %s)\n", L(cx, wide));
-        }
-        break;
+        op(cx, "(if (local.get %zu) (then (call $fb_push (i32.const %zu)"
+               " (i32.const 4))) (else (call $fb_push (i32.const %zu)"
+               " (i32.const 5))))\n", v, t1, t0);
+      } else if (at->kind == TY_STRING) {
+        op(cx, "(call $fb_push %s %s)\n", L(cx, v), L(cx, v + 1));
+      } else {
+        size_t wide = cx_fresh(cx, ty_i64);
+        bool uns = at->kind >= TY_U8;
+        op(cx, "(local.set %zu (i64.%s (local.get %zu)))\n", wide,
+           uns ? "extend_i32_u" : "extend_i32_s", v);
+        if (uns)
+          op(cx, "(call $fb_u64 %s)\n", L(cx, wide));
+        else
+          op(cx, "(call $fb_i64 %s)\n", L(cx, wide));
       }
       i += 2;
     } else {
-      // literal run up to the next hole; {{ }} collapse to one brace
       size_t j = i;
       while (j < fmt.n &&
              !(j + 1 < fmt.n && fmt.p[j] == '{' && fmt.p[j + 1] == '}')) {
@@ -1943,7 +1945,6 @@ static void emit_printf(FnCx *cx, Node *call, bool err) {
         else
           j++;
       }
-      // materialize the collapsed literal
       char *collapsed = arena_alloc(g_arena, (j - i) + 1, 1);
       size_t cn = 0;
       for (size_t q = i; q < j; q++) {
@@ -1957,12 +1958,19 @@ static void emit_printf(FnCx *cx, Node *call, bool err) {
           collapsed[cn++] = fmt.p[q];
         }
       }
-      size_t at = data_intern(collapsed, cn);
-      op(cx, "(call %s (i32.const %zu) (i32.const %zu))\n", sink, at, cn);
+      size_t at2 = data_intern(collapsed, cn);
+      op(cx, "(call $fb_push (i32.const %zu) (i32.const %zu))\n", at2,
+         cn);
       i = j;
     }
   }
-  (void)err;
+}
+
+static void emit_printf(FnCx *cx, Node *call, bool err) {
+  emit_format_build(cx, call);
+  // one write of the built buffer
+  op(cx, "(call %s (i32.const 64) (i32.sub (global.get $fb) "
+         "(i32.const 64)))\n", err ? "$eprint_mem" : "$print_mem");
 }
 
 // ============================================================ calls
