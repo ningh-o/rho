@@ -187,7 +187,7 @@ section — no placeholder stages. boot is the reference compiler.
       *(growth so far, each pinned by tests/run-selfhost.sh, the
       boot-vs-self differential, and — since the twenty-sixth growth —
       tests/run-corpus-diff.sh running the WHOLE corpus through both
-      compilers (47 of 108 behavioral today, pinned floor 47): integer
+      compilers (46 of 108 behavioral today, pinned floor 46): integer
       printing with a decimal runtime; string hole args; let bindings,
       arithmetic with precedence, variables; while/if/else-if/assignment
       with comparisons and unary minus; user fns with parameters, call
