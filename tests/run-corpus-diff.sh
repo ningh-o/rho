@@ -17,6 +17,12 @@ for f in corpus/*.rho; do
   fi
   wasmtime /tmp/cdiff-c.wasm >/tmp/cdiff.wat 2>/dev/null
   cr=$?
+  if [ $cr -eq 1 ]; then
+    # a clean refusal (diagnostics on stderr, exit 1) — a missing
+    # feature, not a wrong behavior; falling through would compare
+    # boot's output against an EMPTY wasm and mislabel it :diff
+    fail=$((fail+1)); failed="$failed ${name}:refuse"; continue
+  fi
   if [ $cr -gt 1 ]; then
     # the compiler itself died mid-run — worse than any behavioral
     # diff; the robustness bar is clean refusal or clean compile
