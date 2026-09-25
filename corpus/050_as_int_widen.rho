@@ -1,0 +1,29 @@
+// exit: 0
+// adapted: isize left the type set; i64 is the 64-bit lane
+// as between integer widths: widening sign-extends signed sources and
+// zero-extends unsigned sources (spec/type-system.md "wrap/truncate/extend")
+fn main() -> i32 {
+  let a: i8 = (-5);
+  printf("i8 -5 as i16 = {}\n", a as i16);
+  printf("i8 -5 as i32 = {}\n", a as i32);
+  printf("i8 -5 as i64 = {}\n", a as i64);
+  let u: u8 = 250;
+  printf("u8 250 as u16 = {}\n", u as u16);
+  printf("u8 250 as u32 = {}\n", u as u32);
+  printf("u8 250 as u64 = {}\n", u as u64);
+  let s: i16 = (-300);
+  printf("i16 -300 as i32 = {}\n", s as i32);
+  printf("i16 -300 as i64 = {}\n", s as i64);
+  let w: u16 = 65000;
+  printf("u16 65000 as u32 = {}\n", w as u32);
+  printf("u16 65000 as u64 = {}\n", w as u64);
+  let n: i32 = (0 - 70000);
+  printf("i32 -70000 as i64 = {}\n", n as i64);
+  let un: u32 = 4000000000;
+  printf("u32 4000000000 as u64 = {}\n", un as u64);
+  let z: i64 = (-12);
+  printf("isize -12 as i64 = {}\n", z as i64);
+  let uz: usize = 4000000000;
+  printf("usize 4000000000 as u64 = {}\n", uz as u64);
+  return 0;
+}

@@ -1,0 +1,11 @@
+Green as i32 = 1
+Green as i64 = 1
+Green as u8 = 1
+Blue-Red = 2
+Unit as i32 = 0
+Tup as i32 = 1
+Structed as i32 = 2
+Fs as i32 = 3
+Str as i32 = 4
+Wrap(Color.Green) as i32 = 5
+tag two

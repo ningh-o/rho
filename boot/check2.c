@@ -1199,6 +1199,14 @@ static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
                !(l->kind == NT_INT || l->kind == NT_FLOAT)) {
       lt = check_expr(c, e->a, NULL);
       rt = check_expr(c, e->b, lt);
+    } else if (expected && type_is_num(expected) &&
+               (l->kind == NT_INT || l->kind == NT_FLOAT) &&
+               (r->kind == NT_INT || r->kind == NT_FLOAT)) {
+      // two literals under a consumer: the consumer types the pair —
+      // `0 - 2147483648` folds into an i32 without either side
+      // overflowing on its own
+      lt = check_expr(c, e->a, expected);
+      rt = check_expr(c, e->b, expected);
     } else {
       lt = check_expr(c, e->a, NULL);
       rt = check_expr(c, e->b, lt);

@@ -1,0 +1,33 @@
+// exit: 0
+// adapted: isize left the type set; i64 is the 64-bit lane
+// integer as float: exact while the mantissa holds, rounds to nearest
+// once the value exceeds it (i64 2^53+1 loses a bit; u64 max rounds up
+// to 2^64; i32 2^24+1 rounds down through f32). Typed locals again —
+// the bare literal form of `as` is broken in both compilers today.
+fn main() -> i32 {
+  let a: i32 = 42;
+  printf("i32 42 as f64 = {}\n", a as f64);
+  let b: i32 = (0 - 7);
+  printf("i32 -7 as f64 = {}\n", b as f64);
+  let c: i8 = (-5);
+  printf("i8 -5 as f64 = {}\n", c as f64);
+  let d: u8 = 250;
+  printf("u8 250 as f64 = {}\n", d as f64);
+  let e: i64 = 9007199254740993;
+  printf("i64 2^53+1 as f64 = {}\n", e as f64);
+  let f: i64 = 123;
+  printf("i64 123 as f64 = {}\n", f as f64);
+  let g: u64 = 18446744073709551615;
+  printf("u64 max as f64 = {}\n", g as f64);
+  let h: i32 = 16777217;
+  printf("i32 2^24+1 as f32 = {}\n", h as f32);
+  let i: i32 = (0 - 100);
+  printf("i32 -100 as f32 = {}\n", i as f32);
+  let j: i64 = (-12);
+  printf("isize -12 as f64 = {}\n", j as f64);
+  let k: usize = 64;
+  printf("usize 64 as f64 = {}\n", k as f64);
+  let l: u32 = 4000000000;
+  printf("u32 4000000000 as f64 = {}\n", l as f64);
+  return 0;
+}

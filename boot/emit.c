@@ -1502,6 +1502,7 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
 
   case NT_AS: {
     Type *ft = (Type *)node_get(e->a)->sem;
+    bool uns_src = ft && ft->kind >= TY_U8; // picks convert_s vs _u
     size_t v = cx_fresh(cx, ft);
     emit_expr(cx, e->a, v);
     // the unified matrix: wrap/truncate/extend; float→int truncates
@@ -1511,18 +1512,31 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       op(cx, "(local.set %zu (f32.demote_f64 (local.get %zu)))\n", dst, v);
     else if (fw == W_F32 && tw == W_F64)
       op(cx, "(local.set %zu (f64.promote_f32 (local.get %zu)))\n", dst, v);
-    else if ((fw == W_F32 || fw == W_F64) && tw == W_I32)
-      op(cx, "(local.set %zu (i32.trunc_f32_s (local.get %zu)))\n", dst,
-         v);
-    else if ((fw == W_F32 || fw == W_F64) && tw == W_I64)
-      op(cx, "(local.set %zu (i64.trunc_f64_s (local.get %zu)))\n", dst,
-         v);
-    else if (fw == W_I32 && (tw == W_F32 || tw == W_F64))
-      op(cx, "(local.set %zu (f32.convert_i32_s (local.get %zu)))\n", dst,
-         v);
-    else if (fw == W_I64 && (tw == W_F32 || tw == W_F64))
-      op(cx, "(local.set %zu (f32.convert_i64_s (local.get %zu)))\n", dst,
-         v);
+    else if (fw == W_F32 && tw == W_I32)
+      // trunc toward zero, saturating out of range (§3)
+      op(cx, "(local.set %zu (i32.trunc_sat_f32_s (local.get %zu)))\n",
+         dst, v);
+    else if (fw == W_F64 && tw == W_I32)
+      op(cx, "(local.set %zu (i32.trunc_sat_f64_s (local.get %zu)))\n",
+         dst, v);
+    else if (fw == W_F32 && tw == W_I64)
+      op(cx, "(local.set %zu (i64.trunc_sat_f32_s (local.get %zu)))\n",
+         dst, v);
+    else if (fw == W_F64 && tw == W_I64)
+      op(cx, "(local.set %zu (i64.trunc_sat_f64_s (local.get %zu)))\n",
+         dst, v);
+    else if (fw == W_I32 && tw == W_F32)
+      op(cx, "(local.set %zu (f32.convert_i32_%s (local.get %zu)))\n",
+         dst, uns_src ? "u" : "s", v);
+    else if (fw == W_I32 && tw == W_F64)
+      op(cx, "(local.set %zu (f64.convert_i32_%s (local.get %zu)))\n",
+         dst, uns_src ? "u" : "s", v);
+    else if (fw == W_I64 && tw == W_F32)
+      op(cx, "(local.set %zu (f32.convert_i64_%s (local.get %zu)))\n",
+         dst, uns_src ? "u" : "s", v);
+    else if (fw == W_I64 && tw == W_F64)
+      op(cx, "(local.set %zu (f64.convert_i64_%s (local.get %zu)))\n",
+         dst, uns_src ? "u" : "s", v);
     else if (fw == W_I32 && tw == W_I32) {
       op(cx, "(local.set %zu (local.get %zu))\n", dst, v);
       truncate_after(cx, t, dst);

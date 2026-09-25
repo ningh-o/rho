@@ -1,0 +1,42 @@
+// exit: 0
+// adapted: enum→tag lands in i32 (§3); the i64 view composes two casts
+// enum as integer reads the tag: the variant's declaration index, for
+// unit, tuple, struct and primitive-payload variants alike (spec/
+// type-system.md "enum→tag integer"). Pinned for flat payloads only,
+// where boot and the self-hosted mirror agree. The nested case — the
+// payload is itself an enum WITH payload variants — currently DIVERGES
+// (boot folds the payload's tag into bits 16+, e.g. Msg.Turn(Msg.Move)
+// reads 65538; the mirror reads the bare 2), so it stays unpinned here.
+enum Color {
+  Red,
+  Green,
+  Blue,
+}
+
+enum Payloads {
+  Unit,
+  Tup(i32),
+  Structed { a: i32, b: i32 },
+  Fs(f64),
+  Str(string),
+  Wrap(Color),
+}
+
+fn main() -> i32 {
+  let c: Color = Color.Green;
+  printf("Green as i32 = {}\n", c as i32);
+  printf("Green as i64 = {}\n", (c as i32) as i64);
+  printf("Green as u8 = {}\n", (c as i32) as u8);
+  printf("Blue-Red = {}\n", (Color.Blue as i32 - Color.Red as i32));
+  printf("Unit as i32 = {}\n", Payloads.Unit as i32);
+  printf("Tup as i32 = {}\n", Payloads.Tup(5) as i32);
+  printf("Structed as i32 = {}\n", Payloads.Structed(a: 1, b: 2) as i32);
+  printf("Fs as i32 = {}\n", Payloads.Fs(2.5) as i32);
+  printf("Str as i32 = {}\n", Payloads.Str("x") as i32);
+  printf("Wrap(Color.Green) as i32 = {}\n", Payloads.Wrap(Color.Green) as i32);
+  let b: Color = Color.Blue;
+  if (b as i32 == 2) {
+    printf("tag two\n");
+  }
+  return 0;
+}
