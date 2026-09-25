@@ -15,6 +15,7 @@ pub const EX_IDX: i32 = 6;   // base[idx]: lhs = base, rhs = index
 pub const EX_SLICE2: i32 = 7; // base[a..b]: lhs = base, args = lo/hi;
                               // op bit0 = lo present, bit1 = hi present
 pub const EX_Q: i32 = 13;    // e? — the propagate-and-unwrap
+pub const EX_ARR: i32 = 16;  // [a, b, c]: a fresh slice literal
 pub const EX_IF: i32 = 15;   // if c { a } else { b } as an expression:
                              // lhs = cond, args[0]/args[1] = the arms
 pub const EX_FLIT: i32 = 14; // a float literal; the raw decimal text
@@ -280,6 +281,13 @@ pub fn field_expr(base: *Expr, fname: string) -> *Expr {
   return new Expr { tag: EX_FIELD, lit: 0, name: fname, op: 0,
                     lhs: Option.Some(base), rhs: Option.None,
                     args: make([]*Expr, 0), fnames: make([]string, 0),
+                    marms: make([]*MatchArm, 0) };
+}
+
+pub fn arr_expr(args: []*Expr) -> *Expr {
+  return new Expr { tag: EX_ARR, lit: 0, name: "", op: 0,
+                    lhs: Option.None, rhs: Option.None,
+                    args: args, fnames: make([]string, 0),
                     marms: make([]*MatchArm, 0) };
 }
 
@@ -691,6 +699,21 @@ fn parse_atom(c: *PCur) -> *Expr {
     }
     return bin(1, lit(0), inner);
   }
+  if is_punct(t, 91) {
+    // [a, b, c] — a fresh slice literal
+    tkadv(c);
+    let args: []*Expr = make([]*Expr, 8);
+    let mut na: usize = 0;
+    while tk(c).kind != lex.TK_EOF && !is_punct(tk(c), 93) {
+      args[na] = parse_bin(c, 0);
+      na = na + 1;
+      if !eat_punct(c, 44) {
+        break;
+      }
+    }
+    eat_punct(c, 93);
+    return arr_expr(args[0..na]);
+  }
   if is_punct(t, 40) && c.pos + 1 < len(c.toks) &&
       is_punct(c.toks[c.pos + 1], 42) {
     // (*e) — the deref read ('*' never opens a parenthesized binary)
@@ -762,9 +785,12 @@ fn parse_atom(c: *PCur) -> *Expr {
   }
   if t.kind == lex.TK_IDENT {
     tkadv(c);
-    // make([]T, n) — the zeroed-slice allocation; the element type
-    // rides the i64 lane, the count is the live part
-    if t.text == "make" && is_punct(tk(c), 40) {
+    // make([]T, n) — the zeroed-slice allocation; 'make(' followed
+    // by '[' is the builtin, anything else is an ordinary call (a
+    // user fn may own the name)
+    if t.text == "make" && c.pos + 1 < len(c.toks) &&
+        is_punct(c.toks[c.pos], 40) &&
+        is_punct(c.toks[c.pos + 1], 91) {
       tkadv(c); // (
       // []elem — the composed element type rides after ]
       let mut elem: string = "";

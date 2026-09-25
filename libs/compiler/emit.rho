@@ -655,6 +655,9 @@ fn push_string(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
 // and its not-found fallback spelled a bogus local.get 0 pair)
 fn emit_arg(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
              nl: *NextLocal) -> string {
+  if e.tag == parse.EX_ARR {
+    return emit_array(pool, e, env, prog, nl);
+  }
   if e.tag == parse.EX_STR {
     return push_string(pool, e, env, prog, nl);
   }
@@ -2078,6 +2081,16 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
                               true, false, optpt);
     return out;
   }
+  if e.tag == parse.EX_ARR {
+    // a slice literal in a scalar lane parks its pair, rides the addr
+    let a_slot2: i64 = nl.v;
+    let l_slot2: i64 = nl.v + 1;
+    nl.v = nl.v + 2;
+    return emit_array(pool, e, env, prog, nl) +
+           "    (local.set " + l_slot2.to_str() + ")\n" +
+           "    (local.set " + a_slot2.to_str() + ")\n" +
+           "    (local.get " + a_slot2.to_str() + ")\n";
+  }
   if e.tag == parse.EX_IF {
     // if c { a } else { b } as an expression: the arms ride one i64
     // (float arms ride bits — the lanes agree within one expression)
@@ -2717,6 +2730,34 @@ fn emit_scrut(pool: *Pool, sc: *Expr, env: *Env, prog: *Prog,
   return out;
 }
 
+// a fresh slice literal: n zeroed slots, each element stored in
+// order — leaves the {addr, len} pair on the stack
+fn emit_array(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
+              nl: *NextLocal) -> string {
+  let a_slot: i64 = nl.v;
+  let l_slot: i64 = nl.v + 1;
+  nl.v = nl.v + 2;
+  let mut out: string = "    (i64.extend_i32_u (call $w_alloc (i32.const " +
+         (len(e.args) as i64).to_str() + ")))\n" +
+         "    (local.set " + a_slot.to_str() + ")\n" +
+         "    (i64.const " + (len(e.args) as i64).to_str() + ")\n" +
+         "    (local.set " + l_slot.to_str() + ")\n";
+  let mut k: usize = 0;
+  while k < len(e.args) {
+    let tv: i64 = nl.v;
+    nl.v = nl.v + 1;
+    out = out + emit_expr(pool, e.args[k], env, prog, nl);
+    out = out + "    (local.set " + tv.to_str() + ")\n" +
+           "    (i64.store (i32.add (i32.wrap_i64 (local.get " +
+           a_slot.to_str() + ")) (i32.const " + (k * 8).to_str() +
+           ")) (local.get " + tv.to_str() + "))\n";
+    k = k + 1;
+  }
+  out = out + "    (local.get " + a_slot.to_str() + ")\n" +
+         "    (local.get " + l_slot.to_str() + ")\n";
+  return out;
+}
+
 // the defer context: one frame per open scope, texts collected as
 // the walk meets them; exits run them innermost-first (LIFO)
 struct DStack {
@@ -3070,6 +3111,71 @@ fn build_string_pair(e: *Expr, pool: *Pool, env: *Env, prog: *Prog,
       }
       let spf = new SPair { ok: true, text: text, a: acc_a, l: acc_l };
       return spf;
+    }
+    return bad;
+  }
+  if e.tag == parse.EX_IF {
+    // a string-valued if: both arms string-buildable, the chain rides
+    // pair results
+    let mut allstr2: bool = true;
+    if len(e.args) > 0 {
+      match fold_string(e.args[0], env) {
+        Option.Some(raw) => {},
+        Option.None => {
+          if !is_stringy(e.args[0], env, prog) {
+            if e.args[0].tag != parse.EX_VAR {
+              allstr2 = false;
+            }
+          }
+        },
+      }
+    } else {
+      allstr2 = false;
+    }
+    if len(e.args) > 1 {
+      match fold_string(e.args[1], env) {
+        Option.Some(raw) => {},
+        Option.None => {
+          if !is_stringy(e.args[1], env, prog) {
+            if e.args[1].tag != parse.EX_VAR {
+              allstr2 = false;
+            }
+          }
+        },
+      }
+    } else {
+      allstr2 = false;
+    }
+    if allstr2 {
+      let t_a2: i64 = nl.v;
+      let t_l2: i64 = nl.v + 1;
+      nl.v = nl.v + 2;
+      let mut text2: string = "";
+      match e.lhs {
+        Option.Some(cond2) => {
+          text2 = text2 + emit_expr(pool, cond2, env, prog, nl);
+        },
+        Option.None => {},
+      }
+      text2 = text2 + "    (i32.wrap_i64)\n" +
+              "    (if (result i64) (result i64)\n" +
+              "      (then\n";
+      if len(e.args) > 0 {
+        text2 = text2 + push_string(pool, e.args[0], env, prog, nl);
+      } else {
+        text2 = text2 + "    (i64.const 0)\n    (i64.const 0)\n";
+      }
+      text2 = text2 + "      )\n      (else\n";
+      if len(e.args) > 1 {
+        text2 = text2 + push_string(pool, e.args[1], env, prog, nl);
+      } else {
+        text2 = text2 + "    (i64.const 0)\n    (i64.const 0)\n";
+      }
+      text2 = text2 + "      ))\n" +
+              "    (local.set " + t_l2.to_str() + ")\n" +
+              "    (local.set " + t_a2.to_str() + ")\n";
+      let spi = new SPair { ok: true, text: text2, a: t_a2, l: t_l2 };
+      return spi;
     }
     return bad;
   }
@@ -3766,6 +3872,16 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
                                pool_len(pool, raw), raw);
                 },
                 Option.None => {
+                  if e.tag == parse.EX_ARR {
+                    let aa: i64 = nl.v;
+                    let al: i64 = nl.v + 1;
+                    nl.v = nl.v + 2;
+                    body = body + emit_array(pool, e, env, prog, nl);
+                    body = body + "    (local.set " + al.to_str() +
+                           ")\n" +
+                           "    (local.set " + aa.to_str() + ")\n";
+                    env_str_bind_runtime(env, st.name, aa, al, 2);
+                  } else {
                   if e.tag == parse.EX_DEREF && len(st.fmt) > 0 &&
                       st_index(prog, st.fmt) >= 0 {
                     // (*p) under a struct annotation: the heap block
@@ -3930,6 +4046,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
                       env_bool_bind(env, st.name);
                     }
                     nl.v = nl.v + 1;
+                  }
                   }
                   }
                   }
