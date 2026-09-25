@@ -1318,6 +1318,34 @@ fn loops_cont(l: *Loops, name: string) -> string {
   return "$w?";
 }
 
+// the assert builtin: a false condition panics with the message
+fn emit_assert(pool: *Pool, call: *Expr, env: *Env,
+               prog: *Prog) -> string {
+  let mut cond: *Expr = parse.lit(1);
+  let mut msg: *Expr = parse.strlit("assert failed");
+  if len(call.args) > 0 {
+    cond = call.args[0];
+  }
+  if len(call.args) > 1 {
+    msg = call.args[1];
+  }
+  let mut out: string = emit_expr(pool, cond, env, prog);
+  // panic when the condition is FALSE
+  out = out + "    (i32.wrap_i64)\n    (i32.eqz)\n    if\n";
+  match fold_string(msg, env) {
+    Option.Some(raw) => {
+      let addr: i64 = pool_intern(pool, raw);
+      out = out + "      (call $w_panic (i32.const " + addr.to_str() +
+             ") (i32.const " + pool_len(pool, raw).to_str() + "))\n";
+    },
+    Option.None => {
+      out = out + "      (call $w_panic (i32.const 0) (i32.const 0))\n";
+    },
+  }
+  out = out + "    end\n";
+  return out;
+}
+
 fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
                next_local: *NextLocal, in_fn: bool, ret_slot: i64,
                prog: *Prog, loops: *Loops, dstack: *DStack,
@@ -1388,7 +1416,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
           },
           Option.None => {
             body = body + dunwind_emit(dstack);
-            body = body + "    (i64.const 0)\n";
+            body = body + "    (i64.const 0)\n    return\n";
           },
         }
       }
@@ -1656,8 +1684,12 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
     if st.tag == parse.ST_CALL {
       match st.val {
         Option.Some(e) => {
-          body = body + emit_expr(pool, e, env, prog);
-          body = body + "    drop\n";
+          if e.tag == parse.EX_CALL && e.name == "assert" {
+            body = body + emit_assert(pool, e, env, prog);
+          } else {
+            body = body + emit_expr(pool, e, env, prog);
+            body = body + "    drop\n";
+          }
         },
         Option.None => {},
       }
