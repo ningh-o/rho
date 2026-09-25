@@ -591,6 +591,8 @@ static Type *resolve_named(Program *p, Module *m, const char *name,
   // (caller already checked via gscope; here: module types)
   Sym *sym = NULL;
   for (Module *mod = p->modules; mod; mod = mod->next) {
+    if (!mod->syms)
+      continue; // not collected yet (load order)
     Sym *s = symtab_get(mod->syms, name);
     if (s && (mod == m || mod == g_prelude_mod || s->pub)) {
       if (sym) {

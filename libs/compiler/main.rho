@@ -1,0 +1,19 @@
+// main.rho — the self-hosted compiler's root (T2.1 skeleton).
+// Source arrives as the SRC build parameter (§7: root consts are
+// ordinary consts; --set overrides any text-formed type); the WAT
+// goes to stdout. Built by boot, it compiles hello-world:
+//   rho build libs/compiler/main.rho -o rho.wasm --set SRC='…'
+//   wasmtime rho.wasm | wat2wasm -o hello.wasm -
+use lex;
+use parse;
+use emit;
+
+const SRC: string = "fn main() -> i32 { printf(\"hello, self\\n\"); return 0; }";
+
+fn main() -> i32 {
+  let toks: []*Tok = lex.lex(SRC);
+  let nodes: []Node = parse.parse(toks, SRC);
+  let wat: string = emit.emit(nodes);
+  printf("{}", wat);
+  return 0;
+}

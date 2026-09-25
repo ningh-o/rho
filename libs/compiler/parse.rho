@@ -1,0 +1,174 @@
+// parse.rho — the self-hosted compiler's parser (T2.1 skeleton).
+// Grammar: fn main ( ) (-> i32)? { stmt* } where a statement is a
+// printf call (a literal format string plus string-literal holes) or
+// a return. The AST is three node kinds — enough for hello-world and
+// its first neighbors; the tree grows module by module (T2.2+).
+use lex;
+
+pub enum Node {
+  PrintFmt(string, []string), // format text + one string per hole
+  Ret(i64),
+}
+
+struct PCur {
+  toks: []*Tok,
+  pos: usize,
+  src: string,
+}
+
+fn tk(c: *PCur) -> *Tok {
+  return c.toks[c.pos];
+}
+
+fn tkadv(c: *PCur) {
+  c.pos = c.pos + 1;
+}
+
+fn eat_punct(c: *PCur, ch: u8) -> bool {
+  let t = tk(c);
+  if t.kind == lex.TK_PUNCT && len(t.text) == 1 && t.text[0] == ch {
+    tkadv(c);
+    return true;
+  }
+  return false;
+}
+
+// split a format literal into its text pieces around {} holes; the
+// pieces and the holes alternate starting with a piece
+fn split_fmt(s: string) -> []string {
+  let parts: []string = make([]string, len(s) + 2);
+  let mut n: usize = 0;
+  let mut start: usize = 0;
+  let mut i: usize = 0;
+  while i + 1 < len(s) {
+    if s[i] == 123 && s[i + 1] == 125 {
+      parts[n] = s[start..i];
+      n = n + 1;
+      start = i + 2;
+      i = i + 2;
+      continue;
+    }
+    i = i + 1;
+  }
+  parts[n] = s[start..len(s)];
+  n = n + 1;
+  return parts[0..n];
+}
+
+// one statement: printf(..); or return ..;
+fn parse_stmt(c: *PCur) -> Node {
+  let t = tk(c);
+  if t.kind == lex.TK_KEYWORD && t.text == "return" {
+    tkadv(c);
+    let mut v: i64 = 0;
+    let t2 = tk(c);
+    if t2.kind == lex.TK_INT {
+      v = t2.ival;
+      tkadv(c);
+    }
+    if !eat_punct(c, 59) {
+      return Node.Ret(0 - 1);
+    }
+    return Node.Ret(v);
+  }
+  if (t.kind == lex.TK_KEYWORD || t.kind == lex.TK_IDENT) &&
+      t.text == "printf" {
+    tkadv(c);
+    if !eat_punct(c, 40) {
+      return Node.Ret(0 - 2);
+    }
+    // the literal format string
+    let ft = tk(c);
+    if ft.kind != lex.TK_STR {
+      return Node.Ret(0 - 3);
+    }
+    tkadv(c);
+    // zero or more string-literal arguments
+    let args: []string = make([]string, 8);
+    let mut na: usize = 0;
+    while eat_punct(c, 44) {
+      let at = tk(c);
+      if at.kind != lex.TK_STR {
+        break;
+      }
+      args[na] = at.text;
+      na = na + 1;
+      tkadv(c);
+    }
+    if !eat_punct(c, 41) {
+      return Node.Ret(0 - 4);
+    }
+    if !eat_punct(c, 59) {
+      return Node.Ret(0 - 5);
+    }
+    return Node.PrintFmt(ft.text, args[0..na]);
+  }
+  // unknown statement: skip a token so the walk makes progress
+  tkadv(c);
+  return Node.Ret(0 - 100);
+}
+
+pub fn parse(toks: []*Tok, src: string) -> []Node {
+  let nodes: []Node = make([]Node, len(src) + 4);
+  let mut n: usize = 0;
+  let c = new PCur { toks: toks, pos: 0, src: src };
+  // walk to 'fn main' then its block
+  while tk(c).kind != lex.TK_EOF {
+    let t = tk(c);
+    if t.kind == lex.TK_KEYWORD && t.text == "fn" {
+      tkadv(c);
+      let nm = tk(c);
+      if nm.kind == lex.TK_KEYWORD || nm.kind == lex.TK_IDENT {
+        tkadv(c);
+      }
+      if nm.text == "main" {
+        eat_punct(c, 40);
+        eat_punct(c, 41);
+        // optional -> i32 (three tokens: '-', '>', the type word)
+        let t2 = tk(c);
+        if t2.kind == lex.TK_PUNCT && len(t2.text) == 1 && t2.text[0] == 45 {
+          tkadv(c);
+          tkadv(c);
+          tkadv(c);
+        }
+        if eat_punct(c, 123) {
+          while tk(c).kind != lex.TK_EOF {
+            let t3 = tk(c);
+            if t3.kind == lex.TK_PUNCT && len(t3.text) == 1 &&
+                t3.text[0] == 125 {
+              tkadv(c);
+              break;
+            }
+            nodes[n] = parse_stmt(c);
+            n = n + 1;
+          }
+        }
+        continue;
+      }
+      // a non-main fn: skip to its closing brace (skeleton: no calls)
+      let mut depth: i32 = 0;
+      while tk(c).kind != lex.TK_EOF {
+        let t4 = tk(c);
+        if t4.kind == lex.TK_PUNCT && len(t4.text) == 1 && t4.text[0] == 123 {
+          depth = depth + 1;
+        }
+        if t4.kind == lex.TK_PUNCT && len(t4.text) == 1 && t4.text[0] == 125 {
+          depth = depth - 1;
+          tkadv(c);
+          if depth <= 0 {
+            break;
+          }
+          continue;
+        }
+        tkadv(c);
+      }
+      continue;
+    }
+    tkadv(c);
+  }
+  return nodes[0..n];
+}
+
+pub fn fmt_pieces(s: string) -> []string {
+  return split_fmt(s);
+}

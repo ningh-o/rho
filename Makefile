@@ -21,6 +21,7 @@ test: selftest
 	./tests/run-emit-tests.sh
 	./tests/run-fmt-tests.sh
 	./tests/run-set-tests.sh
+	./tests/run-selfhost.sh
 	./tests/run-corpus-repo.sh
 
 clean:

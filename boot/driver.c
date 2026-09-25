@@ -138,6 +138,7 @@ int cmd_test(int argc, char **argv) {
                           "tests/run-emit-tests.sh",
                           "tests/run-fmt-tests.sh",
                           "tests/run-set-tests.sh",
+                          "tests/run-selfhost.sh",
                           "tests/run-corpus-repo.sh", NULL};
   for (size_t i = 0; suites[i]; i++) {
     if (access(suites[i], R_OK) != 0) {

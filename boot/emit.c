@@ -2040,6 +2040,52 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       // payload slots zeroed by local default
       return;
     }
+    // mod.const: a module binding's public const, emitted from its
+    // folded value (the same table NT_PATH reads)
+    {
+      Node *recv0 = node_get(e->a);
+      if (recv0->kind == NT_PATH && !cx_var(cx, recv0->name)) {
+        Module *cm = NULL;
+        for (size_t ui = 0; ui < VLEN(cx->fn->mod->uses); ui++) {
+          UseBind *ub = VAT(cx->fn->mod->uses, UseBind, ui);
+          if (strcmp(ub->alias, recv0->name) == 0)
+            cm = ub->target;
+        }
+        if (!cm) {
+          for (Module *mm = cx->p->modules; mm; mm = mm->next)
+            if (mm != g_prelude_mod && mm->syms &&
+                symtab_get(mm->syms, recv0->name) &&
+                symtab_get(mm->syms, recv0->name)->kind == SYM_MODULE)
+              cm = symtab_get(mm->syms, recv0->name)->u.module;
+        }
+        if (cm && cm->syms) {
+          Sym *ms = symtab_get(cm->syms, e->name);
+          if (ms && ms->kind == SYM_CONST && ms->u.konst->cval) {
+            CVal *cv = ms->u.konst->cval;
+            switch (cv->kind) {
+            case 0: case 1:
+              op(cx, "(local.set %zu (i32.const %d))\n", dst,
+                 (int32_t)cv->u);
+              break;
+            case 2:
+              op(cx, "(local.set %zu (f64.const %.17g))\n", dst, cv->f);
+              break;
+            case 3:
+              op(cx, "(local.set %zu (i32.const %d))\n", dst,
+                 cv->b ? 1 : 0);
+              break;
+            default: {
+              size_t at = data_intern(cv->s.p, cv->s.n);
+              op(cx, "(local.set %zu (i32.const %zu))\n", dst, at);
+              op(cx, "(local.set %zu (i32.const %zu))\n", dst + 1,
+                 cv->s.n);
+            }
+            }
+            return;
+          }
+        }
+      }
+    }
     Type *bt = (Type *)node_get(e->a)->sem;
     bool viaptr = bt->kind == TY_PTR;
     Type *st = viaptr ? bt->base : bt;

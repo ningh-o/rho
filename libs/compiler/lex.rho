@@ -1,0 +1,148 @@
+// lex.rho — the self-hosted compiler's lexer (T2.1 skeleton).
+// Tokens: idents, integer literals, string literals (raw bytes; the
+// emitter decodes escapes when it writes WAT data), punctuation,
+// keywords. The source is scanned by position; the token list is a
+// slice the parser walks with its own cursor.
+pub struct Tok {
+  kind: i32,   // TK_* below
+  text: string,
+  ival: i64,
+  line: i32,
+}
+
+pub const TK_EOF: i32 = 0;
+pub const TK_IDENT: i32 = 1;
+pub const TK_INT: i32 = 2;
+pub const TK_STR: i32 = 3;
+pub const TK_PUNCT: i32 = 4;
+pub const TK_KEYWORD: i32 = 5;
+
+struct Cur {
+  src: string,
+  pos: usize,
+  line: i32,
+}
+
+fn at(c: *Cur) -> u8 {
+  if c.pos < len(c.src) {
+    return c.src[c.pos];
+  }
+  return 0;
+}
+
+fn adv(c: *Cur) {
+  if c.pos < len(c.src) {
+    c.pos = c.pos + 1;
+  }
+}
+
+fn is_digit(b: u8) -> bool {
+  return b >= 48 && b <= 57;
+}
+
+fn is_ident_start(b: u8) -> bool {
+  return (b >= 97 && b <= 122) || (b >= 65 && b <= 90) || b == 95;
+}
+
+fn is_ident(b: u8) -> bool {
+  return is_ident_start(b) || is_digit(b);
+}
+
+// the keyword set the skeleton grammar uses
+fn is_keyword(s: string) -> bool {
+  if s == "fn" || s == "return" || s == "let" {
+    return true;
+  }
+  if s == "i32" || s == "string" {
+    return true;
+  }
+  return false;
+}
+
+// a string literal's raw span, quotes stripped: src[a..b]
+fn scan_string_span(c: *Cur) -> usize {
+  adv(c); // the opening quote
+  let mut end: usize = c.pos;
+  while c.pos < len(c.src) {
+    let b: u8 = at(c);
+    if b == 34 {
+      end = c.pos;
+      adv(c);
+      return end;
+    }
+    if b == 92 && c.pos + 1 < len(c.src) {
+      adv(c); // the escape char rides the span; the emitter decodes
+    } else if b == 10 {
+      c.line = c.line + 1;
+    }
+    adv(c);
+  }
+  return len(c.src);
+}
+
+pub fn lex(src: string) -> []*Tok {
+  // every token eats at least one source byte: len(src) bounds the run
+  let toks: []*Tok = make([]*Tok, len(src) + 1);
+  let mut n: usize = 0;
+  let c = new Cur { src: src, pos: 0, line: 1 };
+  while c.pos < len(src) {
+    let b: u8 = at(c);
+    if b == 32 || b == 9 || b == 13 {
+      adv(c);
+      continue;
+    }
+    if b == 10 {
+      c.line = c.line + 1;
+      adv(c);
+      continue;
+    }
+    // comments: // to end of line
+    if b == 47 && c.pos + 1 < len(src) && src[c.pos + 1] == 47 {
+      while c.pos < len(src) && at(c) != 10 {
+        adv(c);
+      }
+      continue;
+    }
+    let line: i32 = c.line;
+    if is_ident_start(b) {
+      let start: usize = c.pos;
+      while c.pos < len(src) && is_ident(at(c)) {
+        adv(c);
+      }
+      let word: string = src[start..c.pos];
+      let k: i32 = if is_keyword(word) { TK_KEYWORD } else { TK_IDENT };
+      toks[n] = new Tok { kind: k, text: word, ival: 0, line: line };
+      n = n + 1;
+      continue;
+    }
+    if is_digit(b) {
+      let start: usize = c.pos;
+      let mut v: i64 = 0;
+      while c.pos < len(src) && is_digit(at(c)) {
+        v = v * 10 + (at(c) as i64 - 48);
+        adv(c);
+      }
+      toks[n] = new Tok { kind: TK_INT, text: src[start..c.pos],
+                          ival: v, line: line };
+      n = n + 1;
+      continue;
+    }
+    if b == 34 {
+      let start: usize = c.pos + 1;
+      let end: usize = scan_string_span(c);
+      toks[n] = new Tok { kind: TK_STR, text: src[start..end],
+                          ival: 0, line: line };
+      n = n + 1;
+      continue;
+    }
+    // punctuation: one character carries the skeleton grammar
+    let pstart: usize = c.pos;
+    adv(c);
+    toks[n] = new Tok { kind: TK_PUNCT, text: src[pstart..c.pos],
+                        ival: 0, line: line };
+    n = n + 1;
+  }
+  toks[n] = new Tok { kind: TK_EOF, text: "", ival: 0, line: c.line };
+  n = n + 1;
+  return toks[0..n];
+}

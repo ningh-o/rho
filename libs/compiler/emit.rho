@@ -1,0 +1,168 @@
+// emit.rho — the self-hosted compiler's wasm emitter (T2.1 skeleton).
+// The output is a self-contained wasm32-wasi module: one memory, the
+// program's string pieces as data segments (escape-decoded from the
+// token's raw span), and an _start that writes the pieces in order
+// through fd_write. Int formatting and the fuller kernel arrive with
+// the parity work (T2.2+).
+use parse;
+
+pub struct Pool {
+  segs: []string, // raw spans (escapes still encoded)
+  lens: []i64,    // decoded byte lengths
+  addrs: []i64,
+  n: usize,
+  next: i64,
+}
+
+// decoded byte count of a raw span
+fn decoded_len(raw: string) -> i64 {
+  let mut n: i64 = 0;
+  let mut i: usize = 0;
+  while i < len(raw) {
+    if raw[i] == 92 && i + 1 < len(raw) {
+      i = i + 2;
+    } else {
+      i = i + 1;
+    }
+    n = n + 1;
+  }
+  return n;
+}
+
+pub fn new_pool() -> *Pool {
+  return new Pool { segs: make([]string, 64), lens: make([]i64, 64),
+                    addrs: make([]i64, 64), n: 0, next: 1024 };
+}
+
+pub fn pool_intern(p: *Pool, raw: string) -> i64 {
+  let mut i: usize = 0;
+  while i < p.n {
+    if p.segs[i] == raw {
+      return p.addrs[i];
+    }
+    i = i + 1;
+  }
+  p.segs[p.n] = raw;
+  p.lens[p.n] = decoded_len(raw);
+  p.addrs[p.n] = p.next;
+  p.n = p.n + 1;
+  p.next = p.next + p.lens[p.n - 1] + 1;
+  return p.addrs[p.n - 1];
+}
+
+pub fn pool_len(p: *Pool, raw: string) -> i64 {
+  let mut i: usize = 0;
+  while i < p.n {
+    if p.segs[i] == raw {
+      return p.lens[i];
+    }
+    i = i + 1;
+  }
+  return 0;
+}
+
+// the WAT data-segment body for a raw span: escapes decoded, every
+// byte spelled \xx (wasm data escapes)
+fn hex_digit(v: u8) -> string {
+  let s: string = "0123456789abcdef";
+  return s[(v as usize)..((v as usize) + 1)];
+}
+
+fn byte_escape(b: u8) -> string {
+  return "\\" + hex_digit(b >> 4) + hex_digit(b & 15);
+}
+
+pub fn wat_data_body(raw: string) -> string {
+  let mut out: string = "";
+  let mut i: usize = 0;
+  while i < len(raw) {
+    let b: u8 = raw[i];
+    if b == 92 && i + 1 < len(raw) {
+      let e: u8 = raw[i + 1];
+      let v: u8 = match e {
+        110 => 10,
+        116 => 9,
+        92 => 92,
+        34 => 34,
+        _ => e,
+      };
+      out = out + byte_escape(v);
+      i = i + 2;
+      continue;
+    }
+    out = out + byte_escape(b);
+    i = i + 1;
+  }
+  return out;
+}
+
+// one fd_write of nbytes at addr: the iovec cell pair at 64/68
+fn write_call(addr: i64, nbytes: i64) -> string {
+  let out: string = "    (i32.store (i32.const 64) (i32.const " +
+                    addr.to_str() + "))\n" +
+                    "    (i32.store (i32.const 68) (i32.const " +
+                    nbytes.to_str() + "))\n" +
+                    "    (drop (call $fd_write (i32.const 1) " +
+                    "(i32.const 64) (i32.const 1) (i32.const 96)))\n";
+  return out;
+}
+
+pub fn emit(nodes: []Node) -> string {
+  let pool = new_pool();
+  let body: []string = make([]string, 256);
+  let mut nb: usize = 0;
+  let mut i: usize = 0;
+  while i < len(nodes) {
+    match nodes[i] {
+      Node.PrintFmt(fmt, args) => {
+        let pieces: []string = parse.fmt_pieces(fmt);
+        let mut pi: usize = 0;
+        let mut ai: usize = 0;
+        while pi < len(pieces) {
+          if len(pieces[pi]) > 0 {
+            let addr: i64 = pool_intern(pool, pieces[pi]);
+            body[nb] = write_call(addr, pool_len(pool, pieces[pi]));
+            nb = nb + 1;
+          }
+          if pi + 1 < len(pieces) {
+            if ai < len(args) {
+              let haddr: i64 = pool_intern(pool, args[ai]);
+              body[nb] = write_call(haddr, pool_len(pool, args[ai]));
+              nb = nb + 1;
+              ai = ai + 1;
+            }
+          }
+          pi = pi + 1;
+        }
+      },
+      Node.Ret(_) => {},
+    }
+    i = i + 1;
+  }
+  let mut out: string = "";
+  out = out + "(module\n";
+  out = out + "  (import \"wasi_snapshot_preview1\" \"fd_write\"\n";
+  out = out + "    (func $fd_write (param i32 i32 i32 i32) " +
+              "(result i32)))\n";
+  out = out + "  (import \"wasi_snapshot_preview1\" \"proc_exit\"\n";
+  out = out + "    (func $proc_exit (param i32)))\n";
+  out = out + "  (memory 1)\n";
+  out = out + "  (export \"memory\" (memory 0))\n";
+  out = out + "  (export \"_start\" (func $_start))\n";
+  out = out + "  (func $_start\n";
+  let mut w: usize = 0;
+  while w < nb {
+    out = out + body[w];
+    w = w + 1;
+  }
+  out = out + "    (call $proc_exit (i32.const 0))\n";
+  out = out + "  )\n";
+  let mut d: usize = 0;
+  while d < pool.n {
+    out = out + "  (data (i32.const " + pool.addrs[d].to_str() +
+                ") \"" + wat_data_body(pool.segs[d]) + "\")\n";
+    d = d + 1;
+  }
+  out = out + ")\n";
+  return out;
+}

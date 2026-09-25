@@ -173,9 +173,14 @@ section — no placeholder stages. boot is the reference compiler.
 
 ## Phase 2 — the self-hosted compiler, written in rho (wasm only)
 
-- [ ] **T2.1** Compiler package skeleton (lex → parse → check → lower →
-      ir → emit_wasm → fmt → cli), compiled **by boot**; hello-world
-      compiles itself.
+- [x] **T2.1** Compiler package skeleton (lex → parse → emit_wasm),
+      compiled **by boot**; hello-world compiles itself
+      (libs/compiler/{lex,parse,emit,main}.rho — tokens with raw-span
+      strings, a fn-main/printf/return grammar, a self-contained
+      wasm32-wasi emitter with a string pool; the source rides the
+      SRC build parameter per §7; tests/run-selfhost.sh pins the
+      loop: boot → rho compiler → hello → wasmtime). Graded growth
+      (types, checker, fmt, the full parity surface) is T2.2+.
 - [ ] **T2.2+** Port module by module; each module its own TODO; graded
       by behavioral parity with boot across the whole corpus
       (determinism law: same compiler + same input → identical bytes).
