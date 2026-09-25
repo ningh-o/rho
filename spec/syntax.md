@@ -126,12 +126,21 @@ decl      := fndecl | struct | enum | trait | impl | const | static
 
 ```
 fndecl    := 'fn' name generics? '(' params ')' ['->' type] block
-generics  := '[' ident (',' ident)* ']' ([':' bounds]? — see below)
-bounds    := bound (',' bound)*
+generics  := '[' gparam (',' gparam)* ']'
+gparam    := ident [':' bound (',' bound)*]   (see note)
 bound     := ident               (a trait name)
 params    := param (',' param)*
 param     := 'mut'? ident ':' type ['...']    ('...' marks variadic)
 ```
+
+**Bounds grammar ruling** (the design's `[T: Show, Eq]` made exact):
+inside the generics bracket, once a `:` introduces a bound list, every
+comma-separated identifier up to the closing `]` is a bound of that
+parameter — a comma never returns to parameter position. `[A, B: Eq]`
+declares two parameters; `[T: Show, Eq]` declares one parameter with
+two bounds; `[A: Show, B]` declares one parameter with bounds `Show`
+and `B` (a checker error when `B` is not a trait). Bounded parameters
+therefore come last when several parameters are declared.
 
 - The last parameter may be variadic: `rest: T...`. It is a concrete
   element type `T`, seen as `[]T` in the body. A variadic parameter
@@ -240,21 +249,23 @@ loop      := [ident ':'] 'loop' block
 
 ### 6.1 Precedence (C-style, 11 levels + postfix)
 
-Highest to lowest, all binary levels left-associative:
+Highest to lowest, all binary levels left-associative (exactly C's
+ladder, with `as` inserted Rust-style above the multiplicative level):
 
 | level | operators            |
 | ----- | -------------------- |
-| 11    | postfix: call, field, index, `?` |
+| 11    | postfix: call, field, index, slice, `?` |
 | 10    | unary `-` `!`        |
-| 9     | `*` `/` `%`          |
-| 8     | `+` `-`              |
-| 7     | `<<` `>>`            |
-| 6     | `&` `|` `^`          |
-| 5     | `==` `!=` `<` `<=` `>` `>=` |
-| 4     | `&&`                 |
-| 3     | `\|\|`               |
-| 2     | `as`                 |
-| 1     | everything else (assignments are statements; match/if/ closures are primary expressions) |
+| 9     | `as`                 |
+| 8     | `*` `/` `%`          |
+| 7     | `+` `-`              |
+| 6     | `<<` `>>`            |
+| 5     | `<` `<=` `>` `>=`    |
+| 4     | `==` `!=`            |
+| 3     | `&`                  |
+| 2     | `^`                  |
+| 1     | `\|`                 |
+| 0     | `&&` then `\|\|` (&& binds tighter) |
 
 `&&` and `||` short-circuit. Conditions of `if`/`while` are `bool`;
 there is no truthiness.
