@@ -79,7 +79,7 @@ boot is rewritten in C: **the only backend in 0.1.0 is wasm32-wasi**;
 arena-allocated, one-shot, implementing **every** rule in the design
 section — no placeholder stages. boot is the reference compiler.
 
-- [ ] **T1.1** Skeleton: build, arena, selftest harness, AST dump.
+- [x] **T1.1** Skeleton: build, arena, selftest harness, AST dump.
 - [ ] **T1.2** Lexer: full grammar — keywords incl. `trait impl for dyn`,
       integer/float literals (default lanes i32/f64), string escapes,
       **fully verbatim triple-quoted strings**, dotted `use`, labels,
