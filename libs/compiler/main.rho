@@ -20,6 +20,10 @@ const FMT: i64 = 0; // 1 = print the canonical formatting instead
 fn main() -> i32 {
   let toks: []*Tok = lex.lex(SRC);
   let prog: *Prog = parse.parse(toks, SRC);
+  if prog.perrs > 0 {
+    eprintf("parse: {} unresolved form(s)\n", prog.perrs);
+    return 1;
+  }
   let errs: i64 = check.check(prog);
   if errs > 0 {
     eprintf("check: {} error(s)\n", errs);

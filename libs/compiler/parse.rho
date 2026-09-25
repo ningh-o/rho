@@ -77,9 +77,9 @@ pub const ST_FSTORE: i32 = 12; // base.f... = e: name = base, path =
                                 // the field names, args[0] = idx when
                                 // the store rides a slice field
 pub const ST_MATCH: i32 = 13;  // match scrut { arms }: scrut rides
-                               // val, the arms ride marms // base.f... = e: name = base, path =
-                               // the field names, args[0] = idx when
-                               // the store rides a slice field
+                               // val, the arms ride marms
+pub const ST_BLOCK: i32 = 14; // { stmts }: a bare block — its own
+                               // scope, defers unwind at its end
 
 pub struct Stmt {
   tag: i32,        // ST_*
@@ -355,6 +355,7 @@ pub struct Prog {
   nstructs: usize,
   enums: []*EnumDef,
   nenums: usize,
+  perrs: i64, // parse-fallback count (a silent zero is a lie)
 }
 
 pub fn make_expr(count: *Expr) -> *Expr {
@@ -490,6 +491,7 @@ pub struct StructDef {
 struct PCur {
   toks: []*Tok,
   pos: usize,
+  perrs: i64, // parse-fallback hits: any hit refuses, never emits
 }
 
 fn tk(c: *PCur) -> *Tok {
@@ -1034,13 +1036,22 @@ fn parse_atom(c: *PCur) -> *Expr {
     }
     return var(t.text);
   }
+  if is_punct(t, 42) {
+    // *e — the bare deref, a unary prefix below postfix (boot's
+    // parse_unary: *p.x is *(p.x); (*p).x takes the paren form)
+    tkadv(c);
+    let inner = parse_primary(c);
+    return deref_expr(inner);
+  }
   if is_punct(t, 40) {
     tkadv(c);
     let inner = parse_bin(c, 0);
     eat_punct(c, 41);
     return inner;
   }
-  // unusable primary: a zero literal keeps the walk alive
+  // unusable primary: a zero literal keeps the walk alive — the
+  // fallback count refuses the program before anything emits
+  c.perrs = c.perrs + 1;
   tkadv(c);
   return lit(0);
 }
@@ -1178,6 +1189,7 @@ fn parse_pat(c: *PCur) -> *Pat {
     let p0 = mk_pat(0);
     return p0;
   }
+  c.perrs = c.perrs + 1;
   tkadv(c);
   return mk_pat(0);
 }
@@ -1209,8 +1221,12 @@ fn parse_arms(c: *PCur) -> []*MatchArm {
           tkadv(c);
           break;
         }
-        // a tail expression: an expr followed by } (no ';')
+        // a tail expression: an expr followed by } (no ';') — the
+        // probe is speculative: a statement head that falls into the
+        // atom fallback must not count as a parse error once the
+        // cursor rewinds (parse_stmt re-parses it for real)
         let save: usize = c.pos;
+        let psave: i64 = c.perrs;
         let e = parse_bin(c, 0);
         if is_punct(tk(c), 125) {
           tail = Option.Some(e);
@@ -1218,6 +1234,7 @@ fn parse_arms(c: *PCur) -> []*MatchArm {
           break;
         }
         c.pos = save;
+        c.perrs = psave;
         body[nb] = parse_stmt(c);
         nb = nb + 1;
       }
@@ -1290,6 +1307,7 @@ fn parse_stmt(c: *PCur) -> *Stmt {
       tyname = eat_type(c);
     }
     if !eat_punct(c, 61) {
+      c.perrs = c.perrs + 1;
       let bad = mk_stmt(ST_RET);
       bad.ret = 0 - 21;
       return bad;
@@ -1309,12 +1327,14 @@ fn parse_stmt(c: *PCur) -> *Stmt {
       t.text == "printf" {
     tkadv(c);
     if !eat_punct(c, 40) {
+      c.perrs = c.perrs + 1;
       let bad = mk_stmt(ST_RET);
       bad.ret = 0 - 22;
       return bad;
     }
     let ft = tk(c);
     if ft.kind != lex.TK_STR {
+      c.perrs = c.perrs + 1;
       let bad = mk_stmt(ST_RET);
       bad.ret = 0 - 23;
       return bad;
@@ -1427,11 +1447,13 @@ fn parse_stmt(c: *PCur) -> *Stmt {
   }
   if t.text == "match" && (t.kind == lex.TK_IDENT ||
       t.kind == lex.TK_KEYWORD) {
-    // match scrut { arms } — the statement form (arm values drop)
+    // match scrut { arms } — the statement form (arm values drop);
+    // the trailing ';' is optional, like boot's
     tkadv(c);
     let st = mk_stmt(ST_MATCH);
     st.val = Option.Some(parse_bin(c, 0));
     st.marms = parse_arms(c);
+    eat_punct(c, 59);
     return st;
   }
   if t.kind == lex.TK_IDENT && c.pos + 1 < len(c.toks) &&
@@ -1537,6 +1559,15 @@ fn parse_stmt(c: *PCur) -> *Stmt {
     }
     return st;
   }
+  if is_punct(t, 123) {
+    // { stmts } — a bare block: its own scope, its defers unwind at
+    // its end (boot's T_LBRACE statement form); an optional ';' may
+    // follow the closing brace
+    let st = mk_stmt(ST_BLOCK);
+    st.body = parse_block(c);
+    eat_punct(c, 59);
+    return st;
+  }
   if t.kind == lex.TK_KEYWORD && t.text == "if" {
     tkadv(c);
     let st = mk_stmt(ST_IF);
@@ -1615,7 +1646,9 @@ fn parse_stmt(c: *PCur) -> *Stmt {
     st.body = parse_block(c);
     return st;
   }
-  // unknown statement: skip a token so the walk makes progress
+  // unknown statement: skip a token so the walk makes progress —
+  // the fallback count refuses the program before anything emits
+  c.perrs = c.perrs + 1;
   tkadv(c);
   let bad = mk_stmt(ST_RET);
   bad.ret = 0 - 100;
@@ -1749,7 +1782,7 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
   let mut nf: usize = 0;
   let nodes: []*Stmt = make([]*Stmt, len(src) + 4);
   let mut n: usize = 0;
-  let c = new PCur { toks: toks, pos: 0 };
+  let c = new PCur { toks: toks, pos: 0, perrs: 0 };
   let cnames: []string = make([]string, 64);
   let cvals: []i64 = make([]i64, 64);
   let cstatic: []bool = make([]bool, 64);
@@ -2063,6 +2096,6 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
                         cmuts: cmuts[0..nc], cexprs: cexprs[0..nc],
                         nconsts: nc, structs: structs[0..ns],
                         nstructs: ns, enums: enums[0..ne],
-                        nenums: ne };
+                        nenums: ne, perrs: c.perrs };
   return prog;
 }

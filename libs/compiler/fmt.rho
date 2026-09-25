@@ -439,6 +439,11 @@ pub fn fmt_line(st: *Stmt, depth: usize) -> string {
     }
     return out + ";\n";
   }
+  if st.tag == parse.ST_BLOCK {
+    let mut out: string = ind + "{\n";
+    out = out + fmt_block(st.body, depth + 1);
+    return out + ind + "}\n";
+  }
   if st.tag == parse.ST_IF {
     let mut out: string = ind + "if ";
     match st.val {

@@ -6052,6 +6052,13 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
         Option.None => {},
       }
     }
+    if st.tag == parse.ST_BLOCK {
+      // a bare block: its statements inline; the nested emit_stmts
+      // opens its own defer frame, so the block's defers unwind at
+      // its end
+      body = body + emit_stmts(st.body, pool, env, nl, in_fn,
+                               ret_slot, prog, loops, dstack, tfd);
+    }
     if st.tag == parse.ST_DEFER {
       match st.sub {
         Option.Some(inner) => {
