@@ -127,8 +127,10 @@ section — no placeholder stages. boot is the reference compiler.
       million-deep recursion verified), if/while/loop statements,
       if/match as expressions (escape ownership retained).
 - [ ] **T1.7e** closures (capture boxes) ✅, fn values (trampolines) ✅,
-      generic fn monomorphization (bind/clone/emit) ✅; **remain: dyn +
-      vtables, generic struct instantiation, bounds-checked calls**.
+      generic fn monomorphization (bind/clone/emit) ✅, associated-fn
+      calls `Type.name(args)` ✅, user-defined to_str printing ✅ (§8);
+      **remain: dyn + vtables, generic struct instantiation,
+      bounds-checked calls, generic methods on generic types**.
 - [ ] **T1.7** (completes when a-e cover the conformance map rows) rc insertion per the pure-local
       counting rules ✅ (incl. enum-payload deep retain/release, let/assign
       copy retain), zeroed allocations ✅, container ownership walk at the
@@ -145,10 +147,11 @@ section — no placeholder stages. boot is the reference compiler.
 - [ ] **T1.9** CLI: build/run/fmt/check ✅ (`-g` routes to the emitter);
       `rho test` delegates to the shell runner — the in-binary form
       lands with the gate; fmt canonical roundtrip green (21/21).
-- [x] **T1.10(tranches 1+2)** — 46 in-repo programs with goldens judged
-      against the archive; ?T/weak/rc/churn/string-family adaptations
-      proven. **Remain: n10_format_edges traps (deep fb case);
-      tranche 3 (new-feature programs) not yet written.**
+- [x] **T1.10(tranches 1+2)** — 79 in-repo programs with goldens judged
+      against the archive (n10 restored; floats/enum-payload/statics/
+      to_str/null-family/assoc/MIN-division all landed byte-exact or
+      lawfully regenerated). **Remain: tranche 3 (new-feature programs)
+      not yet written; leftovers listed in corpus/PLAN.md.**
 
 ## Phase 2 — the self-hosted compiler, written in rho (wasm only)
 
