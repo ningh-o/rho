@@ -1443,6 +1443,26 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
       op(cx, "(return)\n");
       return;
     }
+    // TCO: a direct self tail call becomes param reassignment + a
+    // branch to the function top (spec §9)
+    Node *rv = node_get(s->a);
+    if (rv->kind == NT_CALL && node_get(rv->a)->kind == NT_PATH &&
+        (FnDef *)rv->sem2 == cx->fn) {
+      FnDef *f = cx->fn;
+      // release old param values, then move the new ones in
+      for (size_t i = 0; i < f->sig->nparams; i++) {
+        VarInfo *pv = VAT(cx->vars, VarInfo, i);
+        release(cx, pv->ty, pv->vreg);
+      }
+      emit_call_args(cx, f, rv->list);
+      // pop results into param locals in reverse
+      for (size_t i = f->sig->nparams; i > 0; i--) {
+        VarInfo *pv = VAT(cx->vars, VarInfo, i - 1);
+        op(cx, "(local.set %zu)\n", pv->vreg);
+      }
+      op(cx, "(br $tco)\n");
+      return;
+    }
     size_t v = cx_fresh(cx, cx->ret);
     emit_expr(cx, s->a, v);
     emit_scope_exit(cx, 0);
@@ -1847,7 +1867,13 @@ static void emit_fndef(Em *em, FnDef *f) {
   if (getenv("RHO_DEBUG_SHAPE"))
     fprintf(stderr, "[shape] %s ret-kind=%d nlocals=%zu\n", f->name,
             (int)cx.ret->kind, shape_nlocals(cx.ret));
+  op(&cx, "(loop $tco\n");
+  cx.depth++;
   emit_stmt(&cx, f->body);
+  cx.depth--;
+  op(&cx, ")\n");
+  if (cx.ret->kind != TY_UNIT)
+    op(&cx, "(unreachable)\n"); // every path returns explicitly
 
   // assemble: (func $name (param…) (result…) (local…) body)
   Buf fn;
