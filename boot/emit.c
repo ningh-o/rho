@@ -413,7 +413,7 @@ __attribute__((unused)) static void emit_div(FnCx *cx, int opkind, Type *t, size
   const char *w = is64 ? "i64" : "i32";
   bool uns = t->kind >= TY_U8;
   // divisor zero → panic "division by zero"
-  op(cx, "(if %s.eqz (local.get %zu) (then\n", w, b);
+  op(cx, "(if (%s.eqz (local.get %zu)) (then\n", w, b);
   size_t msg = data_intern("division by zero", 18);
   op(cx, "  (call $rho_panic (i32.const %zu) (i32.const 18))))\n", msg);
   if (opkind == OP_DIV) {

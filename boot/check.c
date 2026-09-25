@@ -900,7 +900,11 @@ bool check_program(Program *p) {
           Node *pp = node_get(reflist_at(d->list, k));
           sig->params[k].name = pp->name;
           sig->params[k].decl = reflist_at(d->list, k);
-          sig->params[k].ty = pp->op == 1 ? NULL : resolve_type(m, pp->a, &g);
+          sig->params[k].ty =
+              pp->op == 1 ? NULL
+                          : resolve_type(m, pp->a, &g);
+          if (pp->op == 2 && sig->params[k].ty)
+            sig->params[k].ty = type_slice(sig->params[k].ty); // []T
           sig->params[k].variadic = pp->op == 2;
         }
         sig->ret = d->c != NO_REF ? resolve_type(m, d->c, &g) : ty_unit;
