@@ -213,6 +213,15 @@ fn expr_walk(e: *Expr, prog: *Prog, bound: []string, nb: usize,
             errs.n = errs.n + 1;
           }
         } else {
+        if e.name == "to_str" {
+          // the prelude's to_str rides every primitive
+          let mut ka: usize = 0;
+          while ka < len(e.args) {
+            expr_walk(e.args[ka], prog, bound, nb, errs);
+            ka = ka + 1;
+          }
+          return;
+        }
         if r.tag == parse.EX_VAR && struct_known(prog, r.name) {
           // Type.name(args) — the associated-fn call; the type itself
           // is not a variable reference

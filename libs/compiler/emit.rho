@@ -3909,6 +3909,76 @@ fn build_string_pair(e: *Expr, pool: *Pool, env: *Env, prog: *Prog,
     let spc = new SPair { ok: true, text: text, a: ta, l: tl };
     return spc;
   }
+  if e.tag == parse.EX_MCALL && e.name == "to_str" {
+    // the prelude's to_str on a primitive: ints through $w_itoa,
+    // floats through the exact-decimal text, bools their words,
+    // strings themselves
+    let mut recv9: *Expr = parse.lit(0);
+    match e.lhs {
+      Option.Some(r9) => {
+        recv9 = r9;
+      },
+      Option.None => {},
+    }
+    let isstr9: bool = is_stringy(recv9, env, prog);
+    let fk9: i64 = expr_fkind(recv9, env, prog);
+    let bl9: bool = hole_boolish(recv9, env, prog);
+    if !isstr9 || fk9 > 0 || bl9 {
+      let ta9: i64 = nl.v;
+      let tl9: i64 = nl.v + 1;
+      nl.v = nl.v + 2;
+      let mut t9: string = emit_expr(pool, recv9, env, prog, nl) +
+             "    (local.set " + ta9.to_str() + ")\n" +
+             "    (local.get " + ta9.to_str() + ")\n";
+      if fk9 == 1 {
+        FLOAT_WANTED = 1;
+        t9 = t9 + "    call $u___f64_text\n" +
+               "    (local.set " + tl9.to_str() + ")\n" +
+               "    (local.set " + ta9.to_str() + ")\n";
+      } else {
+        if fk9 == 2 {
+          FLOAT_WANTED = 1;
+          t9 = t9 + "    (f64.reinterpret_i64)\n" +
+                 "    (f32.demote_f64)\n    (f64.promote_f32)\n" +
+                 "    (i64.reinterpret_f64)\n" +
+                 "    call $u___f32_text\n" +
+                 "    (local.set " + tl9.to_str() + ")\n" +
+                 "    (local.set " + ta9.to_str() + ")\n";
+        } else {
+          if bl9 {
+            t9 = t9 + "    call $w_bool\n" +
+                   "    (local.set $l)\n" +
+                   "    (i64.extend_i32_u)\n" +
+                   "    (local.set " + ta9.to_str() + ")\n" +
+                   "    (i64.extend_i32_u (local.get $l))\n" +
+                   "    (local.set " + tl9.to_str() + ")\n";
+            let spb9 = new SPair { ok: true, text: t9, a: ta9,
+                                   l: tl9 };
+            return spb9;
+          }
+          if expr_width(recv9, env, prog) < 0 {
+            t9 = t9 + "    call $w_u64\n" +
+                   "    (local.set $l)\n" +
+                   "    (i64.extend_i32_u)\n" +
+                   "    (local.set " + ta9.to_str() + ")\n" +
+                   "    (i64.extend_i32_u (local.get $l))\n" +
+                   "    (local.set " + tl9.to_str() + ")\n";
+            let spu9 = new SPair { ok: true, text: t9, a: ta9,
+                                   l: tl9 };
+            return spu9;
+          }
+          t9 = t9 + "    call $w_i64\n" +
+                 "    (local.set $l)\n" +
+                 "    (i64.extend_i32_u)\n" +
+                 "    (local.set " + ta9.to_str() + ")\n" +
+                 "    (i64.extend_i32_u (local.get $l))\n" +
+                 "    (local.set " + tl9.to_str() + ")\n";
+        }
+      }
+      let sp9 = new SPair { ok: true, text: t9, a: ta9, l: tl9 };
+      return sp9;
+    }
+  }
   if e.tag == parse.EX_MCALL {
     // a string-returning method call: the receiver and args ride the
     // call, the result pair parks in fresh slots
