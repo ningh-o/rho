@@ -622,8 +622,10 @@ static Type *check_call(FnCtx *c, NodeRef er, Type *expected) {
   }
   if (lk.kind == LOOK_FN) {
     // intrinsics
-    if (is_intrinsic_fn(callee->name) &&
-        strcmp(callee->name, "len") != 0 && lk.fns->mod == g_prelude_mod) {
+    if ((strcmp(callee->name, "printf") == 0 ||
+         strcmp(callee->name, "eprintf") == 0 ||
+         strcmp(callee->name, "format") == 0) &&
+        lk.fns->mod == g_prelude_mod) {
       return check_format_call(c, call, expected);
     }
     if (strcmp(callee->name, "make") == 0 &&
