@@ -325,23 +325,35 @@ fn cmp_wat(t: *Tok) -> string {
   return "i64.gt_s";
 }
 
-// split a format literal into its text pieces around {} holes
+// split a format literal into its text pieces around {} holes;
+// {{ and }} escape to literal braces (collapsed into the piece text)
 fn split_fmt(s: string) -> []string {
   let parts: []string = make([]string, len(s) + 2);
   let mut n: usize = 0;
-  let mut start: usize = 0;
+  let mut piece: string = "";
   let mut i: usize = 0;
-  while i + 1 < len(s) {
-    if s[i] == 123 && s[i + 1] == 125 {
-      parts[n] = s[start..i];
-      n = n + 1;
-      start = i + 2;
+  while i < len(s) {
+    if s[i] == 123 && i + 1 < len(s) && s[i + 1] == 123 {
+      piece = piece + "{";
       i = i + 2;
       continue;
     }
+    if s[i] == 125 && i + 1 < len(s) && s[i + 1] == 125 {
+      piece = piece + "}";
+      i = i + 2;
+      continue;
+    }
+    if s[i] == 123 && i + 1 < len(s) && s[i + 1] == 125 {
+      parts[n] = piece;
+      n = n + 1;
+      piece = "";
+      i = i + 2;
+      continue;
+    }
+    piece = piece + s[i..(i + 1)];
     i = i + 1;
   }
-  parts[n] = s[start..len(s)];
+  parts[n] = piece;
   n = n + 1;
   return parts[0..n];
 }
