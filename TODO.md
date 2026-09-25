@@ -242,10 +242,18 @@ section — no placeholder stages. boot is the reference compiler.
       shared zeroed None box filling fresh ?T slices, payload-typed
       binders, printf in expression position). The names-table
       lookups scan backward now — match binders shadow across arms.
-      55 of 108 behavioral, floor 55. Remain: floats (the f64 lane);
-      string elements and string payloads in enums; closures/traits/
-      dyn/generics/variadics; overloads; module loading; weak/rc;
-      the set face in the differential runner)*
+      55 of 108 behavioral, floor 55. The thirty-ninth cut: stringly
+      scalar lanes (literals/concats/format/string-returning calls
+      ride their ADDRESS through emit_expr — enum ctor payloads
+      carrying strings unblock) and printf's evaluation order (every
+      hole evaluates into temps before the first byte writes; an oob
+      used to leave a half-printed line). 055 and 094 join: 56 of
+      108, floor 56. Remain: floats (the f64 lane — the exact-decimal
+      formatter is the deep end, the literals can ride their text
+      into f64.const); string statics (the {addr,len} pair needs two
+      globals); slice-returning fns; closures/traits/dyn/generics/
+      variadics; overloads; module loading; weak/rc; the set face in
+      the differential runner)*
 - [ ] **T2.x** Optimizer in the mirror: constant folding, dead-code
       elimination, globals tree-shaking, tail-call→loop — with the
       language suites (opt/eq/params/modsys/strops/multiline) rebuilt
