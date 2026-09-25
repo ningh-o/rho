@@ -292,14 +292,16 @@ section — no placeholder stages. boot is the reference compiler.
       fixtures + a suite leg wired into make test. The self-hosted
       compiler mirrors the surface when its CLI lands (a T2 dogfood
       leg: rho's test suite running rho).
-- [ ] **T3.6** Conformance pair from the syntax audit: boot honors
-      `mut` parameters — a mut param is a mutable local copy, the
-      caller never sees assignments to the slot; writes through a
-      handle-typed param stay caller-visible (syntax.md §4.1) — and
-      the usize lane comes home to the address width (u32 on wasm32;
-      syntax.md §3): len, indexing, alloc counts included. The diff
-      suite gains the mut-param program in the same commit; the
-      self-host mirrors both when it grows the matching surface.
+- [ ] **T3.6** The mut view law (§18) + the usize lane: boot gates
+      stores through handle bindings, `mut`-receiver method calls, and
+      the call-site `mut` marker on the binding's mut-ness (value
+      parameters stay immutable — current behavior becomes lawful);
+      the corpus adapts mechanically (`let` → `let mut` on
+      through-written bindings) in the same commit, plus the leg
+      pinning that a value receiver cannot call a pointer-receiver
+      method. The usize lane comes home to the address width (u32 on
+      wasm32; syntax.md §3): len, indexing, alloc counts included.
+      The self-host mirrors both when it grows the matching surface.
 - [ ] **T3.7** Module item imports (module-system.md §2/§4/§6,
       syntax.md §4.4): the final use-segment binds a public item
       unqualified (`use lex.a as b;`), the brace form expands one
@@ -589,3 +591,31 @@ fake green is a red). Test blocks are checked in every mode (a broken
 test is a compile error) and emitted only under the verb. No kernel
 growth, no new mechanisms: the whole protocol lowers through §7's
 build parameters and the existing panic law.
+
+### 18. Mutability
+
+`mut` is one keyword with one meaning, everywhere — it always sits
+before the binding name (`let mut i`, `static mut LOG`,
+`fn scale(mut p: *Rect)`), never inside a type, and means exactly:
+**the view under this binding is writable.** A binding without `mut`
+is a read-only view: stores through it (fields, slice elements),
+calls of `mut`-receiver methods, and passing it where a `mut` view is
+required are compile errors. `mut` is permission, never layout —
+copying and the rc law (§2) are untouched; the view is shallow by
+design: a handle copied out of any binding is governed by the new
+binding's own `mut`.
+
+Value parameters carry no `mut` (a copy has no view): they are
+immutable, and the body rebinds with `let mut p = p;` when it must
+mutate its copy. Handle parameters default to read-only and take
+`mut` before the name to grant writes. The call site pairs with the
+declaration: an argument passed to a `mut` parameter must be marked
+`mut` at the call site, and an argument marked `mut` must land in a
+`mut` parameter — both directions are compile errors — and the marker
+requires the argument's own binding to be `mut` (you can only grant
+what you have). Methods distinguish `fn Rect.area(self: *Rect)` from
+`fn Rect.scale(mut self: *Rect, …)`; a non-`mut` binding cannot call
+the latter, and a value can never call a pointer-receiver method.
+Receiver `mut`-ness is not an overload axis and must match the
+trait's signature exactly at impl time. Declaring `mut` without ever
+writing through it is a hint (LSP), never an error.
