@@ -355,6 +355,8 @@ pub struct Prog {
   nstructs: usize,
   enums: []*EnumDef,
   nenums: usize,
+  traits: []*TraitDef,
+  ntraits: usize,
   perrs: i64, // parse-fallback count (a silent zero is a lie)
 }
 
@@ -490,6 +492,15 @@ pub struct StructDef {
   tparams: []string, // the declared type parameters, in order
 }
 
+pub struct TraitDef {
+  name: string,
+  methods: []string, // the declared method names, in order (the
+                     // vtable ordinals)
+  rtypes: []string,  // each declared method's return type (the
+                     // dispatch picks its calling type by it)
+  nmethods: usize,
+}
+
 // parse owns the constructors: the other modules build table entries
 // through these, never through raw new (the checker's new is the
 // user-struct surface)
@@ -543,6 +554,7 @@ struct PCur {
   toks: []*Tok,
   pos: usize,
   perrs: i64, // parse-fallback hits: any hit refuses, never emits
+  impl_type: string, // inside an impl block: fns take "Type." names
 }
 
 fn tk(c: *PCur) -> *Tok {
@@ -653,6 +665,12 @@ fn eat_type(c: *PCur) -> string {
       }
       eat_punct(c, 93); // ]
       return pre + name;
+    }
+    if name == "dyn" && tk(c).kind == lex.TK_IDENT {
+      // dyn Trait — the fat-dispatch type rides its trait's name
+      let trt: string = tk(c).text;
+      tkadv(c);
+      return pre + "dyn " + trt;
     }
     if is_punct(tk(c), 91) && c.pos + 1 < len(c.toks) &&
         !is_punct(c.toks[c.pos + 1], 93) {
@@ -1884,7 +1902,8 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
   let mut nf: usize = 0;
   let nodes: []*Stmt = make([]*Stmt, len(src) + 4);
   let mut n: usize = 0;
-  let c = new PCur { toks: toks, pos: 0, perrs: 0 };
+  let c = new PCur { toks: toks, pos: 0, perrs: 0,
+                    impl_type: "" };
   let cnames: []string = make([]string, 64);
   let cvals: []i64 = make([]i64, 64);
   let cstatic: []bool = make([]bool, 64);
@@ -1896,8 +1915,113 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
   let mut ns: usize = 0;
   let enums: []*EnumDef = make([]*EnumDef, 32);
   let mut ne: usize = 0;
+  let traits: []*TraitDef = make([]*TraitDef, 16);
+  let mut ntr: usize = 0;
+  let mut break_to_fn: bool = false;
   while tk(c).kind != lex.TK_EOF {
     let t = tk(c);
+    if t.kind == lex.TK_IDENT && t.text == "trait" &&
+       c.pos + 1 < len(c.toks) &&
+       (c.toks[c.pos + 1].kind == lex.TK_IDENT ||
+        c.toks[c.pos + 1].kind == lex.TK_KEYWORD) {
+      // trait Name { fn method(self) -> T, ... } — the declaration
+      // names the vtable ordinals; satisfaction is name-matching
+      tkadv(c); // trait
+      let trname: string = tk(c).text;
+      tkadv(c);
+      let tms: []string = make([]string, 8);
+      let trts: []string = make([]string, 8);
+      let mut ntm: usize = 0;
+      if eat_punct(c, 123) {
+        while tk(c).kind != lex.TK_EOF {
+          if is_punct(tk(c), 125) {
+            tkadv(c);
+            break;
+          }
+          if tk(c).kind == lex.TK_KEYWORD && tk(c).text == "fn" {
+            tkadv(c);
+            let mt2 = tk(c);
+            if mt2.kind == lex.TK_IDENT || mt2.kind == lex.TK_KEYWORD {
+              tkadv(c); // past the name — the cursor sits on '('
+              if ntm < 8 {
+                tms[ntm] = mt2.text;
+                // the declared signature: skip to ')' then read the
+                // arrow's type (the dispatch's calling type)
+                let mut rty: string = "i64";
+                if is_punct(tk(c), 40) {
+                  let mut dep: i64 = 0;
+                  while tk(c).kind != lex.TK_EOF {
+                    if is_punct(tk(c), 40) {
+                      dep = dep + 1;
+                    }
+                    if is_punct(tk(c), 41) {
+                      dep = dep - 1;
+                      if dep == 0 {
+                        tkadv(c);
+                        break;
+                      }
+                    }
+                    tkadv(c);
+                  }
+                  eat_arrow(c);
+                  rty = eat_type(c);
+                  if len(rty) == 0 {
+                    rty = "i64";
+                  }
+                }
+                trts[ntm] = rty;
+                ntm = ntm + 1;
+              }
+            }
+          } else {
+            tkadv(c);
+          }
+        }
+      }
+      let td = new TraitDef { name: trname, methods: tms[0..ntm],
+                              rtypes: trts[0..ntm],
+                              nmethods: ntm };
+      traits[ntr] = td;
+      ntr = ntr + 1;
+      continue;
+    }
+    if t.kind == lex.TK_IDENT && t.text == "impl" &&
+       c.pos + 1 < len(c.toks) &&
+       (c.toks[c.pos + 1].kind == lex.TK_IDENT ||
+        c.toks[c.pos + 1].kind == lex.TK_KEYWORD) {
+      // impl Trait for Type { fn ... } — the fns register as the
+      // type's methods (the trait itself is a compile-time fact)
+      tkadv(c); // impl
+      tkadv(c); // the trait name
+      if tk(c).kind == lex.TK_IDENT && tk(c).text == "for" {
+        tkadv(c); // for
+        let itp = tk(c);
+        if itp.kind == lex.TK_IDENT || itp.kind == lex.TK_KEYWORD {
+          c.impl_type = itp.text;
+          tkadv(c);
+        }
+      }
+      if eat_punct(c, 123) {
+        while tk(c).kind != lex.TK_EOF {
+          if is_punct(tk(c), 125) {
+            tkadv(c);
+            break;
+          }
+          if tk(c).kind == lex.TK_KEYWORD && tk(c).text == "fn" {
+            // the fn branch below runs with impl_type set
+            c.pos = c.pos;
+            break_to_fn = true;
+            break;
+          }
+          tkadv(c);
+        }
+        if break_to_fn {
+          continue;
+        }
+        c.impl_type = "";
+      }
+      continue;
+    }
     if t.kind == lex.TK_IDENT && t.text == "struct" &&
        c.pos + 1 < len(c.toks) &&
        (c.toks[c.pos + 1].kind == lex.TK_IDENT ||
@@ -2137,6 +2261,11 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
           fname = nm.text + "." + mt.text;
           tkadv(c);
         }
+      } else {
+        if len(c.impl_type) > 0 {
+          // inside an impl block the header owns the type
+          fname = c.impl_type + "." + fname;
+        }
       }
       if fname == "main" {
         eat_punct(c, 40);
@@ -2233,6 +2362,12 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
       }
       fns[nf] = fd;
       nf = nf + 1;
+      if len(c.impl_type) > 0 && is_punct(tk(c), 125) {
+        // the impl block closes: further fns are plain again
+        tkadv(c);
+        c.impl_type = "";
+        break_to_fn = false;
+      }
       continue;
     }
     tkadv(c);
@@ -2243,6 +2378,7 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
                         cmuts: cmuts[0..nc], cexprs: cexprs[0..nc],
                         nconsts: nc, structs: structs[0..ns],
                         nstructs: ns, enums: enums[0..ne],
-                        nenums: ne, perrs: c.perrs };
+                        nenums: ne, traits: traits[0..ntr],
+                        ntraits: ntr, perrs: c.perrs };
   return prog;
 }

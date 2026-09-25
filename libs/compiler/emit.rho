@@ -2305,6 +2305,192 @@ fn managed_type_of_binding(env: *Env, name: string) -> string {
   return "";
 }
 
+// the dyn hole's dispatch text and parked pair (a dyn value's
+// to_str rides its vtable slot at the trait's declared ordinal)
+static mut DYN_TEXT: string = "";
+static mut DYN_A: i64 = 0;
+static mut DYN_L: i64 = 0;
+
+// when an arg is a dyn value (a fat-pair binding or a dyn-element
+// read), emit its to_str dispatch and park the pair; true when done
+fn dyn_hole_dispatch(arg: *Expr, pool: *Pool, env: *Env,
+                     prog: *Prog, nl: *NextLocal) -> bool {
+  let mut trt: string = "";
+  let mut vbox: i64 = 0;
+  let mut obj: i64 = 0;
+  let mut pre: string = "";
+  if arg.tag == parse.EX_VAR &&
+      is_dyn_type(env_slice_elemtext(env, arg.name)) {
+    trt = dyn_trait(env_slice_elemtext(env, arg.name));
+    let a0: i64 = env_str_look(env, arg.name);
+    vbox = (0 - a0) - 1;
+    obj = env_str_len_slot(env, arg.name);
+  } else {
+    if arg.tag == parse.EX_MCALL && arg.name == "to_str" {
+      // d.to_str() on a dyn receiver — the dispatch parks the pair;
+      // ride it (the arg's own text already parked into nl slots)
+      let mut rv9: *Expr = parse.lit(0);
+      match arg.lhs {
+        Option.Some(r9b) => {
+          rv9 = r9b;
+        },
+        Option.None => {},
+      }
+      if rv9.tag == parse.EX_VAR &&
+          is_dyn_type(env_slice_elemtext(env, rv9.name)) {
+        // evaluate the dispatch (it parks its pair in fresh slots
+        // and rides the address — dropped, the pair is the value)
+        let base9: i64 = nl.v;
+        let t9: string = emit_expr(pool, arg, env, prog, nl);
+        DYN_TEXT = t9 + "    drop\n";
+        DYN_A = base9;
+        DYN_L = base9 + 1;
+        return true;
+      }
+    }
+    return false;
+  }
+  let ord: i64 = trait_ordinal(prog, trt, "to_str");
+  if ord < 0 {
+    return false;
+  }
+  let ta: i64 = nl.v;
+  let tl: i64 = nl.v + 1;
+  nl.v = nl.v + 2;
+  pre = pre + "    (local.get " + obj.to_str() + ")\n" +
+         "    (i64.load (i32.add (i32.wrap_i64 (local.get " +
+         vbox.to_str() + ")) (i32.const " + (ord * 8).to_str() +
+         ")))\n" +
+         "    (i32.wrap_i64)\n" +
+         "    call_indirect (type $clp1)\n" +
+         "    (local.set " + tl.to_str() + ")\n" +
+         "    (local.set " + ta.to_str() + ")\n";
+  DYN_TEXT = pre;
+  DYN_A = ta;
+  DYN_L = tl;
+  return true;
+}
+
+// ---- dyn: fat {vtable, obj} pairs, dispatch through the fn table ----
+
+// is a type text the fat-dispatch type?
+fn is_dyn_type(ty: string) -> bool {
+  return len(ty) >= 4 && ty[0] == 100 && ty[1] == 121 &&
+      ty[2] == 110 && ty[3] == 32;
+}
+
+// the trait name inside "dyn Trait"
+fn dyn_trait(ty: string) -> string {
+  if is_dyn_type(ty) {
+    return ty[4..len(ty)];
+  }
+  return "";
+}
+
+// a trait method's ordinal (the vtable slot), -1 when absent
+fn trait_ordinal(prog: *Prog, trt: string,
+                 method: string) -> i64 {
+  let mut i: usize = 0;
+  while i < prog.ntraits {
+    if prog.traits[i].name == trt {
+      let mut k: usize = 0;
+      while k < prog.traits[i].nmethods {
+        if prog.traits[i].methods[k] == method {
+          return k as i64;
+        }
+        k = k + 1;
+      }
+      return 0 - 1;
+    }
+    i = i + 1;
+  }
+  return 0 - 1;
+}
+
+// the table index of a plain method (registering it once); -1 when
+// the method does not exist
+fn method_table_idx(pool: *Pool, prog: *Prog, tname: string,
+                    mname: string) -> i64 {
+  if !user_fn_exists(prog, tname + "." + mname) {
+    return 0 - 1;
+  }
+  let full: string = "$u_" + sym_name(tname + "_" + mname);
+  let mut i: usize = 0;
+  while i < pool.gi.cfn {
+    if pool.gi.clo_wasms[i] == full {
+      return i as i64;
+    }
+    i = i + 1;
+  }
+  if pool.gi.cfn >= len(pool.gi.clo_wasms) {
+    return 0 - 1;
+  }
+  pool.gi.clo_wasms[pool.gi.cfn] = full;
+  // the arity the dispatch will use: receiver + args (bounded 3)
+  let fdm2: *FnDef = fn_def_of(prog, tname + "." + mname);
+  let ari: i64 = 1 + (len(fdm2.params) as i64) - 1;
+  if ari >= 1 && ari <= 3 {
+    let cty3: []i64 = pool.gi.clo_ty;
+    cty3[ari as usize] = 1;
+  }
+  pool.gi.cfn = pool.gi.cfn + 1;
+  return (pool.gi.cfn as i64) - 1;
+}
+
+// the vtable box for (trait, type): slot k holds the table index of
+// the type's method k (built once per pair, cached by name)
+fn dyn_vtable(pool: *Pool, prog: *Prog, trt: string,
+              tname: string) -> string {
+  // the emitted text leaves the box address on the stack
+  let vtkey: string = "vt:" + trt + ":" + tname;
+  let mut i: usize = 0;
+  while i < pool.gi.n {
+    if pool.gi.bases[i] == vtkey {
+      return pool.gi.keys[i];
+    }
+    i = i + 1;
+  }
+  let mut td_i: i64 = 0 - 1;
+  let mut ti: usize = 0;
+  while ti < prog.ntraits {
+    if prog.traits[ti].name == trt {
+      td_i = ti as i64;
+    }
+    ti = ti + 1;
+  }
+  if td_i < 0 {
+    return "";
+  }
+  let td = prog.traits[td_i as usize];
+  let mut text: string =
+      "    (i64.extend_i32_u (call $w_alloc (i32.const " +
+      (td.nmethods + 1).to_str() + ")))\n" +
+      "    (local.set $r)\n";
+  let mut k: usize = 0;
+  while k < td.nmethods {
+    let midx: i64 = method_table_idx(pool, prog, tname,
+                                     td.methods[k]);
+    if midx < 0 {
+      return "";
+    }
+    text = text + "    (i64.store (i32.add (i32.wrap_i64 " +
+           "(local.get $r)) (i32.const " + (k * 8).to_str() +
+           ")) (i64.const " + midx.to_str() + "))\n";
+    k = k + 1;
+  }
+  text = text + "    (local.get $r)\n";
+  // cache: bases carries the key, keys carries the emitted text
+  if pool.gi.n >= len(pool.gi.bases) {
+    return text;
+  }
+  pool.gi.bases[pool.gi.n] = vtkey;
+  pool.gi.keys[pool.gi.n] = text;
+  pool.gi.sufs[pool.gi.n] = "";
+  pool.gi.fds[pool.gi.n] = prog.fns[0];
+  pool.gi.n = pool.gi.n + 1;
+  return text;
+}
+
 // a wasm-safe symbol: '.' can't ride an id (Type.method → Type_method)
 fn sym_name(name: string) -> string {
   let mut out: string = "";
@@ -2592,7 +2778,13 @@ fn is_stringy(e: *Expr, env: *Env, prog: *Prog) -> bool {
 // text, a slice element's, or a struct-field slice's (one field step)
 fn optpt_of_scrutinee(sc: *Expr, env: *Env, prog: *Prog) -> string {
   if sc.tag == parse.EX_VAR {
-    return env_slicept_of(env, sc.name);
+    // the pointer target; a string payload rides its raw text (the
+    // binder walk keys on "string")
+    let pt: string = env_slicept_of(env, sc.name);
+    if len(pt) > 0 {
+      return pt;
+    }
+    return env_slice_elemtext(env, sc.name);
   }
   if sc.tag == parse.EX_IDX {
     let mut b: *Expr = parse.lit(0);
@@ -2962,6 +3154,59 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
     if recv.tag == parse.EX_VAR && recv.name == "weak" &&
         e.name == "from" && len(e.args) >= 1 {
       return emit_expr(pool, e.args[0], env, prog, nl);
+    }
+    // DISABLED with the dyn emit (084's crash); re-lands with the
+    // coercion above
+    if false && recv.tag == parse.EX_VAR &&
+        is_dyn_type(env_slice_elemtext(env, recv.name)) {
+      let trt8: string =
+          dyn_trait(env_slice_elemtext(env, recv.name));
+      let ord8: i64 = trait_ordinal(prog, trt8, e.name);
+      if ord8 >= 0 {
+        let a0r: i64 = env_str_look(env, recv.name);
+        let vbox8: i64 = (0 - a0r) - 1;
+        let obj8: i64 = env_str_len_slot(env, recv.name);
+        // the declared return rides the trait table (the dispatch
+        // picks its calling type by it)
+        let mut rtype8: string = "i64";
+        let mut t8: usize = 0;
+        while t8 < prog.ntraits {
+          if prog.traits[t8].name == trt8 {
+            let mut m8: usize = 0;
+            while m8 < prog.traits[t8].nmethods {
+              if prog.traits[t8].methods[m8] == e.name &&
+                  m8 < len(prog.traits[t8].rtypes) {
+                rtype8 = prog.traits[t8].rtypes[m8];
+              }
+              m8 = m8 + 1;
+            }
+          }
+          t8 = t8 + 1;
+        }
+        let mut out8: string = "";
+        if len(e.args) > 0 {
+          // dispatch with arguments (bounded: $cl2)
+          out8 = out8 + emit_arg(pool, e.args[0], env, prog, nl);
+        }
+        out8 = out8 + "    (local.get " + obj8.to_str() + ")\n" +
+               "    (i64.load (i32.add (i32.wrap_i64 (local.get " +
+               vbox8.to_str() + ")) (i32.const " +
+               (ord8 * 8).to_str() + ")))\n" +
+               "    (i32.wrap_i64)\n";
+        if rtype8 == "string" {
+          // a pair result parks into slots; the address rides the
+          // scalar lane (the stringy pattern)
+          out8 = out8 + "    call_indirect (type $clp1)\n" +
+                 "    (local.set " + (nl.v + 1).to_str() +
+                 ")\n" +
+                 "    (local.set " + nl.v.to_str() + ")\n" +
+                 "    (local.get " + nl.v.to_str() + ")\n";
+          nl.v = nl.v + 2;
+        } else {
+          out8 = out8 + "    call_indirect (type $cl1)\n";
+        }
+        return out8;
+      }
     }
     // w.get() — the absence probe: the header's rc decides
     if recv.tag == parse.EX_VAR &&
@@ -6412,6 +6657,16 @@ fn emit_print_fd(pool: *Pool, fmt: string, args: []*Expr, env: *Env,
                 "    (local.set " + t_a[q].to_str() + ")\n";
           kinds[q] = 4;
         } else {
+        let dyn_pair: bool = false &&
+            dyn_hole_dispatch(arg, pool, env, prog, nl);
+        if dyn_pair {
+          // a dyn value renders through its vtable's to_str slot
+          t_a[q] = DYN_A;
+          t_l[q] = DYN_L;
+          kinds[q] = 4;
+          pre = pre + DYN_TEXT;
+          DYN_TEXT = "";
+        } else {
         let spt = to_str_pair(arg, pool, env, prog, nl);
         if spt.ok {
           // a value whose type owns to_str prints through it
@@ -6467,6 +6722,7 @@ fn emit_print_fd(pool: *Pool, fmt: string, args: []*Expr, env: *Env,
               }
             }
           }
+        }
         }
         }
         }
@@ -6666,6 +6922,38 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
     if st.tag == parse.ST_LET {
       match st.val {
         Option.Some(e) => {
+          if false && is_dyn_type(st.fmt) {
+            // DISABLED: the dyn coercion emit crashes indirect calls
+            // (084); the static accident handles homogeneous dyn.
+            // Next growth re-lands this with the crash fixed.
+            // a dyn coercion: the fat pair (vtable box, obj) — the
+            // vtable caches per (trait, type); the obj retains (the
+            // dyn owns a reference)
+            let trt7: string = dyn_trait(st.fmt);
+            let objt: string = expr_ptr_type(e, env, prog);
+            let vt_text: string = dyn_vtable(pool, prog, trt7,
+                                             objt);
+            if len(vt_text) > 0 {
+              let vb7: i64 = nl.v;
+              let ob7: i64 = nl.v + 1;
+              nl.v = nl.v + 2;
+              body = body + vt_text;
+              body = body + "    (local.set " + vb7.to_str() +
+                     ")\n";
+              body = body + emit_expr(pool, e, env, prog, nl);
+              body = body + "    (local.set " + ob7.to_str() +
+                     ")\n";
+              body = body + retain_if_shared(e, ob7);
+              env_str_bind_runtime(env, st.name, vb7, ob7, 3);
+              env_bind_sliceelem(env, st.name, st.fmt);
+            } else {
+              body = body + emit_expr(pool, e, env, prog, nl);
+              body = body + "    (local.set " + nl.v.to_str() +
+                     ")\n";
+              env_bind(env, st.name, nl.v);
+              nl.v = nl.v + 1;
+            }
+          } else
           if is_weak_type(st.fmt) ||
               (e.tag == parse.EX_VAR && is_weak_type(
                   env_ptr_of(env, e.name))) {
@@ -8324,6 +8612,11 @@ pub fn emit(prog: *Prog) -> string {
   let mut gdone: usize = 0;
   while gdone < pool.gi.n {
     let gb: string = pool.gi.bases[gdone];
+    if len(gb) >= 3 && gb[0] == 118 && gb[1] == 116 && gb[2] == 58 {
+      // "vt:" — a vtable cache entry, not a fn
+      gdone = gdone + 1;
+      continue;
+    }
     if len(gb) >= 5 && gb[0] == 99 && gb[1] == 108 && gb[2] == 111 &&
         gb[3] == 58 {
       // "clo:<wat>"
@@ -8432,6 +8725,8 @@ pub fn emit(prog: *Prog) -> string {
     // the closure table: one funcref per entry, the indirect-call
     // types for the arities the calls used
     let cty1: []i64 = pool.gi.clo_ty;
+    out = out + "  (type $clp1 (func (param i64) (result i64)" +
+                " (result i64)))\n";
     let mut ari: i64 = 1;
     while ari <= 3 {
       if cty1[ari as usize] > 0 {

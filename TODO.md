@@ -372,9 +372,25 @@ section — no placeholder stages. boot is the reference compiler.
       match expressions whose arms spell bool words print them.
       n02, n12, n13, n14, 056, 095, and t03 land byte-exact — and
       102's grow-floor fix keeps it. 98 of 108 behavioral, floor 98;
-      weak1-5 selfhost legs pin the wave. Remain: traits/impl/dyn;
-      module loading; the mut law and usize lane (T3.6's mirror
-      side)*
+      weak1-5 selfhost legs pin the wave. The fifty-ninth cut
+      (2026-09-26): traits, impl blocks, and dyn PARSE. Trait
+      declarations record their methods in order (the vtable
+      ordinals) and each declared return type (the dispatch's calling
+      shape); impl blocks register their fns as the type's methods
+      through an impl_type carrier on the cursor; `dyn Trait` rides
+      as a type text. The dyn EMIT (fat {vtable, obj} pairs, dispatch
+      through the fn table) is built but DISABLED at its three hooks
+      — the coercion site crashes indirect calls (084); the static
+      accident handles homogeneous dyn, so the hooks return when the
+      crash is fixed. A slice-field let records its element text (a
+      match over old[j] lost its binder's pointer lane), the release
+      walker pushes slice fields as pairs, and an Option scrutinee's
+      payload target resolves through a binding, an element, or a
+      struct-field slice. 084 and 085 land byte-exact (name-
+      satisfaction and bounds are static dispatch): 100 of 108
+      behavioral, floor 100. Remain: the dyn emit's crash then
+      030/086-089; module loading (032/t09); 105's field-slice
+      stores; the mut law and usize lane (T3.6's mirror side)*
 - [ ] **T2.x** Optimizer in the mirror: constant folding, dead-code
       elimination, globals tree-shaking, tail-call→loop — with the
       language suites (opt/eq/params/modsys/strops/multiline) rebuilt
