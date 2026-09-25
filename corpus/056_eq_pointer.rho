@@ -1,0 +1,31 @@
+// exit: 0
+// adapted: pointers stay identity-compared; null left the language, so
+// the absence side rides ?T (None == None is the enum tag law)
+struct Node {
+  v: i32,
+}
+
+fn main() -> i32 {
+  let a: *Node = new Node { v: 1 };
+  let b: *Node = new Node { v: 1 };
+  let alias: *Node = a;
+  printf("distinct allocs: eq={} ne={}\n", (a == b), (a != b));
+  printf("alias: eq={} ne={}\n", (a == alias), (a != alias));
+  printf("self: eq={} ne={}\n", (a == a), (a != a));
+  let n1: ?*Node = Option.None;
+  let n2: ?*Node = Option.None;
+  printf("null vs null: eq={}\n", (n1 == n2));
+  printf("null vs live: ne={}\n", (n1 != Option.Some(a)));
+  printf("live vs null: ne={}\n", (Option.Some(a) != n1));
+  let wa: weak[Node] = weak.from(a);
+  let wa2: weak[Node] = weak.from(a);
+  let wb: weak[Node] = weak.from(b);
+  printf("weak same obj: eq={} ne={}\n", (wa == wa2), (wa != wa2));
+  printf("weak diff obj: eq={} ne={}\n", (wa == wb), (wa != wb));
+  let none: ?weak[Node] = Option.None;
+  let none2: ?weak[Node] = Option.None;
+  printf("weak null: eq={} vs-live-ne={}\n", (none == none2), (Option.Some(wa) != none));
+  a.v = 2;
+  printf("mutated through one alias still identity: eq={}\n", (a == alias));
+  return 0;
+}

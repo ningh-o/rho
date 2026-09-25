@@ -1,0 +1,38 @@
+// exit: 101
+// adapted: null deref → the ?T law — the strong ref drops to None, the
+// weak observes the death, get() hands back None, and the unwrap path
+// panics (exit 101)
+struct Node {
+  v: i32,
+}
+
+fn make_node(v: i32) -> *Node {
+  return new Node { v: v };
+}
+
+fn main() -> i32 {
+  let mut n: ?*Node = Option.Some(make_node(8));
+  let w: weak[Node] = match n {
+    Option.Some(p) => weak.from(p),
+    Option.None => weak.from(make_node(0)),
+  };
+  n = Option.None;
+  let alive: bool = match w.get() {
+    Option.Some(_) => true,
+    Option.None => false,
+  };
+  printf("released: alive={}\n", alive);
+  let q: ?*Node = w.get();
+  let q_null: bool = match q {
+    Option.Some(_) => false,
+    Option.None => true,
+  };
+  printf("get: q_null={}\n", q_null);
+  printf("reading q.v\n");
+  match q {
+    Option.Some(p) => printf("q.v={}\n", p.v),
+    Option.None => panic("null deref"),
+  }
+  printf("unreachable\n");
+  return 0;
+}

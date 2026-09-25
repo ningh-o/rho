@@ -1233,8 +1233,8 @@ static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
       case TY_BOOL: case TY_F32: case TY_F64: case TY_STRING:
       case TY_I8: case TY_I16: case TY_I32: case TY_I64:
       case TY_U8: case TY_U16: case TY_U32: case TY_U64: case TY_USIZE:
-      case TY_PTR: case TY_STRUCT: case TY_ENUM:
-        break;
+      case TY_PTR: case TY_WEAK: case TY_STRUCT: case TY_ENUM:
+        break; // weak compares identity, like pointers (§10)
       case TY_SLICE:
         err_at(c, e, "slices never compare (write a loop)");
         break;

@@ -1403,6 +1403,17 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       op(cx, "(local.set %zu %s)\n", dst, L(cx, res));
       return;
     }
+    if ((e->op == OP_EQ || e->op == OP_NE) && lt->kind == TY_WEAK) {
+      // weak identity is the TARGET's identity, not the box's (§10)
+      size_t res = cx_fresh(cx, ty_bool);
+      op(cx, "(local.set %zu (i32.eq (call $rho_weak_payload %s) "
+             "(call $rho_weak_payload %s)))\n", res, L(cx, a),
+         L(cx, b));
+      if (e->op == OP_NE)
+        op(cx, "(local.set %zu (i32.eqz %s))\n", res, L(cx, res));
+      op(cx, "(local.set %zu %s)\n", dst, L(cx, res));
+      return;
+    }
     if ((e->op == OP_EQ || e->op == OP_NE) && lt->kind == TY_STRING) {
       op(cx, "(local.set %zu (call $rho_streq (local.get %zu) "
              "(local.get %zu) (local.get %zu) (local.get %zu)))\n", dst,
