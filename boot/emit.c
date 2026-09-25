@@ -1794,6 +1794,8 @@ static void emit_match(FnCx *cx, NodeRef er, size_t dst) {
     }
     if (!wildcard && has_wild)
       op(cx, "(local.set %zu (i32.const 1))\n", matched);
+    if (wildcard && has_wild)
+      op(cx, "(if (i32.eqz %s) (then\n", L(cx, matched));
     // bind pattern locals from the payload run
     cx->scope++;
     size_t slot = v + 1;
