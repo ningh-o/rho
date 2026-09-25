@@ -556,6 +556,32 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog) -> string {
     }
     return out;
   }
+  // short-circuit && / ||: the lhs gates whether the rhs runs at all
+  // (an if with an i64 result — both operators yield 0/1)
+  if e.op == 13 || e.op == 14 {
+    let mut out: string = "";
+    match e.lhs {
+      Option.Some(l) => {
+        out = out + emit_expr(pool, l, env, prog);
+      },
+      Option.None => {},
+    }
+    out = out + "    (i32.wrap_i64)\n    if (result i64)\n";
+    if e.op == 14 {
+      out = out + "      (i64.const 1)\n    else\n";
+    }
+    match e.rhs {
+      Option.Some(r) => {
+        out = out + emit_expr(pool, r, env, prog);
+      },
+      Option.None => {},
+    }
+    if e.op == 13 {
+      out = out + "    else\n      (i64.const 0)\n";
+    }
+    out = out + "    end\n";
+    return out;
+  }
   // binary: operand code, then the operator
   let mut out: string = "";
   if e.op == 12 {
@@ -691,7 +717,8 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
               body = body + "    (local.set " + next_local.v.to_str() +
                      ")\n";
               env_bind(env, st.name, next_local.v);
-              if e.tag == parse.EX_BIN && e.op >= 5 && e.op <= 10 {
+              if e.tag == parse.EX_BIN &&
+                  ((e.op >= 5 && e.op <= 10) || e.op == 13 || e.op == 14) {
                 env_bool_bind(env, st.name);
               }
               next_local.v = next_local.v + 1;

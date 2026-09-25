@@ -220,6 +220,9 @@ pub fn lex(src: string) -> []*Tok {
           two = true;
         }
       }
+      if nx == b2 && (b2 == 38 || b2 == 124) {
+        two = true; // && ||
+      }
     }
     adv(c);
     if two {

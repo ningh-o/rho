@@ -68,9 +68,16 @@ pub fn strlit(text: string) -> *Expr {
 }
 
 // operator codes: 0=+ 1=- 2=* 3=/ 4=% 5=< 6=> 7=<= 8=>= 9=== 10=!=
+// 13=&& 14=||
 pub fn op_code(t: *Tok) -> i64 {
   let a: u8 = t.text[0];
   if len(t.text) == 2 {
+    if a == 38 {
+      return 13;
+    }
+    if a == 124 {
+      return 14;
+    }
     if a == 61 {
       return 9;
     }
@@ -153,19 +160,27 @@ fn is_punct(t: *Tok, ch: u8) -> bool {
   return t.kind == lex.TK_PUNCT && len(t.text) == 1 && t.text[0] == ch;
 }
 
-// precedence: 0 comparisons, 1 = + -, 2 = * / %
+// precedence: 0 = ||, 1 = &&, 2 = comparisons, 3 = + -, 4 = * / %
+// (&& binds tighter than ||, C-style; both sit below comparisons)
 fn prec_of(t: *Tok) -> i32 {
   if len(t.text) == 2 {
-    return 0;
+    let a: u8 = t.text[0];
+    if a == 38 {
+      return 1;
+    }
+    if a == 124 {
+      return 0;
+    }
+    return 2;
   }
   let b: u8 = t.text[0];
   if b == 60 || b == 62 {
-    return 0;
+    return 2;
   }
   if b == 43 || b == 45 {
-    return 1;
+    return 3;
   }
-  return 2;
+  return 4;
 }
 
 fn is_binop(t: *Tok) -> bool {
@@ -173,9 +188,12 @@ fn is_binop(t: *Tok) -> bool {
     return false;
   }
   if len(t.text) == 2 {
-    // == != <= >=
+    // == != <= >= && ||
     let a: u8 = t.text[0];
     let b: u8 = t.text[1];
+    if a == b && (a == 38 || a == 124) {
+      return true;
+    }
     return b == 61 && (a == 61 || a == 33 || a == 60 || a == 62);
   }
   if len(t.text) != 1 {
@@ -278,7 +296,7 @@ fn parse_primary(c: *PCur) -> *Expr {
           tkadv(c);
           break;
         }
-        args[na] = parse_bin(c, 1);
+        args[na] = parse_bin(c, 0);
         na = na + 1;
         if !eat_punct(c, 44) {
           eat_punct(c, 41);
@@ -291,7 +309,7 @@ fn parse_primary(c: *PCur) -> *Expr {
   }
   if is_punct(t, 40) {
     tkadv(c);
-    let inner = parse_bin(c, 1);
+    let inner = parse_bin(c, 0);
     eat_punct(c, 41);
     return inner;
   }
@@ -414,7 +432,7 @@ fn parse_stmt(c: *PCur) -> *Stmt {
     let args: []*Expr = make([]*Expr, 8);
     let mut na: usize = 0;
     while eat_punct(c, 44) {
-      args[na] = parse_bin(c, 1);
+      args[na] = parse_bin(c, 0);
       na = na + 1;
     }
     eat_punct(c, 41);
