@@ -1,0 +1,14 @@
+// out: 15 6 -8
+fn main() -> i32 {
+  let base: i32 = 10;
+  let add_base: fn(i32) -> i32 = fn(x: i32) -> i32 {
+    return x + base;
+  };
+  printf("{} ", add_base(5));
+  let scale: i32 = 3;
+  let mul: fn(i32) -> i32 = fn(x: i32) -> i32 { return x * scale; };
+  printf("{} ", mul(2));
+  let f: fn(i32) -> i32 = fn(x: i32) -> i32 { return 0 - x; };
+  printf("{}\n", f(8));
+  return 0;
+}

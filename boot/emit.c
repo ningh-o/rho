@@ -193,6 +193,8 @@ typedef struct Em {
   bool debug;
   size_t heap_min;     // pages
   size_t label_n;      // unique loop-label ids
+  size_t closure_n;    // synthesized closure counter
+  Vec closures;        // of const char* (wat names) — table order
 } Em;
 
 static Em *em_cur; // current emitter (single-shot compiler)
@@ -205,6 +207,7 @@ static void em_init(Em *em, Program *p, bool debug) {
   buf_init(&em->datasegs);
   vec_init(&em->data, sizeof(DataEnt));
   vec_init(&em->fns, sizeof(EFn));
+  vec_init(&em->closures, sizeof(const char *));
   vec_init(&em->dropfns, sizeof(Type *));
   vec_init(&em->emitted, sizeof(FnDef *));
   em->data_off = DATA_BASE;
@@ -572,6 +575,111 @@ static size_t dropfn_for(Type *t) {
   return 4 + VLEN(em->dropfns) - 1;
 }
 
+void em_queue_text(Em *em, const char *text) {
+  size_t n = strlen(text);
+  tneed(&em->fnbuf, n);
+  memcpy(em->fnbuf.p + em->fnbuf.n, text, n);
+  em->fnbuf.n += n;
+}
+
+// wasm type section entries for closure signatures (params + capt ptr)
+typedef struct CloTy {
+  FnSig *sig;
+  const char *tname;
+} CloTy;
+static Vec g_clotypes; // of CloTy
+
+size_t clofn_type_idx(FnCx *cx, FnSig *sig) {
+  (void)cx;
+  if (!g_clotypes.data)
+    vec_init(&g_clotypes, sizeof(CloTy));
+  for (size_t i = 0; i < VLEN(g_clotypes); i++)
+    if (VAT(g_clotypes, CloTy, i)->sig == sig)
+      return i;
+  CloTy *ct = VPUSH(g_clotypes, CloTy);
+  ct->sig = sig;
+  ct->tname = aprintf(g_arena, "$clo_%zu", VLEN(g_clotypes) - 1);
+  return VLEN(g_clotypes) - 1;
+}
+
+size_t closure_table_idx(Em *em, const char *cname) {
+  for (size_t i = 0; i < VLEN(em->closures); i++)
+    if (strcmp(*VAT(em->closures, const char *, i), cname) == 0)
+      return 4 + VLEN(em->dropfns) + i;
+  *VPUSH(em->closures, const char *) = cname;
+  return 4 + VLEN(em->dropfns) + VLEN(em->closures) - 1;
+}
+
+// walk a closure body collecting outer-variable references (in
+// deterministic traversal order; duplicates kept per reference site —
+// dedup happens at the copy step)
+typedef struct CapSet {
+  Vec list; // of VarInfo* — unique by vreg
+} CapSet;
+
+void closure_collect_captures(FnCx *cx, NodeRef br, Vec *caps) {
+  Node *b = node_get(br);
+  if (b->kind != NT_EXPRSTMT || b->op != 3)
+    return;
+  extern void cap_stmt(FnCx * cx, Node * s, Vec * caps);
+  for (size_t i = 0; i < reflist_len(b->list); i++)
+    cap_stmt(cx, node_get(reflist_at(b->list, i)), caps);
+}
+
+static void cap_add(FnCx *cx, Node *pathnode, Vec *caps) {
+  VarInfo *v = cx_var(cx, pathnode->name);
+  if (!v || !v->ty)
+    return; // own params/undeclared have nothing to capture
+  for (size_t i = 0; i < VLEN(*caps); i++)
+    if (*VAT(*caps, VarInfo *, i) == v)
+      return;
+  *VPUSH(*caps, VarInfo *) = v;
+}
+
+static void cap_expr(FnCx *cx, NodeRef er, Vec *caps) {
+  if (er == NO_REF)
+    return;
+  Node *e = node_get(er);
+  if (e->kind == NT_PATH) {
+    cap_add(cx, e, caps);
+    return;
+  }
+  if (e->kind == NT_CALL) {
+    cap_expr(cx, e->a, caps);
+    for (size_t i = 0; i < reflist_len(e->list); i++)
+      cap_expr(cx, node_get(reflist_at(e->list, i))->a, caps);
+    return;
+  }
+  if (e->kind == NT_METHOD) {
+    cap_expr(cx, e->a, caps);
+    for (size_t i = 0; i < reflist_len(e->list); i++)
+      cap_expr(cx, node_get(reflist_at(e->list, i))->a, caps);
+    return;
+  }
+  cap_expr(cx, e->a, caps);
+  cap_expr(cx, e->b, caps);
+  cap_expr(cx, e->c, caps);
+  cap_expr(cx, e->d, caps);
+  if (e->list)
+    for (size_t i = 0; i < reflist_len(e->list); i++)
+      cap_expr(cx, reflist_at(e->list, i), caps);
+}
+
+void cap_stmt(FnCx *cx, Node *s, Vec *caps) {
+  cap_expr(cx, s->a, caps);
+  cap_expr(cx, s->b, caps);
+  cap_expr(cx, s->c, caps);
+  cap_expr(cx, s->d, caps);
+  if (s->list && s->kind != NT_NEW && s->kind != NT_METHOD &&
+      s->kind != NT_CALL)
+    for (size_t i = 0; i < reflist_len(s->list); i++)
+      cap_stmt(cx, node_get(reflist_at(s->list, i)), caps);
+  // nested closures capture transitively (their bodies run in their own
+  // context; outer refs still capture here)
+  if (s->kind == NT_CLOSURE)
+    cap_expr(cx, s->c, caps);
+}
+
 // emit every registered drop walker + the funcref table
 static void emit_dropfns_and_table(Em *em) {
   for (size_t i = 0; i < VLEN(em->dropfns); i++) {
@@ -594,7 +702,7 @@ static void emit_dropfns_and_table(Em *em) {
   }
   // table: 4 nodrop slots + one per registered walker
   tprintf(&em->fnbuf, "  (table %zu funcref)\n",
-          4 + VLEN(em->dropfns));
+          4 + VLEN(em->dropfns) + VLEN(em->closures));
   tprintf(&em->fnbuf,
           "  (elem (i32.const 0) $rho_nodrop $rho_nodrop $rho_nodrop "
           "$rho_nodrop");
@@ -602,7 +710,10 @@ static void emit_dropfns_and_table(Em *em) {
     Type *st = *VAT(em->dropfns, Type *, i);
     tprintf(&em->fnbuf, " $drop_%s_%zu", st->sdef->name, i);
   }
+  for (size_t i = 0; i < VLEN(em->closures); i++)
+    tprintf(&em->fnbuf, " %s", *VAT(em->closures, const char *, i));
   tprintf(&em->fnbuf, ")\n");
+  (void)dropfn_for;
 }
 
 static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
@@ -636,8 +747,9 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
     }
     // const/static value: emitted as constants (ints) or data (strings)
     // via the folded value in the const table
-    Sym *s = symtab_get(cx->p->entry->syms, e->name);
-    Module *m = cx->fn->mod;
+    Sym *s = cx->p->entry->syms ? symtab_get(cx->p->entry->syms, e->name)
+                                : NULL;
+    Module *m = cx->fn ? cx->fn->mod : cx->p->entry;
     if (!s) s = symtab_get(m->syms, e->name);
     if (!s) s = symtab_get(g_prelude_mod->syms, e->name);
     if (s && s->kind == SYM_CONST && s->u.konst->cval) {
@@ -760,6 +872,36 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       size_t v = cx_fresh(cx, ty_i32);
       emit_expr(cx, aw->a, v);
       op(cx, "(call $proc_exit %s)\n", L(cx, v));
+      return;
+    }
+    // fn value held in a local: call through the table
+    VarInfo *fvv = cx_var(cx, callee->name);
+    if (fvv && fvv->ty && fvv->ty->kind == TY_FN) {
+      FnSig *sig = fvv->ty->sig;
+      size_t argregs2[16];
+      for (size_t i = 0; i < sig->nparams; i++) {
+        size_t v = cx_fresh(cx, sig->params[i].ty);
+        argregs2[i] = v;
+        Node *aw = i < reflist_len(e->list)
+                       ? node_get(reflist_at(e->list, i))
+                       : NULL;
+        if (aw && aw->kind == NT_POSARG)
+          emit_expr(cx, aw->a, v);
+      }
+      for (size_t i = 0; i < sig->nparams; i++) {
+        size_t n = shape_nlocals(sig->params[i].ty);
+        for (size_t k = 0; k < n; k++)
+          op(cx, "%s", L(cx, argregs2[i] + k));
+      }
+      op(cx, "%s\n", L(cx, fvv->vreg + 1)); // capture ptr
+      extern size_t clofn_type_idx(FnCx * cx, FnSig * sig);
+      op(cx, "(call_indirect (type $clo_%zu) %s)\n",
+         clofn_type_idx(cx, sig), L(cx, fvv->vreg));
+      if (sig->ret->kind != TY_UNIT) {
+        size_t n = shape_nlocals(sig->ret);
+        for (size_t i = n; i > 0; i--)
+          op(cx, "(local.set %zu)\n", dst + i - 1);
+      }
       return;
     }
     // plain call: the checker's chosen FnDef rides on ->sem2
@@ -1308,6 +1450,138 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
     return;
   }
 
+  case NT_CLOSURE: {
+    // captures by copy (immutables only — the checker enforces); the
+    // closure fn takes the capture payload as a trailing param
+    Type *ft = (Type *)e->sem;
+    FnSig *sig = ft->sig;
+    // capture set: outer locals referenced inside the body — walk
+    Vec caps; // of VarInfo*
+    vec_init(&caps, sizeof(VarInfo *));
+    {
+      extern void closure_collect_captures(FnCx * cx, NodeRef body,
+                                           Vec * caps);
+      closure_collect_captures(cx, e->c, &caps);
+    }
+    size_t ncap = VLEN(caps);
+    if (getenv("RHO_DEBUG_CLO")) fprintf(stderr, "[clo] ncap=%zu\n", ncap);
+    // capture struct payload: each capture's shape inline
+    size_t cap_size = 0;
+    for (size_t i = 0; i < ncap; i++)
+      cap_size += type_size((*VAT(caps, VarInfo *, i))->ty);
+    size_t blk = cx_fresh(cx, ty_i32);
+    op(cx, "(local.set %zu (call $rho_alloc (i32.const %zu)))\n", blk,
+       cap_size ? cap_size : 4);
+    op(cx, "(local.set %zu (i32.add (local.get %zu) (i32.const 24)))\n",
+       blk, blk);
+    // store captures (managed ones retained: the box owns them)
+    size_t coff = 0;
+    for (size_t i = 0; i < ncap; i++) {
+      VarInfo *cv = *VAT(caps, VarInfo *, i);
+      size_t n = shape_nlocals(cv->ty);
+      for (size_t k = 0; k < n; k++) {
+        WTy w = local_wty(cv->ty, k);
+        const char *strop = w == W_I64   ? "i64.store"
+                            : w == W_F32 ? "f32.store"
+                            : w == W_F64 ? "f64.store"
+                                         : "i32.store";
+        op(cx, "(%s (i32.add (local.get %zu) (i32.const %zu)) %s)\n",
+           strop, blk, coff + k * 4, L(cx, cv->vreg + k));
+      }
+      retain(cx, cv->ty, cv->vreg);
+      coff += type_size(cv->ty);
+    }
+    // synthesize the closure fn: params + trailing capture ptr
+    size_t cid = cx->em->closure_n++;
+    const char *cname = aprintf(g_arena, "$clo_%zu", cid);
+    {
+      Buf b2;
+      buf_init(&b2);
+      tprintf(&b2, "  (func %s", cname);
+      for (size_t i = 0; i < sig->nparams; i++) {
+        size_t n = shape_nlocals(sig->params[i].ty);
+        for (size_t k = 0; k < n; k++)
+          tprintf(&b2, " (param %s)",
+                  wty_s(local_wty(sig->params[i].ty, k)));
+      }
+      tprintf(&b2, " (param i32)"); // capture payload ptr
+      if (sig->ret->kind != TY_UNIT) {
+        size_t n = shape_nlocals(sig->ret);
+        for (size_t k = 0; k < n; k++)
+          tprintf(&b2, " (result %s)", wty_s(local_wty(sig->ret, k)));
+      }
+      tprintf(&b2, "\n");
+      // synthesize the body with a nested FnCx sharing locals space
+      FnCx cc;
+      cx_init(&cc, cx->em, NULL, cname);
+      // params registered first
+      for (size_t i = 0; i < sig->nparams; i++) {
+        size_t v = cx_fresh(&cc, sig->params[i].ty);
+        VarInfo *vi = VPUSH(cc.vars, VarInfo);
+        vi->name = sig->params[i].name;
+        vi->vreg = v;
+        vi->managed = type_is_managed(sig->params[i].ty);
+        vi->scope = 0;
+        vi->ty = sig->params[i].ty;
+      }
+      size_t capt_local = cx_fresh(&cc, ty_i32);
+      (void)capt_local;
+      // captures become locals loaded from the capture payload
+      size_t off2 = 0;
+      for (size_t i = 0; i < ncap; i++) {
+        VarInfo *cv = *VAT(caps, VarInfo *, i);
+        size_t n = shape_nlocals(cv->ty);
+        size_t v = cx_fresh(&cc, cv->ty);
+        for (size_t k = 0; k < n; k++) {
+          WTy w = local_wty(cv->ty, k);
+          const char *ld = w == W_I64   ? "i64.load"
+                           : w == W_F32 ? "f32.load"
+                           : w == W_F64 ? "f64.load"
+                                        : "i32.load";
+          op(&cc, "(local.set %zu (%s (i32.add (local.get %zu) "
+                  "(i32.const %zu))))\n", v + k, ld, capt_local,
+             off2 + k * 4);
+        }
+        VarInfo *vi = VPUSH(cc.vars, VarInfo);
+        vi->name = cv->name;
+        vi->vreg = v;
+        vi->managed = false; // the box owns them; body treats as borrowed
+        vi->scope = 0;
+        vi->ty = cv->ty;
+        off2 += type_size(cv->ty);
+      }
+      cc.ret = sig->ret;
+      op(&cc, "(loop $tco\n");
+      cc.depth++;
+      emit_stmt(&cc, e->c);
+      cc.depth--;
+      op(&cc, ")\n");
+      if (cc.ret->kind != TY_UNIT)
+        op(&cc, "(unreachable)\n");
+      // locals skip the param + capture slots (declared as params)
+      size_t nparam_locals2 = 0;
+      for (size_t i = 0; i < sig->nparams; i++)
+        nparam_locals2 += shape_nlocals(sig->params[i].ty);
+      nparam_locals2 += 1; // capture ptr param
+      tprintf(&b2, "  (local");
+      for (size_t i = nparam_locals2; i < VLEN(cc.localtypes); i++)
+        tprintf(&b2, " %s", wty_s(*VAT(cc.localtypes, WTy, i)));
+      tprintf(&b2, ")\n");
+      tneed(&b2, cc.b.n);
+      memcpy(b2.p + b2.n, cc.b.p, cc.b.n);
+      b2.n += cc.b.n;
+      tprintf(&b2, "  )\n");
+      // queue for assembly
+      extern void em_queue_text(Em * em, const char *text);
+      em_queue_text(cx->em, aprintf(g_arena, "%.*s", (int)b2.n, b2.p));
+    }
+    // value = (table idx, capture payload)
+    size_t ti = closure_table_idx(cx->em, cname);
+    op(cx, "(local.set %zu (i32.const %zu))\n", dst, ti);
+    op(cx, "(local.set %zu (local.get %zu))\n", dst + 1, blk);
+    return;
+  }
+
   case NT_MATCH_EXPR: {
     emit_match(cx, er, dst);
     return;
@@ -1726,6 +2000,7 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
     vi->vreg = v;
     vi->managed = type_is_managed(t);
     vi->scope = cx->scope;
+    vi->ty = t;
     return;
   }
   case NT_RETURN: {
@@ -2199,9 +2474,6 @@ static void emit_fndef(Em *em, FnDef *f) {
     vi->scope = 0;
     vi->ty = pt;
   }
-  if (getenv("RHO_DEBUG_SHAPE"))
-    fprintf(stderr, "[shape] %s ret-kind=%d nlocals=%zu\n", f->name,
-            (int)cx.ret->kind, shape_nlocals(cx.ret));
   op(&cx, "(loop $tco\n");
   cx.depth++;
   emit_stmt(&cx, f->body);
@@ -2408,6 +2680,26 @@ int emit_program(Program *p, bool debug, char **wat_out, size_t *wat_len) {
     memcpy(o->p + o->n, f->wat, f->wat_len);
     o->n += f->wat_len;
   }
+  // closure fn-type section
+  for (size_t i = 0; i < VLEN(g_clotypes); i++) {
+    CloTy *ct = VAT(g_clotypes, CloTy, i);
+    FnSig *sg = ct->sig;
+    tprintf(&em.fnbuf, "  (type %s (func", ct->tname);
+    for (size_t k = 0; k < sg->nparams; k++) {
+      size_t n = shape_nlocals(sg->params[k].ty);
+      for (size_t j = 0; j < n; j++)
+        tprintf(&em.fnbuf, " (param %s)",
+                wty_s(local_wty(sg->params[k].ty, j)));
+    }
+    tprintf(&em.fnbuf, " (param i32)");
+    if (sg->ret->kind != TY_UNIT) {
+      size_t n = shape_nlocals(sg->ret);
+      for (size_t j = 0; j < n; j++)
+        tprintf(&em.fnbuf, " (result %s)", wty_s(local_wty(sg->ret, j)));
+    }
+    tprintf(&em.fnbuf, "))\n");
+  }
+
   // drop walkers + the funcref table (fnbuf), after all functions
   emit_dropfns_and_table(&em);
   tneed(o, em.fnbuf.n);

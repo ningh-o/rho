@@ -600,6 +600,24 @@ static Type *check_call(FnCtx *c, NodeRef er, Type *expected) {
     err_at(c, callee, "unknown name '%s'", callee->name);
     return ty_unit;
   }
+  if (lk.kind == LOOK_LOCAL && lk.local->ty &&
+      lk.local->ty->kind == TY_FN) {
+    // fn value / closure call
+    FnSig *sig = lk.local->ty->sig;
+    size_t nfixed = sig->nparams;
+    if (reflist_len(args) != nfixed)
+      err_at(c, call, "call takes %zu argument(s), got %zu", nfixed,
+             reflist_len(args));
+    for (size_t i = 0; i < reflist_len(args); i++) {
+      Node *aw = node_get(reflist_at(args, i));
+      if (aw->kind != NT_POSARG) {
+        err_at(c, aw, "named arguments are only valid in constructors");
+        continue;
+      }
+      check_expr(c, aw->a, i < nfixed ? sig->params[i].ty : NULL);
+    }
+    return sig->ret;
+  }
   if (lk.kind == LOOK_FN) {
     // intrinsics
     if (is_intrinsic_fn(callee->name) &&
@@ -1210,6 +1228,7 @@ static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
     return type_slice(elem);
   }
   case NT_CLOSURE: {
+    // (the checker-annotated fn type carries this closure's sig)
     // params + body; captures checked when used (immutables by copy —
     // enforced because closures see the outer immutable locals)
     GScope dummy = {0};

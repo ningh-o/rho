@@ -1036,6 +1036,10 @@ static NodeRef parse_stmt(Parser *p) {
     // fall through: expression statement
     break;
   }
+  case T_LBRACE: {
+    // bare block statement (its own scope; defers/releases at its end)
+    return parse_block(p);
+  }
   case T_EOF:
     return nnew(p, NT_EXPRSTMT);
   default:

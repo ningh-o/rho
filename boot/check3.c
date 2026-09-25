@@ -218,9 +218,6 @@ static CVal fold_binop(int op, CVal a, CVal b) {
     int64_t sx = (int64_t)x, sy = (int64_t)y;
     // unsigned types compare unsigned
     bool uu = a.ty->kind >= TY_U8;
-    if (getenv("RHO_DEBUG_FOLD"))
-      fprintf(stderr, "[cmp] op=%d x=%llu y=%llu uu=%d\n", op,
-              (unsigned long long)x, (unsigned long long)y, (int)uu);
     bool bv;
     switch (op) {
     case OP_EQ: bv = x == y; break;
@@ -563,14 +560,8 @@ void const_resolve_all(Program *p) {
 bool fold_if_condition(Module *m, Node *ifnode, int *live) {
   bool b;
   if (!fold_cond_modules(m, ifnode->a, &b)) {
-    if (getenv("RHO_DEBUG_FOLD"))
-      fprintf(stderr, "[fold-fail] %s:%d kind=%d\n", m->path,
-              ifnode->line, (int)node_get(ifnode->a)->kind);
     return false;
   }
-  if (getenv("RHO_DEBUG_FOLD"))
-    fprintf(stderr, "[fold] %s:%d -> %d\n", m->path, ifnode->line,
-            b ? 1 : 0);
   *live = b ? 1 : 0;
   return true;
 }
