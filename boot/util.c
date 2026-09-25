@@ -328,6 +328,7 @@ static const struct { TokKind k; const char *s; } k_tok_names[] = {
     {T_PERCENT, "'%'"},        {T_AMP, "'&'"},
     {T_PIPE, "'|'"},           {T_CARET, "'^'"},
     {T_BANG, "'!'"},           {T_QUESTION, "'?'"},
+    {T_ANDAND, "'&&'"},        {T_OROR, "'||'"},
     {T_SHL, "'<<'"},           {T_SHR, "'>>'"},
     {T_EQ, "'='"},             {T_EQEQ, "'=='"},
     {T_NE, "'!='"},            {T_LT, "'<'"},
