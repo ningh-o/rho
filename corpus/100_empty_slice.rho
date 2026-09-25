@@ -1,0 +1,12 @@
+// exit: 0
+// adapted: prim to_str calls ride format; and under the fat-slice law
+// the empty range on an EMPTY base is valid (both bounds checks are
+// lo>hi and hi>len — 0..0 passes), so the pinned bounds panic is gone
+// and the empty slice reads len 0
+fn main() -> i32 {
+  let s: string = "abc";
+  printf("{}\n", len(s[0..0]));
+  let e: string = "";
+  printf("{}", format("{}", len(e[0..0])));
+  return 0;
+}
