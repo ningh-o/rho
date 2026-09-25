@@ -167,6 +167,8 @@ typedef struct FnDef {
   const char *recv;    // receiver type spelling (method/assoc)
   const char **gparams;
   size_t ngparams;
+  size_t nimplicit; // methods on a generic type: leading gparams come
+                    // from the type (bound at each receiver use)
   struct FnDef *next_overload; // same-name chain
   struct FnDef *instances;     // monomorphized instances (chain)
   struct FnDef *next_instance;

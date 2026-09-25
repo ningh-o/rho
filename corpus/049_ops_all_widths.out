@@ -1,0 +1,10 @@
+i8: add=-76 sub=-90 mul=-69 div=-11 rem=-6
+i16: add=-76 sub=-90 mul=-581 div=-11 rem=-6
+i32: add=-76 sub=-90 mul=-581 div=-11 rem=-6
+i64: add=-76 sub=-90 mul=-581 div=-11 rem=-6
+i64b: add=-76 sub=-90 mul=-581 div=-11 rem=-6
+u8: add=1 sub=243 mul=214 div=35 rem=5
+u16: add=257 sub=243 mul=1750 div=35 rem=5
+u32: add=257 sub=243 mul=1750 div=35 rem=5
+u64: add=257 sub=243 mul=1750 div=35 rem=5
+u64b: add=257 sub=243 mul=1750 div=35 rem=5

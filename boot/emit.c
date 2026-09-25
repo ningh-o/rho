@@ -621,9 +621,7 @@ typedef struct Layout {
   size_t size; // payload size (excl. the 24-byte header)
 } Layout;
 
-static size_t align_up(size_t v, size_t a) { return (v + a - 1) & ~(a - 1); }
-
-static size_t type_align(Type *t) { // dense layout: always 4
+__attribute__((unused)) static size_t type_align(Type *t) { // dense: 4
   (void)t;
   return 4;
 }
@@ -644,13 +642,14 @@ static size_t type_size(Type *t) {
   return shape_slot_off(t, shape_nlocals(t));
 }
 
-__attribute__((unused)) static size_t field_offset(Type *st, size_t idx) {
+static size_t field_offset(Type *st, size_t idx) {
+  // dense layout: each field's size is its instantiated shape's packed
+  // width (param-typed fields must count at their BOUND width — a raw
+  // TY_PARAM reads 4 and would overlap the next field's slots)
   size_t off = 0;
-  for (size_t i = 0; i < idx; i++) {
-    off = align_up(off, type_align(st->sdef->fields[i].ty));
-    off += type_size(st->sdef->fields[i].ty);
-  }
-  return align_up(off, type_align(st->sdef->fields[idx].ty));
+  for (size_t i = 0; i < idx; i++)
+    off += type_size(inst_ty(st, st->sdef->fields[i].ty));
+  return off;
 }
 
 // numeric const from a folded value stored in a node's type-checked
@@ -1733,11 +1732,14 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       Type *rt = (Type *)node_get(e->a)->sem;
       size_t selfv = cx_fresh(cx, rt);
       emit_expr(cx, e->a, selfv);
-      // args map to params[1..]
+      // args map to params[1..]; a variadic tail materializes a fresh
+      // slice exactly like a plain call (spec §12)
       size_t nfixed = f->sig->nparams;
+      bool mvar = nfixed > 0 && f->sig->params[nfixed - 1].variadic;
+      size_t mfixed = mvar ? nfixed - 1 : nfixed;
       size_t argregs[16];
       size_t nregs = 0;
-      for (size_t i = 1; i < nfixed; i++) {
+      for (size_t i = 1; i < mfixed; i++) {
         Type *pt = f->sig->params[i].ty;
         Node *aw = (i - 1) < reflist_len(e->list)
                        ? node_get(reflist_at(e->list, i - 1))
@@ -1749,12 +1751,56 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
           pass_arg_own(cx, aw->a, pt, v);
         }
       }
+      if (mvar) {
+        Type *st = f->sig->params[mfixed].ty;
+        Type *et = st->base;
+        size_t esz = type_size(et);
+        size_t extra =
+            reflist_len(e->list) > mfixed - 1 ? reflist_len(e->list) - (mfixed - 1)
+                                              : 0;
+        Node *firstaw = extra >= 1 ? node_get(reflist_at(e->list, mfixed - 1))
+                                   : NULL;
+        size_t v = cx_fresh(cx, st);
+        argregs[nregs++] = v;
+        if (extra == 1 && firstaw && firstaw->kind == NT_POSARG &&
+            firstaw->bval) { // spread passes the slice through
+          emit_expr(cx, firstaw->a, v);
+        } else {
+          size_t blk = cx_fresh(cx, ty_i32);
+          op(cx, "(local.set %zu (call $rho_alloc (i32.const %zu)))\n", blk,
+             extra * esz);
+          op(cx,
+             "(local.set %zu (i32.add (local.get %zu) (i32.const 24)))\n", v,
+             blk);
+          op(cx, "(local.set %zu %s)\n", v + 1, L(cx, v)); // fat: owner=data
+          op(cx, "(local.set %zu (i32.const %zu))\n", v + 2, extra);
+          for (size_t j = 0; j < extra; j++) {
+            Node *aw = node_get(reflist_at(e->list, mfixed - 1 + j));
+            Type *at = (Type *)node_get(aw->a)->sem;
+            size_t ev = cx_fresh(cx, at);
+            emit_expr(cx, aw->a, ev);
+            size_t nl = shape_nlocals(et);
+            for (size_t k = 0; k < nl; k++) {
+              WTy w = local_wty(et, k);
+              const char *strop = w == W_I64   ? "i64.store"
+                                  : w == W_F32 ? "f32.store"
+                                  : w == W_F64 ? "f64.store"
+                                               : "i32.store";
+              op(cx, "(%s (i32.add %s (i32.const %zu)) %s)\n", strop,
+                 L(cx, v), j * esz + shape_slot_off(et, k), L(cx, ev + k));
+            }
+          }
+        }
+      }
       // methods on the concrete type are direct calls
       if (node_get(e->a)->kind == NT_PATH && cx_var(cx, node_get(e->a)->name))
         retain(cx, rt, selfv);
-      op(cx, "%s", L(cx, selfv));
+      // push every argument local in order — fat values own slot runs
+      for (size_t k = 0; k < shape_nlocals(rt); k++)
+        op(cx, "%s", L(cx, selfv + k));
       for (size_t i = 0; i < nregs; i++)
-        op(cx, "%s", L(cx, argregs[i]));
+        for (size_t k = 0; k < shape_nlocals(f->sig->params[i + 1].ty); k++)
+          op(cx, "%s", L(cx, argregs[i] + k));
       op(cx, "(call $%s)\n", fn_wat_name(f));
       Type *tres = f->sig->ret;
       if (tres->kind != TY_UNIT) {
@@ -3439,9 +3485,16 @@ static void emit_all_fns(Em *em) {
     for (Sym *s = m->syms->order_head; s; s = s->order_next) {
       if (s->kind != SYM_FN)
         continue;
-      for (FnDef *f = s->u.fns; f; f = f->next_overload)
-        if (f->body != NO_REF)
+      for (FnDef *f = s->u.fns; f; f = f->next_overload) {
+        // generic templates never run — only their instantiations do
+        if (f->body != NO_REF && !f->ngparams)
           prereg_drop_walkers_stmt(node_get(f->body));
+        // generic instances walk too (their bodies carry the concrete
+        // instantiations' types)
+        for (FnDef *g = f->instances; g; g = g->next_instance)
+          if (g->body != NO_REF)
+            prereg_drop_walkers_stmt(node_get(g->body));
+      }
     }
   }
   // deterministic: module load order, then symbol creation order
@@ -3452,7 +3505,7 @@ static void emit_all_fns(Em *em) {
       if (s->kind != SYM_FN)
         continue;
       for (FnDef *f = s->u.fns; f; f = f->next_overload) {
-        if (f->body != NO_REF)
+        if (f->body != NO_REF && !f->ngparams)
           emit_fndef(em, f);
         // generic instances emit right after their template
         for (FnDef *g = f->instances; g; g = g->next_instance)

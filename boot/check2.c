@@ -23,6 +23,8 @@ typedef struct FnCtx {
   Vec labels;   // of const char* — labels are function-unique
   const char **gparams;
   size_t ngparams;
+  Type **gbinds; // generic instance: name → concrete bind (parallel to
+                 // gparams; NULL for templates)
 } FnCtx;
 
 static void ctx_push_scope(FnCtx *c) { c->scope++; }
@@ -167,12 +169,19 @@ static bool lookup(FnCtx *c, const char *name, Look *out) {
 }
 
 // resolve a type node inside a function context (generic params of the
-// enclosing fn are in scope)
+// enclosing fn are in scope); inside a generic INSTANCE the names map
+// to the instance's concrete binds
 static Type *check_type_in_ctx(FnCtx *c, NodeRef tr, GScope *g) {
   (void)g;
   extern Type *resolve_type_pub(Module *, NodeRef, GScope *);
   GScope gs = {c->gparams, c->ngparams, NULL};
-  return resolve_type_pub(c->mod, tr, &gs);
+  Type *t = resolve_type_pub(c->mod, tr, &gs);
+  if (c->gbinds && t && t->kind == TY_PARAM) {
+    for (size_t i = 0; i < c->ngparams; i++)
+      if (strcmp(c->gparams[i], t->pname) == 0)
+        return c->gbinds[i] ? c->gbinds[i] : t;
+  }
+  return t;
 }
 
 // ---------------------------------------------------------------- literals
@@ -274,6 +283,10 @@ static Type *check_match(FnCtx *c, NodeRef er, Type *expected);
 static void check_pattern(FnCtx *c, Node *p, Type *st);
 static Type *check_call(FnCtx *c, NodeRef er, Type *expected);
 static Type *check_method(FnCtx *c, NodeRef er, Type *expected);
+static FnDef *instantiate_generic_seeded(FnCtx *c, FnDef *f, Node *call,
+                                         Type *expected, Type **seed);
+static bool ty_has_param(Type *t);
+static bool ty_pattern_match(Type *pat, Type *val);
 static Type *check_format_call(FnCtx *c, Node *call, Type *expected);
 static void check_assign_target(FnCtx *c, Node *lv);
 static void check_assign_target_base(FnCtx *c, NodeRef base);
@@ -307,6 +320,8 @@ static bool sig_matches(FnCtx *c, FnSig *sig, NodeRef call_r,
     Node *a = node_get(reflist_at(args, i + first));
     if (a->kind != NT_POSARG)
       return false; // named args only valid on constructors
+    if (pt && ty_has_param(pt))
+      continue; // generic pattern: binds at instantiation
     if (pt && pt->kind == TY_PARAM)
       continue; // generic parameter: matches (bound at instantiation)
     Node *arg = node_get(a->a);
@@ -316,7 +331,7 @@ static bool sig_matches(FnCtx *c, FnSig *sig, NodeRef call_r,
       continue;
     }
     Type *at = check_expr(c, a->a, pt);
-    if (!type_eq(at, pt))
+    if (!ty_pattern_match(pt, at))
       return false;
   }
   return true;
@@ -383,15 +398,32 @@ static FnDef **method_candidates(FnCtx *c, Type *t, const char *name,
           *VPUSH(g_method_cands, FnDef *) = f;
     }
   }
-  // extension methods participate only from the use closure
-  for (size_t i = 0; i < VLEN(c->mod->uses); i++) {
+  // extension methods participate from the caller's own module and its
+  // use closure (the design's import-scoped visibility: your own
+  // declarations are trivially imported)
+  Module *extmods[64];
+  size_t nexts = 0;
+  extmods[nexts++] = c->mod;
+  for (size_t i = 0; i < VLEN(c->mod->uses) && nexts < 64; i++) {
     UseBind *ub = VAT(c->mod->uses, UseBind, i);
-    Module *um = ub->target;
+    bool dup = false;
+    for (size_t k = 0; k < nexts; k++)
+      if (extmods[k] == ub->target)
+        dup = true;
+    if (!dup)
+      extmods[nexts++] = ub->target;
+  }
+  for (size_t mi = 0; mi < nexts; mi++) {
+    Module *um = extmods[mi];
+    if (um == tmod)
+      continue; // the type's own module was scanned natively above
     if (!um->syms)
       continue;
     for (Sym *s = um->syms->order_head; s; s = s->order_next) {
-      if (s->kind != SYM_FN || strcmp(s->name, name) != 0 || !s->pub)
+      if (s->kind != SYM_FN || strcmp(s->name, name) != 0)
         continue;
+      if (um != c->mod && !s->pub)
+        continue; // own module: private ok; imports: pub only
       for (FnDef *f = s->u.fns; f; f = f->next_overload) {
         if (!f->is_method || strcmp(f->recv, tn) != 0)
           continue;
@@ -516,6 +548,97 @@ typedef struct TBind {
   Type **tys;
   size_t n;
 } TBind;
+
+// does the type mention a generic parameter (deep)?
+static bool ty_has_param(Type *t) {
+  if (!t)
+    return false;
+  if (t->kind == TY_PARAM)
+    return true;
+  if (t->base && ty_has_param(t->base))
+    return true;
+  for (size_t i = 0; i < t->nargs; i++)
+    if (ty_has_param(t->args[i]))
+      return true;
+  return false;
+}
+
+// structural unification: bind the generic names in pat from val;
+// false on a shape clash or a conflicting rebind
+static bool tunify(Type *pat, Type *val, TBind *b) {
+  if (!pat || !val)
+    return pat == val;
+  if (pat->kind == TY_PARAM) {
+    for (size_t i = 0; i < b->n; i++)
+      if (b->names[i] && strcmp(b->names[i], pat->pname) == 0) {
+        if (b->tys[i] && !type_eq(b->tys[i], val))
+          return false;
+        b->tys[i] = val;
+        return true;
+      }
+    return true; // a param of some outer scope: nothing to bind
+  }
+  switch (pat->kind) {
+  case TY_PTR:
+  case TY_SLICE:
+  case TY_WEAK:
+    return val->kind == pat->kind &&
+           tunify(pat->base, val->base, b);
+  case TY_STRUCT:
+    if (val->kind != TY_STRUCT || val->sdef != pat->sdef ||
+        val->nargs != pat->nargs)
+      return false;
+    for (size_t i = 0; i < pat->nargs; i++)
+      if (!tunify(pat->args[i], val->args[i], b))
+        return false;
+    return true;
+  case TY_ENUM:
+    if (val->kind != TY_ENUM || val->edef != pat->edef ||
+        val->nargs != pat->nargs)
+      return false;
+    for (size_t i = 0; i < pat->nargs; i++)
+      if (!tunify(pat->args[i], val->args[i], b))
+        return false;
+    return true;
+  default:
+    return type_eq(pat, val);
+  }
+}
+
+// a generic signature's type is a PATTERN: params match any type at
+// their position (binding happens at instantiation)
+static bool ty_pattern_match(Type *pat, Type *val) {
+  if (!pat || !val)
+    return pat == val;
+  if (pat->kind == TY_PARAM)
+    return true;
+  if (!ty_has_param(pat))
+    return type_eq(pat, val);
+  switch (pat->kind) {
+  case TY_PTR:
+  case TY_SLICE:
+  case TY_WEAK:
+    return val->kind == pat->kind && ty_pattern_match(pat->base, val->base);
+  case TY_STRUCT:
+    if (val->kind != TY_STRUCT || val->sdef != pat->sdef ||
+        val->nargs != pat->nargs)
+      return false;
+    for (size_t i = 0; i < pat->nargs; i++)
+      if (!ty_pattern_match(pat->args[i], val->args[i]))
+        return false;
+    return true;
+  case TY_ENUM:
+    if (val->kind != TY_ENUM || val->edef != pat->edef ||
+        val->nargs != pat->nargs)
+      return false;
+    for (size_t i = 0; i < pat->nargs; i++)
+      if (!ty_pattern_match(pat->args[i], val->args[i]))
+        return false;
+    return true;
+  default:
+    return type_eq(pat, val);
+  }
+}
 
 static Type *tsubst_impl(Type *t, TBind *b) {
   if (!t)
@@ -828,6 +951,31 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
                 }
               }
               if (nhits == 1) {
+                // a generic assoc fn instantiates at the call site
+                // (implicit type params bind from args / the expected
+                // return, exactly like a plain generic fn)
+                if (hit->ngparams) {
+                  extern FnDef *instantiate_generic(FnCtx * c, FnDef * f,
+                                                    Node * call,
+                                                    Type * expected);
+                  FnDef *inst = instantiate_generic(c, hit, m, expected);
+                  if (!inst)
+                    return ty_unit;
+                  node_get(er)->op = 5;
+                  node_get(er)->sem2 = inst;
+                  for (size_t ai = 0; ai < reflist_len(m->list); ai++) {
+                    Node *aw = node_get(reflist_at(m->list, ai));
+                    if (aw->kind != NT_POSARG)
+                      continue;
+                    size_t np = inst->sig->nparams;
+                    bool va = np > 0 && inst->sig->params[np - 1].variadic;
+                    size_t nfx = va ? np - 1 : np;
+                    Type *pt2 = ai < nfx ? inst->sig->params[ai].ty
+                                  : va ? inst->sig->params[nfx].ty : NULL;
+                    check_expr(c, aw->a, pt2);
+                  }
+                  return inst->sig->ret;
+                }
                 // sig_matches' literal fast path leaves arg sems unset;
                 // check every arg for real (the emitter reads them)
                 for (size_t ai = 0; ai < reflist_len(m->list); ai++) {
@@ -976,6 +1124,9 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
   // exact-match-unique over candidates (recv already consumed)
   int nmatch = 0;
   FnDef *chosen = NULL;
+  // a generic method's implicit params bind from the receiver
+  // instantiation (self: Opt binds T from Opt[i32])
+  Type *rbase = rt->kind == TY_PTR ? rt->base : rt;
   for (size_t i = 0; i < ncand; i++) {
     FnDef *f = cands[i];
     // arity/type check with literal adaptation (params[0] is self)
@@ -984,6 +1135,23 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
     bool variadic = nparams > 0 && f->sig->params[nparams - 1].variadic;
     size_t nfixed = variadic ? nparams - 1 : nparams;
     bool ok = variadic ? nargv + 1 >= nfixed : nargv + 1 == nfixed;
+    // substitute the implicit binds through the param types first
+    Type *selfty = NULL;
+    TBind itb = {0};
+    if (ok && f->nimplicit &&
+        (rbase->kind == TY_STRUCT || rbase->kind == TY_ENUM) &&
+        rbase->nargs == f->nimplicit) {
+      itb.names = f->gparams;
+      itb.tys = arena_alloc(g_arena, f->nimplicit * sizeof(Type *), 8);
+      for (size_t b = 0; b < f->nimplicit; b++)
+        itb.tys[b] = rbase->args[b];
+      itb.n = f->nimplicit;
+      selfty = tsubst(f->sig->params[0].ty, &itb);
+      if (!type_eq(selfty, rt))
+        ok = false;
+    } else if (ok && f->nimplicit) {
+      ok = false; // generic method needs an instantiated receiver
+    }
     for (size_t j = 0; ok && j < nargv; j++) {
       Node *aw = node_get(reflist_at(m->list, j));
       if (aw->kind != NT_POSARG) {
@@ -992,6 +1160,8 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
       }
       Type *pt = j < nfixed ? f->sig->params[j + 1].ty
                             : f->sig->params[nfixed].ty;
+      if (itb.n)
+        pt = tsubst(pt, &itb); // implicit binds applied
       Node *arg = node_get(aw->a);
       if (arg->kind == NT_INT || arg->kind == NT_FLOAT) {
         if (!literal_adapts_to(c, arg, pt))
@@ -1015,6 +1185,36 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
       err_at(c, m, "ambiguous method call '%s' (%d exact matches)",
              m->name, nmatch);
     return ty_unit;
+  }
+  if (chosen->ngparams) {
+    // monomorphize the generic method: implicit params seeded from the
+    // receiver, the rest from args/expected, then the args re-check
+    // against the substituted signature
+    Type **seed = NULL;
+    if (chosen->nimplicit) {
+      seed = arena_alloc(g_arena, chosen->ngparams * sizeof(Type *), 8);
+      memset(seed, 0, chosen->ngparams * sizeof(Type *));
+      for (size_t b = 0; b < chosen->nimplicit && b < rbase->nargs; b++)
+        seed[b] = rbase->args[b];
+    }
+    FnDef *inst =
+        instantiate_generic_seeded(c, chosen, m, expected, seed);
+    if (!inst)
+      return ty_unit;
+    node_get(er)->sem2 = inst;
+    node_get(er)->op = 2;
+    for (size_t j = 0; j < reflist_len(m->list); j++) {
+      Node *aw = node_get(reflist_at(m->list, j));
+      if (aw->kind != NT_POSARG)
+        continue;
+      size_t nparams = inst->sig->nparams;
+      bool variadic = nparams > 0 && inst->sig->params[nparams - 1].variadic;
+      size_t nfixed = variadic ? nparams - 1 : nparams;
+      Type *pt = j < nfixed ? inst->sig->params[j + 1].ty
+                            : variadic ? inst->sig->params[nfixed].ty : NULL;
+      check_expr(c, aw->a, pt);
+    }
+    return inst->sig->ret;
   }
   node_get(er)->sem2 = chosen; // the chosen method (emit reads it)
   node_get(er)->op = 2;        // marks: real method call
@@ -1179,7 +1379,13 @@ static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
     for (size_t i = 0; i < bt->sdef->nfields; i++)
       if (strcmp(bt->sdef->fields[i].name, e->name) == 0) {
         node_get(er)->op = (int)i; // field index for the emitter
-        return bt->sdef->fields[i].ty;
+        // the field type lives through the receiver instantiation
+        Type *ft = bt->sdef->fields[i].ty;
+        if (bt->nargs && bt->sdef->gparams) {
+          TBind fb = {bt->sdef->gparams, bt->args, bt->nargs};
+          ft = tsubst(ft, &fb);
+        }
+        return ft;
       }
     err_at(c, e, "struct %s has no field '%s'", bt->sdef->name, e->name);
     return ty_unit;
@@ -1366,14 +1572,31 @@ static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
       for (size_t i = 0; i < n; i++)
         gargs[i] = check_type_in_ctx(c, reflist_at(node_get(e->a)->list, i),
                                      &dummy);
+      if (n != sd->ngparams) {
+        err_at(c, e, "struct %s takes %zu generic argument(s), got %zu",
+               sd->name, sd->ngparams, n);
+        gargs = NULL;
+      }
+    } else if (sd->ngparams) {
+      err_at(c, e, "cannot infer the generic arguments of %s here "
+                   "— spell them: new %s[T, …]", sd->name, sd->name);
+      return ty_unit;
     }
     Type *st = type_struct(sd, gargs, sd->ngparams);
     // field initializers: every field exactly once (pointer fields must
-    // initialize — checked here structurally)
+    // initialize — checked here structurally); field types live through
+    // the instantiation's binds
+    TBind nb = {0};
+    if (gargs && sd->gparams) {
+      nb.names = sd->gparams;
+      nb.tys = gargs;
+      nb.n = sd->ngparams;
+    }
     RefList *inits = e->b != NO_REF ? node_get(e->b)->list : NULL;
     size_t ninits = inits ? reflist_len(inits) : 0;
     for (size_t i = 0; i < sd->nfields; i++) {
       FieldDef *f = &sd->fields[i];
+      Type *fty = nb.n ? tsubst(f->ty, &nb) : f->ty;
       bool found = false;
       for (size_t j = 0; j < ninits; j++) {
         Node *fi = node_get(reflist_at(inits, j));
@@ -1384,13 +1607,13 @@ static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
         if (found)
           err_at(c, fi, "field '%s' initialized twice", f->name);
         found = true;
-        check_expr(c, fi->a, f->ty);
+        check_expr(c, fi->a, fty);
       }
       if (!found) {
         // zeroed default only for unmanaged fields
-        if (type_is_managed(f->ty))
+        if (type_is_managed(fty))
           err_at(c, e, "field '%s' (%s) must be initialized", f->name,
-                 type_name(f->ty));
+                 type_name(fty));
       }
     }
     for (size_t j = 0; j < ninits; j++) {
@@ -1982,6 +2205,7 @@ static void check_fn_body(Program *p, FnDef *f) {
   ctx.ret = f->sig->ret;
   ctx.gparams = f->gparams;
   ctx.ngparams = f->ngparams;
+  ctx.gbinds = f->ibinds; // instances: names map to concrete binds
   for (size_t i = 0; i < f->sig->nparams; i++) {
     Local *l = ctx_decl_local(&ctx, f->sig->params[i].name);
     l->ty = f->sig->params[i].ty ? f->sig->params[i].ty : ty_unit;
@@ -1998,8 +2222,11 @@ bool check_bodies(Program *p) {
       if (s->kind != SYM_FN)
         continue;
       for (FnDef *f = s->u.fns; f; f = f->next_overload) {
+        // generic templates are checked per instantiation (their bodies
+        // only make sense with concrete binds — the design's law)
+        if (f->ngparams)
+          continue;
         check_fn_body(p, f);
-        // generic instances checked at their instantiation sites
       }
     }
   }
@@ -2020,31 +2247,44 @@ Type *tsubst(Type *t, void *b) { return tsubst_impl(t, (TBind *)b); }
 // monomorphize a generic call: bind gparams from argument types (and
 // the expected type through the return), reuse identical instances
 FnDef *instantiate_generic(FnCtx *c, FnDef *f, Node *call, Type *expected) {
+  return instantiate_generic_seeded(c, f, call, expected, NULL);
+}
+
+static FnDef *instantiate_generic_seeded(FnCtx *c, FnDef *f, Node *call,
+                                         Type *expected, Type **seed) {
   const char **names = f->gparams;
   size_t ng = f->ngparams;
   Type **binds = arena_alloc(g_arena, ng * sizeof(Type *), 8);
   memset(binds, 0, ng * sizeof(Type *));
-  // bind from params/args in order
+  // seeded binds win (a method's implicit params come from the receiver
+  // instantiation; plain fns pass NULL)
+  TBind tb0 = {names, binds, ng};
+  if (seed)
+    for (size_t b = 0; b < ng; b++)
+      binds[b] = seed[b];
+  // bind from the expected type through the return FIRST (a literal
+  // argument has no type of its own until the consumer is known)
+  Type *rt = f->sig->ret;
+  if (rt && expected && ty_has_param(rt))
+    tunify(rt, expected, &tb0);
+  // bind from params/args by structural unification (literals defer to
+  // the re-check — they have no independent type)
   for (size_t i = 0; i < f->sig->nparams && i < reflist_len(call->list);
        i++) {
     Type *pt = f->sig->params[i].ty;
-    if (!pt || pt->kind != TY_PARAM)
+    if (!pt || !ty_has_param(pt))
       continue;
     Node *aw = node_get(reflist_at(call->list, i));
     if (aw->kind != NT_POSARG)
       continue;
-    for (size_t b = 0; b < ng; b++)
-      if (strcmp(names[b], pt->pname) == 0) {
-        if (!binds[b])
-          binds[b] = check_expr(c, aw->a, NULL);
-      }
-  }
-  // bind from the expected type through a param-typed return
-  Type *rt = f->sig->ret;
-  if (rt && rt->kind == TY_PARAM && expected) {
-    for (size_t b = 0; b < ng; b++)
-      if (strcmp(names[b], rt->pname) == 0 && !binds[b])
-        binds[b] = expected;
+    Node *arg = node_get(aw->a);
+    if (arg->kind == NT_INT || arg->kind == NT_FLOAT ||
+        (arg->kind == NT_UNARY && arg->op == OP_NEG &&
+         (node_get(arg->a)->kind == NT_INT ||
+          node_get(arg->a)->kind == NT_FLOAT)))
+      continue; // literal: adapted by the post-instantiation re-check
+    Type *at = check_expr(c, aw->a, NULL);
+    tunify(pt, at, &tb0);
   }
   for (size_t b = 0; b < ng; b++)
     if (!binds[b]) {
@@ -2090,7 +2330,12 @@ FnDef *instantiate_generic(FnCtx *c, FnDef *f, Node *call, Type *expected) {
   }
   inst->sig->ret = tsubst(f->sig->ret, &tb);
   inst->ibinds = binds;
-  inst->ngparams = 0;
+  // names stay for instance-body type resolution (check_fn_body maps
+  // them through ibinds); nimplicit=0 marks "fully instantiated" so no
+  // call site ever re-instantiates an instance
+  inst->gparams = f->gparams;
+  inst->ngparams = f->ngparams;
+  inst->nimplicit = 0;
   // append (creation order)
   if (!f->instances) {
     f->instances = inst;

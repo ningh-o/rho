@@ -1,0 +1,42 @@
+// exit: 0
+// adapted: isize left the type set; the two extra
+// lines ride i64/u64 instead. the + - * / % sweep at every width: identical operands per signedness
+// (signed a=-83 b=7, unsigned a=250 b=7), so each line shows that
+// width's own wrap — i8 overflows where the wider widths do not
+fn sweep[T](tag: string, a: T, b: T) {
+  printf("{}: add={} sub={} mul={} div={} rem={}\n", tag, (a + b), (a - b), (a * b), (a / b), (a % b));
+}
+
+fn main() -> i32 {
+  let a8: i8 = (-83);
+  let b8: i8 = 7;
+  sweep("i8", a8, b8);
+  let a16: i16 = (-83);
+  let b16: i16 = 7;
+  sweep("i16", a16, b16);
+  let a32: i32 = (-83);
+  let b32: i32 = 7;
+  sweep("i32", a32, b32);
+  let a64: i64 = (-83);
+  let b64: i64 = 7;
+  sweep("i64", a64, b64);
+  let ai: i64 = (-83);
+  let bi: i64 = 7;
+  sweep("i64b", ai, bi);
+  let c8: u8 = 250;
+  let d8: u8 = 7;
+  sweep("u8", c8, d8);
+  let c16: u16 = 250;
+  let d16: u16 = 7;
+  sweep("u16", c16, d16);
+  let c32: u32 = 250;
+  let d32: u32 = 7;
+  sweep("u32", c32, d32);
+  let c64: u64 = 250;
+  let d64: u64 = 7;
+  sweep("u64", c64, d64);
+  let cu: u64 = 250;
+  let du: u64 = 7;
+  sweep("u64b", cu, du);
+  return 0;
+}

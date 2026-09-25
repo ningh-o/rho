@@ -1,0 +1,67 @@
+// exit: 0
+// slice 080: generic instantiation shapes — one generic fn at many types,
+// nested generic instantiations, generic fns over generic instantiations,
+// and a generic enum's method
+fn id[T](x: T) -> T {
+  return x;
+}
+
+fn flip[A, B](p: *Pair[A, B]) -> *Pair[B, A] {
+  return new Pair[B, A] { a: p.b, b: p.a };
+}
+
+struct Pair[A, B] {
+  a: A,
+  b: B,
+}
+
+fn Pair.swap(self: *Pair) -> *Pair[B, A] {
+  return flip(self);
+}
+
+enum Opt[T] {
+  Some(T),
+  None,
+}
+
+struct Point {
+  x: i32,
+  y: i32,
+}
+
+fn Opt.get_or(self: Opt, alt: T) -> T {
+  return match self {
+    Opt.Some(v) => v,
+    Opt.None => alt,
+  };
+}
+
+fn main() -> i32 {
+  // one body, many instantiations
+  let a: i32 = id(7);
+  let b: i64 = id(11);
+  let s: string = id("hi");
+  printf("id={} {} {}\n", a, b, s);
+  // a generic instantiation as another instantiation's argument
+  let inner: *Pair[i32, i64] = new Pair[i32, i64] { a: 3, b: 4 };
+  let outer: *Pair[*Pair[i32, i64], string] = new Pair[*Pair[i32, i64], string] {
+    a: inner,
+    b: "outer",
+  };
+  printf("outer={}\n", outer.a.a);
+  printf("outer={} {}\n", outer.b, outer.a.b);
+  let re: *Pair[*Pair[i32, i64], string] = id(outer);
+  printf("re={}\n", re.a.a);
+  // two-parameter flip, and the method that calls it
+  let fl: *Pair[string, *Pair[i32, i64]] = flip(outer);
+  printf("flip={} {}\n", fl.a, fl.b.a);
+  let sw: *Pair[i64, i32] = inner.swap();
+  printf("swap={} {}\n", sw.a, sw.b);
+  // generic enum over a pointer payload
+  let p = new Point { x: 5, y: 0 - 1 };
+  let q = new Point { x: 9, y: 9 };
+  let some: Opt[*Point] = Opt.Some(p);
+  let none: Opt[*Point] = Opt.None;
+  printf("some={} none={}\n", some.get_or(q).x, none.get_or(q).x);
+  return 0;
+}

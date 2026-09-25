@@ -454,12 +454,21 @@ static bool gscope_has(GScope *g, const char *name) {
   return false;
 }
 
+// every generic parameter name of the type is in scope (the bare-name
+// self-reference form is legal only then)
+static bool gscope_has_all(GScope *g, const char **names, size_t n) {
+  for (size_t i = 0; i < n; i++)
+    if (!gscope_has(g, names[i]))
+      return false;
+  return true;
+}
+
 // ============================================================ resolve types
 
 static Type *resolve_type(Module *m, NodeRef tr, GScope *g);
 
 static Type *resolve_named(Program *p, Module *m, const char *name,
-                           Type **args, size_t nargs, NodeRef tr) {
+                           Type **args, size_t nargs, NodeRef tr, GScope *g) {
   Node *t = node_get(tr);
   // generic parameter?
   // (caller already checked via gscope; here: module types)
@@ -483,6 +492,16 @@ static Type *resolve_named(Program *p, Module *m, const char *name,
   }
   if (sym->kind == SYM_STRUCT) {
     StructDef *sd = sym->u.sdef;
+    // a bare generic name inside its own method's signature (or a
+    // recursive field) binds to the enclosing scope's parameters:
+    // `self: *Pair` means Pair at the method's own A and B
+    if (nargs == 0 && sd->ngparams > 0 && g &&
+        gscope_has_all(g, sd->gparams, sd->ngparams)) {
+      Type **pargs = arena_alloc(g_arena, sd->ngparams * sizeof(Type *), 8);
+      for (size_t i = 0; i < sd->ngparams; i++)
+        pargs[i] = type_param(sd->gparams[i]);
+      return type_struct(sd, pargs, sd->ngparams);
+    }
     if (nargs != sd->ngparams) {
       diag_at(DIAG_ERROR, m->path, t->line, t->col,
               "struct %s takes %zu generic argument(s), got %zu", name,
@@ -492,6 +511,13 @@ static Type *resolve_named(Program *p, Module *m, const char *name,
   }
   if (sym->kind == SYM_ENUM) {
     EnumDef *ed = sym->u.edef;
+    if (nargs == 0 && ed->ngparams > 0 && g &&
+        gscope_has_all(g, ed->gparams, ed->ngparams)) {
+      Type **pargs = arena_alloc(g_arena, ed->ngparams * sizeof(Type *), 8);
+      for (size_t i = 0; i < ed->ngparams; i++)
+        pargs[i] = type_param(ed->gparams[i]);
+      return type_enum(ed, pargs, ed->ngparams);
+    }
     if (nargs != ed->ngparams) {
       diag_at(DIAG_ERROR, m->path, t->line, t->col,
               "enum %s takes %zu generic argument(s), got %zu", name,
@@ -583,7 +609,7 @@ static Type *resolve_type(Module *m, NodeRef tr, GScope *g) {
                         : NULL;
     for (size_t i = 0; i < nargs; i++)
       args[i] = resolve_type(m, reflist_at(t->list, i), g);
-    return resolve_named(g_program, m, t->name, args, nargs, tr);
+    return resolve_named(g_program, m, t->name, args, nargs, tr, g);
   }
   default:
     break;
@@ -681,6 +707,7 @@ static void collect_module(Program *p, Module *m) {
         g.names = arena_alloc(g_arena, g.n * sizeof(char *), 8);
         for (size_t j = 0; j < g.n; j++)
           g.names[j] = node_get(reflist_at(gps, j))->name;
+        sd->gparams = g.names; // cached for method-implicit binding
       }
       sd->nfields = reflist_len(d->list);
       sd->fields = arena_alloc(g_arena, (sd->nfields ? sd->nfields : 1) *
@@ -701,6 +728,7 @@ static void collect_module(Program *p, Module *m) {
         g.names = arena_alloc(g_arena, g.n * sizeof(char *), 8);
         for (size_t j = 0; j < g.n; j++)
           g.names[j] = node_get(reflist_at(gps, j))->name;
+        ed->gparams = g.names; // cached for method-implicit binding
       }
       ed->nvariants = reflist_len(d->list);
       ed->variants = arena_alloc(
@@ -907,6 +935,61 @@ bool check_program(Program *p) {
         continue;
       for (FnDef *fd = s->u.fns; fd; fd = fd->next_overload) {
         Node *d = node_get(fd->decl);
+        // a method/assoc fn on a GENERIC type implicitly carries the
+        // type's own generic parameters (bound from each receiver use):
+        // `fn Pair.swap(self: *Pair)` is generic over Pair's A and B
+        if ((fd->is_method || fd->is_assoc) && fd->recv) {
+          for (Module *tm = p->modules; tm; tm = tm->next) {
+            Sym *ts = symtab_get(tm->syms, fd->recv);
+            if (!ts || !(tm == m || ts->pub))
+              continue;
+            size_t tn = ts->kind == SYM_STRUCT  ? ts->u.sdef->ngparams
+                        : ts->kind == SYM_ENUM ? ts->u.edef->ngparams
+                                               : 0;
+            const char **tgp =
+                ts->kind == SYM_STRUCT  ? ts->u.sdef->gparams
+                : ts->kind == SYM_ENUM ? ts->u.edef->gparams
+                                       : NULL;
+            if (tn == 0 || !tgp)
+              break;
+            // prepend the type's params, dedup against the fn's own
+            size_t own = fd->ngparams;
+            size_t extra = 0;
+            for (size_t i = 0; i < tn; i++) {
+              bool dup = false;
+              for (size_t j = 0; j < own; j++)
+                if (strcmp(fd->gparams[j], tgp[i]) == 0)
+                  dup = true;
+              for (size_t j = 0; j < i; j++)
+                if (strcmp(tgp[j], tgp[i]) == 0)
+                  dup = true;
+              if (!dup)
+                extra++;
+            }
+            if (extra) {
+              const char **ng = arena_alloc(
+                  g_arena, (extra + own) * sizeof(char *), 8);
+              size_t k = 0;
+              for (size_t i = 0; i < tn; i++) {
+                bool dup = false;
+                for (size_t j = 0; j < own; j++)
+                  if (strcmp(fd->gparams[j], tgp[i]) == 0)
+                    dup = true;
+                for (size_t j = 0; j < i; j++)
+                  if (strcmp(tgp[j], tgp[i]) == 0)
+                    dup = true;
+                if (!dup)
+                  ng[k++] = tgp[i];
+              }
+              for (size_t j = 0; j < own; j++)
+                ng[k++] = fd->gparams[j];
+              fd->nimplicit = k - own;
+              fd->gparams = ng;
+              fd->ngparams = k;
+            }
+            break;
+          }
+        }
         GScope g = {0};
         if (fd->ngparams) {
           g.n = fd->ngparams;

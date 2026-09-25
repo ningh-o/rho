@@ -1,0 +1,39 @@
+// exit: 15
+fn safe_div(a: i32, b: i32) -> Result[i32, string] {
+  if b == 0 {
+    return Result.Err("division by zero");
+  }
+  return Result.Ok(a / b);
+}
+
+fn halve(o: Option[i32]) -> Option[i32] {
+  let v: i32 = o.or_hint();
+  if v < 0 {
+    return Option.None;
+  }
+  return Option.Some(v / 2);
+}
+
+fn Option.or_hint(self: Option) -> i32 {
+  return match self {
+    Option.Some(v) => v,
+    Option.None => 4,
+  };
+}
+
+fn compute() -> Result[i32, string] {
+  let q: i32 = safe_div(12, 2)?;
+  let r: i32 = safe_div(q, 3)?;
+  return Result.Ok(q + r);
+}
+
+fn main() -> i32 {
+  let v: Result[i32, string] = compute();
+  let a: i32 = match v {
+    Result.Ok(x) => x,
+    Result.Err(_) => 0 - 1,
+  };
+  let h: i32 = halve(Option.Some(10)).or_hint();
+  let n: i32 = halve(Option.None).or_hint();
+  return a + h + n;
+}

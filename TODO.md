@@ -128,9 +128,12 @@ section — no placeholder stages. boot is the reference compiler.
       if/match as expressions (escape ownership retained).
 - [ ] **T1.7e** closures (capture boxes) ✅, fn values (trampolines) ✅,
       generic fn monomorphization (bind/clone/emit) ✅, associated-fn
-      calls `Type.name(args)` ✅, user-defined to_str printing ✅ (§8);
-      **remain: dyn + vtables, generic struct instantiation,
-      bounds-checked calls, generic methods on generic types**.
+      calls `Type.name(args)` ✅, user-defined to_str printing ✅ (§8),
+      generic struct/enum instantiation ✅ (field types through the
+      binds; dense field offsets at the BOUND width), methods on
+      generic types ✅ (the type's params ride implicitly, bound from
+      each receiver; 018/019/080/049 land); **remain: dyn + vtables,
+      bounds-checked calls**.
 - [ ] **T1.7** (completes when a-e cover the conformance map rows) rc insertion per the pure-local
       counting rules ✅ (incl. enum-payload deep retain/release, let/assign
       copy retain), zeroed allocations ✅, container ownership walk at the

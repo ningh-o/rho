@@ -1,0 +1,44 @@
+// out: p=3 4
+// out: sw=4 3
+// out: o=9 n=2
+// out: fat=o 3
+// generic struct/enum instantiation: field types through binds,
+// methods carrying the type's implicit params, fat fields laid out
+// by the BOUND width (not the raw param width)
+struct Pair[A, B] {
+  a: A,
+  b: B,
+}
+
+fn Pair.swap(self: *Pair) -> *Pair[B, A] {
+  return new Pair[B, A] { a: self.b, b: self.a };
+}
+
+enum Opt[T] {
+  Some(T),
+  None,
+}
+
+fn Opt.or(self: Opt, alt: T) -> T {
+  return match self {
+    Opt.Some(v) => v,
+    Opt.None => alt,
+  };
+}
+
+fn main() -> i32 {
+  let p: *Pair[i32, i64] = new Pair[i32, i64] { a: 3, b: 4 };
+  printf("p={} {}\n", p.a, p.b);
+  let sw: *Pair[i64, i32] = p.swap();
+  printf("sw={} {}\n", sw.a, sw.b);
+  let o: Opt[i32] = Opt.Some(9);
+  let n: Opt[i32] = Opt.None;
+  printf("o={} n={}\n", o.or(1), n.or(2));
+  // a string field after a param field: the dense offset must use the
+  // bound width (string = 8 bytes) — a wrong layout truncates 'ok'
+  let inner: *Pair[i32, i64] = new Pair[i32, i64] { a: 3, b: 4 };
+  let fat: *Pair[*Pair[i32, i64], string] =
+    new Pair[*Pair[i32, i64], string] { a: inner, b: "o" };
+  printf("fat={} {}\n", fat.b, fat.a.a);
+  return 0;
+}
