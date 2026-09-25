@@ -147,6 +147,16 @@ fn stmts_walk(nodes: []*Stmt, prog: *Prog, bound: []string,
         k = k + 1;
       }
     }
+    if st.tag == parse.ST_DEFER {
+      match st.sub {
+        Option.Some(inner) => {
+          let one: []*Stmt = make([]*Stmt, 1);
+          one[0] = inner;
+          stmts_walk(one, prog, bound, nb, labels, nl, errs);
+        },
+        Option.None => {},
+      }
+    }
     if st.tag == parse.ST_ISTORE {
       let mut k: usize = 0;
       while k < len(st.args) {

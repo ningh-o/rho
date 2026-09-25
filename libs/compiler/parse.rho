@@ -36,6 +36,7 @@ pub const ST_LOOP: i32 = 7;
 pub const ST_BREAK: i32 = 8;
 pub const ST_CONT: i32 = 9;
 pub const ST_ISTORE: i32 = 10; // xs[i] = e: name = base, args[0] = idx
+pub const ST_DEFER: i32 = 11;  // defer stmt; — the inner rides sub
 
 pub struct Stmt {
   tag: i32,        // ST_*
@@ -46,12 +47,14 @@ pub struct Stmt {
   ret: i64,        // return: the value
   body: []*Stmt,   // if/while: the statements
   body2: []*Stmt,  // if: the else statements
+  sub: ?*Stmt,     // defer: the deferred statement
 }
 
 fn mk_stmt(tag: i32) -> *Stmt {
   return new Stmt { tag: tag, fmt: "", args: make([]*Expr, 0),
                     name: "", val: Option.None, ret: 0,
-                    body: make([]*Stmt, 0), body2: make([]*Stmt, 0) };
+                    body: make([]*Stmt, 0), body2: make([]*Stmt, 0),
+                    sub: Option.None };
 }
 
 pub fn lit(v: i64) -> *Expr {
@@ -719,6 +722,13 @@ fn parse_stmt(c: *PCur) -> *Stmt {
       st.name = label;
       return st;
     }
+  }
+  if t.kind == lex.TK_KEYWORD && t.text == "defer" {
+    // defer stmt; — an assignment or a call, run at scope exit
+    tkadv(c);
+    let st = mk_stmt(ST_DEFER);
+    st.sub = Option.Some(parse_stmt(c));
+    return st;
   }
   if t.kind == lex.TK_KEYWORD && t.text == "break" {
     tkadv(c);
