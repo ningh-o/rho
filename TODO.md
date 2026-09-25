@@ -137,7 +137,7 @@ section — no placeholder stages. boot is the reference compiler.
       does **not** live here — it is std.io's job.
 - [ ] **T1.9** CLI: build/run/test/fmt/check; `-g` full symbols; fmt
       canonical roundtrip byte-for-byte.
-- [x] **T1.10(tranches 1+2 underway)** — 42 programs in-repo with regenerated goldens; ?T/weak adaptations proven (linked list, weak death observation); n10_format_edges pending an fb-scratch OOB fix: adapt the first batch of archive
+- [x] **T1.10(tranches 1+2 underway)** — 42 programs in-repo with regenerated goldens; ?T/weak adaptations proven (linked list, weak death observation); n05-n11 string family deferred: printf multi-chunk output drifts vs archive goldens (self-recorded goldens masked it; the fb/printf assembly needs a real fix next session): adapt the first batch of archive
       corpus programs + the new-feature programs; goldens regenerated
       from boot. Every later tranche is its own TODO.
 
