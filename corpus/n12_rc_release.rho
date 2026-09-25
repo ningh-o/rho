@@ -1,0 +1,72 @@
+// exit: 0
+// adapted from 090_rc_release: release timing through weak handles —
+// overwriting the last strong binding releases immediately; a block
+// local releases at block exit; a strong two-node cycle stays alive
+struct Node {
+  v: i32,
+}
+
+fn make_node(v: i32) -> *Node {
+  return new Node { v: v };
+}
+
+struct Cyc {
+  id: i32,
+  other: ?*Cyc,
+}
+
+fn make_cycle() -> *Cyc {
+  let a: *Cyc = new Cyc { id: 7, other: Option.None };
+  let b: *Cyc = new Cyc { id: 8, other: Option.Some(a) };
+  a.other = Option.Some(b);
+  return a;
+}
+
+fn alive(w: weak[Node]) -> bool {
+  return match w.get() {
+    Option.Some(_) => true,
+    Option.None => false,
+  };
+}
+
+fn alive_c(w: weak[Cyc]) -> bool {
+  return match w.get() {
+    Option.Some(_) => true,
+    Option.None => false,
+  };
+}
+
+fn main() -> i32 {
+  let mut n: ?*Node = Option.Some(make_node(5));
+  let w: weak[Node] = weak.from(deref_n(n));
+  printf("up: alive={}\n", alive(w));
+  n = Option.None;
+  printf("nulled: alive={}\n", alive(w));
+  let mut w2: weak[Node] = weak.from(make_node(0));
+  {
+    let m: *Node = make_node(6);
+    w2 = weak.from(m);
+    printf("block up: alive={}\n", alive(w2));
+  }
+  printf("block exited: alive={}\n", alive(w2));
+  let mut c: ?*Cyc = Option.Some(make_cycle());
+  let wc: weak[Cyc] = weak.from(deref_c(c));
+  printf("cycle up: alive={}\n", alive_c(wc));
+  c = Option.None;
+  printf("cycle dropped: alive={} (strong cycles stay)\n", alive_c(wc));
+  return 0;
+}
+
+fn deref_n(o: ?*Node) -> *Node {
+  return match o {
+    Option.Some(p) => p,
+    Option.None => make_node(0),
+  };
+}
+
+fn deref_c(o: ?*Cyc) -> *Cyc {
+  return match o {
+    Option.Some(p) => p,
+    Option.None => make_cycle(),
+  };
+}

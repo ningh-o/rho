@@ -1,0 +1,6 @@
+up: alive=true
+nulled: alive=false
+block up: alive=true
+block exited: alive=false
+cycle up: alive=true
+cycle dropped: alive=true (strong cycles stay)
