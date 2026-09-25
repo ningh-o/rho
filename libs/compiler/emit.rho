@@ -1330,7 +1330,7 @@ fn expr_fkind(e: *Expr, env: *Env, prog: *Prog) -> i64 {
     }
   }
   if e.tag == parse.EX_CALL {
-    let rt: string = fn_rtype_of(prog, e.name);
+    let rt: string = call_fn_rtype(prog, e, env);
     if rt == "f64" {
       return 1;
     }
@@ -1722,6 +1722,13 @@ fn fold_string(e: *Expr, env: *Env) -> ?string {
 fn is_stringy(e: *Expr, env: *Env, prog: *Prog) -> bool {
   if e.tag == parse.EX_STR {
     return true;
+  }
+  if e.tag == parse.EX_CALL {
+    // format builds a string; so does any call with a string return
+    if e.name == "format" {
+      return true;
+    }
+    return call_fn_rtype(prog, e, env) == "string";
   }
   if e.tag == parse.EX_VAR {
     if str_static_is(prog, e.name) {
@@ -2464,7 +2471,7 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
     }
   }
   if (e.tag == parse.EX_CALL &&
-       rtype_is_pair(fn_rtype_of(prog, e.name))) ||
+       rtype_is_pair(call_fn_rtype(prog, e, env))) ||
      (e.tag == parse.EX_MCALL) {
     let mut sret: bool = false;
     if e.tag == parse.EX_CALL {
@@ -2931,7 +2938,16 @@ fn match_chain_m(pool: *Pool, arms: []*MatchArm, i: usize, bx: i64,
   match a.val {
     Option.Some(v) => {
       if as_pair {
-        tail = push_string(pool, v, env, prog, nl);
+        // a pair tail builds through the full pair machinery — a
+        // format call or a concat is as arm-worthy as a literal
+        let spt2 = build_string_pair(v, pool, env, prog, nl);
+        if spt2.ok {
+          tail = spt2.text +
+                 "    (local.get " + spt2.a.to_str() + ")\n" +
+                 "    (local.get " + spt2.l.to_str() + ")\n";
+        } else {
+          tail = push_string(pool, v, env, prog, nl);
+        }
       } else {
         tail = emit_expr(pool, v, env, prog, nl);
       }
@@ -3350,6 +3366,15 @@ fn build_string_pair(e: *Expr, pool: *Pool, env: *Env, prog: *Prog,
               na = na + 1;
               nl.v = nl.v + 2;
             } else {
+              let spt3 = to_str_pair(arg, pool, env, prog, nl);
+              if spt3.ok {
+                // a value whose type owns to_str renders through it;
+                // the pair parks in the builder's own slots
+                text = text + spt3.text;
+                chain_a[na] = spt3.a;
+                chain_l[na] = spt3.l;
+                na = na + 1;
+              } else {
               if expr_fkind(arg, env, prog) > 0 {
                 // a float hole rides the exact-decimal text
                 FLOAT_WANTED = 1;
@@ -3400,6 +3425,7 @@ fn build_string_pair(e: *Expr, pool: *Pool, env: *Env, prog: *Prog,
                 chain_l[na] = nl.v + 1;
                 na = na + 1;
                 nl.v = nl.v + 2;
+              }
               }
               }
             }
@@ -3648,14 +3674,16 @@ fn build_string_pair(e: *Expr, pool: *Pool, env: *Env, prog: *Prog,
     let sps = new SPair { ok: true, text: text, a: a_slot, l: l_slot };
     return sps;
   }
-  if e.tag == parse.EX_CALL && fn_returns_string(prog, e.name) {
+  if e.tag == parse.EX_CALL &&
+      rtype_is_pair(call_fn_rtype(prog, e, env)) {
     let mut text: string = "";
     let mut k: usize = 0;
     while k < len(e.args) {
       text = text + emit_arg(pool, e.args[k], env, prog, nl);
       k = k + 1;
     }
-    text = text + "    call $u_" + sym_name(e.name) + "\n" +
+    text = text + "    call " + ginst_call_name(pool, prog, e, env) +
+           "\n" +
            "    (local.set " + (nl.v + 1).to_str() + ")\n" +
            "    (local.set " + nl.v.to_str() + ")\n";
     let sp = new SPair { ok: true, text: text, a: nl.v,
@@ -3698,6 +3726,50 @@ fn build_string_pair(e: *Expr, pool: *Pool, env: *Env, prog: *Prog,
                          l: nl.v + 1 };
     nl.v = nl.v + 2;
     return sp;
+  }
+  if e.tag == parse.EX_MCALL {
+    // a string-returning method call: the receiver and args ride the
+    // call, the result pair parks in fresh slots
+    let mut recv: *Expr = parse.lit(0);
+    match e.lhs {
+      Option.Some(r14) => {
+        recv = r14;
+      },
+      Option.None => {},
+    }
+    let en3: string = expr_enum_type(recv, env, prog);
+    let mut tname: string = "";
+    let mut text: string = "";
+    if recv.tag == parse.EX_VAR && st_index(prog, recv.name) >= 0 {
+      tname = recv.name;
+    } else {
+      if len(en3) > 0 {
+        tname = en3;
+        text = text + emit_expr(pool, recv, env, prog, nl);
+      } else {
+        let bt3: string = expr_ptr_type(recv, env, prog);
+        if len(bt3) == 0 {
+          return bad;
+        }
+        tname = bt3;
+        text = text + emit_expr(pool, recv, env, prog, nl);
+      }
+    }
+    if !rtype_is_pair(fn_rtype_of(prog, tname + "." + e.name)) {
+      return bad;
+    }
+    let mut k: usize = 0;
+    while k < len(e.args) {
+      text = text + emit_arg(pool, e.args[k], env, prog, nl);
+      k = k + 1;
+    }
+    text = text + "    call $u_" + tname + "_" + e.name + "\n" +
+           "    (local.set " + (nl.v + 1).to_str() + ")\n" +
+           "    (local.set " + nl.v.to_str() + ")\n";
+    let spm2 = new SPair { ok: true, text: text, a: nl.v,
+                           l: nl.v + 1 };
+    nl.v = nl.v + 2;
+    return spm2;
   }
   return bad;
 }
@@ -3942,7 +4014,7 @@ fn expr_type(e: *Expr, env: *Env, prog: *Prog) -> string {
     return "*" + e.name;
   }
   if e.tag == parse.EX_CALL {
-    return fn_rtype_of(prog, e.name);
+    return call_fn_rtype(prog, e, env);
   }
   if e.tag == parse.EX_BIN {
     if e.op >= 5 && e.op <= 14 {
@@ -4064,6 +4136,127 @@ fn fn_def_of(prog: *Prog, name: string) -> *FnDef {
   return prog.fns[0];
 }
 
+// ---- overloads: one name, many signatures; exact-match-unique ----
+
+fn fn_overload_count(prog: *Prog, name: string) -> i64 {
+  let mut n: i64 = 0;
+  let mut i: usize = 0;
+  while i < len(prog.fns) {
+    if prog.fns[i].name == name {
+      n = n + 1;
+    }
+    i = i + 1;
+  }
+  return n;
+}
+
+// a fn's wasm name: alone under its own name; beside its siblings
+// under the signature key when overloads share the name
+fn wasm_fn_name(prog: *Prog, fd: *FnDef) -> string {
+  if fn_overload_count(prog, fd.name) <= 1 {
+    return "$u_" + sym_name(fd.name);
+  }
+  let mut key: string = "";
+  let mut k: usize = 0;
+  while k < len(fd.ptypes) {
+    if k > 0 {
+      key = key + "_";
+    }
+    let mut pt: string = fd.ptypes[k];
+    if len(pt) == 0 {
+      pt = "i64";
+    }
+    key = key + mangle_type(pt);
+    k = k + 1;
+  }
+  return "$u_" + sym_name(fd.name) + "__" + key;
+}
+
+// does an unadapted literal ride into this parameter kind (int lit →
+// int param of any width, float lit → float param)?
+fn lit_adapts_into(arg: *Expr, ptype: string) -> bool {
+  let mut pt: string = ptype;
+  if len(pt) == 0 {
+    pt = "i64";
+  }
+  if arg.tag == parse.EX_LIT &&
+      (arg.name == "true" || arg.name == "false") {
+    return pt == "bool";
+  }
+  if arg.tag == parse.EX_LIT {
+    return type_width(pt) != 0;
+  }
+  if arg.tag == parse.EX_FLIT {
+    return pt == "f64" || pt == "f32";
+  }
+  return false;
+}
+
+// resolve a call against the candidate chain: exact param types win,
+// a literal adapts into any width of its own class; the unique
+// survivor is the callee (zero or many would be the checker's error —
+// boot refused nothing here, so the corpus never asks)
+fn resolve_call_fd(prog: *Prog, e: *Expr, env: *Env) -> *FnDef {
+  if fn_overload_count(prog, e.name) <= 1 {
+    return fn_def_of(prog, e.name);
+  }
+  let mut best: i64 = 0 - 1;
+  let mut best_exact: bool = false;
+  let mut i: usize = 0;
+  while i < len(prog.fns) {
+    if prog.fns[i].name != e.name ||
+        len(prog.fns[i].params) != len(e.args) {
+      i = i + 1;
+      continue;
+    }
+    let fd2: *FnDef = prog.fns[i];
+    let mut allok: bool = true;
+    let mut alexact: bool = true;
+    let mut k: usize = 0;
+    while k < len(e.args) {
+      let at: string = expr_type(e.args[k], env, prog);
+      let mut pt: string = "";
+      if k < len(fd2.ptypes) {
+        pt = fd2.ptypes[k];
+      }
+      if len(at) > 0 && at == pt {
+        k = k + 1;
+        continue;
+      }
+      if lit_adapts_into(e.args[k], pt) {
+        alexact = false;
+      } else {
+        allok = false;
+      }
+      k = k + 1;
+    }
+    if !allok {
+      i = i + 1;
+      continue;
+    }
+    if best < 0 || (alexact && !best_exact) {
+      best = i as i64;
+      best_exact = alexact;
+    }
+    i = i + 1;
+  }
+  if best < 0 {
+    return fn_def_of(prog, e.name);
+  }
+  return prog.fns[best as usize];
+}
+
+// a call's return type, overload-aware
+fn call_fn_rtype(prog: *Prog, e: *Expr, env: *Env) -> string {
+  if fn_overload_count(prog, e.name) > 1 {
+    let fd3: *FnDef = resolve_call_fd(prog, e, env);
+    if len(fd3.rtype) > 0 {
+      return fd3.rtype;
+    }
+  }
+  return fn_rtype_of(prog, e.name);
+}
+
 // the wasm callee for a call: a plain user fn emits under its own
 // name; a generic fn instantiates per distinct type binding (the
 // argument types bind T in declaration order) and emits the clone
@@ -4072,10 +4265,10 @@ fn ginst_call_name(pool: *Pool, prog: *Prog, e: *Expr,
   if !user_fn_exists(prog, e.name) {
     return "$u_" + sym_name(e.name);
   }
-  let fd: *FnDef = fn_def_of(prog, e.name);
+  let fd: *FnDef = resolve_call_fd(prog, e, env);
   let nt: usize = len(fd.tparams);
   if nt == 0 {
-    return "$u_" + sym_name(e.name);
+    return wasm_fn_name(prog, fd);
   }
   // bind each T from the param whose written type names it
   let tys: []string = make([]string, nt);
@@ -4137,6 +4330,52 @@ fn ginst_call_name(pool: *Pool, prog: *Prog, e: *Expr,
   return "$u_" + sym_name(e.name) + key;
 }
 
+// a value whose type owns a to_str method prints through it (the
+// Show surface: struct pointers, struct values, enum boxes); the
+// pair parks in fresh slots, "" when no method exists
+fn to_str_pair(e: *Expr, pool: *Pool, env: *Env, prog: *Prog,
+               nl: *NextLocal) -> *SPair {
+  let bad = new SPair { ok: false, text: "", a: 0, l: 0 };
+  let mut tname: string = "";
+  if e.tag == parse.EX_VAR {
+    let vt: string = env_val_of(env, e.name);
+    if len(vt) > 0 {
+      tname = vt;
+    } else {
+      let pt4: string = env_ptr_of(env, e.name);
+      if len(pt4) > 0 {
+        tname = pt4;
+      } else {
+        tname = env_enum_of(env, e.name);
+      }
+    }
+  } else {
+    let et4: string = expr_enum_type(e, env, prog);
+    if len(et4) > 0 {
+      tname = et4;
+    } else {
+      tname = expr_ptr_type(e, env, prog);
+    }
+  }
+  if len(tname) == 0 {
+    return bad;
+  }
+  if !user_fn_exists(prog, tname + ".to_str") {
+    return bad;
+  }
+  if !rtype_is_pair(fn_rtype_of(prog, tname + ".to_str")) {
+    return bad;
+  }
+  let text: string = emit_expr(pool, e, env, prog, nl) +
+         "    call $u_" + tname + "_to_str\n" +
+         "    (local.set " + (nl.v + 1).to_str() + ")\n" +
+         "    (local.set " + nl.v.to_str() + ")\n";
+  let spt = new SPair { ok: true, text: text, a: nl.v,
+                        l: nl.v + 1 };
+  nl.v = nl.v + 2;
+  return spt;
+}
+
 fn emit_print_fd(pool: *Pool, fmt: string, args: []*Expr, env: *Env,
                  prog: *Prog, nl: *NextLocal, fd: i64) -> string {
   let pieces: []string = parse.fmt_pieces(fmt);
@@ -4188,6 +4427,14 @@ fn emit_print_fd(pool: *Pool, fmt: string, args: []*Expr, env: *Env,
                 "    (local.set " + t_a[q].to_str() + ")\n";
           kinds[q] = 4;
         } else {
+        let spt = to_str_pair(arg, pool, env, prog, nl);
+        if spt.ok {
+          // a value whose type owns to_str prints through it
+          pre = pre + spt.text;
+          t_a[q] = spt.a;
+          t_l[q] = spt.l;
+          kinds[q] = 4;
+        } else {
         let sp = build_string_pair(arg, pool, env, prog, nl);
         if sp.ok {
           pre = pre + sp.text;
@@ -4206,7 +4453,7 @@ fn emit_print_fd(pool: *Pool, fmt: string, args: []*Expr, env: *Env,
           } else {
             let mut boolish: bool = false;
             if arg.tag == parse.EX_CALL {
-              boolish = fn_rtype_of(prog, arg.name) == "bool";
+              boolish = call_fn_rtype(prog, arg, env) == "bool";
             }
             if arg.tag == parse.EX_MCALL {
               let mut recv0: *Expr = parse.lit(0);
@@ -4235,6 +4482,7 @@ fn emit_print_fd(pool: *Pool, fmt: string, args: []*Expr, env: *Env,
               }
             }
           }
+        }
         }
         }
       },
@@ -5223,7 +5471,8 @@ struct NextLocal {
   v: i64,
 }
 
-// one user fn: params as i64 locals, an i64 result
+// one user fn: params as i64 locals, an i64 result. wname overrides
+// the wasm name (overloads ride their signature key); "" derives it
 fn capture_at_after(fd: *FnDef) -> i64 {
   let mut n: i64 = 0;
   let mut k: usize = 0;
@@ -5238,7 +5487,8 @@ fn capture_at_after(fd: *FnDef) -> i64 {
   return n;
 }
 
-fn emit_fn(fd: *FnDef, pool: *Pool, prog: *Prog) -> string {
+fn emit_fn(fd: *FnDef, pool: *Pool, prog: *Prog,
+           wname: string) -> string {
   let env = env_new(64);
   env_bind_consts(env, prog, pool);
   let nl = new NextLocal { v: 0 };
@@ -5311,7 +5561,12 @@ fn emit_fn(fd: *FnDef, pool: *Pool, prog: *Prog) -> string {
   let body: string = emit_stmts(fd.body, pool, env, nl, true,
                                 0 - 1, prog, loops, dstack,
                                 Option.Some(fd));
-  let mut out: string = "  (func $u_" + sym_name(fd.name);
+  let mut out: string = "";
+  if len(wname) > 0 {
+    out = "  (func " + wname;
+  } else {
+    out = "  (func $u_" + sym_name(fd.name);
+  }
   // signature: every param slot is an i64 (a string param is a pair)
   let np: i64 = capture_at_after(fd);
   let mut q: i64 = 0;
@@ -5726,7 +5981,7 @@ fn float_runtime_wat(pool: *Pool) -> string {
   let mut out: string = "";
   let mut fi: usize = 0;
   while fi < len(fprog.fns) {
-    out = out + emit_fn(fprog.fns[fi], pool, fprog);
+    out = out + emit_fn(fprog.fns[fi], pool, fprog, "");
     fi = fi + 1;
   }
   return out;
@@ -5747,7 +6002,8 @@ pub fn emit(prog: *Prog) -> string {
   let mut fi: usize = 0;
   while fi < len(prog.fns) {
     if len(prog.fns[fi].tparams) == 0 {
-      fntext = fntext + emit_fn(prog.fns[fi], pool, prog);
+      fntext = fntext + emit_fn(prog.fns[fi], pool, prog,
+                                wasm_fn_name(prog, prog.fns[fi]));
     }
     fi = fi + 1;
   }
@@ -5755,7 +6011,7 @@ pub fn emit(prog: *Prog) -> string {
   // body may call more generics, appending as it emits
   let mut gdone: usize = 0;
   while gdone < pool.gi.n {
-    fntext = fntext + emit_fn(pool.gi.fds[gdone], pool, prog);
+    fntext = fntext + emit_fn(pool.gi.fds[gdone], pool, prog, "");
     gdone = gdone + 1;
   }
   // assemble: header, memory, runtime, _start with the let locals
