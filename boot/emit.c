@@ -250,6 +250,7 @@ typedef struct VarInfo {
   NodeRef node;     // originating decl node (0 for binders)
   size_t vreg;
   bool managed;   // needs release at scope exit
+  bool moved;     // ownership transferred (returned); no release
   size_t scope;   // scope level
   Type *ty;       // the value type (release/retain need it)
 } VarInfo;
@@ -348,6 +349,7 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst);
 size_t static_slot(Module *m, const char *name);
 static void emit_printf(FnCx *cx, Node *call, bool err);
 static void emit_call_args(FnCx *cx, FnDef *f, RefList *args);
+static void pass_arg_own(FnCx *cx, NodeRef arg, Type *pt, size_t v);
 static void emit_match(FnCx *cx, NodeRef er, size_t dst);
 static void bind_pattern(FnCx *cx, Node *pat, Type *st, size_t *slot);
 static void register_pattern_binders(FnCx *cx, Node *pat, Type *st);
@@ -368,6 +370,14 @@ __attribute__((unused)) static void retain(FnCx *cx, Type *t, size_t vreg) {
     break;
   }
 }
+static void release(FnCx *cx, Type *t, size_t vreg); // fwd
+
+static void release_var(FnCx *cx, VarInfo *v) {
+  if (v->moved)
+    return;
+  release(cx, v->ty, v->vreg);
+}
+
 static void release(FnCx *cx, Type *t, size_t vreg) {
   if (!t)
     return; // checker already reported; keep emitting
@@ -767,6 +777,20 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
         truncate_after(cx, t, dst);
       }
       return;
+    case OP_DEREF: {
+      // *p: copy the pointee value out of the block (payload ptr)
+      size_t n = shape_nlocals(t);
+      for (size_t i = 0; i < n; i++) {
+        WTy w = local_wty(t, i);
+        const char *ld = w == W_I64   ? "i64.load"
+                         : w == W_F32 ? "f32.load"
+                         : w == W_F64 ? "f64.load"
+                                      : "i32.load";
+        op(cx, "(local.set %zu (%s (i32.add %s (i32.const %zu))))\n",
+           dst + i, ld, L(cx, v), i * 4);
+      }
+      return;
+    }
     default:
       return;
     }
@@ -1023,11 +1047,14 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
                        : NULL;
         size_t v = cx_fresh(cx, pt);
         argregs[nregs++] = v;
-        if (aw && aw->kind == NT_POSARG)
+        if (aw && aw->kind == NT_POSARG) {
           emit_expr(cx, aw->a, v);
+          pass_arg_own(cx, aw->a, pt, v);
+        }
       }
-      // call_indirect for boxed receivers is unnecessary: methods on
-      // the concrete type are direct; push args then call
+      // methods on the concrete type are direct calls
+      if (node_get(e->a)->kind == NT_PATH && cx_var(cx, node_get(e->a)->name))
+        retain(cx, rt, selfv);
       op(cx, "%s", L(cx, selfv));
       for (size_t i = 0; i < nregs; i++)
         op(cx, "%s", L(cx, argregs[i]));
@@ -1071,7 +1098,7 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
                          : w == W_F64 ? "f64.load"
                                       : "i32.load";
         op(cx, "(local.set %zu (%s (i32.add (local.get %zu) "
-               "(i32.const %zu))))\n", dst + i, ld, p, 24 + fo);
+               "(i32.const %zu))))\n", dst + i, ld, p, fo);
       }
       return;
     }
@@ -1093,6 +1120,8 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
     size_t sz = type_size(st);
     op(cx, "(local.set %zu (call $rho_alloc (i32.const %zu)))\n", dst,
        sz);
+    op(cx, "(local.set %zu (i32.add (local.get %zu) (i32.const 24)))\n",
+       dst, dst);
     RefList *inits = e->b != NO_REF ? node_get(e->b)->list : NULL;
     for (size_t i = 0; i < st->sdef->nfields; i++) {
       const char *fname = st->sdef->fields[i].name;
@@ -1117,7 +1146,7 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
                                : w == W_F64 ? "f64.store"
                                             : "i32.store";
           op(cx, "(%s (i32.add (local.get %zu) (i32.const %zu)) %s)\n",
-             str_op, dst, 24 + off + k * 4, L(cx, tmp + k));
+             str_op, dst, off + k * 4, L(cx, tmp + k));
         }
         // the block owns managed field values (fresh retain at store)
         retain(cx, ft, tmp);
@@ -1561,6 +1590,14 @@ static void emit_printf(FnCx *cx, Node *call, bool err) {
 
 // scalar-only arg passing for the T1.7a slice: managed/struct args
 // arrive with T1.7b
+// pass +1 when the argument is a bare variable (the callee owns its
+// params); expression results move their single reference in
+static void pass_arg_own(FnCx *cx, NodeRef arg, Type *pt, size_t v) {
+  Node *a = node_get(arg);
+  if (a->kind == NT_PATH && cx_var(cx, a->name))
+    retain(cx, pt, v);
+}
+
 static void emit_call_args(FnCx *cx, FnDef *f, RefList *args) {
   size_t nfixed = f->sig->nparams;
   bool variadic = nfixed > 0 && f->sig->params[nfixed - 1].variadic;
@@ -1571,8 +1608,10 @@ static void emit_call_args(FnCx *cx, FnDef *f, RefList *args) {
     Node *aw = i < reflist_len(args) ? node_get(reflist_at(args, i)) : NULL;
     size_t v = cx_fresh(cx, pt);
     argregs_run[i] = v;
-    if (aw && aw->kind == NT_POSARG)
+    if (aw && aw->kind == NT_POSARG) {
       emit_expr(cx, aw->a, v);
+      pass_arg_own(cx, aw->a, pt, v);
+    }
   }
   if (variadic) {
     // materialize the trailing args as a fresh slice (spec §12)
@@ -1650,6 +1689,12 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
       emit_scope_exit(cx, 0);
       op(cx, "(return)\n");
       return;
+    }
+    // returning a bare variable MOVES it: no release at scope exit
+    if (node_get(s->a)->kind == NT_PATH) {
+      VarInfo *rv = cx_var(cx, node_get(s->a)->name);
+      if (rv)
+        rv->moved = true;
     }
     // TCO: a direct self tail call becomes param reassignment + a
     // branch to the function top (spec §9)
@@ -1761,13 +1806,13 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
           const char *strop = scalar_wty(ft) == W_I64 ? "i64.store"
                                                        : "i32.store";
           op(cx, "(local.set %zu (%s (i32.add (local.get %zu) "
-                 "(i32.const %zu))))\n", oldv, ld, p, 24 + off);
+                 "(i32.const %zu))))\n", oldv, ld, p, off);
           if (instr) {
             op(cx, "(local.set %zu (%s.%s (local.get %zu) "
                    "(local.get %zu)))\n", nv, w, instr, oldv, rhs);
             truncate_after(cx, ft, nv);
             op(cx, "(%s (i32.add (local.get %zu) (i32.const %zu)) "
-                   "(local.get %zu))\n", strop, p, 24 + off, nv);
+                   "(local.get %zu))\n", strop, p, off, nv);
             return;
           }
         }
@@ -1780,7 +1825,7 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
                               : w == W_F64 ? "f64.store"
                                            : "i32.store";
           op(cx, "(%s (i32.add (local.get %zu) (i32.const %zu)) %s)\n",
-             strop, p, 24 + off + k * 4, L(cx, rhs + k));
+             strop, p, off + k * 4, L(cx, rhs + k));
         }
         return;
       }
@@ -2083,7 +2128,7 @@ static void emit_scope_exit(FnCx *cx, size_t to_scope) {
     VarInfo *v = VAT(cx->vars, VarInfo, --i);
     if (v->scope < to_scope)
       break;
-    release(cx, v->ty, v->vreg);
+    release_var(cx, v);
   }
 }
 

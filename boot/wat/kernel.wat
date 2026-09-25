@@ -48,25 +48,30 @@
 
   ;; rc glue
   (func $rho_retain (param $p i32)
+    ;; statics (data literals below the heap) are immortal
+    (if (i32.lt_u (local.get $p) (i32.const 65536)) (then (return)))
     (if (i32.eqz (local.get $p)) (then (return)))
-    (i32.store (local.get $p)
-      (i32.add (i32.load (local.get $p)) (i32.const 1))))
+    (i32.store (i32.sub (local.get $p) (i32.const 24))
+      (i32.add (i32.load (i32.sub (local.get $p) (i32.const 24)))
+               (i32.const 1))))
 
   (func $rho_release (param $p i32)
     (local $rc i32) (local $drop i32)
+    ;; statics (data literals below the heap) are immortal
+    (if (i32.lt_u (local.get $p) (i32.const 65536)) (then (return)))
     (if (i32.eqz (local.get $p)) (then (return)))
-    (local.set $rc (i32.load (local.get $p)))
+    (local.set $rc (i32.load (i32.sub (local.get $p) (i32.const 24))))
     (local.set $rc (i32.sub (local.get $rc) (i32.const 1)))
-    (i32.store (local.get $p) (local.get $rc))
+    (i32.store (i32.sub (local.get $p) (i32.const 24)) (local.get $rc))
     ;; at rc==0: run the drop fn (payload pointer = p+24) when set,
     ;; then the block dies (freed to the allocator's list later; the
     ;; bump kernel keeps memory for 0.1.0 bring-up, wrc keeps headers)
     (if (i32.eqz (local.get $rc))
       (then
-        (local.set $drop (i32.load (i32.add (local.get $p) (i32.const 12))))
+        (local.set $drop (i32.load (i32.sub (local.get $p)
+                                             (i32.const 12))))
         (if (i32.ge_s (local.get $drop) (i32.const 0))
-          (then (call_indirect (type $dropfn) (i32.add (local.get $p)
-                                                       (i32.const 24))
+          (then (call_indirect (type $dropfn) (local.get $p)
                                (local.get $drop)))))))
 
   (table 4 funcref)

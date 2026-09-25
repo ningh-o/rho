@@ -1,0 +1,10 @@
+// out: 23
+struct Pt { x: i32, y: i32 }
+fn norm(p: Pt) -> i32 { return p.x * p.x + p.y * p.y; }
+fn mk(x: i32) -> Pt { return *new Pt { x: x, y: 3 }; }
+fn main() -> i32 {
+  let a = mk(1);
+  let b = mk(2);
+  printf("{}\n", norm(a) + norm(b));
+  return 0;
+}
