@@ -165,6 +165,7 @@ typedef struct Em {
   size_t table_next;   // next funcref table index (drop fns first)
   bool debug;
   size_t heap_min;     // pages
+  size_t label_n;      // unique loop-label ids
 } Em;
 
 static Em *em_cur; // current emitter (single-shot compiler)
@@ -1038,6 +1039,197 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
       release(cx, t, v); // discard: release owned temps
     }
     return;
+  case NT_ASSIGN: {
+    Type *lt = s->a != NO_REF ? (Type *)node_get(s->a)->sem : NULL;
+    if (s->a == NO_REF) {
+      // defer-assignment form stores the target in the node's b chain
+      return;
+    }
+    // lvalue: plain local, field (through pointer), or index
+    Node *lv = node_get(s->a);
+    if (lv->kind == NT_PATH) {
+      VarInfo *v = cx_var(cx, lv->name);
+      if (!v)
+        return;
+      size_t rhs = cx_fresh(cx, lt);
+      emit_expr(cx, s->b, rhs);
+      if (s->op != OP_NONE) {
+        // compound: op(old, rhs) into a fresh result
+        size_t res = cx_fresh(cx, lt);
+        const char *w = scalar_wty(lt) == W_I64 ? "i64" : "i32";
+        const char *instr = NULL;
+        bool uns = lt->kind >= TY_U8;
+        switch (s->op) {
+        case OP_ADD: instr = "add"; break;
+        case OP_SUB: instr = "sub"; break;
+        case OP_MUL: instr = "mul"; break;
+        case OP_BAND: instr = "and"; break;
+        case OP_BOR: instr = "or"; break;
+        case OP_BXOR: instr = "xor"; break;
+        default: break;
+        }
+        if (instr) {
+          op(cx, "(local.set %zu (%s.%s (local.get %zu) (local.get %zu)))\n",
+             res, w, instr, v->vreg, rhs);
+          truncate_after(cx, lt, res);
+          size_t n = shape_nlocals(lt);
+          for (size_t i = 0; i < n; i++)
+            op(cx, "(local.set %zu %s)\n", v->vreg + i, L(cx, res + i));
+          return;
+        }
+        if (s->op == OP_DIV || s->op == OP_MOD) {
+          emit_div(cx, s->op, lt, res, v->vreg, rhs);
+          truncate_after(cx, lt, res);
+          size_t n = shape_nlocals(lt);
+          for (size_t i = 0; i < n; i++)
+            op(cx, "(local.set %zu %s)\n", v->vreg + i, L(cx, res + i));
+          return;
+        }
+        // shifts (mask by left width)
+        int bits = lt->kind == TY_I8 || lt->kind == TY_U8 ? 8
+                   : lt->kind == TY_I16 || lt->kind == TY_U16 ? 16
+                   : lt->kind == TY_I64 || lt->kind == TY_U64 ? 64 : 32;
+        if (scalar_wty(lt) == W_I64)
+          op(cx, "(local.set %zu (i64.%s (local.get %zu) (i64.and "
+                 "(local.get %zu) (i64.const %d))))\n", res,
+             s->op == OP_SHL ? "shl" : (uns ? "shr_u" : "shr_s"), v->vreg,
+             rhs, bits - 1);
+        else
+          op(cx, "(local.set %zu (i32.%s (local.get %zu) (i32.and "
+                 "(local.get %zu) (i32.const %d))))\n", res,
+             s->op == OP_SHL ? "shl" : (uns ? "shr_u" : "shr_s"), v->vreg,
+             rhs, bits - 1);
+        truncate_after(cx, lt, res);
+        op(cx, "(local.set %zu (local.get %zu))\n", v->vreg, res);
+        return;
+      }
+      size_t n = shape_nlocals(lt);
+      // overwrite: release the old managed value, move the new one in
+      release(cx, lt, v->vreg);
+      for (size_t i = 0; i < n; i++)
+        op(cx, "(local.set %zu %s)\n", v->vreg + i, L(cx, rhs + i));
+      return;
+    }
+    return; // field/index lvalues arrive with T1.7b
+  }
+
+  case NT_IF: {
+    if (s->op == 1) {
+      // comptime-folded: only the live branch exists
+      cx->scope++;
+      size_t base = VLEN(cx->vars);
+      if (s->ival)
+        emit_stmt(cx, s->b);
+      else if (s->c != NO_REF)
+        emit_stmt(cx, s->c);
+      for (size_t i = VLEN(cx->vars); i > base; i--) {
+        VarInfo *v = VAT(cx->vars, VarInfo, i - 1);
+        release(cx, v->ty, v->vreg);
+      }
+      cx->vars.len = base;
+      cx->scope--;
+      return;
+    }
+    size_t c = cx_fresh(cx, ty_bool);
+    emit_expr(cx, s->a, c);
+    op(cx, "(if (local.get %zu) (then\n", c);
+    cx->depth++;
+    emit_stmt(cx, s->b);
+    if (s->c != NO_REF) {
+      op(cx, ") (else\n");
+      emit_stmt(cx, s->c);
+    }
+    op(cx, "))\n");
+    cx->depth--;
+    return;
+  }
+
+  case NT_WHILE: {
+    // (block $exit (loop $top (br_if $exit !(cond)) body (br $top)))
+    size_t c = cx_fresh(cx, ty_bool);
+    op(cx, "(block $b%zu\n", cx->em->label_n);
+    int exit_d = ++cx->depth;
+    LabEnt *lab = VPUSH(cx->labels, LabEnt);
+    lab->name = s->name;
+    lab->brk_depth = exit_d;
+    lab->scope = cx->scope + 1;
+    op(cx, "(loop $l%zu\n", cx->em->label_n);
+    lab->cont_depth = ++cx->depth;
+    size_t loop_id = cx->em->label_n++;
+    emit_expr(cx, s->a, c);
+    op(cx, "(br_if $b%zu (i32.eqz (local.get %zu)))\n", loop_id, c);
+    cx->scope++;
+    size_t base = VLEN(cx->vars);
+    emit_stmt(cx, s->b);
+    for (size_t i = VLEN(cx->vars); i > base; i--) {
+      VarInfo *v = VAT(cx->vars, VarInfo, i - 1);
+      release(cx, v->ty, v->vreg);
+    }
+    cx->vars.len = base;
+    cx->scope--;
+    op(cx, "(br $l%zu))\n", loop_id);
+    op(cx, ")\n");
+    cx->depth -= 2;
+    cx->labels.len--;
+    return;
+  }
+
+  case NT_LOOP: {
+    op(cx, "(block $b%zu\n", cx->em->label_n);
+    int exit_d = ++cx->depth;
+    LabEnt *lab = VPUSH(cx->labels, LabEnt);
+    lab->name = s->name;
+    lab->brk_depth = exit_d;
+    lab->scope = cx->scope + 1;
+    op(cx, "(loop $l%zu\n", cx->em->label_n);
+    lab->cont_depth = ++cx->depth;
+    size_t loop_id = cx->em->label_n++;
+    cx->scope++;
+    size_t base = VLEN(cx->vars);
+    emit_stmt(cx, s->b);
+    for (size_t i = VLEN(cx->vars); i > base; i--) {
+      VarInfo *v = VAT(cx->vars, VarInfo, i - 1);
+      release(cx, v->ty, v->vreg);
+    }
+    cx->vars.len = base;
+    cx->scope--;
+    op(cx, "(br $l%zu))\n", loop_id);
+    op(cx, ")\n");
+    cx->depth -= 2;
+    cx->labels.len--;
+    return;
+  }
+
+  case NT_BREAK:
+  case NT_CONTINUE: {
+    // find the target loop (innermost unnamed, or by label)
+    LabEnt *target = NULL;
+    if (s->name) {
+      for (size_t i = VLEN(cx->labels); i > 0; i--) {
+        LabEnt *l = VAT(cx->labels, LabEnt, i - 1);
+        if (l->name && strcmp(l->name, s->name) == 0) {
+          target = l;
+          break;
+        }
+      }
+    } else {
+      for (size_t i = VLEN(cx->labels); i > 0; i--) {
+        LabEnt *l = VAT(cx->labels, LabEnt, i - 1);
+        target = l;
+        break;
+      }
+    }
+    if (!target)
+      return;
+    // exits crossing scopes run their defers (T1.7b completes the
+    // defers part; releases below keep memory honest)
+    emit_scope_exit(cx, target->scope);
+    int want = s->kind == NT_BREAK ? target->brk_depth : target->cont_depth;
+    int rel = cx->depth - want;
+    op(cx, "(br %d)\n", rel);
+    return;
+  }
+
   default:
     op(cx, ";; STMT-UNEMITTED %s\n", node_kind_name(s->kind));
   }

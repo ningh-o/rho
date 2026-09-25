@@ -1,0 +1,6 @@
+// out: five
+fn main() -> i32 {
+  let x: i32 = 2 + 3;
+  if x == 5 { printf("five\n"); } else { printf("not\n"); }
+  return 0;
+}
