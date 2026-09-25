@@ -9,8 +9,21 @@ PINNED=85
 pass=0; fail=0; failed=""
 for f in corpus/*.rho; do
   name=$(basename "$f" .rho)
-  bgot=$("$RHO" run "$f" 2>/dev/null); brc=$?
+  # per-program build parameters: '// set: name=value' header lines.
+  # boot takes them as --set; the self-host side has no channel for
+  # the target's overrides, so the runner rewrites the const
+  # initializer textually first — §7's override lands before the
+  # load-time fold, which is exactly the rewritten literal's meaning
+  sets=()
   src=$(cat "$f")
+  for s in $(sed -n 's/^\/\/ set: //p' "$f"); do
+    sets+=(--set "$s")
+    kn=${s%%=*}
+    vv=${s#*=}
+    src=$(printf '%s\n' "$src" | sed -E \
+      "s/^(const +${kn} *: *[A-Za-z0-9?*]+ *= *).*/\1${vv};/")
+  done
+  bgot=$("$RHO" run "$f" 2>/dev/null ${sets:+${sets[@]}}); brc=$?
   if ! "$RHO" build libs/compiler/main.rho -o /tmp/cdiff-c.wasm \
       --set "SRC=$src" >/dev/null 2>&1; then
     fail=$((fail+1)); failed="$failed $name:build"; continue
