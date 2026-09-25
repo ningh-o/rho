@@ -2169,12 +2169,23 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
           } else {
           if skind == 0 {
             // a folded var rebinding to a runtime build gains fresh
-            // pair slots (the latest binding wins at lookup)
+            // pair slots — bound BEFORE the tree builds, so a loop's
+            // rebind reads the previous iteration's value through the
+            // slots (the build's own lhs leaf takes the latest
+            // binding), then the result moves into the bound slots
+            let s1: i64 = next_local.v;
+            next_local.v = next_local.v + 1;
+            let s2: i64 = next_local.v;
+            next_local.v = next_local.v + 1;
+            env_str_bind_runtime(env, st.name, s1, s2, 1);
             let sp = build_string_pair(e, pool, env, prog,
                                        next_local);
             if sp.ok {
               body = body + sp.text;
-              env_str_bind_runtime(env, st.name, sp.a, sp.l, 1);
+              body = body + "    (local.get " + sp.a.to_str() +
+                     ")\n    (local.set " + s1.to_str() + ")\n" +
+                     "    (local.get " + sp.l.to_str() +
+                     ")\n    (local.set " + s2.to_str() + ")\n";
             } else {
               body = body + emit_expr(pool, e, env, prog);
             }
