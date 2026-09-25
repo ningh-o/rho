@@ -2075,8 +2075,14 @@ fn rel_field_walk(pool: *Pool, prog: *Prog, si: i64) -> string {
     let fc: string = rel_callee(pool, prog, fty);
     if len(fc) > 0 {
       walk = walk + "            (i64.load (i32.add (i32.wrap_i64 " +
-             "(local.get $p)) (i32.const " + off.to_str() + ")))\n" +
-             "            call " + fc + "\n";
+             "(local.get $p)) (i32.const " + off.to_str() + ")))\n";
+      if len(fty) >= 2 && fty[0] == 91 && fty[1] == 93 {
+        // a slice field: the walker takes the pair (addr, len)
+        walk = walk + "            (i64.load (i32.add (i32.wrap_i64 " +
+               "(local.get $p)) (i32.const " + (off + 8).to_str() +
+               ")))\n";
+      }
+      walk = walk + "            call " + fc + "\n";
     }
     j = j + 1;
   }
@@ -2580,6 +2586,49 @@ fn is_stringy(e: *Expr, env: *Env, prog: *Prog) -> bool {
     return false;
   }
   return false;
+}
+
+// an Option scrutinee's payload pointer target: a binding's recorded
+// text, a slice element's, or a struct-field slice's (one field step)
+fn optpt_of_scrutinee(sc: *Expr, env: *Env, prog: *Prog) -> string {
+  if sc.tag == parse.EX_VAR {
+    return env_slicept_of(env, sc.name);
+  }
+  if sc.tag == parse.EX_IDX {
+    let mut b: *Expr = parse.lit(0);
+    match sc.lhs {
+      Option.Some(bb) => {
+        b = bb;
+      },
+      Option.None => {},
+    }
+    if b.tag == parse.EX_VAR {
+      return env_slicept_of(env, b.name);
+    }
+    if b.tag == parse.EX_FIELD {
+      let mut owner: *Expr = parse.lit(0);
+      match b.lhs {
+        Option.Some(oo) => {
+          owner = oo;
+        },
+        Option.None => {},
+      }
+      let bt: string = field_base_type(owner, env, prog);
+      if len(bt) > 0 {
+        let si: i64 = st_index(prog, bt);
+        let fi: i64 = st_field_index(prog, si, b.name);
+        if fi >= 0 {
+          let fty: string =
+              prog.structs[si as usize].types[fi as usize];
+          if len(fty) >= 2 && fty[0] == 91 && fty[1] == 93 {
+            return type_ptr_target(fty[2..len(fty)]);
+          }
+        }
+      }
+    }
+    return "";
+  }
+  return "";
 }
 
 fn both_stringy(e: *Expr, env: *Env, prog: *Prog) -> bool {
@@ -3253,23 +3302,7 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
       out = out + "    (local.get " + bx.to_str() + ")\n";
     }
     out = out + "    (local.set $d)\n";
-    let mut optpt: string = "";
-    if sc.tag == parse.EX_IDX {
-      let mut b6: *Expr = parse.lit(0);
-      match sc.lhs {
-        Option.Some(x6) => {
-          b6 = x6;
-        },
-        Option.None => {},
-      }
-      if b6.tag == parse.EX_VAR {
-        optpt = env_slicept_of(env, b6.name);
-      }
-    }
-    if sc.tag == parse.EX_VAR {
-      // an Option-typed binding carries its payload's pointer target
-      optpt = env_slicept_of(env, sc.name);
-    }
+    let mut optpt: string = optpt_of_scrutinee(sc, env, prog);
     if sc.tag == parse.EX_MCALL && sc.name == "get" {
       // w.get() — the payload is the weak's target
       let mut rw: *Expr = parse.lit(0);
@@ -4680,13 +4713,7 @@ fn build_string_pair(e: *Expr, pool: *Pool, env: *Env, prog: *Prog,
       let t_a: i64 = nl.v;
       let t_l: i64 = nl.v + 1;
       nl.v = nl.v + 2;
-      let mut optpt5: string = "";
-      if sc.tag == parse.EX_VAR {
-        optpt5 = env_slicept_of(env, sc.name);
-        if len(optpt5) == 0 {
-          optpt5 = env_slice_elemtext(env, sc.name);
-        }
-      }
+      let mut optpt5: string = optpt_of_scrutinee(sc, env, prog);
       if sc.tag == parse.EX_MCALL && sc.name == "get" {
         let mut rw5: *Expr = parse.lit(0);
         match sc.lhs {
@@ -7025,6 +7052,11 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
                                ")\n";
                       }
                       env_str_bind_runtime(env, st.name, pa, pl, fki);
+                      if len(st.fmt) >= 2 && st.fmt[0] == 91 &&
+                          st.fmt[1] == 93 {
+                        env_bind_sliceelem(env, st.name,
+                                           st.fmt[2..len(st.fmt)]);
+                      }
                     } else {
                   // a pointer-typed init binds as a *T (the written
                   // annotation wins, else the init's own type)
@@ -7529,22 +7561,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
             body = body + "    (local.get " + bx.to_str() + ")\n";
           }
           body = body + "    (local.set $d)\n";
-          let mut optpt: string = "";
-          if sc.tag == parse.EX_IDX {
-            let mut b7: *Expr = parse.lit(0);
-            match sc.lhs {
-              Option.Some(x7) => {
-                b7 = x7;
-              },
-              Option.None => {},
-            }
-            if b7.tag == parse.EX_VAR {
-              optpt = env_slicept_of(env, b7.name);
-            }
-          }
-          if sc.tag == parse.EX_VAR {
-            optpt = env_slicept_of(env, sc.name);
-          }
+          let mut optpt: string = optpt_of_scrutinee(sc, env, prog);
           if sc.tag == parse.EX_MCALL && sc.name == "get" {
             // w.get() — the payload is the weak's target
             let mut rw2: *Expr = parse.lit(0);
