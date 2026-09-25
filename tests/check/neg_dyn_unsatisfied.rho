@@ -1,0 +1,14 @@
+// expect: does not satisfy Show
+trait Show {
+  fn to_str(self) -> string,
+}
+
+struct NoShow {
+  n: i32,
+}
+
+fn main() -> i32 {
+  let x = new NoShow { n: 1 };
+  let d: dyn Show = x;
+  return 0;
+}

@@ -205,31 +205,56 @@ size_t diags_count(void) { return vec_len(&g_diags); }
 Node *g_nodes;
 size_t g_nodes_len, g_nodes_cap;
 
+// Node storage is CHUNKED and never moves: the checker and emitter
+// hand out Node* pointers that must stay valid across later node
+// creation (generic instantiation clones whole trees while its
+// callers still hold pointers into the originals).
+#define NODE_CHUNK 8192
+static Node **g_chunk_ptrs; // chunk bases (the array may move; the
+                            // chunks themselves never do)
+static size_t g_nchunks, g_chunks_cap;
+
+static Node *chunk_for(size_t idx) {
+  return g_chunk_ptrs[idx / NODE_CHUNK];
+}
+
 NodeRef node_new(NodeKind kind, const char *file, int line, int col) {
-  if (g_nodes_len == g_nodes_cap) {
-    size_t nc = g_nodes_cap ? g_nodes_cap * 2 : 1024;
-    g_nodes = realloc(g_nodes, nc * sizeof(Node));
-    g_nodes_cap = nc;
-  }
-  if (g_nodes_len == 0) {
+  if (g_nchunks == 0) {
+    g_chunks_cap = 8;
+    g_chunk_ptrs = malloc(g_chunks_cap * sizeof(Node *));
+    Node *c0 = malloc(NODE_CHUNK * sizeof(Node));
+    memset(c0, 0, NODE_CHUNK * sizeof(Node));
+    g_chunk_ptrs[0] = c0;
+    g_nchunks = 1;
     // index 0 is NO_REF; park an inert node there forever
-    memset(&g_nodes[0], 0, sizeof(Node));
-    g_nodes[0].a = g_nodes[0].b = g_nodes[0].c = g_nodes[0].d = NO_REF;
+    c0[0].a = c0[0].b = c0[0].c = c0[0].d = NO_REF;
     g_nodes_len = 1;
+    g_nodes = c0; // compatibility for direct-base readers
   }
-  Node *n = &g_nodes[g_nodes_len];
+  if (g_nodes_len >= g_nchunks * NODE_CHUNK) {
+    if (g_nchunks == g_chunks_cap) {
+      g_chunks_cap *= 2;
+      g_chunk_ptrs = realloc(g_chunk_ptrs, g_chunks_cap * sizeof(Node *));
+    }
+    Node *nc = malloc(NODE_CHUNK * sizeof(Node));
+    memset(nc, 0, NODE_CHUNK * sizeof(Node));
+    g_chunk_ptrs[g_nchunks++] = nc;
+  }
+  Node *n = &chunk_for(g_nodes_len)[g_nodes_len % NODE_CHUNK];
+  NodeRef idx = (NodeRef)g_nodes_len;
+  g_nodes_len++;
   memset(n, 0, sizeof(Node));
   n->kind = kind;
   n->file = file;
   n->line = line;
   n->col = col;
   n->a = n->b = n->c = n->d = NO_REF;
-  return g_nodes_len++;
+  return idx;
 }
 
 Node *node_get(NodeRef r) {
   assert(r != NO_REF && r < g_nodes_len);
-  return &g_nodes[r];
+  return &chunk_for(r)[r % NODE_CHUNK];
 }
 
 RefList *reflist(void) {

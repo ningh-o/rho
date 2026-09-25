@@ -126,15 +126,18 @@ section — no placeholder stages. boot is the reference compiler.
 - [x] **T1.7d** labels lowering, TCO (self tail call → loop,
       million-deep recursion verified), if/while/loop statements,
       if/match as expressions (escape ownership retained).
-- [ ] **T1.7e** closures (capture boxes) ✅, fn values (trampolines) ✅,
+- [x] **T1.7e** closures (capture boxes) ✅, fn values (trampolines) ✅,
       generic fn monomorphization (bind/clone/emit) ✅, associated-fn
       calls `Type.name(args)` ✅, user-defined to_str printing ✅ (§8),
       generic struct/enum instantiation ✅ (field types through the
       binds; dense field offsets at the BOUND width), methods on
       generic types ✅ (the type's params ride implicitly, bound from
-      each receiver; 018/019/080/049 land); **remain: dyn + vtables,
-      bounds-checked calls**.
-- [ ] **T1.7** (completes when a-e cover the conformance map rows) rc insertion per the pure-local
+      each receiver), trait bounds verified per instantiation ✅
+      (concrete-over-generic overload precedence), dyn + vtables ✅
+      (fat {vtable, obj}; per-(trait,type) shim runs in one append-only
+      funcref region; coercion at every expected-type site; dispatch
+      through the closure ABI; 084–089 land byte-exact).
+- [x] **T1.7** (completes when a-e cover the conformance map rows) rc insertion per the pure-local
       counting rules ✅ (incl. enum-payload deep retain/release, let/assign
       copy retain), zeroed allocations ✅, container ownership walk at the
       rc==1 death check, tail-call→loop ✅, labels lowering ✅.

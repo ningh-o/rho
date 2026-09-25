@@ -1,0 +1,73 @@
+// exit: 0
+// slice 085: the satisfaction boundary — traits are satisfied per
+// trait, not globally: Dot has only to_str (Show), Icon only paint
+// (Paint), Logo both, and each coerces through exactly the traits it
+// satisfies. The unsatisfied direction is a compile error and lives in
+// tests/diag (d039 impl_missing_method, d040 dyn_unsatisfied, d041
+// dyn_unknown_method); this file pins the positive side of that relation.
+trait Show {
+  fn to_str(self) -> string,
+}
+
+trait Paint {
+  fn paint(self) -> string,
+}
+
+struct Dot {
+  n: i32,
+}
+
+fn Dot.to_str(self: *Dot) -> string {
+  return format("dot {}", self.n);
+}
+
+struct Icon {
+  n: i32,
+}
+
+fn Icon.paint(self: *Icon) -> string {
+  return format("icon {}", self.n);
+}
+
+struct Logo {
+  n: i32,
+}
+
+fn Logo.to_str(self: *Logo) -> string {
+  return format("logo {}", self.n);
+}
+
+fn Logo.paint(self: *Logo) -> string {
+  return format("paint {}", self.n);
+}
+
+fn show_only[T: Show](v: *T) -> string {
+  return format("show({})", v);
+}
+
+// static dispatch through the Paint bound — a dyn Paint parameter would
+// demand argument-position coercion, which traps in the frozen oracle
+// (let/assign/field/return coercions all run; only the argument site is
+// broken), so the dyn views below are built at let annotations
+fn paint_of[T: Paint](v: *T) -> string {
+  return format("paint({})", v.paint());
+}
+
+fn main() -> i32 {
+  let d = new Dot { n: 1 };
+  let i = new Icon { n: 2 };
+  let l = new Logo { n: 3 };
+  // Show accepts Dot and Logo, never Icon (by construction here)
+  printf("{} | {}\n", show_only(d), show_only(l));
+  // Paint accepts Icon and Logo
+  printf("{} | {}\n", paint_of(i), paint_of(l));
+  // one object, each dyn view through its satisfied trait only
+  let dl: dyn Show = l;
+  let dp: dyn Paint = l;
+  printf("{} / {}\n", dl, dp.paint());
+  let di: dyn Paint = i;
+  printf("{}\n", di.paint());
+  let dd: dyn Show = d;
+  printf("{}\n", dd);
+  return 0;
+}

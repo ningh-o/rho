@@ -1,0 +1,10 @@
+static [0] pt(1,2)
+static [1] pt(3,4)
+dyn    [0] pt(1,2)
+dyn    [1] pt(3,4)
+dyn    [2] wd<hey>
+counts 2 3
+nested 2 2
+dup 5 5
+sum=17
+nest=4

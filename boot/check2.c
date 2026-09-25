@@ -404,15 +404,27 @@ static bool sig_matches(FnCtx *c, FnSig *sig, NodeRef call_r,
   return true;
 }
 
-// resolve a call to one of an overload chain: exact-match-unique
+// resolve a call to one of an overload chain: exact-match-unique.
+// Concrete signatures match before generic ones — a hand-written
+// (i32, i32) overload wins over a generic [T: Show](T, T) at the same
+// argument shape (both are "exact" once instantiated; specificity
+// breaks the tie, keeping zero-or-many an error among peers).
 static FnDef *resolve_overload(FnCtx *c, FnDef *chain, NodeRef call_r,
                                bool has_recv, const char *what) {
   FnDef *match = NULL;
   int nmatch = 0;
   for (FnDef *f = chain; f; f = f->next_overload) {
-    if (sig_matches(c, f->sig, call_r, has_recv)) {
+    if (!f->ngparams && sig_matches(c, f->sig, call_r, has_recv)) {
       match = f;
       nmatch++;
+    }
+  }
+  if (nmatch == 0) {
+    for (FnDef *f = chain; f; f = f->next_overload) {
+      if (f->ngparams && sig_matches(c, f->sig, call_r, has_recv)) {
+        match = f;
+        nmatch++;
+      }
     }
   }
   if (nmatch == 1)
@@ -577,6 +589,24 @@ static Type *check_format_call(FnCtx *c, Node *call, Type *expected) {
     case TY_U8: case TY_U16: case TY_U32: case TY_U64: case TY_USIZE:
     case TY_F32: case TY_F64: case TY_BOOL: case TY_STRING:
       break;
+    case TY_DYN: {
+      // a dyn prints through its trait's to_str (dispatched at run)
+      TraitDef *td = vt->tdef;
+      bool printable = false;
+      if (td)
+        for (size_t k = 0; k < td->nsigs; k++) {
+          Node *sn = node_get(reflist_at(node_get(td->decl)->list, k));
+          if (strcmp(sn->name, "to_str") == 0 &&
+              td->sigs[k].nparams == 1 &&
+              td->sigs[k].ret->kind == TY_STRING)
+            printable = true;
+        }
+      if (!printable)
+        err_at(c, node_get(aw->a),
+               "dyn %s is not printable (its trait has no to_str)",
+               td ? td->name : "?");
+      break;
+    }
     default: {
       // §8: every value prints via to_str — a type carrying a
       // to_str(self) -> string method IS printable
@@ -1184,6 +1214,39 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
     }
   }
   size_t ncand = 0;
+  // dyn dispatch: the receiver is a fat {vtable, obj}; the method
+  // resolves inside the trait and lowers to an indirect call
+  if (rt->kind == TY_DYN && rt->tdef) {
+    TraitDef *td = rt->tdef;
+    for (size_t i = 0; i < td->nsigs; i++) {
+      Node *sn = node_get(reflist_at(node_get(td->decl)->list, i));
+      if (strcmp(sn->name, m->name) != 0)
+        continue;
+      FnSig *sig = &td->sigs[i];
+      size_t nparams = sig->nparams;
+      size_t nargv = reflist_len(m->list);
+      if (nparams != nargv + 1) {
+        err_at(c, m, "method '%s' of %s takes %zu argument(s), got %zu",
+               m->name, td->name, nparams - 1, nargv);
+        return ty_unit;
+      }
+      for (size_t j = 0; j < nargv; j++) {
+        Node *aw = node_get(reflist_at(m->list, j));
+        if (aw->kind != NT_POSARG) {
+          err_at(c, aw, "named arguments are only valid in constructors");
+          continue;
+        }
+        Type *pt = sig->params[j + 1].ty;
+        check_expr(c, aw->a, pt);
+      }
+      node_get(er)->op = 6; // dyn dispatch marker for the emitter
+      node_get(er)->ival = i;
+      node_get(er)->sem2 = td;
+      return sig->ret;
+    }
+    err_at(c, m, "trait %s has no method '%s'", td->name, m->name);
+    return ty_unit;
+  }
   FnDef **cands = method_candidates(c, rt, m->name, &ncand);
   if (!ncand) {
     err_at(c, m, "no method '%s' for type %s (native or in the use "
@@ -2024,6 +2087,19 @@ static Type *check_expr(FnCtx *c, NodeRef er, Type *expected) {
   Type *t = check_expr_inner(c, er, expected);
   if (er != NO_REF)
     node_get(er)->sem = t;
+  // dyn coercion at every expected-type site: a *T whose T satisfies
+  // the trait becomes the fat value {vtable, obj} (§ traits). The
+  // node's sem keeps the NATURAL pointer type — the emitter wraps at
+  // the consumer when it sees a dyn destination under a pointer sem.
+  if (expected && expected->kind == TY_DYN && t && t->kind == TY_PTR &&
+      t->base->kind == TY_STRUCT && er != NO_REF) {
+    if (trait_satisfied(c, t, expected->tdef))
+      return expected;
+    err_at(c, node_get(er),
+           "%s does not satisfy %s (a dyn coercion needs every trait "
+           "method)",
+           t->base->sdef->name, expected->tdef->name);
+  }
   return t;
 }
 
@@ -2108,6 +2184,7 @@ static void check_stmt(FnCtx *c, NodeRef sr) {
     l->mut = s->bval;
     l->ty = ann ? ann : it;
     l->decl = sr;
+    node_get(sr)->sem = l->ty; // the emitter allocates from this face
     if (ann && !type_eq(ann, it)) {
       // literal-style adaptation is exact (check_expr applied the
       // consumer); a real mismatch is an error

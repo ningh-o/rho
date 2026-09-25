@@ -1,0 +1,19 @@
+// expect: trait Show has no method 'paint'
+trait Show {
+  fn to_str(self) -> string,
+}
+
+struct S {
+  n: i32,
+}
+
+fn S.to_str(self: *S) -> string {
+  return format("s {}", self.n);
+}
+
+fn main() -> i32 {
+  let x = new S { n: 1 };
+  let d: dyn Show = x;
+  printf("{}\n", d.paint());
+  return 0;
+}

@@ -93,6 +93,12 @@ pub fn panic(msg: string) {}
 
 pub fn assert(cond: bool, msg: string) {}
 
+pub fn assert_eq[T: Show](a: T, b: T) {
+  if !(a == b) {
+    panic("assert_eq failed: " + a.to_str() + " != " + b.to_str());
+  }
+}
+
 pub fn exit(code: i32) {}
 
 // ------------------------------------------------------------ floats

@@ -129,8 +129,12 @@ static void fmt_params(F *f, RefList *ps) {
       fp(f, ", ");
     if (p->bval)
       fp(f, "mut ");
-    fp(f, "%s: ", p->name);
-    fmt_type(f, NG(p->a));
+    if (p->a != NO_REF) { // a bare trait-sig self has no annotation
+      fp(f, "%s: ", p->name);
+      fmt_type(f, NG(p->a));
+    } else {
+      fp(f, "%s", p->name);
+    }
     if (p->op == 2)
       fp(f, "...");
   }

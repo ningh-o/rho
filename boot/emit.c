@@ -222,6 +222,9 @@ typedef struct Em {
   size_t label_n;      // unique loop-label ids
   size_t closure_n;    // synthesized closure counter
   Vec closures;        // of const char* (wat names) — table order
+  Vec tableents;       // of const char* — the ONE append-only funcref
+                       // region past dropfns (closures, fn trampolines,
+                       // dyn shims interleave; append-only = stable)
   Vec fnnames;         // of FnNameEnt — unique WAT names per FnDef
 } Em;
 
@@ -245,6 +248,7 @@ static void em_init(Em *em, Program *p, bool debug) {
   vec_init(&em->fns, sizeof(EFn));
   vec_init(&em->closures, sizeof(const char *));
   vec_init(&em->dropfns, sizeof(Type *));
+  vec_init(&em->tableents, sizeof(const char *));
   vec_init(&em->emitted, sizeof(FnDef *));
   em->data_off = DATA_BASE;
   em->p = p;
@@ -319,6 +323,7 @@ typedef struct FnCx {
   int depth;          // wasm block depth counter
   size_t nlocals;     // locals allocated (fresh vreg counter)
   Vec localtypes;     // of WTy — every local's wasm type
+  Vec slotbase;       // of Type* — the rho type each slot belongs to
   Type *ret;
 } FnCx;
 
@@ -333,6 +338,7 @@ static void cx_init(FnCx *cx, Em *em, FnDef *fn, const char *wname) {
   vec_init(&cx->defers, sizeof(DeferEnt));
   vec_init(&cx->labels, sizeof(LabEnt));
   vec_init(&cx->localtypes, sizeof(WTy));
+  vec_init(&cx->slotbase, sizeof(Type *));
   cx->ret = fn ? fn->sig->ret : ty_unit;
 }
 
@@ -347,9 +353,19 @@ static Type *ty_ptr_scratch(void) {
 static size_t cx_fresh(FnCx *cx, Type *t) {
   size_t n = shape_nlocals(t);
   size_t at = VLEN(cx->localtypes);
-  for (size_t i = 0; i < n; i++)
+  for (size_t i = 0; i < n; i++) {
     *VPUSH(cx->localtypes, WTy) = local_wty(t, i);
+    *VPUSH(cx->slotbase, Type *) = t;
+  }
   return at;
+}
+
+// the rho type a vreg's slots were allocated for (dyn coercion reads
+// the destination's face at the emission site)
+static Type *slot_type(FnCx *cx, size_t vreg) {
+  if (vreg >= VLEN(cx->slotbase))
+    return NULL;
+  return *VAT(cx->slotbase, Type *, vreg);
 }
 
 // variable lookup by name
@@ -476,8 +492,11 @@ static void retain(FnCx *cx, Type *t, size_t vreg) {
   if (!t)
     return;
   switch (t->kind) {
-  case TY_PTR: case TY_STRING: case TY_SLICE: case TY_DYN:
+  case TY_PTR: case TY_STRING: case TY_SLICE:
     op(cx, "(call $rho_retain %s)\n", L(cx, vreg));
+    break;
+  case TY_DYN: // the fat value's second word is the object
+    op(cx, "(call $rho_retain %s)\n", L(cx, vreg + 1));
     break;
   case TY_ENUM:
     enum_payload_rc(cx, t, vreg, true);
@@ -531,8 +550,11 @@ static void release(FnCx *cx, Type *t, size_t vreg) {
   if (!t)
     return; // checker already reported; keep emitting
   switch (t->kind) {
-  case TY_PTR: case TY_STRING: case TY_SLICE: case TY_DYN:
+  case TY_PTR: case TY_STRING: case TY_SLICE:
     op(cx, "(call $rho_release %s)\n", L(cx, vreg));
+    break;
+  case TY_DYN:
+    op(cx, "(call $rho_release %s)\n", L(cx, vreg + 1));
     break;
   case TY_ENUM:
     enum_payload_rc(cx, t, vreg, false);
@@ -737,6 +759,9 @@ static size_t dropfn_for(Type *t) {
   return 4 + VLEN(em->dropfns) - 1;
 }
 
+size_t tableent_add(Em *em, const char *name);
+size_t dynrun_base(FnCx *cx, TraitDef *td, StructDef *sd);
+
 void em_queue_text(Em *em, const char *text) {
   size_t n = strlen(text);
   tneed(&em->fnbuf, n);
@@ -768,6 +793,7 @@ size_t clofn_type_idx(FnCx *cx, FnSig *sig) {
 typedef struct FnWrap {
   FnDef *fn;
   const char *tname;
+  size_t idx; // shared-region table index
 } FnWrap;
 static Vec g_fnwraps;
 
@@ -776,7 +802,7 @@ size_t fnvalue_wrap(FnCx *cx, FnDef *pf) {
     vec_init(&g_fnwraps, sizeof(FnWrap));
   for (size_t i = 0; i < VLEN(g_fnwraps); i++)
     if (VAT(g_fnwraps, FnWrap, i)->fn == pf)
-      return 4 + VLEN(cx->em->dropfns) + VLEN(cx->em->closures) + i;
+      return VAT(g_fnwraps, FnWrap, i)->idx;
   FnWrap *w = VPUSH(g_fnwraps, FnWrap);
   w->fn = pf;
   w->tname = aprintf(g_arena, "$tramp_%zu", VLEN(g_fnwraps) - 1);
@@ -806,16 +832,131 @@ size_t fnvalue_wrap(FnCx *cx, FnDef *pf) {
   tprintf(&b, " (call $%s)\n", fn_wat_name(pf));
   tprintf(&b, "  )\n");
   em_queue_text(cx->em, aprintf(g_arena, "%.*s", (int)b.n, b.p));
-  return 4 + VLEN(cx->em->dropfns) + VLEN(cx->em->closures) +
-         VLEN(g_fnwraps) - 1;
+  w->idx = tableent_add(cx->em, w->tname);
+  return w->idx;
+}
+
+// the shared funcref region: index = 4 (kernel) + dropfns + position.
+// Append-only across closures / trampolines / dyn shims so an index
+// handed out earlier can never shift.
+size_t tableent_add(Em *em, const char *name) {
+  *VPUSH(em->tableents, const char *) = name;
+  return 4 + VLEN(em->dropfns) + VLEN(em->tableents) - 1;
 }
 
 size_t closure_table_idx(Em *em, const char *cname) {
-  for (size_t i = 0; i < VLEN(em->closures); i++)
-    if (strcmp(*VAT(em->closures, const char *, i), cname) == 0)
+  for (size_t i = 0; i < VLEN(em->tableents); i++)
+    if (strcmp(*VAT(em->tableents, const char *, i), cname) == 0)
       return 4 + VLEN(em->dropfns) + i;
-  *VPUSH(em->closures, const char *) = cname;
-  return 4 + VLEN(em->dropfns) + VLEN(em->closures) - 1;
+  return tableent_add(em, cname);
+}
+
+// ------------------------------------------------------------ dyn
+//
+// dyn Trait = the fat value {vtable, obj}. Each (trait, type) pair
+// gets ONE contiguous run of shims in the shared funcref region —
+// method i of the trait lives at base + i. A shim has the closure ABI
+// (args..., env i32) and forwards env as self, so dispatch is a plain
+// call_indirect through the closure types.
+
+typedef struct DynRun {
+  TraitDef *td;
+  StructDef *sd;
+  size_t base;
+} DynRun;
+static Vec g_dynruns;
+static size_t g_dynshim_n; // unique shim names across runs
+
+// the concrete method for (type, trait-sig): module order, receiver
+// name match, params-after-self + return matching the trait signature
+static FnDef *dyn_find_method(Program *p, StructDef *sd, const char *mname,
+                              FnSig *tsig) {
+  for (Module *m = p->modules; m; m = m->next) {
+    if (!m->syms)
+      continue;
+    Sym *s = symtab_get(m->syms, mname);
+    if (!s || s->kind != SYM_FN)
+      continue;
+    for (FnDef *f = s->u.fns; f; f = f->next_overload) {
+      if (!f->is_method || strcmp(f->recv, sd->name) != 0)
+        continue;
+      if (f->sig->nparams != tsig->nparams)
+        continue;
+      bool ok = true;
+      for (size_t q = 1; q < tsig->nparams && ok; q++) {
+        Type *pa = f->sig->params[q].ty;
+        Type *pb = tsig->params[q].ty;
+        if (!pb)
+          continue;
+        if (!pa || !type_eq(pa, pb))
+          ok = false;
+      }
+      if (ok && !type_eq(f->sig->ret, tsig->ret))
+        ok = false;
+      if (ok)
+        return f;
+    }
+  }
+  return NULL;
+}
+
+size_t dynrun_base(FnCx *cx, TraitDef *td, StructDef *sd) {
+  if (!g_dynruns.data)
+    vec_init(&g_dynruns, sizeof(DynRun));
+  for (size_t i = 0; i < VLEN(g_dynruns); i++) {
+    DynRun *r = VAT(g_dynruns, DynRun, i);
+    if (r->td == td && r->sd == sd)
+      return r->base;
+  }
+  size_t base = 0;
+  bool haveslots = false;
+  for (size_t mi = 0; mi < td->nsigs; mi++) {
+    const char *mname =
+        node_get(reflist_at(node_get(td->decl)->list, mi))->name;
+    FnDef *m = dyn_find_method(cx->p, sd, mname, &td->sigs[mi]);
+    if (!m)
+      continue; // the checker already rejected unsatisfied coercions
+    const char *shim = aprintf(g_arena, "$dynshim_%zu", g_dynshim_n++);
+    Buf b;
+    buf_init(&b);
+    tprintf(&b, "  (func %s", shim);
+    for (size_t i = 1; i < m->sig->nparams; i++) {
+      size_t n = shape_nlocals(m->sig->params[i].ty);
+      for (size_t k = 0; k < n; k++)
+        tprintf(&b, " (param %s)",
+                wty_s(local_wty(m->sig->params[i].ty, k)));
+    }
+    tprintf(&b, " (param i32)"); // env: the object, forwarded as self
+    if (m->sig->ret->kind != TY_UNIT) {
+      size_t n = shape_nlocals(m->sig->ret);
+      for (size_t k = 0; k < n; k++)
+        tprintf(&b, " (result %s)", wty_s(local_wty(m->sig->ret, k)));
+    }
+    tprintf(&b, "\n");
+    size_t bparam = m->sig->nparams - 1; // args occupy 0..bparam-1, env last
+    size_t aidx = 0;
+    for (size_t i = 1; i < m->sig->nparams; i++) {
+      size_t n = shape_nlocals(m->sig->params[i].ty);
+      for (size_t k = 0; k < n; k++)
+        tprintf(&b, " (local.get %zu)\n", aidx + k);
+      aidx += n;
+    }
+    (void)bparam;
+    tprintf(&b, " (local.get %zu)\n", aidx); // env as self
+    tprintf(&b, " (call $%s)\n", fn_wat_name(m));
+    tprintf(&b, "  )\n");
+    em_queue_text(cx->em, aprintf(g_arena, "%.*s", (int)b.n, b.p));
+    size_t idx = tableent_add(cx->em, shim);
+    if (!haveslots) {
+      base = idx;
+      haveslots = true;
+    }
+  }
+  DynRun *r = VPUSH(g_dynruns, DynRun);
+  r->td = td;
+  r->sd = sd;
+  r->base = base;
+  return base;
 }
 
 // walk a closure body collecting outer-variable references (in
@@ -901,16 +1042,20 @@ static void emit_dropfns_and_table(Em *em) {
       if (!type_is_managed(ft))
         continue;
       if (ft->kind == TY_PTR || ft->kind == TY_STRING ||
-          ft->kind == TY_SLICE || ft->kind == TY_DYN)
+          ft->kind == TY_SLICE)
         tprintf(&em->fnbuf,
                 "    (call $rho_release (i32.load (i32.add (local.get $p) "
                 "(i32.const %zu))))\n", off);
+      else if (ft->kind == TY_DYN) // the fat field's second word
+        tprintf(&em->fnbuf,
+                "    (call $rho_release (i32.load (i32.add (local.get $p) "
+                "(i32.const %zu))))\n", off + 4);
     }
     tprintf(&em->fnbuf, "  )\n");
   }
-  // table: 4 nodrop slots + one per registered walker
+  // table: 4 nodrop slots + drop walkers + the shared funcref region
   tprintf(&em->fnbuf, "  (table %zu funcref)\n",
-          4 + VLEN(em->dropfns) + VLEN(em->closures) + VLEN(g_fnwraps));
+          4 + VLEN(em->dropfns) + VLEN(em->tableents));
   tprintf(&em->fnbuf,
           "  (elem (i32.const 0) $rho_nodrop $rho_nodrop $rho_nodrop "
           "$rho_nodrop");
@@ -918,10 +1063,8 @@ static void emit_dropfns_and_table(Em *em) {
     Type *st = *VAT(em->dropfns, Type *, i);
     tprintf(&em->fnbuf, " $drop_%s_%zu", st->sdef->name, i);
   }
-  for (size_t i = 0; i < VLEN(em->closures); i++)
-    tprintf(&em->fnbuf, " %s", *VAT(em->closures, const char *, i));
-  for (size_t i = 0; i < VLEN(g_fnwraps); i++)
-    tprintf(&em->fnbuf, " %s", VAT(g_fnwraps, FnWrap, i)->tname);
+  for (size_t i = 0; i < VLEN(em->tableents); i++)
+    tprintf(&em->fnbuf, " %s", *VAT(em->tableents, const char *, i));
   tprintf(&em->fnbuf, ")\n");
   (void)dropfn_for;
 }
@@ -997,6 +1140,21 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
     return;
   Node *e = node_get(er);
   Type *t = (Type *)e->sem;
+
+  // dyn coercion (checker-approved): a pointer sem under a dyn face
+  // becomes the fat value {vtable base, obj} — the vtable run is
+  // registered on first use, deterministically
+  Type *dface = slot_type(cx, dst);
+  if (dface && dface->kind == TY_DYN && t && t->kind == TY_PTR &&
+      t->base->kind == TY_STRUCT) {
+    size_t p = cx_fresh(cx, t);
+    emit_expr(cx, er, p);
+    size_t base = dynrun_base(cx, dface->tdef, t->base->sdef);
+    op(cx, "(local.set %zu (i32.const %zu))\n", dst, base);
+    op(cx, "(local.set %zu %s)\n", dst + 1, L(cx, p));
+    op(cx, "(call $rho_retain %s)\n", L(cx, p)); // the fat value owns it
+    return;
+  }
 
   if (e->kind == NT_EXPRSTMT && e->op == 3) {
     emit_block_value(cx, er, dst);
@@ -1638,10 +1796,10 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
         return;
       }
     }
-    // op==2 marks a real method call and op==5 an associated-fn call
-    // (sem2 = FnDef both ways); otherwise a non-NULL sem2 is a variant
-    // constructor
-    EnumVariant *var = (e->op == 2 || e->op == 5)
+    // op==2 marks a real method call, op==5 an associated-fn call
+    // (sem2 = FnDef), op==6 a dyn dispatch (sem2 = TraitDef); otherwise
+    // a non-NULL sem2 is a variant constructor
+    EnumVariant *var = (e->op == 2 || e->op == 5 || e->op == 6)
                            ? NULL
                            : (EnumVariant *)e->sem2;
     if (var) {
@@ -1707,6 +1865,54 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
          L(cx, wp));
       op(cx, "(else\n");
       op(cx, "  (local.set %zu (i32.const %d))))\n", dst, none_tag);
+      return;
+    }
+    if (e->op == 6) {
+      // dyn dispatch: push args, the object as the trailing env, and
+      // call_indirect through the (args…, env) closure type
+      TraitDef *td = (TraitDef *)e->sem2;
+      size_t midx = (size_t)e->ival;
+      if (!td)
+        return;
+      FnSig *tsig = &td->sigs[midx];
+      Type *rt = (Type *)node_get(e->a)->sem; // the fat receiver
+      size_t recv = cx_fresh(cx, rt);
+      emit_expr(cx, e->a, recv);
+      size_t argregs[16];
+      size_t nregs = 0;
+      for (size_t i = 1; i < tsig->nparams; i++) {
+        Type *pt = tsig->params[i].ty;
+        size_t v = cx_fresh(cx, pt);
+        argregs[nregs++] = v;
+        Node *aw = (i - 1) < reflist_len(e->list)
+                       ? node_get(reflist_at(e->list, i - 1))
+                       : NULL;
+        if (aw && aw->kind == NT_POSARG) {
+          emit_expr(cx, aw->a, v);
+          pass_arg_own(cx, aw->a, pt, v);
+        }
+      }
+      for (size_t i = 0; i < nregs; i++)
+        for (size_t k = 0; k < shape_nlocals(tsig->params[i + 1].ty); k++)
+          op(cx, "%s", L(cx, argregs[i] + k));
+      op(cx, "%s\n", L(cx, recv + 1)); // the object rides as env
+      // dispatch type: (args-minus-self…, env) -> ret — arena-lived,
+      // the closure-type registry keeps the pointer for the type
+      // section at module assembly
+      FnSig *dsig = arena_alloc(g_arena, sizeof(FnSig), 8);
+      memset(dsig, 0, sizeof *dsig);
+      dsig->nparams = tsig->nparams - 1;
+      dsig->params = tsig->params + 1;
+      dsig->ret = tsig->ret;
+      extern size_t clofn_type_idx(FnCx * cx, FnSig * sig);
+      op(cx, "(call_indirect (type $cloty_%zu) (i32.add %s "
+             "(i32.const %zu)))\n",
+         clofn_type_idx(cx, dsig), L(cx, recv), midx);
+      if (tsig->ret->kind != TY_UNIT) {
+        size_t n = shape_nlocals(tsig->ret);
+        for (size_t i = n; i > 0; i--)
+          op(cx, "(local.set %zu)\n", dst + i - 1);
+      }
       return;
     }
     if (e->op == 5) {
@@ -2590,6 +2796,39 @@ static void emit_format_build(FnCx *cx, Node *call) {
       op(cx, "(local.set %zu)\n", valregs[i]);     // ptr (1st result)
       continue;
     }
+    if (at->kind == TY_DYN && at->tdef) {
+      // a dyn value prints by dispatching its trait's to_str (the
+      // checker verified the trait carries it)
+      TraitDef *td = at->tdef;
+      size_t tsidx = 0;
+      bool found = false;
+      for (size_t k = 0; k < td->nsigs; k++) {
+        Node *sn = node_get(reflist_at(node_get(td->decl)->list, k));
+        if (strcmp(sn->name, "to_str") == 0) {
+          tsidx = k;
+          found = true;
+        }
+      }
+      if (found) {
+        size_t dv = cx_fresh(cx, at);
+        emit_expr(cx, aw->a, dv);
+        op(cx, "(call $rho_retain %s)\n", L(cx, dv + 1)); // borrowed self
+        valregs[i] = cx_fresh(cx, ty_string);
+        op(cx, "%s\n", L(cx, dv + 1)); // env = the object
+        FnSig *dsig = arena_alloc(g_arena, sizeof(FnSig), 8);
+        memset(dsig, 0, sizeof *dsig);
+        dsig->nparams = 0;
+        dsig->params = NULL;
+        dsig->ret = ty_string;
+        extern size_t clofn_type_idx(FnCx * cx, FnSig * sig);
+        op(cx, "(call_indirect (type $cloty_%zu) (i32.add %s "
+               "(i32.const %zu)))\n",
+           clofn_type_idx(cx, dsig), L(cx, dv), tsidx);
+        op(cx, "(local.set %zu)\n", valregs[i] + 1);
+        op(cx, "(local.set %zu)\n", valregs[i]);
+        continue;
+      }
+    }
     if (at->kind != TY_STRING && type_is_managed_or_agg(at)) {
       // a to_str-bearing type: phase 1 evaluates self, calls the
       // method, and keeps the string block (§8)
@@ -2782,7 +3021,11 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
   Node *s = node_get(sr);
   switch (s->kind) {
   case NT_LET: {
-    Type *t = (Type *)node_get(s->b)->sem;
+    // the checker's effective face (annotation wins; a dyn coercion
+    // keeps the init's sem at the natural pointer type)
+    Type *t = (Type *)s->sem;
+    if (!t)
+      t = (Type *)node_get(s->b)->sem;
     size_t v = cx_fresh(cx, t);
     emit_expr(cx, s->b, v);
     if (node_get(s->b)->kind == NT_PATH &&
