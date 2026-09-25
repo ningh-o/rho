@@ -111,7 +111,10 @@ static Type *inst_ty(Type *inst, Type *raw) {
 static size_t shape_nlocals(Type *t) {
   switch (t->kind) {
   case TY_PTR: return 1;
-  case TY_STRING: case TY_SLICE: case TY_DYN: case TY_FN: return 2;
+  // slices are fat: {owner, data, len} — owner carries the rc
+  // (payload pointer, header at -24), data is the aliased view
+  case TY_SLICE: return 3;
+  case TY_STRING: case TY_DYN: case TY_FN: return 2;
   case TY_STRUCT: {
     size_t n = 0;
     for (size_t i = 0; i < t->sdef->nfields; i++)
@@ -521,7 +524,8 @@ static size_t type_size(Type *t) {
   case TY_U32: case TY_USIZE: case TY_BOOL: case TY_F32:
   case TY_PTR: return 4;
   case TY_I64: case TY_U64: case TY_F64: return 8;
-  case TY_STRING: case TY_SLICE: case TY_DYN: case TY_FN: return 8;
+  case TY_SLICE: return 12; // {owner, data, len}
+  case TY_STRING: case TY_DYN: case TY_FN: return 8;
   case TY_STRUCT: {
     size_t off = 0;
     for (size_t i = 0; i < t->sdef->nfields; i++) {
@@ -957,7 +961,9 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       {
         size_t n32 = cx_fresh(cx, ty_i32);
         op(cx, "(local.set %zu (i32.wrap_i64 %s))\n", n32, L(cx, n));
-        op(cx, "(local.set %zu %s)\n", dst + 1, L(cx, n32));
+        // fat slice: {owner, data, len}
+        op(cx, "(local.set %zu %s)\n", dst + 1, L(cx, dst));
+        op(cx, "(local.set %zu %s)\n", dst + 2, L(cx, n32));
       }
       return;
     }
@@ -988,7 +994,10 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
         Type *at = (Type *)node_get(aw->a)->sem;
         size_t v = cx_fresh(cx, at);
         emit_expr(cx, aw->a, v);
-        if (at->kind == TY_STRING || at->kind == TY_SLICE)
+        if (at->kind == TY_SLICE) // len rides the third slot
+          op(cx, "(local.set %zu (i64.extend_i32_u %s))\n", dst,
+             L(cx, v + 2));
+        else if (at->kind == TY_STRING)
           op(cx, "(local.set %zu (i64.extend_i32_u %s))\n", dst,
              L(cx, v + 1));
         else {
@@ -1546,10 +1555,11 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
     emit_expr(cx, e->b, i);
     size_t i32v = cx_fresh(cx, ty_i32);
     op(cx, "(local.set %zu (i32.wrap_i64 (local.get %zu)))\n", i32v, i);
-    // bounds check: i >=u len → panic (spec §3)
+    // bounds check: i >=u len → panic (spec §3); the len slot is +1
+    // for strings and +2 for fat slices
     size_t msg = data_intern("index out of bounds", 19);
     op(cx, "(if (i32.ge_u (local.get %zu) %s) (then\n", i32v,
-       L(cx, b + 1));
+       L(cx, b + (bt->kind == TY_SLICE ? 2 : 1)));
     op(cx, "  (call $rho_panic (i32.const %zu) (i32.const 19))))\n", msg);
     if (bt->kind == TY_STRING) {
       op(cx, "(local.set %zu (i32.load8_u (i32.add %s (local.get %zu))))\n",
@@ -1560,10 +1570,10 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       size_t addr = cx_fresh(cx, ty_i32);
       if (esz == 1)
         op(cx, "(local.set %zu (i32.add %s (local.get %zu)))\n", addr,
-           L(cx, b), i32v);
+           L(cx, b + 1), i32v); // fat slice: data rides the second slot
       else
         op(cx, "(local.set %zu (i32.add %s (i32.mul (local.get %zu) "
-               "(i32.const %zu))))\n", addr, L(cx, b), i32v, esz);
+               "(i32.const %zu))))\n", addr, L(cx, b + 1), i32v, esz);
       size_t n = shape_nlocals(el);
       for (size_t k = 0; k < n; k++) {
         WTy w = local_wty(el, k);
@@ -1579,8 +1589,15 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
   }
 
   case NT_SLICE_E: {
-    // s[a..b]: a view (ptr+a*esz, b-a); bounds-checked both ends
+    // s[a..b]: bounds-checked both ends. A []T slice is a fat VIEW
+    // {owner, data+off, len} — writes alias the base storage (the
+    // 092 law) and the owner slot carries the rc. Strings are
+    // immutable, so their slice COPIES into a fresh owned block: a
+    // two-slot string view would release an interior pointer and
+    // corrupt the rc discipline (zero-UB law, spec §2).
     Type *bt = (Type *)node_get(e->a)->sem;
+    bool is_str = bt->kind == TY_STRING;
+    size_t lenslot = is_str ? 1 : 2;
     size_t b = cx_fresh(cx, bt);
     emit_expr(cx, e->a, b);
     size_t lo = cx_fresh(cx, ty_i32);
@@ -1597,23 +1614,61 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       emit_expr(cx, e->c, t);
       op(cx, "(local.set %zu (i32.wrap_i64 (local.get %zu)))\n", hi, t);
     } else {
-      op(cx, "(local.set %zu %s)\n", hi, L(cx, b + 1));
+      op(cx, "(local.set %zu %s)\n", hi, L(cx, b + lenslot));
     }
     size_t msg = data_intern("index out of bounds", 19);
     op(cx, "(if (i32.gt_u (local.get %zu) (local.get %zu)) (then\n", lo,
        hi);
     op(cx, "  (call $rho_panic (i32.const %zu) (i32.const 19))))\n", msg);
-    op(cx, "(if (i32.gt_u (local.get %zu) %s) (then\n", hi, L(cx, b + 1));
+    op(cx, "(if (i32.gt_u (local.get %zu) %s) (then\n", hi,
+       L(cx, b + lenslot));
     op(cx, "  (call $rho_panic (i32.const %zu) (i32.const 19))))\n", msg);
-    size_t esz = bt->kind == TY_STRING ? 1 : type_size(bt->base);
-    if (esz == 1)
-      op(cx, "(local.set %zu (i32.add %s (local.get %zu)))\n", dst,
-         L(cx, b), lo);
-    else
-      op(cx, "(local.set %zu (i32.add %s (i32.mul (local.get %zu) "
-             "(i32.const %zu))))\n", dst, L(cx, b), lo, esz);
+    size_t esz = is_str ? 1 : type_size(bt->base);
+    size_t cnt = cx_fresh(cx, ty_i32);
     op(cx, "(local.set %zu (i32.sub (local.get %zu) (local.get %zu)))\n",
-       dst + 1, hi, lo);
+       cnt, hi, lo);
+    if (!is_str) {
+      // fat view: owner passes through (+1 retain, one per owned
+      // copy — the pure-local counting law), data shifts by lo*esz
+      retain(cx, bt, b);
+      op(cx, "(local.set %zu %s)\n", dst, L(cx, b));
+      if (esz == 1)
+        op(cx, "(local.set %zu (i32.add %s (local.get %zu)))\n", dst + 1,
+           L(cx, b + 1), lo);
+      else
+        op(cx, "(local.set %zu (i32.add %s (i32.mul (local.get %zu) "
+               "(i32.const %zu))))\n", dst + 1, L(cx, b + 1), lo, esz);
+      op(cx, "(local.set %zu %s)\n", dst + 2, L(cx, cnt));
+      return;
+    }
+    // string: copy into a fresh block
+    size_t bytes = cx_fresh(cx, ty_i32);
+    op(cx, "(local.set %zu %s)\n", bytes, L(cx, cnt)); // esz == 1
+    size_t blk = cx_fresh(cx, ty_i32);
+    op(cx, "(local.set %zu (call $rho_alloc (local.get %zu)))\n", blk,
+       bytes);
+    size_t src = cx_fresh(cx, ty_i32);
+    op(cx, "(local.set %zu (i32.add %s (local.get %zu)))\n", src,
+       L(cx, b), lo);
+    size_t pay = cx_fresh(cx, ty_i32);
+    op(cx, "(local.set %zu (i32.add (local.get %zu) (i32.const 24)))\n",
+       pay, blk);
+    size_t ci = cx_fresh(cx, ty_i32);
+    op(cx, "(local.set %zu (i32.const 0))\n", ci);
+    size_t lid = cx->em->label_n++;
+    op(cx, "(block $b%zu (loop $l%zu\n", lid, lid);
+    op(cx, "  (br_if $b%zu (i32.ge_u (local.get %zu) (local.get %zu)))\n",
+       lid, ci, bytes);
+    op(cx, "  (i32.store8 (i32.add (local.get %zu) (local.get %zu))\n",
+       pay, ci);
+    op(cx, "    (i32.load8_u (i32.add (local.get %zu) (local.get %zu))))\n",
+       src, ci);
+    op(cx, "  (local.set %zu (i32.add (local.get %zu) (i32.const 1)))\n",
+       ci, ci);
+    op(cx, "  (br $l%zu))\n", lid);
+    op(cx, ")\n");
+    op(cx, "(local.set %zu %s)\n", dst, L(cx, pay));
+    op(cx, "(local.set %zu %s)\n", dst + 1, L(cx, cnt));
     return;
   }
 
@@ -1626,7 +1681,9 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
        n * esz);
     op(cx, "(local.set %zu (i32.add (local.get %zu) (i32.const 24)))\n",
        dst, blk);
-    op(cx, "(local.set %zu (i32.const %zu))\n", dst + 1, n);
+    // fat slice: owner and data both start at the payload
+    op(cx, "(local.set %zu %s)\n", dst + 1, L(cx, dst));
+    op(cx, "(local.set %zu (i32.const %zu))\n", dst + 2, n);
     for (size_t i2 = 0; i2 < n; i2++) {
       Node *el = node_get(reflist_at(e->list, i2));
       Type *elt = (Type *)el->sem;
@@ -2187,7 +2244,9 @@ static void emit_call_args(FnCx *cx, FnDef *f, RefList *args) {
          extra * esz);
       op(cx, "(local.set %zu (i32.add (local.get %zu) (i32.const 24)))\n",
          v, blk);
-      op(cx, "(local.set %zu (i32.const %zu))\n", v + 1, extra);
+      // fat slice: owner and data both start at the payload
+      op(cx, "(local.set %zu %s)\n", v + 1, L(cx, v));
+      op(cx, "(local.set %zu (i32.const %zu))\n", v + 2, extra);
       for (size_t j = 0; j < extra; j++) {
         Node *aw = node_get(reflist_at(args, nfixedp + j));
         Type *at = (Type *)node_get(aw->a)->sem;
@@ -2214,8 +2273,9 @@ static void emit_call_args(FnCx *cx, FnDef *f, RefList *args) {
       op(cx, "%s", L(cx, argregs_run[i] + k));
   }
   if (variadic) {
-    op(cx, "%s", L(cx, argregs_run[nfixedp]));
-    op(cx, "%s", L(cx, argregs_run[nfixedp] + 1));
+    size_t nv = shape_nlocals(f->sig->params[nfixedp].ty);
+    for (size_t k = 0; k < nv; k++)
+      op(cx, "%s", L(cx, argregs_run[nfixedp] + k));
   }
 }
 
@@ -2400,19 +2460,21 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
       }
       size_t msg = data_intern("index out of bounds", 19);
       op(cx, "(if (i32.ge_u (local.get %zu) %s) (then\n", i,
-         L(cx, b + 1));
+         L(cx, b + (bt->kind == TY_SLICE ? 2 : 1)));
       op(cx, "  (call $rho_panic (i32.const %zu) (i32.const 19))))\n", msg);
       Type *el = bt->kind == TY_STRING ? ty_u8 : bt->base;
       size_t esz = type_size(el);
       size_t rhs = cx_fresh(cx, lt);
       emit_expr(cx, s->b, rhs);
       size_t addr = cx_fresh(cx, ty_i32);
+      // fat slice: the data pointer rides the second slot
       if (esz == 1)
         op(cx, "(local.set %zu (i32.add %s (local.get %zu)))\n", addr,
-           L(cx, b), i);
+           L(cx, b + (bt->kind == TY_SLICE ? 1 : 0)), i);
       else
         op(cx, "(local.set %zu (i32.add %s (i32.mul (local.get %zu) "
-               "(i32.const %zu))))\n", addr, L(cx, b), i, esz);
+               "(i32.const %zu))))\n", addr,
+           L(cx, b + (bt->kind == TY_SLICE ? 1 : 0)), i, esz);
       size_t nl = shape_nlocals(el);
       for (size_t k = 0; k < nl; k++) {
         WTy w = local_wty(el, k);

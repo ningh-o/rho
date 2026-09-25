@@ -1,0 +1,24 @@
+// slices own their block: an interior view would corrupt the base's
+// rc/header bytes at release (the offset-24 probe reads the payload's
+// first four bytes as rc and decrements them)
+// out: AAAA
+// out: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABBBB
+// out: 66 67
+// out: 6667
+fn main() -> i32 {
+  let s: string = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" + "BBBB";
+  {
+    let v: string = s[24..28];
+    printf("{}\n", v);
+  }
+  printf("{}\n", s);
+  let a: []u8 = make([]u8, 8);
+  a[0] = 65;
+  a[1] = 66;
+  a[2] = 67;
+  let b: []u8 = a[1..3];
+  printf("{} {}\n", b[0], b[1]);
+  let c: []u8 = b[0..2];
+  printf("{}{}\n", c[0], c[1]);
+  return 0;
+}
