@@ -1,6 +1,7 @@
 // driver.c — command implementations. T1.1 delivers the skeleton;
 // each command fills in as its phase lands (see TODO.md Phase 1).
 #include "rho.h"
+#include <unistd.h>
 #include "sem.h"
 
 int emit_program(Program *p, bool debug, char **wat_out, size_t *wat_len);
@@ -78,10 +79,41 @@ int cmd_build(int argc, char **argv) {
 }
 
 int cmd_run(int argc, char **argv) {
-  (void)argc;
-  (void)argv;
-  fprintf(stderr, "rho run: not implemented yet (Phase 1, T1.9+)\n");
-  return EXIT_USAGE;
+  const char *path = NULL;
+  Program *p = load_and_check(argc, argv, &path);
+  if (!p)
+    return g_had_error ? EXIT_COMPILE : EXIT_USAGE;
+  char watz[] = "/tmp/rho-run.XXXXXX.wat";
+  char wasmt[] = "/tmp/rho-run.XXXXXX.wasm";
+  int fd = mkstemps(watz, 4);
+  close(fd);
+  mkstemps(wasmt, 5);
+  char *wat = NULL;
+  size_t wat_len = 0;
+  emit_program(p, false, &wat, &wat_len);
+  FILE *wf = fopen(watz, "w");
+  fwrite(wat, 1, wat_len, wf);
+  fclose(wf);
+  char cmd[2048];
+  // run through wasmtime; map traps to the panic catalog (stack
+  // overflow = defined panic, exit 101 — spec §3)
+  // wasmtime's trap backtrace goes to a file: a trap maps to the
+  // panic catalog (stack overflow = defined panic, exit 101)
+  snprintf(cmd, sizeof cmd,
+           "wat2wasm %s -o %s 2>/dev/null && "
+           "wasmtime run %s 2>/tmp/rho-trap.$$.err; rc=$?; "
+           "if [ $rc -eq 134 ] || [ $rc -eq 132 ] || [ $rc -eq 133 ]; "
+           "then echo \"panic: stack overflow\" >&2; rm -f "
+           "/tmp/rho-trap.$$.err; exit 101; "
+           "else cat /tmp/rho-trap.$$.err >&2; rm -f "
+           "/tmp/rho-trap.$$.err; exit $rc; fi",
+           watz, wasmt, wasmt);
+  int rc = system(cmd);
+  unlink(watz);
+  unlink(wasmt);
+  if (WIFEXITED(rc))
+    return WEXITSTATUS(rc);
+  return 1;
 }
 
 int cmd_test(int argc, char **argv) {

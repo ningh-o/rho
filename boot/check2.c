@@ -657,7 +657,8 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
         Type *inst = instantiate_enum_ctor(c, lk.edef, expected, var,
                                            m->list);
         // bind the declaration's generic params to the instance args
-        TBind tb = {edef_gnames(lk.edef), inst->args, lk.edef->ngparams};
+        TBind tb = {edef_gnames(lk.edef), inst->args,
+                    inst->args ? lk.edef->ngparams : 0};
         node_get(er)->sem2 = var; // the chosen variant
         // tuple-form constructor: positional args (or named for struct
         // variants)
@@ -1375,7 +1376,8 @@ static void check_pattern(FnCtx *c, Node *p, Type *st) {
              st->edef->name);
       return;
     }
-    TBind tb = {edef_gnames(st->edef), st->args, st->edef->ngparams};
+    TBind tb = {edef_gnames(st->edef), st->args,
+                 st->args ? st->edef->ngparams : 0};
     for (size_t v = 0; v < st->edef->nvariants; v++) {
       EnumVariant *var = &st->edef->variants[v];
       if (strcmp(dot + 1, var->name) != 0)
