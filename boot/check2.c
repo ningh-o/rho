@@ -412,7 +412,7 @@ bool sig_same(FnSig *a, FnSig *b) {
 }
 
 // intrinsic call names the checker special-cases
-static bool is_intrinsic_fn(const char *n) {
+__attribute__((unused)) static bool is_intrinsic_fn(const char *n) {
   return strcmp(n, "printf") == 0 || strcmp(n, "eprintf") == 0 ||
          strcmp(n, "format") == 0 || strcmp(n, "len") == 0 ||
          strcmp(n, "panic") == 0 || strcmp(n, "assert") == 0 ||
