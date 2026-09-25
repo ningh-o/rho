@@ -1676,7 +1676,8 @@ fn expr_enum_type(e: *Expr, env: *Env, prog: *Prog) -> string {
     return "";
   }
   if e.tag == parse.EX_IDX {
-    // an enum-element slice's indexing yields the element's enum
+    // an enum-element slice's indexing yields the element's enum —
+    // through a binding or a struct-field slice (one field step)
     let mut b5: *Expr = parse.lit(0);
     match e.lhs {
       Option.Some(x5) => {
@@ -1686,6 +1687,31 @@ fn expr_enum_type(e: *Expr, env: *Env, prog: *Prog) -> string {
     }
     if b5.tag == parse.EX_VAR {
       return env_sliceelem_of(env, b5.name, prog);
+    }
+    if b5.tag == parse.EX_FIELD {
+      let mut ow5: *Expr = parse.lit(0);
+      match b5.lhs {
+        Option.Some(o5) => {
+          ow5 = o5;
+        },
+        Option.None => {},
+      }
+      let bt5: string = field_base_type(ow5, env, prog);
+      if len(bt5) > 0 {
+        let si5: i64 = st_index(prog, bt5);
+        let fi5: i64 = st_field_index(prog, si5, b5.name);
+        if fi5 >= 0 {
+          let fty5: string =
+              prog.structs[si5 as usize].types[fi5 as usize];
+          if len(fty5) >= 4 && fty5[0] == 91 && fty5[1] == 93 &&
+              (fty5[2] == 63 || fty5[2] == 79) {
+            return "Option";
+          }
+          if en_index(prog, fty5[2..len(fty5)]) >= 0 {
+            return fty5[2..len(fty5)];
+          }
+        }
+      }
     }
     return "";
   }
