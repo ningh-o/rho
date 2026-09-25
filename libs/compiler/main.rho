@@ -1,9 +1,13 @@
-// main.rho — the self-hosted compiler's root (T2.1 skeleton).
+// main.rho — the self-hosted compiler's root (T2.1 skeleton, growing).
 // Source arrives as the SRC build parameter (§7: root consts are
 // ordinary consts; --set overrides any text-formed type); the WAT
-// goes to stdout. Built by boot, it compiles hello-world:
+// goes to stdout:
 //   rho build libs/compiler/main.rho -o rho.wasm --set SRC='…'
-//   wasmtime rho.wasm | wat2wasm -o hello.wasm -
+//   wasmtime rho.wasm | wat2wasm -o out.wasm -
+// Subset today: fn main + user fns (i64 params/returns — string
+// parameters need a pair-passing ABI, next), printf over folded
+// strings and integer expressions, let/assignment (i64 + folded
+// strings), while/if/else-if, comparisons, len() over strings.
 use lex;
 use parse;
 use emit;

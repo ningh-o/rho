@@ -27,6 +27,7 @@ pub const ST_RET: i32 = 2;
 pub const ST_IF: i32 = 3;
 pub const ST_WHILE: i32 = 4;
 pub const ST_SET: i32 = 5;
+pub const ST_CALL: i32 = 6;
 
 pub struct Stmt {
   tag: i32,        // ST_*
@@ -227,9 +228,18 @@ pub fn fmt_pieces(s: string) -> []string {
   return split_fmt(s);
 }
 
-// primary: INT | STRING | IDENT | ( expr )
+// primary: INT | STRING | IDENT | ( expr ) | -expr
 fn parse_primary(c: *PCur) -> *Expr {
   let t = tk(c);
+  if is_punct(t, 45) {
+    // -literal folds; -expr negates
+    tkadv(c);
+    let inner = parse_primary(c);
+    if inner.tag == EX_LIT {
+      return lit(0 - inner.lit);
+    }
+    return bin(1, lit(0), inner);
+  }
   if t.kind == lex.TK_INT {
     tkadv(c);
     return lit(t.ival);
@@ -383,6 +393,15 @@ fn parse_stmt(c: *PCur) -> *Stmt {
     return st;
   }
   if t.kind == lex.TK_IDENT && c.pos + 1 < len(c.toks) &&
+      is_punct(c.toks[c.pos + 1], 40) {
+    // name(args); — a call statement, its result discarded
+    let e = parse_bin(c, 1);
+    eat_punct(c, 59);
+    let st = mk_stmt(ST_CALL);
+    st.val = Option.Some(e);
+    return st;
+  }
+  if t.kind == lex.TK_IDENT && c.pos + 1 < len(c.toks) &&
       is_punct(c.toks[c.pos + 1], 61) {
     // name = expr;
     tkadv(c); // the name
@@ -403,7 +422,15 @@ fn parse_stmt(c: *PCur) -> *Stmt {
     let t2 = tk(c);
     if t2.kind == lex.TK_KEYWORD && t2.text == "else" {
       tkadv(c);
-      st.body2 = parse_block(c);
+      let t3 = tk(c);
+      if t3.kind == lex.TK_KEYWORD && t3.text == "if" {
+        // else if: a one-statement else holding the nested if
+        let nested: []*Stmt = make([]*Stmt, 1);
+        nested[0] = parse_stmt(c);
+        st.body2 = nested[0..1];
+      } else {
+        st.body2 = parse_block(c);
+      }
     }
     return st;
   }

@@ -5,8 +5,8 @@
 set -u
 RHO=${RHO:-./build/rho}
 # sources ride the SRC build parameter (§7): compile-time consts
-run_one() { # name, src, expected-stdout
-  local name=$1 src=$2 want=$3
+run_one() { # name, src, expected-stdout[, expected-rc]
+  local name=$1 src=$2 want=$3 wantrc=${4:-0}
   "$RHO" build libs/compiler/main.rho -o /tmp/rhoc-$name.wasm --set "SRC=$src" \
     >/tmp/rhoc-$name.log 2>&1
   if [ $? -ne 0 ]; then
@@ -20,10 +20,10 @@ run_one() { # name, src, expected-stdout
   local got rc
   got=$(perl -e 'alarm 10; exec @ARGV' -- wasmtime /tmp/hi-$name.wasm 2>/dev/null)
   rc=$?
-  if [ "$rc" -eq 0 ] && [ "$got" = "$want" ]; then
+  if [ "$rc" -eq "$wantrc" ] && [ "$got" = "$want" ]; then
     echo "  $name: ok"
   else
-    echo "FAIL selfhost/$name: rc=$rc got=[$got] want=[$want]"
+    echo "FAIL selfhost/$name: rc=$rc want=$wantrc got=[$got] want=[$want]"
     FAILED=1
   fi
 }
@@ -37,6 +37,7 @@ run_one flow 'fn main() -> i32 { let mut i = 0; let mut sum = 0; while i < 10 { 
 run_one fns 'fn double(x: i64) -> i64 { return x * 2; } fn add3(a: i64, b: i64, c: i64) -> i64 { return a + b + c; } fn main() -> i32 { let d = double(21); let t = add3(d, 10, 1); printf("d={} t={}\n", d, t); return 0; }' 'd=42 t=53'
 run_one fib 'fn fib(n: i64) -> i64 { if n < 2 { return n; } return fib(n - 1) + fib(n - 2); } fn main() -> i32 { printf("fib(10)={}\n", fib(10)); return 0; }' 'fib(10)=55'
 run_one strs 'fn main() -> i32 { let a = "one"; let b = "two"; let c = a + "-" + b + "!"; printf("a={} b={} c={} all={}\n", a, b, c, "x" + "y"); return 0; }' 'a=one b=two c=one-two! all=xy'
+run_one suite 'fn banner() -> i64 { printf("[banner]\n"); return 3; } fn main() -> i32 { let n = banner(); if n == 3 { printf("three\n"); } else if n == 4 { printf("four\n"); } else { printf("other\n"); } printf("neg={} len={}\n", 0 - 5, len("abcd")); banner(); return 7; }' $'[banner]\nthree\nneg=-5 len=4\n[banner]' 7
 if [ "$FAILED" -eq 0 ]; then
   echo "selfhost: ok (boot → rho compiler → program → run)"
 else

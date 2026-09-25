@@ -19,8 +19,8 @@ diff_one() { # name, src
   sgot=$(perl -e 'alarm 10; exec @ARGV' -- wasmtime \
     /tmp/diff-$name.self.wasm 2>/dev/null)
   src_rc=$?
-  if [ "$src_rc" -eq 0 ] && [ "$bgot" = "$sgot" ]; then
-    echo "  $name: boot==self [$bgot]"
+  if [ "$brc" -eq "$src_rc" ] && [ "$bgot" = "$sgot" ]; then
+    echo "  $name: boot==self rc=$brc [$bgot]"
   else
     echo "FAIL diff/$name: boot rc=$brc=[$bgot] self rc=$src_rc=[$sgot]"
     FAILED=1
@@ -32,6 +32,7 @@ diff_one exprs 'fn main() -> i32 { let x = 6 * 7; let y = x - 2; printf("x={} y=
 diff_one flow 'fn main() -> i32 { let mut i = 0; let mut sum = 0; while i < 10 { if i % 2 == 0 { sum = sum + i; } else { sum = sum - 1; } i = i + 1; } printf("sum={} i={}\n", sum, i); return 0; }'
 diff_one fib 'fn fib(n: i64) -> i64 { if n < 2 { return n; } return fib(n - 1) + fib(n - 2); } fn main() -> i32 { printf("fib(10)={}\n", fib(10)); return 0; }'
 diff_one strs 'fn main() -> i32 { let a = "one"; let b = "two"; let c = a + "-" + b + "!"; printf("a={} b={} c={} all={}\n", a, b, c, "x" + "y"); return 0; }'
+diff_one suite 'fn banner() -> i64 { printf("[banner]\n"); return 3; } fn main() -> i32 { let n = banner(); if n == 3 { printf("three\n"); } else if n == 4 { printf("four\n"); } else { printf("other\n"); } printf("neg={} len={}\n", 0 - 5, len("abcd")); banner(); return 7; }'
 if [ "$FAILED" -eq 0 ]; then
   echo "differential: ok (boot == self-hosted on the growing subset)"
 else
