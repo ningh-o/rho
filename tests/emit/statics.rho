@@ -1,0 +1,13 @@
+// out: 3
+static mut HITS: i32 = 0;
+fn bump() {
+  HITS += 1;
+  return;
+}
+fn main() -> i32 {
+  bump();
+  bump();
+  bump();
+  printf("{}\n", HITS);
+  return 0;
+}

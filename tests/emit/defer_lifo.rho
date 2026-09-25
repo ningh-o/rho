@@ -1,0 +1,8 @@
+// out: defer2
+// out: defer1
+fn main() -> i32 {
+  defer printf("defer1\n");
+  defer printf("defer2\n");
+  printf("");
+  return 0;
+}

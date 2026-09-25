@@ -1451,7 +1451,9 @@ static void check_assign_target(FnCtx *c, Node *lv) {
   }
   case NT_FIELD_E: {
     Type *bt = check_expr(c, lv->a, NULL);
-    if (bt->kind != TY_PTR && bt->kind != TY_STRUCT) {
+    if (bt->kind == TY_PTR)
+      return; // the pointee is mutable through a pointer
+    if (bt->kind != TY_STRUCT) {
       err_at(c, lv, "cannot assign through %s", type_name(bt));
       return;
     }

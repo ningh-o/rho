@@ -1411,6 +1411,13 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
     op(cx, "(return)\n");
     return;
   }
+  case NT_DEFER: {
+    DeferEnt *dnt = VPUSH(cx->defers, DeferEnt);
+    dnt->stmt = sr;
+    dnt->scope = cx->scope;
+    return;
+  }
+
   case NT_EXPRSTMT:
     if (s->op == 3) { // block
       cx->scope++;
@@ -1441,10 +1448,112 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
     }
     // lvalue: plain local, field (through pointer), or index
     Node *lv = node_get(s->a);
+    if (lv->kind == NT_FIELD_E) {
+      Type *bt = (Type *)node_get(lv->a)->sem;
+      if (bt->kind == TY_PTR && bt->base->kind == TY_STRUCT) {
+        Type *st = bt->base;
+        int idx = lv->op;
+        size_t off = field_offset(st, (size_t)idx);
+        Type *ft = inst_ty(st, st->sdef->fields[idx].ty);
+        size_t rhs = cx_fresh(cx, lt);
+        emit_expr(cx, s->b, rhs);
+        size_t p = cx_fresh(cx, bt);
+        emit_expr(cx, lv->a, p);
+        if (s->op != OP_NONE) {
+          // compound: load old, op, store
+          size_t oldv = cx_fresh(cx, ft);
+          size_t nv = cx_fresh(cx, ft);
+          const char *w = scalar_wty(ft) == W_I64 ? "i64" : "i32";
+          const char *instr = NULL;
+          switch (s->op) {
+          case OP_ADD: instr = "add"; break;
+          case OP_SUB: instr = "sub"; break;
+          case OP_MUL: instr = "mul"; break;
+          case OP_BAND: instr = "and"; break;
+          case OP_BOR: instr = "or"; break;
+          case OP_BXOR: instr = "xor"; break;
+          default: break;
+          }
+          const char *ld = scalar_wty(ft) == W_I64 ? "i64.load" : "i32.load";
+          const char *strop = scalar_wty(ft) == W_I64 ? "i64.store"
+                                                       : "i32.store";
+          op(cx, "(local.set %zu (%s (i32.add (local.get %zu) "
+                 "(i32.const %zu))))\n", oldv, ld, p, 24 + off);
+          if (instr) {
+            op(cx, "(local.set %zu (%s.%s (local.get %zu) "
+                   "(local.get %zu)))\n", nv, w, instr, oldv, rhs);
+            truncate_after(cx, ft, nv);
+            op(cx, "(%s (i32.add (local.get %zu) (i32.const %zu)) "
+                   "(local.get %zu))\n", strop, p, 24 + off, nv);
+            return;
+          }
+        }
+        // plain store of the (already computed) rhs
+        size_t n = shape_nlocals(ft);
+        for (size_t k = 0; k < n; k++) {
+          WTy w = local_wty(ft, k);
+          const char *strop = w == W_I64   ? "i64.store"
+                              : w == W_F32 ? "f32.store"
+                              : w == W_F64 ? "f64.store"
+                                           : "i32.store";
+          op(cx, "(%s (i32.add (local.get %zu) (i32.const %zu)) %s)\n",
+             strop, p, 24 + off + k * 4, L(cx, rhs + k));
+        }
+        return;
+      }
+      return; // inline-value field stores arrive with copies (later)
+    }
     if (lv->kind == NT_PATH) {
       VarInfo *v = cx_var(cx, lv->name);
-      if (!v)
+      if (!v) {
+        // module static: load-modify-store on its memory slot
+        Sym *ss = NULL;
+        for (Module *m2 = cx->p->modules; m2; m2 = m2->next)
+          if (m2->syms && (ss = symtab_get(m2->syms, lv->name)) &&
+              ss->kind == SYM_STATIC)
+            break;
+        if (!ss)
+          return;
+        size_t slot = static_slot(cx->fn->mod, lv->name);
+        size_t rhs = cx_fresh(cx, lt);
+        emit_expr(cx, s->b, rhs);
+        if (s->op == OP_NONE) {
+          size_t n = shape_nlocals(lt);
+          for (size_t i = 0; i < n; i++)
+            op(cx, "(i32.store (i32.const %zu) %s)\n", slot + i * 4,
+               L(cx, rhs + i));
+          return;
+        }
+        size_t oldv = cx_fresh(cx, lt);
+        size_t nv = cx_fresh(cx, lt);
+        size_t n = shape_nlocals(lt);
+        for (size_t i = 0; i < n; i++)
+          op(cx, "(local.set %zu (i32.load (i32.const %zu)))\n", oldv + i,
+             slot + i * 4);
+        const char *w = scalar_wty(lt) == W_I64 ? "i64" : "i32";
+        const char *instr = NULL;
+        switch (s->op) {
+        case OP_ADD: instr = "add"; break;
+        case OP_SUB: instr = "sub"; break;
+        case OP_MUL: instr = "mul"; break;
+        case OP_BAND: instr = "and"; break;
+        case OP_BOR: instr = "or"; break;
+        case OP_BXOR: instr = "xor"; break;
+        default: break;
+        }
+        if (instr) {
+          op(cx, "(local.set %zu (%s.%s (local.get %zu) (local.get %zu)))\n",
+             nv, w, instr, oldv, rhs);
+          truncate_after(cx, lt, nv);
+        } else {
+          emit_div(cx, s->op, lt, nv, oldv, rhs);
+          truncate_after(cx, lt, nv);
+        }
+        for (size_t i = 0; i < n; i++)
+          op(cx, "(i32.store (i32.const %zu) %s)\n", slot + i * 4,
+             L(cx, nv + i));
         return;
+      }
       size_t rhs = cx_fresh(cx, lt);
       emit_expr(cx, s->b, rhs);
       if (s->op != OP_NONE) {
@@ -1640,7 +1749,16 @@ static void emit_scope_exit(FnCx *cx, size_t to_scope) {
     DeferEnt *d = VAT(cx->defers, DeferEnt, --i);
     if (d->scope < to_scope)
       break;
-    emit_stmt(cx, d->stmt); // the NT_DEFER's payload
+    NodeRef act = node_get(d->stmt)->a;
+    Node *an = node_get(act);
+    if (an->kind == NT_ASSIGN)
+      emit_stmt(cx, act);
+    else {
+      Type *at2 = (Type *)an->sem;
+      size_t tv = cx_fresh(cx, at2 ? at2 : ty_unit);
+      emit_expr(cx, act, tv);
+      release(cx, at2, tv);
+    }
   }
   for (size_t i = VLEN(cx->vars); i > 0;) {
     VarInfo *v = VAT(cx->vars, VarInfo, --i);
@@ -1713,6 +1831,50 @@ static void emit_start(Em *em) {
   Buf b;
   buf_init(&b);
   tprintf(&b, "  (func $_start\n");
+  // statics initialize from comptime-folded values (module × symbol
+  // order, deterministic)
+  for (Module *m = em->p->modules; m; m = m->next) {
+    if (!m->syms)
+      continue;
+    for (Sym *s = m->syms->order_head; s; s = s->order_next) {
+      if (s->kind != SYM_STATIC)
+        continue;
+      size_t slot = static_slot(m, s->name);
+      CVal *cv = s->u.konst->cval;
+      if (!cv)
+        continue;
+      switch (cv->kind) {
+      case CV_INT: case CV_UINT:
+        if (cv->ty && scalar_wty(cv->ty) == W_I64)
+          tprintf(&b, "    (i64.store (i32.const %zu) (i64.const %lld))\n",
+                  slot, (long long)cv->u);
+        else
+          tprintf(&b, "    (i32.store (i32.const %zu) (i32.const %d))\n",
+                  slot, (int32_t)cv->u);
+        break;
+      case CV_FLOAT:
+        if (cv->ty && cv->ty->kind == TY_F32)
+          tprintf(&b, "    (f32.store (i32.const %zu) (f32.const %.9g))\n",
+                  slot, cv->f);
+        else
+          tprintf(&b, "    (f64.store (i32.const %zu) (f64.const %.17g))\n",
+                  slot, cv->f);
+        break;
+      case CV_BOOL:
+        tprintf(&b, "    (i32.store (i32.const %zu) (i32.const %d))\n",
+                slot, cv->b ? 1 : 0);
+        break;
+      case CV_STR: {
+        size_t at = data_intern(cv->s.p, cv->s.n);
+        tprintf(&b, "    (i32.store (i32.const %zu) (i32.const %zu))\n",
+                slot, at);
+        tprintf(&b, "    (i32.store (i32.const %zu) (i32.const %zu))\n",
+                slot + 4, cv->s.n);
+        break;
+      }
+      }
+    }
+  }
   if (main && main->kind == SYM_FN) {
     FnDef *mf = main->u.fns;
     if (mf->sig->ret->kind != TY_UNIT)
