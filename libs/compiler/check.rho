@@ -19,6 +19,37 @@ pub fn name_known(prog: *Prog, name: string) -> bool {
   return false;
 }
 
+pub fn enum_known(prog: *Prog, name: string) -> bool {
+  let mut i: usize = 0;
+  while i < prog.nenums {
+    if prog.enums[i].name == name {
+      return true;
+    }
+    i = i + 1;
+  }
+  return false;
+}
+
+// the variant's tag, -1 when the enum or variant is unknown
+pub fn enum_variant(prog: *Prog, ename: string,
+                    vname: string) -> i64 {
+  let mut i: usize = 0;
+  while i < prog.nenums {
+    if prog.enums[i].name == ename {
+      let mut k: usize = 0;
+      while k < prog.enums[i].nv {
+        if prog.enums[i].vnames[k] == vname {
+          return k as i64;
+        }
+        k = k + 1;
+      }
+      return 0 - 1;
+    }
+    i = i + 1;
+  }
+  return 0 - 1;
+}
+
 pub fn struct_known(prog: *Prog, name: string) -> bool {
   let mut i: usize = 0;
   while i < prog.nstructs {
@@ -118,6 +149,22 @@ fn expr_walk(e: *Expr, prog: *Prog, bound: []string, nb: usize,
     return;
   }
   if e.tag == parse.EX_FIELD || e.tag == parse.EX_DEREF {
+    // Enum.Var without call parens — the unit-variant constructor
+    if e.tag == parse.EX_FIELD {
+      match e.lhs {
+        Option.Some(b) => {
+          if b.tag == parse.EX_VAR && enum_known(prog, b.name) {
+            if enum_variant(prog, b.name, e.name) < 0 &&
+                !(b.name == "Option" || b.name == "Result") {
+              eprintf("check: unknown variant '{}.{}'\n", b.name, e.name);
+              errs.n = errs.n + 1;
+            }
+            return;
+          }
+        },
+        Option.None => {},
+      }
+    }
     match e.lhs {
       Option.Some(b) => {
         expr_walk(b, prog, bound, nb, errs);
@@ -126,10 +173,33 @@ fn expr_walk(e: *Expr, prog: *Prog, bound: []string, nb: usize,
     }
     return;
   }
+  if e.tag == parse.EX_MATCH {
+    match e.lhs {
+      Option.Some(sc) => {
+        expr_walk(sc, prog, bound, nb, errs);
+      },
+      Option.None => {},
+    }
+    let mut k: usize = 0;
+    while k < len(e.marms) {
+      walk_arm(e.marms[k], prog, bound, nb, errs);
+      k = k + 1;
+    }
+    return;
+  }
   if e.tag == parse.EX_MCALL {
     let mut assoc: bool = false;
     match e.lhs {
       Option.Some(r) => {
+        if r.tag == parse.EX_VAR && enum_known(prog, r.name) {
+          // Enum.Var / Enum.Var(args) — the constructor call
+          assoc = true;
+          if enum_variant(prog, r.name, e.name) < 0 &&
+              !(r.name == "Option" || r.name == "Result") {
+            eprintf("check: unknown variant '{}.{}'\n", r.name, e.name);
+            errs.n = errs.n + 1;
+          }
+        } else {
         if r.tag == parse.EX_VAR && struct_known(prog, r.name) {
           // Type.name(args) — the associated-fn call; the type itself
           // is not a variable reference
@@ -144,6 +214,7 @@ fn expr_walk(e: *Expr, prog: *Prog, bound: []string, nb: usize,
             eprintf("check: unknown method '{}'\n", e.name);
             errs.n = errs.n + 1;
           }
+        }
         }
       },
       Option.None => {},
@@ -200,6 +271,37 @@ fn expr_walk(e: *Expr, prog: *Prog, bound: []string, nb: usize,
       expr_walk(r, prog, bound, nb, errs);
     },
     Option.None => {},
+  }
+}
+
+fn walk_arm(a: *MatchArm, prog: *Prog, bound: []string,
+             nb0: usize, errs: *ErrBox) {
+  let mut nb: usize = nb0;
+  let mut k: usize = 0;
+  while k < len(a.pat.binders) {
+    if nb < len(bound) {
+      bound[nb] = a.pat.binders[k];
+      nb = nb + 1;
+    }
+    k = k + 1;
+  }
+  // the block arm's statements walk with the binders in scope, the
+  // tail expression riding as a final statement (its names resolve
+  // against the block's own lets)
+  match a.val {
+    Option.Some(v) => {
+      let all: []*Stmt = make([]*Stmt, len(a.body) + 1);
+      let mut q: usize = 0;
+      while q < len(a.body) {
+        all[q] = a.body[q];
+        q = q + 1;
+      }
+      all[q] = parse.wrap_expr_stmt(v);
+      stmts_walk(all, prog, bound, nb, make([]string, 32), 0, errs);
+    },
+    Option.None => {
+      stmts_walk(a.body, prog, bound, nb, make([]string, 32), 0, errs);
+    },
   }
 }
 
@@ -263,6 +365,19 @@ fn stmts_walk(nodes: []*Stmt, prog: *Prog, bound: []string,
       let mut k: usize = 0;
       while k < len(st.args) {
         expr_walk(st.args[k], prog, bound, nb, errs);
+        k = k + 1;
+      }
+    }
+    if st.tag == parse.ST_MATCH {
+      match st.val {
+        Option.Some(sc) => {
+          expr_walk(sc, prog, bound, nb, errs);
+        },
+        Option.None => {},
+      }
+      let mut k: usize = 0;
+      while k < len(st.marms) {
+        walk_arm(st.marms[k], prog, bound, nb, errs);
         k = k + 1;
       }
     }
