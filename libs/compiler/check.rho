@@ -7,7 +7,12 @@ use parse;
 
 pub fn name_known(prog: *Prog, name: string) -> bool {
   if name == "len" || name == "assert" || name == "format" ||
-      name == "assert_eq" || name == "printf" || name == "eprintf" {
+      name == "assert_eq" || name == "printf" || name == "eprintf" ||
+      name == "panic" {
+    return true;
+  }
+  if name == "weak" {
+    // the weak namespace's only member: weak.from(p) — the identity
     return true;
   }
   let mut i: usize = 0;
@@ -124,6 +129,10 @@ fn fn_named(prog: *Prog, name: string) -> bool {
 // some Type.method exists (the receiver's own type is beyond the
 // name-level checker — suffix match keeps the refusal honest)
 fn method_known(prog: *Prog, mname: string) -> bool {
+  if mname == "get" {
+    // weak.get() — the absence probe over the header's rc
+    return true;
+  }
   let mut i: usize = 0;
   while i < len(prog.fns) {
     let n: string = prog.fns[i].name;
@@ -270,6 +279,14 @@ fn expr_walk(e: *Expr, prog: *Prog, bound: []string, nb: usize,
           }
           return;
         }
+        if r.tag == parse.EX_VAR && r.name == "weak" {
+          // weak.from(p) — the namespace's one builtin (get() rides
+          // the method surface below)
+          if e.name != "from" {
+            eprintf("check: unknown fn 'weak.{}'\n", e.name);
+            errs.n = errs.n + 1;
+          }
+        } else {
         if r.tag == parse.EX_VAR && struct_known(prog, r.name) {
           // Type.name(args) — the associated-fn call; the type itself
           // is not a variable reference
@@ -284,6 +301,7 @@ fn expr_walk(e: *Expr, prog: *Prog, bound: []string, nb: usize,
             eprintf("check: unknown method '{}'\n", e.name);
             errs.n = errs.n + 1;
           }
+        }
         }
         }
       },

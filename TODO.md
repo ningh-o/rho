@@ -344,8 +344,37 @@ section — no placeholder stages. boot is the reference compiler.
       guards the empty fn table (len() on a fn-less program
       panicked the compiler). 018, 080, 081, and 083 land byte-exact:
       91 of 108 behavioral, floor 91; gens1-3 selfhost legs pin the
-      wave. Remain: traits/impl/dyn; module loading; weak/rc; the
-      mut law and usize lane (T3.6's mirror side)*
+      wave. The fifty-eighth cut (2026-09-26): rc and weak land
+      whole. Every box carries its rc in the slot BEFORE the payload
+      pointer (all existing offsets untouched); $w_alloc stamps rc=1
+      and grows memory past the first page — with a floor that rises
+      to the old end on every grow (the first version marched the
+      new top down through lived-in pages and corrupted the shared
+      None box at 65504; 102 died at round ~60). weak[T] rides the
+      pointer lane uncounted (weak.from is the identity, equality is
+      identity); get() probes the header and its fresh box retains
+      the payload INSIDE the live branch (a dead probe must never
+      resurrect). The counting law: rebinds retain the new value
+      first (self-assign stays alive), then release the old through
+      the type's thunk — a lazily-registered per-type walker
+      (struct fields, option payloads by tag, enum variants, slice
+      elements; strings and scalars release nothing — their deaths
+      are unobservable); construction retains shared inits into
+      fields, enum payloads, and slice elements; a scope's owned
+      lets release at scope exit through the defer stack's new
+      release pool (returns unwind it too, SKIPPING the returned
+      binding — the value moves out with its count); match binders
+      borrow (never counted); a fresh scrutinee box dies with its
+      match. ?X params bind the option lane (a pre-existing hole:
+      they bound as pointers, so matches over them compared box
+      addresses against tags); Option patterns carry string payloads
+      through optpt; panic(msg) is the fatal builtin (exit 101);
+      match expressions whose arms spell bool words print them.
+      n02, n12, n13, n14, 056, 095, and t03 land byte-exact — and
+      102's grow-floor fix keeps it. 98 of 108 behavioral, floor 98;
+      weak1-5 selfhost legs pin the wave. Remain: traits/impl/dyn;
+      module loading; the mut law and usize lane (T3.6's mirror
+      side)*
 - [ ] **T2.x** Optimizer in the mirror: constant folding, dead-code
       elimination, globals tree-shaking, tail-call→loop — with the
       language suites (opt/eq/params/modsys/strops/multiline) rebuilt

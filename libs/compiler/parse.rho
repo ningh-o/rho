@@ -624,7 +624,23 @@ fn eat_type(c: *PCur) -> string {
   if t.kind == lex.TK_IDENT || t.kind == lex.TK_KEYWORD {
     let name: string = t.text;
     tkadv(c);
-    if (name == "weak" || name == "Option" || name == "Result") &&
+    if name == "weak" && is_punct(tk(c), 91) {
+      // weak[T] — the payload text rides whole (the target keys get())
+      tkadv(c); // [
+      let mut wargs: string = "";
+      while tk(c).kind != lex.TK_EOF && !is_punct(tk(c), 93) {
+        if len(wargs) > 0 {
+          wargs = wargs + ",";
+        }
+        wargs = wargs + eat_type(c);
+        if !eat_punct(c, 44) {
+          break;
+        }
+      }
+      eat_punct(c, 93); // ]
+      return pre + "weak[" + wargs + "]";
+    }
+    if (name == "Option" || name == "Result") &&
        is_punct(tk(c), 91) {
       // the bracketed payload(s): consumed whole, the builtin name
       // rides on (norm_enum collapses the text downstream)
