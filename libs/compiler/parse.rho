@@ -957,7 +957,8 @@ fn parse_pat(c: *PCur) -> *Pat {
         }
       } else {
         if is_punct(tk(c), 123) {
-          // struct payload binders
+          // struct payload binders: 'field: binder' pairs — the name
+          // after the colon binds (the field name itself does not)
           tkadv(c);
           while tk(c).kind != lex.TK_EOF {
             if is_punct(tk(c), 125) {
@@ -966,9 +967,22 @@ fn parse_pat(c: *PCur) -> *Pat {
             }
             let bt = tk(c);
             if bt.kind == lex.TK_IDENT || bt.kind == lex.TK_KEYWORD {
-              binders[nb] = bt.text;
-              nb = nb + 1;
               tkadv(c);
+              if is_punct(tk(c), 58) {
+                // 'field: binder' — the name after the colon binds
+                tkadv(c); // :
+                let bnd = tk(c);
+                if bnd.kind == lex.TK_IDENT ||
+                    bnd.kind == lex.TK_KEYWORD {
+                  binders[nb] = bnd.text;
+                  nb = nb + 1;
+                  tkadv(c);
+                }
+              } else {
+                // a bare name binds itself (the field's own name)
+                binders[nb] = bt.text;
+                nb = nb + 1;
+              }
             } else {
               tkadv(c);
             }
