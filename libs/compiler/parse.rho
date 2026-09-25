@@ -10,6 +10,10 @@ pub const EX_VAR: i32 = 1;
 pub const EX_BIN: i32 = 2;
 pub const EX_STR: i32 = 3;
 pub const EX_CALL: i32 = 4;
+pub const EX_MAKE: i32 = 5;  // make([]T, n): args[0] = the count
+pub const EX_IDX: i32 = 6;   // base[idx]: lhs = base, rhs = index
+pub const EX_SLICE2: i32 = 7; // base[a..b]: lhs = base, args = lo/hi;
+                              // op bit0 = lo present, bit1 = hi present
 
 pub struct Expr {
   tag: i32,      // EX_*
@@ -31,6 +35,7 @@ pub const ST_CALL: i32 = 6;
 pub const ST_LOOP: i32 = 7;
 pub const ST_BREAK: i32 = 8;
 pub const ST_CONT: i32 = 9;
+pub const ST_ISTORE: i32 = 10; // xs[i] = e: name = base, args[0] = idx
 
 pub struct Stmt {
   tag: i32,        // ST_*
@@ -140,13 +145,44 @@ pub fn bin(op: i64, lhs: *Expr, rhs: *Expr) -> *Expr {
 pub struct FnDef {
   name: string,
   params: []string,
-  pstr: []bool, // true where the parameter is : string
+  pstr: []bool, // true where the parameter rides the pair ABI
+  pslc: []bool, // true where that pair is a slice (vs a string)
   body: []*Stmt,
 }
 
 pub struct Prog {
   fns: []*FnDef,
   main: []*Stmt,
+}
+
+pub fn make_expr(count: *Expr) -> *Expr {
+  let args: []*Expr = make([]*Expr, 1);
+  args[0] = count;
+  return new Expr { tag: EX_MAKE, lit: 0, name: "", op: 0,
+                    lhs: Option.None, rhs: Option.None, args: args };
+}
+
+pub fn idx_expr(base: *Expr, index: *Expr) -> *Expr {
+  return new Expr { tag: EX_IDX, lit: 0, name: "", op: 0,
+                    lhs: Option.Some(base), rhs: Option.Some(index),
+                    args: make([]*Expr, 0) };
+}
+
+// op bit0 = explicit lo, bit1 = explicit hi
+pub fn slice_expr(base: *Expr, lo: *Expr, hi: *Expr,
+                  has_lo: bool, has_hi: bool) -> *Expr {
+  let args: []*Expr = make([]*Expr, 2);
+  args[0] = lo;
+  args[1] = hi;
+  let mut flags: i64 = 0;
+  if has_lo {
+    flags = flags | 1;
+  }
+  if has_hi {
+    flags = flags | 2;
+  }
+  return new Expr { tag: EX_SLICE2, lit: 0, name: "", op: flags,
+                    lhs: Option.Some(base), rhs: Option.None, args: args };
 }
 
 pub fn call(name: string, args: []*Expr) -> *Expr {
@@ -179,6 +215,22 @@ fn eat_punct(c: *PCur, ch: u8) -> bool {
 
 fn is_punct(t: *Tok, ch: u8) -> bool {
   return t.kind == lex.TK_PUNCT && len(t.text) == 1 && t.text[0] == ch;
+}
+
+// []T — the element type FOLLOWS the closed brackets (recursively
+// for [][]T); returns true when a bracketed type was eaten
+fn eat_slice_type(c: *PCur) -> bool {
+  if !is_punct(tk(c), 91) {
+    return false;
+  }
+  tkadv(c); // [
+  eat_punct(c, 93); // ]
+  if is_punct(tk(c), 91) {
+    eat_slice_type(c);
+  } else {
+    tkadv(c); // the element type name
+  }
+  return true;
 }
 
 // precedence, loose to tight (spec §6.1's C ladder):
@@ -286,8 +338,54 @@ pub fn fmt_pieces(s: string) -> []string {
   return split_fmt(s);
 }
 
-// primary: INT | STRING | IDENT | ( expr ) | -expr
+// postfix: [e] indexes, [a..b] slices (either end open) — binds
+// tighter than every binary level
+fn parse_postfix(c: *PCur, e0: *Expr) -> *Expr {
+  let mut e: *Expr = e0;
+  while is_punct(tk(c), 91) {
+    tkadv(c); // [
+    if is_punct(tk(c), 46) {
+      // [.. — open lo
+      tkadv(c);
+      eat_punct(c, 46);
+      let mut hi: *Expr = lit(0);
+      let mut has_hi: bool = false;
+      if !is_punct(tk(c), 93) {
+        hi = parse_bin(c, 0);
+        has_hi = true;
+      }
+      eat_punct(c, 93);
+      e = slice_expr(e, lit(0), hi, false, has_hi);
+      continue;
+    }
+    let inner = parse_bin(c, 0);
+    if is_punct(tk(c), 46) {
+      // [a.. — slice with explicit lo
+      tkadv(c);
+      eat_punct(c, 46);
+      let mut hi: *Expr = lit(0);
+      let mut has_hi: bool = false;
+      if !is_punct(tk(c), 93) {
+        hi = parse_bin(c, 0);
+        has_hi = true;
+      }
+      eat_punct(c, 93);
+      e = slice_expr(e, inner, hi, true, has_hi);
+      continue;
+    }
+    eat_punct(c, 93);
+    e = idx_expr(e, inner);
+  }
+  return e;
+}
+
+// primary: INT | STRING | IDENT | ( expr ) | -expr — postfix follows
 fn parse_primary(c: *PCur) -> *Expr {
+  let e: *Expr = parse_atom(c);
+  return parse_postfix(c, e);
+}
+
+fn parse_atom(c: *PCur) -> *Expr {
   let t = tk(c);
   if is_punct(t, 45) {
     // -literal folds; -expr negates
@@ -328,6 +426,16 @@ fn parse_primary(c: *PCur) -> *Expr {
   }
   if t.kind == lex.TK_IDENT {
     tkadv(c);
+    // make([]T, n) — the zeroed-slice allocation; the element type
+    // rides the i64 lane, the count is the live part
+    if t.text == "make" && is_punct(tk(c), 40) {
+      tkadv(c); // (
+      eat_slice_type(c); // []elem — the element rides after ]
+      eat_punct(c, 44); // ,
+      let n = parse_bin(c, 0);
+      eat_punct(c, 41); // )
+      return make_expr(n);
+    }
     // name(args…) — a call
     if is_punct(tk(c), 40) {
       tkadv(c);
@@ -439,10 +547,12 @@ fn parse_stmt(c: *PCur) -> *Stmt {
         tkadv(c);
       }
     }
-    // optional : type
+    // optional : type ([]T eats the bracketed element form)
     if is_punct(tk(c), 58) {
       tkadv(c);
-      tkadv(c);
+      if !eat_slice_type(c) {
+        tkadv(c);
+      }
     }
     if !eat_punct(c, 61) {
       let bad = mk_stmt(ST_RET);
@@ -482,6 +592,24 @@ fn parse_stmt(c: *PCur) -> *Stmt {
     let st = mk_stmt(ST_PF);
     st.fmt = ft.text;
     st.args = args[0..na];
+    return st;
+  }
+  if t.kind == lex.TK_IDENT && c.pos + 1 < len(c.toks) &&
+      is_punct(c.toks[c.pos + 1], 91) {
+    // xs[i] = e; — an indexed store into a slice element
+    tkadv(c); // the base name
+    eat_punct(c, 91); // [
+    let idx = parse_bin(c, 0);
+    eat_punct(c, 93); // ]
+    eat_punct(c, 61); // =
+    let e = parse_bin(c, 0);
+    eat_punct(c, 59);
+    let st = mk_stmt(ST_ISTORE);
+    st.name = t.text;
+    let a: []*Expr = make([]*Expr, 1);
+    a[0] = idx;
+    st.args = a;
+    st.val = Option.Some(e);
     return st;
   }
   if t.kind == lex.TK_IDENT && c.pos + 1 < len(c.toks) &&
@@ -633,7 +761,7 @@ fn parse_stmt(c: *PCur) -> *Stmt {
 
 // ( params ) — names plus a string flag per parameter (': string');
 // everything else is i64
-fn parse_params2(c: *PCur, pstr: []bool) -> []string {
+fn parse_params2(c: *PCur, pstr: []bool, pslc: []bool) -> []string {
   let names: []string = make([]string, 8);
   let mut n: usize = 0;
   if !eat_punct(c, 40) {
@@ -648,16 +776,22 @@ fn parse_params2(c: *PCur, pstr: []bool) -> []string {
     if pt.kind == lex.TK_IDENT || pt.kind == lex.TK_KEYWORD {
       names[n] = pt.text;
       pstr[n] = false;
+      pslc[n] = false;
       n = n + 1;
       tkadv(c);
-      // optional : type
+      // optional : type ([]T rides the pair ABI like string)
       if is_punct(tk(c), 58) {
         tkadv(c);
-        let tt = tk(c);
-        if tt.kind == lex.TK_KEYWORD && tt.text == "string" {
+        if eat_slice_type(c) {
           pstr[n - 1] = true;
+          pslc[n - 1] = true;
+        } else {
+          let tt = tk(c);
+          if tt.kind == lex.TK_KEYWORD && tt.text == "string" {
+            pstr[n - 1] = true;
+          }
+          tkadv(c);
         }
-        tkadv(c);
       }
     } else {
       tkadv(c);
@@ -711,7 +845,8 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
       }
       // a user fn: params, arrow, body
       let pstr: []bool = make([]bool, 8);
-      let params = parse_params2(c, pstr);
+      let pslc: []bool = make([]bool, 8);
+      let params = parse_params2(c, pstr, pslc);
       eat_arrow(c);
       let mut body: []*Stmt = make([]*Stmt, 0);
       if eat_punct(c, 123) {
@@ -728,7 +863,8 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
         body = bstmts[0..bn];
       }
       let fd = new FnDef { name: nm.text, params: params,
-                           pstr: pstr[0..len(params)], body: body };
+                           pstr: pstr[0..len(params)],
+                           pslc: pslc[0..len(params)], body: body };
       fns[nf] = fd;
       nf = nf + 1;
       continue;

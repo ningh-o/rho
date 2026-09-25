@@ -21,6 +21,43 @@ pub fn name_known(prog: *Prog, name: string) -> bool {
 
 fn expr_walk(e: *Expr, prog: *Prog, bound: []string, nb: usize,
              errs: *ErrBox) {
+  if e.tag == parse.EX_MAKE {
+    let mut k: usize = 0;
+    while k < len(e.args) {
+      expr_walk(e.args[k], prog, bound, nb, errs);
+      k = k + 1;
+    }
+    return;
+  }
+  if e.tag == parse.EX_IDX {
+    match e.lhs {
+      Option.Some(b) => {
+        expr_walk(b, prog, bound, nb, errs);
+      },
+      Option.None => {},
+    }
+    match e.rhs {
+      Option.Some(i) => {
+        expr_walk(i, prog, bound, nb, errs);
+      },
+      Option.None => {},
+    }
+    return;
+  }
+  if e.tag == parse.EX_SLICE2 {
+    match e.lhs {
+      Option.Some(b) => {
+        expr_walk(b, prog, bound, nb, errs);
+      },
+      Option.None => {},
+    }
+    let mut k: usize = 0;
+    while k < len(e.args) {
+      expr_walk(e.args[k], prog, bound, nb, errs);
+      k = k + 1;
+    }
+    return;
+  }
   if e.tag == parse.EX_CALL {
     if !name_known(prog, e.name) {
       eprintf("check: unknown fn '{}'\n", e.name);
@@ -101,6 +138,19 @@ fn stmts_walk(nodes: []*Stmt, prog: *Prog, bound: []string,
       while k < len(st.args) {
         expr_walk(st.args[k], prog, bound, nb, errs);
         k = k + 1;
+      }
+    }
+    if st.tag == parse.ST_ISTORE {
+      let mut k: usize = 0;
+      while k < len(st.args) {
+        expr_walk(st.args[k], prog, bound, nb, errs);
+        k = k + 1;
+      }
+      match st.val {
+        Option.Some(e) => {
+          expr_walk(e, prog, bound, nb, errs);
+        },
+        Option.None => {},
       }
     }
     if st.tag == parse.ST_IF {
