@@ -335,6 +335,16 @@ section — no placeholder stages. boot is the reference compiler.
       plain use per item, module-vs-item and name collisions are
       errors naming both, and item imports stop at package facades.
       Implemented with the T3.4 modsys suite; the self-host mirrors.
+- [ ] **T3.8** The in-tree wasm toolchain, sequenced after the corpus
+      differential closes (108/108) so the mirror's climb is not
+      disturbed mid-growth: `std.wasm` — an encoder/decoder package
+      written in rho — plus boot's C counterpart, pinned
+      byte-identical against each other; the compiler pipeline grows
+      a module IR with two serializers (WAT text stays the debug and
+      interchange contract; the binary path retires wat2wasm).
+      Acceptance: dual-run byte-compare over the whole corpus, the
+      wat→wasm→wat fixpoint leg (fmt's law, applied to assembly), and
+      a readable decode diff for the T3.2 canary.
 
 ## Phase 4 — kernel boundary and the std library
 
@@ -392,7 +402,9 @@ only when their listed dependencies close.
       (utf-8, collections, io, net) and tooling quality (operand-stack
       emission, string pooling, linear-scan register allocation, escape
       analysis / rc-pair elimination — ordering decided when the freeze
-      lands).
+      lands; the §13 in-compiler optimizer's finish line includes
+      retiring binaryen from the site pipeline once its effect is
+      matched).
 
 ## Phase 7 — after 0.1.0: native compilation, in the std library
 
