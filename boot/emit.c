@@ -1073,7 +1073,11 @@ static FnDef *dyn_find_method(Program *p, StructDef *sd, const char *mname,
         Type *pb = tsig->params[q].ty;
         if (!pb)
           continue;
-        if (!pa || !type_eq(pa, pb))
+        // the trait side may speak Self (*Self vs *P): unify it the
+        // way satisfaction does (the strict eq left the method
+        // unfound and the vtable slot pointed at nothing)
+        extern bool self_unifies(Type * trait_side, Type * impl_side);
+        if (!pa || !(type_eq(pa, pb) || self_unifies(pb, pa)))
           ok = false;
       }
       if (ok && !type_eq(f->sig->ret, tsig->ret))
@@ -1105,11 +1109,14 @@ size_t dynrun_base(FnCx *cx, TraitDef *td, StructDef *sd) {
     Buf b;
     buf_init(&b);
     tprintf(&b, "  (func %s", shim);
-    for (size_t i = 1; i < m->sig->nparams; i++) {
-      size_t n = shape_nlocals(m->sig->params[i].ty);
+    // the ABI mirrors the DISPATCH type (the trait sig's shapes — a
+    // *Self param rides the trait scope's wide lane), while the
+    // forward converts to the method's own shapes at the boundary
+    for (size_t i = 1; i < td->sigs[mi].nparams; i++) {
+      size_t n = shape_nlocals(td->sigs[mi].params[i].ty);
       for (size_t k = 0; k < n; k++)
         tprintf(&b, " (param %s)",
-                wty_s(local_wty(m->sig->params[i].ty, k)));
+                wty_s(local_wty(td->sigs[mi].params[i].ty, k)));
     }
     tprintf(&b, " (param i32)"); // env: the object, forwarded as self
     if (m->sig->ret->kind != TY_UNIT) {
@@ -1118,16 +1125,28 @@ size_t dynrun_base(FnCx *cx, TraitDef *td, StructDef *sd) {
         tprintf(&b, " (result %s)", wty_s(local_wty(m->sig->ret, k)));
     }
     tprintf(&b, "\n");
-    size_t bparam = m->sig->nparams - 1; // args occupy 0..bparam-1, env last
+    // forward in the METHOD's order: env rides the self slot FIRST,
+    // then the args (the old order pushed args then self — every
+    // dyn method with parameters called with crossed lanes)
     size_t aidx = 0;
-    for (size_t i = 1; i < m->sig->nparams; i++) {
-      size_t n = shape_nlocals(m->sig->params[i].ty);
-      for (size_t k = 0; k < n; k++)
-        tprintf(&b, " (local.get %zu)\n", aidx + k);
-      aidx += n;
-    }
-    (void)bparam;
+    for (size_t i = 1; i < m->sig->nparams; i++)
+      aidx += shape_nlocals(td->sigs[mi].params[i].ty);
     tprintf(&b, " (local.get %zu)\n", aidx); // env as self
+    size_t pidx = 0;
+    for (size_t i = 1; i < m->sig->nparams; i++) {
+      size_t tn = shape_nlocals(td->sigs[mi].params[i].ty);
+      size_t mn = shape_nlocals(m->sig->params[i].ty);
+      // lane widths agree (or the method is wider) — pass through;
+      // a wide trait lane into a narrow method param wraps down
+      if (tn == mn) {
+        for (size_t k = 0; k < mn; k++)
+          tprintf(&b, " (local.get %zu)\n", pidx + k);
+      } else {
+        for (size_t k = 0; k < mn; k++)
+          tprintf(&b, " (i32.wrap_i64 (local.get %zu))\n", pidx + k);
+      }
+      pidx += tn;
+    }
     tprintf(&b, " (call $%s)\n", fn_wat_name(m));
     tprintf(&b, "  )\n");
     em_queue_text(cx->em, aprintf(g_arena, "%.*s", (int)b.n, b.p));

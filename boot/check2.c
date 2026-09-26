@@ -375,7 +375,9 @@ static TraitDef *find_trait(Module *m, const char *name) {
 // §15: a trait sig's Self is the type being checked — it unifies
 // with whatever the satisfying method carries at that position, and
 // the unification looks through the type constructors (*Self vs *Pt)
-static bool self_unifies(Type *trait_side, Type *impl_side) {
+bool self_unifies(Type *trait_side, Type *impl_side); // shared with emit
+
+static bool self_unifies_impl(Type *trait_side, Type *impl_side) {
   if (!trait_side || !impl_side)
     return false;
   if (trait_side->kind == TY_PARAM &&
@@ -385,7 +387,7 @@ static bool self_unifies(Type *trait_side, Type *impl_side) {
   case TY_PTR:
   case TY_SLICE:
   case TY_WEAK:
-    return self_unifies(trait_side->base, impl_side->base);
+    return self_unifies_impl(trait_side->base, impl_side->base);
   default:
     break;
   }
@@ -393,11 +395,14 @@ static bool self_unifies(Type *trait_side, Type *impl_side) {
     if (trait_side->args && impl_side->args &&
         trait_side->nargs == impl_side->nargs) {
       for (size_t i = 0; i < trait_side->nargs; i++)
-        if (self_unifies(trait_side->args[i], impl_side->args[i]))
+        if (self_unifies_impl(trait_side->args[i], impl_side->args[i]))
           return true;
     }
   }
   return false;
+}
+bool self_unifies(Type *trait_side, Type *impl_side) {
+  return self_unifies_impl(trait_side, impl_side);
 }
 
 static bool trait_satisfied(FnCtx *c, Type *t, TraitDef *td) {

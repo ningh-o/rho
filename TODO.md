@@ -1295,9 +1295,19 @@ operator overloading with one shape, no magic:
       and pointer slots wrap to the i64 lane); impl Hash replaces it;
       the never-list refuses with its own message. Five fixtures pin
       eq-override/default/ord-derivations/ord-refusal/hash — suites
-      518. REMAINING: [T: Eq] bounds static dispatch, dyn Eq virtual
-      dispatch, the cycle-through-user-eq overflow doc, and the
-      mirror side.
+      518. THE REMAINING LEGS LANDED (same day): [T: Eq] dispatches
+      statically (the instantiated == rewrites into the impl's eq —
+      the bound's satisfaction already rode the method tables),
+      dyn Eq .eq dispatches virtually, and BOTH ride two real
+      pre-existing dyn fixes: the shim forwarded its arguments
+      BEFORE the env-as-self (every dyn method with parameters
+      called with crossed lanes), and the shim finder compared the
+      trait's *Self param strictly (the method went unfound and the
+      vtable slot pointed at nothing — self_unifies now exported to
+      emit). The trait-scope ABI follows the dispatch type's lane,
+      converting to the method's shape at the boundary. Suites 521;
+      the cycle-through-user-eq overflow doc and the mirror side
+      remain.
 - `trait Hash { fn hash(self) -> u64 }` — the default folds the same
   values the `==` law compares, FNV-1a 64-bit over the slots in
   declaration order (string = content bytes; `*T` = the 32-bit

@@ -1,0 +1,33 @@
+// spec: type-system.md §15 — [T: Eq] dispatches statically: the
+// instantiated == calls the impl's eq
+// out: same
+// out: differ
+// exit: 0
+struct P { x: i32 }
+struct R { y: i32 }
+impl Eq for P {
+  fn eq(self, other: *Self) -> bool {
+    return self.x == other.x;
+  }
+}
+impl Eq for R {
+  fn eq(self, other: *Self) -> bool {
+    return self.y == other.y;
+  }
+}
+fn same[T: Eq](a: *T, b: *T) -> bool {
+  return a == b;
+}
+fn main() -> i32 {
+  let p1 = new P { x: 7 };
+  let p2 = new P { x: 7 };
+  if same(p1, p2) {
+    printf("same\n");
+  }
+  let r1 = new R { y: 1 };
+  let r2 = new R { y: 2 };
+  if !same(r1, r2) {
+    printf("differ\n");
+  }
+  return 0;
+}

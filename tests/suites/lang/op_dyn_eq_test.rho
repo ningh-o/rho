@@ -1,0 +1,24 @@
+// spec: type-system.md §15 — a dyn Eq value dispatches .eq virtually
+// (the trait's *Self param unifies with the impl's concrete pointer)
+// out: dyn-eq
+// exit: 0
+struct P { x: i32 }
+impl Eq for P {
+  fn eq(self, other: *Self) -> bool {
+    return self.x == other.x;
+  }
+}
+impl Show for P {
+  fn to_str(self) -> string {
+    return "P";
+  }
+}
+fn main() -> i32 {
+  let a: *P = new P { x: 1 };
+  let b: *P = new P { x: 1 };
+  let d: dyn Eq = a;
+  if d.eq(b) {
+    printf("dyn-eq\n");
+  }
+  return 0;
+}

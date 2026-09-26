@@ -1,0 +1,19 @@
+// spec: spec.md §9 — dyn dispatch carries parameters: the shim
+// forwards env as self FIRST, then the args in order
+// out: 15
+// exit: 0
+trait Adder {
+  fn add(self, n: i64) -> i64,
+}
+struct C { v: i64 }
+impl Adder for C {
+  fn add(self, n: i64) -> i64 {
+    return self.v + n;
+  }
+}
+fn main() -> i32 {
+  let c: *C = new C { v: 10 };
+  let d: dyn Adder = c;
+  printf("{}\n", d.add(5));
+  return 0;
+}
