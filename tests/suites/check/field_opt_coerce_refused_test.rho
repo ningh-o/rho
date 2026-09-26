@@ -1,0 +1,11 @@
+// spec: type-system.md §3 — a field's face is exact like a let's
+// annotation: no implicit T-into-?T coercion (the bare *S used to
+// park its raw pointer into the Option field and a match over the
+// field read the box header as a tag — neither arm ran)
+// expect: field 'val' wants Option (value is *S)
+struct S { v: i64, }
+struct A { val: ?*S, }
+fn main() -> i32 {
+  let a: *A = new A { val: new S { v: 9 } };
+  return 0;
+}

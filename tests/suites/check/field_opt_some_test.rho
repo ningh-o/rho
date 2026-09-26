@@ -1,0 +1,13 @@
+// spec: type-system.md §3 — the explicit wrap is the one true form
+// out: some 9
+// exit: 0
+struct S { v: i64, }
+struct A { val: ?*S, }
+fn main() -> i32 {
+  let a: *A = new A { val: Option.Some(new S { v: 9 }) };
+  match a.val {
+    Option.Some(x) => printf("some {}\n", x.v),
+    Option.None => printf("none\n"),
+  }
+  return 0;
+}

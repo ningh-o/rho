@@ -2058,7 +2058,17 @@ static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
         if (found)
           err_at(c, fi, "field '%s' initialized twice", f->name);
         found = true;
-        check_expr(c, fi->a, fty);
+        Type *it = check_expr(c, fi->a, fty);
+        // the field-init face is exact like a let's annotation: no
+        // implicit T-into-?T coercion (a bare *S parked its raw
+        // pointer into an Option field and the match read the box
+        // header as a tag — neither arm ran). The one widening is
+        // the value-struct copy law: a boxed initializer copies its
+        // payload slots into the inline field (T3.4's face).
+        bool boxed_copy = it->kind == TY_PTR && type_eq(fty, it->base);
+        if (!type_eq(fty, it) && !boxed_copy)
+          err_at(c, fi, "field '%s' wants %s (value is %s)", f->name,
+                 type_name(fty), type_name(it));
       }
       if (!found) {
         // zeroed default only for unmanaged fields
