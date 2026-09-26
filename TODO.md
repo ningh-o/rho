@@ -459,14 +459,19 @@ section — no placeholder stages. boot is the reference compiler.
       immortal guard reading data_top instead of the moving heap, the
       fmt scratch keeping its honest 4032-byte cap (a page-wide
       scratch corrupted large outputs), rho_panic writing one iov per
-      piece (wasmtime 40 drops trailing iovs), and module consts
-      exported (the compiler source is full of lex.TK_* field reads).
-      Remaining: the mirror's own parse of a two-fn probe returns
-      fns=0 with perrs=0 while the same source through boot parses
-      (first token classifies as kind 1 instead of TK_KEYWORD) — a
-      boot miscompile of the self-host's lexer at mirror scale; find
-      it with the /tmp/tF driver (lex prints ntok/k0/eof, parse
-      prints fns/perrs) before wiring leg 4 in.
+      piece (wasmtime 40 drops trailing iovs), module consts
+      exported (the compiler source is full of lex.TK_* field reads),
+      and the parser's struct-literal/declaration field tables grow
+      on demand (a fixed cap was an out-of-bounds write the day a
+      struct rode eleven fields). The mirror now runs its whole
+      pipeline: it loads lex and parse (74 fns registered) and
+      refuses cleanly at parse.rho's own text with FOUR parse
+      fallbacks (token positions 5454, 19177, 21036, 21153 into
+      parse.rho's token stream — constructs the mirror's parser
+      lacks that parse.rho itself uses; boot parses the same text
+      clean). Next: instrument the mirror's fallback sites with
+      their token text (the /tmp/tP probe pattern), teach the parser
+      the missing forms, then wire leg 4 in.
 - [ ] **T3.2 Pure-source trust root**: every gate run rebuilds the seed
       from boot's C source on the spot. The pinned `seed.wasm` stays in
       the repo **as a canary**: rebuild, compare byte-for-byte (D1 makes
