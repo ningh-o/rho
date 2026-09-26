@@ -1,0 +1,12 @@
+// pending: gap/trait-mut-match
+// expect: gap_trait_mut_sig_mismatch_test.rho:10:
+// spec: type-system.md §14 — receiver mut-ness must match the trait's signature exactly at impl time; boot compares only when the trait's self is bare, so a typed-receiver trait is satisfied by a mut impl.
+// The trait declares `fn bump(self: *C)`; the impl
+// writes it `mut self` — the mismatch must be
+// diagnosed at the impl (marked line).
+struct C { v: i32 }
+trait Bump { fn bump(self: *C) -> i32, }
+//
+impl Bump for C {
+  fn bump(mut self) -> i32 { return self.v; }
+}

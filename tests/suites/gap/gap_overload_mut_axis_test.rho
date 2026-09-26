@@ -1,0 +1,15 @@
+// pending: gap/mut-not-an-axis
+// expect: gap_overload_mut_axis_test.rho:13:
+// spec: type-system.md §5/§14 — receiver mut-ness is not a resolution axis: two candidates differing only in mut self are an ambiguity; boot silently discards the mut twin when the binding is non-mut.
+// The two methods differ only in the receiver's mut
+// form; the ambiguity must be diagnosed at the call
+// site (marked line).
+struct R { v: i32 }
+fn R.get(self) -> i32 { return self.v; }
+fn R.get(mut self) -> i32 { return self.v; }
+fn main() -> i32 {
+  let r = new R { v: 4 };
+//
+  printf("{}\n", r.get());
+  return 0;
+}

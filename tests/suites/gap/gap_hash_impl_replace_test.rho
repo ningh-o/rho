@@ -1,0 +1,17 @@
+// out: 7 7
+// exit: 0
+// spec: type-system.md §15 — an explicit `impl Hash for T` replaces
+// the FNV default (replace-don't-merge): a constant hash pins that
+// the impl's hash, not the default, answers.
+struct P { a: i32 }
+impl Hash for P {
+  fn hash(self) -> u64 {
+    return 7;
+  }
+}
+fn main() -> i32 {
+  let p = new P { a: 1 };
+  let q = new P { a: 999999 };
+  printf("{} {}\n", p.hash(), q.hash());
+  return 0;
+}

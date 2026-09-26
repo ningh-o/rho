@@ -1,0 +1,13 @@
+// out: 5 3 9
+// exit: 0
+// pending: gap/t312-option-methods
+// spec: type-system.md §9 — unwrap goes through match or methods
+// (`Option.get_or`, `Result.unwrap_or` … per the prelude). The
+// prelude defines none of them yet.
+fn main() -> i32 {
+  let n: ?i32 = Option.None;
+  let s: ?i32 = Option.Some(3);
+  let r: Result[i32, string] = Result.Err("boom");
+  printf("{} {} {}\n", n.get_or(5), s.get_or(5), r.unwrap_or(9));
+  return 0;
+}

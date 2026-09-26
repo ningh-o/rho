@@ -1,0 +1,11 @@
+// pending: gap/bare-block-stmt
+// expect: gap_bare_block_stmt_test.rho:9:
+// spec: syntax.md §5 — stmt has no bare-block production; boot accepts a naked `{ ... }` statement.
+// The pin names this file at the marked line: any
+// diagnostic reported there satisfies the refusal,
+// whatever its future wording.
+fn main() -> i32 {
+//
+  { let q = 1; }
+  return 0;
+}

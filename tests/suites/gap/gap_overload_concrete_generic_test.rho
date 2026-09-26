@@ -1,0 +1,12 @@
+// pending: gap/overload-exact-unique
+// expect: gap_overload_concrete_generic_test.rho:10:
+// spec: type-system.md §5 — if two distinct signatures both exact-match after literal adaptation, it is AMBIGUOUS; boot prefers concrete over generic before declaring ambiguity (a tie-break with no law basis).
+// Both signatures exact-match f(1); the ambiguity
+// must be diagnosed at the call site (marked line).
+fn f(x: i32) -> i32 { return x; }
+fn f[T](x: T) -> T { return x; }
+fn main() -> i32 {
+//
+  printf("{}\n", f(1));
+  return 0;
+}

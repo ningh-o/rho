@@ -1,0 +1,17 @@
+// NOT pending — this refusal already holds ("ordering needs numbers
+// or strings") and must SURVIVE the T3.12 wave, so the pin is
+// deliberate: any diagnostic on the marked line passes both today's
+// wording and the future "no impl Ord" one.
+// spec: type-system.md §15 — `<` on a user type with no `impl Ord`
+// is a compile error (no lexicographic auto-derive, explicit impl
+// only).
+// expect: gap_ord_without_impl_test.rho:14:
+struct Pt { x: i32 }
+fn main() -> i32 {
+  let a = new Pt { x: 1 };
+  let b = new Pt { x: 2 };
+//
+  let c = a < b;
+  printf("{}\n", c);
+  return 0;
+}

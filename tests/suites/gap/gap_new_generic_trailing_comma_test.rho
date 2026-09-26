@@ -1,0 +1,12 @@
+// pending: gap/grammar-trailing-commas
+// expect: gap_new_generic_trailing_comma_test.rho:9:
+// spec: syntax.md §6.2 — the explicit-generics form `new Pair[i32, i64]` carries no trailing-comma grant; boot accepts the dangling comma.
+// Pair is generic so the arity check cannot mask
+// the comma.
+struct Pair[T] { a: T, b: T }
+fn main() -> i32 {
+//
+  let p = new Pair[i32, ] { a: 1, b: 2 };
+  printf("{}\n", p.a + p.b);
+  return 0;
+}

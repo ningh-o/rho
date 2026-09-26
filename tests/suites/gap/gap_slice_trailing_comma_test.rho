@@ -1,0 +1,11 @@
+// pending: gap/grammar-trailing-commas
+// expect: gap_slice_trailing_comma_test.rho:9:
+// spec: syntax.md §6.2 — slice literals carry no trailing-comma grant; boot accepts [1, 2, ].
+// The pin names this file at the marked line: any
+// diagnostic reported there satisfies the refusal,
+// whatever its future wording.
+fn main() -> i32 {
+//
+  let a: []i32 = [1, 2, ];
+  return 0;
+}

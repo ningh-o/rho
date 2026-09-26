@@ -1,0 +1,24 @@
+// out: after-scope=1
+// exit: 0
+// pending: gap/rc-slice-literal-retain
+// spec: spec.md §1.4 — one retain per copy of a managed value into a
+// longer-lived place; a slice literal's element stores are such a
+// copy. Today the element store does not retain, so when `b`'s
+// binding dies the block dies under the slice: the weak observes
+// death where the law keeps it alive.
+struct Box { s: string }
+fn main() -> i32 {
+  let mut w: ?weak[Box] = Option.None;
+  {
+    let b = new Box { s: format("hi") };
+    w = Option.Some(weak.from(b));
+    let keep: []*Box = [b];
+    len(keep);
+  }
+  let r = match w {
+    Option.Some(wk) => match wk.get() { Option.Some(_) => 1, Option.None => 0 },
+    Option.None => 0 - 1,
+  };
+  printf("after-scope={}\n", r);
+  return 0;
+}

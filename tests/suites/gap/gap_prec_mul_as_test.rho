@@ -1,0 +1,13 @@
+// out: 12
+// exit: 0
+// pending: gap/prec-as-mul-rhs
+// spec: syntax.md §6.1/§6.7 — `as` is level 9, tighter than the
+// multiplicative level 8, so `a * b as u8` reads `a * (b as u8)`.
+// Today parse_as never runs on a multiplicative rhs: the form dies
+// with "expected ';'".
+fn main() -> i32 {
+  let a: u8 = 3;
+  let b: u8 = 4;
+  printf("{}\n", a * b as u8);
+  return 0;
+}

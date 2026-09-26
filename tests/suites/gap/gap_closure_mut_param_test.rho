@@ -1,0 +1,12 @@
+// out: 7
+// exit: 0
+// pending: gap/closure-mut-param
+// spec: syntax.md §6.8 — a closure's parameters are §4.1's params,
+// where `mut` sits before a handle-typed parameter name; today the
+// closure parameter loop refuses `mut` outright at parse.
+fn main() -> i32 {
+  let g = fn(mut xs: []i32) -> i32 { xs[0] = 7; return xs[0]; };
+  let mut arr: []i32 = [1, 2];
+  printf("{}\n", g(mut arr));
+  return 0;
+}

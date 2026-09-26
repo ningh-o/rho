@@ -1,0 +1,11 @@
+// pending: gap/bin-literal-overflow
+// expect: gap_lex_bin_overflow2_test.rho:9:
+// spec: syntax.md §2.2 — same law, one past the u64 edge with mixed digits: the value wraps to 1 and fits u64 silently.
+// The pin names this file at the marked line: any
+// diagnostic reported there satisfies the refusal,
+// whatever its future wording.
+fn main() -> i32 {
+//
+  let big: u64 = 0b100000000000000000000000000000000000000000000000000000000000000001;
+  return 0;
+}

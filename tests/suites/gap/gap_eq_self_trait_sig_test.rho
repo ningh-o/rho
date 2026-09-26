@@ -1,0 +1,24 @@
+// out: self-sig: true false
+// exit: 0
+// spec: syntax.md §4.2 + type-system.md §15 — a trait signature may
+// name Self where a type is expected; inside the satisfying impl
+// Self is the target type. Today Self is not a type expression
+// anywhere, so neither the trait nor the impl checks. (The pin
+// exercises both faces: equal values dispatch true, a differing
+// value proves the method actually compared.)
+struct Bag { v: i32 }
+trait Same {
+  fn same_v(self, other: Self) -> bool,
+}
+impl Same for Bag {
+  fn same_v(self, other: Self) -> bool {
+    return self.v == other.v;
+  }
+}
+fn main() -> i32 {
+  let a = new Bag { v: 3 };
+  let b = new Bag { v: 3 };
+  let c = new Bag { v: 4 };
+  printf("self-sig: {} {}\n", a.same_v(*b), a.same_v(*c));
+  return 0;
+}

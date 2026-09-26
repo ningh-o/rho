@@ -1,0 +1,20 @@
+// expect: gap_never_list_locked_test.rho:18:
+// spec: type-system.md §10/§15 — the never-list (slices []T among
+// them) is LOCKED: no impl can unlock it. A struct holding a slice
+// gets an `impl Eq`, then == is demanded after the marker: the
+// refusal must fire AT the == (impls do not unlock), not at the
+// impl. TODAY boot fails at the impl line ("unknown trait Eq"), so
+// the line pin deliberately misses — it only passes when the law's
+// shape exists AND the lock still holds.
+struct Bad { xs: []i32 }
+impl Eq for Bad {
+  fn eq(self, other: Self) -> bool { return false; }
+}
+fn main() -> i32 {
+  let a = new Bad { xs: [1] };
+  let b = new Bad { xs: [1] };
+//
+  let c = a == b;
+  printf("{}\n", c);
+  return 0;
+}

@@ -1,0 +1,11 @@
+// pending: gap/hex-prefix
+// expect: gap_lex_hex_upper_test.rho:9:
+// spec: syntax.md §2.2 — hex := 0x[0-9a-fA-F_]+: the prefix is lowercase; 0X is not granted (boot takes either case).
+// The pin names this file at the marked line: any
+// diagnostic reported there satisfies the refusal,
+// whatever its future wording.
+fn main() -> i32 {
+//
+  let x = 0X1F;
+  return 0;
+}

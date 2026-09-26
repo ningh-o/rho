@@ -1,0 +1,8 @@
+// pending: gap/variadic-position
+// expect: gap_decl_variadic_notlast_test.rho:8:
+// spec: syntax.md §4.1 — a variadic parameter must be last; at most one per function. parse_params computes the flag and discards it, so `a: i32..., b: i32` parses silently.
+// The pin names this file at the marked line: any
+// diagnostic reported there satisfies the refusal,
+// whatever its future wording.
+//
+fn f(a: i32..., b: i32) -> i32 { return b; }

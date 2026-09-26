@@ -1,0 +1,16 @@
+// out: 44
+// exit: 0
+// pending: gap/arm-literal-consumer
+// spec: type-system.md §1 — "an arm of a match/if whose other arms
+// determine the type" is a literal consumer: with `u: u8` in the
+// first arm, the 44 in the second arm adapts to u8. Today only the
+// outer expected type flows into arms: "match arms disagree: u8 vs
+// i32".
+enum E { A, B }
+fn main() -> i32 {
+  let u: u8 = 200;
+  let e = E.A;
+  let r = match e { E.A => u, E.B => 44 };
+  printf("{}\n", r);
+  return 0;
+}

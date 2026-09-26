@@ -1,0 +1,11 @@
+// out: unit main ran
+// exit: 0
+// pending: gap/emit-unit-main
+// spec: syntax.md §4.1 (the return type is optional), module-system.md
+// §5 (a fn main must exist in the entry file — no return-type demand).
+// Regression: emit_start declared (local $rc i32) only for a non-unit
+// main while unconditionally emitting (local.set $rc (call $main)),
+// so every unit-main program failed wat2wasm (introduced 912e814).
+fn main() {
+  printf("unit main ran\n");
+}

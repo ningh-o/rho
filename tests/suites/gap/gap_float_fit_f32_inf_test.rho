@@ -1,0 +1,9 @@
+// pending: gap/t312-float-fit
+// expect: gap_float_fit_f32_inf_test.rho:6:
+// spec: type-system.md §1 (ratified 2026-09-26) — a float literal that rounds to ±inf for its consumer is out of range: a compile error, never a silent inf. Today 1e400 folds to inf and prints.
+fn main() -> i32 {
+//
+  let x: f32 = 1e400;
+  printf("{}\n", x);
+  return 0;
+}

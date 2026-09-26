@@ -1,0 +1,10 @@
+// pending: gap/const-builtin-annotation
+// expect: gap_decl_const_usertype_test.rho:6:
+// spec: type-system.md §2 — the const annotation may pin any BUILTIN type only (a const is a folded value); a user-type annotation matches no fold branch and is silently ignored (K folds as i32).
+struct Pt { x: i32 }
+//
+const K: Pt = 3;
+fn main() -> i32 {
+  printf("{}\n", K);
+  return 0;
+}

@@ -1,0 +1,11 @@
+// pending: gap/crlf-normalization
+// expect: gap_str_raw_cr_test.rho:8:
+// spec: syntax.md §1 — the compiler normalizes \r\n and lone \r to \n internally, so a raw CR inside a single-line string becomes a raw newline, which §2.5 refuses. boot copies the lone CR into the value as content.
+// The pin names this file at the marked line: any
+// diagnostic reported there satisfies the refusal.
+fn main() -> i32 {
+//
+  let s = "ab";
+  printf("{}\n", len(s));
+  return 0;
+}

@@ -1,0 +1,18 @@
+// out: lt=true le=true gt=false ge=false
+// exit: 0
+// pending: gap/t312-operator-traits
+// spec: type-system.md §15 — ordering on a user type exists only
+// through `impl Ord for T`; `a < b` calls lt and the other three
+// derive: a <= b is !(b < a), a > b is b < a, a >= b is !(a < b).
+struct Pt { x: i32 }
+impl Ord for Pt {
+  fn lt(self, other: Self) -> bool {
+    return self.x < other.x;
+  }
+}
+fn main() -> i32 {
+  let a = new Pt { x: 1 };
+  let b = new Pt { x: 2 };
+  printf("lt={} le={} gt={} ge={}\n", a < b, a <= b, a > b, a >= b);
+  return 0;
+}

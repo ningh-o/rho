@@ -1,0 +1,10 @@
+// pending: gap/ident-rooted-lvalue
+// expect: gap_call_lvalue_test.rho:8:
+// spec: syntax.md §5 — lvalue := ident | lvalue '.' ident | lvalue '[' expr ']': the root must be a binding; boot accepts a call-rooted store.
+struct Pt { w: i32, h: i32 }
+fn mk() -> *Pt { return new Pt { w: 0, h: 0 }; }
+fn main() -> i32 {
+//
+  mk().w = 1;
+  return 0;
+}

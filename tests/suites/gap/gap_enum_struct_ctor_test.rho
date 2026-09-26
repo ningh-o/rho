@@ -1,0 +1,18 @@
+// out: 7
+// exit: 0
+// pending: gap/enum-struct-ctor
+// spec: syntax.md §6.2 — enum variant constructors come "by path:
+// Shape.Circle(r), Shape.Rect(w: 7, h: 3) — tuple position or named
+// fields". The named-field (struct-form) constructor does not parse:
+// `V.P { x: 7 }` dies with "expected ';' after the let initializer"
+// (patterns gained the struct form in T3.11; constructors never did).
+// BLOCKED PAIR: the positional-payload pattern refusal (syntax.md §7,
+// ruled in T3.12) is untestable until this lands — any expect pin on
+// the match line drowns in this file's parse cascade today.
+enum V { P { x: i32 }, Q }
+fn main() -> i32 {
+  let v = V.P { x: 7 };
+  let m = match v { V.P { x: a } => a, V.Q => 0 };
+  printf("{}\n", m);
+  return 0;
+}

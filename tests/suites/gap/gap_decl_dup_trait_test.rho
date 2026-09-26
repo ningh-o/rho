@@ -1,0 +1,8 @@
+// pending: gap/duplicate-decl
+// expect: gap_decl_dup_trait_test.rho:8:
+// spec: module-system.md §1 + the collision law — two declarations of one name in a module are an error; every other dup-decl path reports, but a second `trait` silently overwrites the first (the guard leans on 0 == SYM_FN as "unset").
+// The pin names the SECOND declaration: that is the one
+// that must be refused.
+trait Dup {}
+//
+trait Dup {}

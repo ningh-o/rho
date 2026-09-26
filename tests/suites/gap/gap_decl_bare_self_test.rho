@@ -1,0 +1,8 @@
+// pending: gap/method-naming
+// expect: gap_decl_bare_self_test.rho:8:
+// spec: syntax.md §4.1 — a function whose first parameter is self is a method of T and must be named fn T.name; boot accepts a bare-self receiver on any plain fn (an untyped receiver).
+// The pin names this file at the marked line: any
+// diagnostic reported there satisfies the refusal,
+// whatever its future wording.
+//
+fn lonely(self) -> i32 { return 0; }

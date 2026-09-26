@@ -1,0 +1,24 @@
+// out: dyn-eq: true false
+// exit: 0
+// pending: gap/t312-operator-traits
+// spec: type-system.md §9/§15 — a `dyn Eq` value dispatches .eq
+// virtually, exactly like any trait method (there is no separate
+// dyn mechanism for operators); the == operator itself still never
+// applies to dyn. Promotion note: `other: Self` read as dyn Eq at
+// the call is this pin's reading — adjust the call shape if the
+// wave rules Self-through-dyn differently.
+struct A { v: i32 }
+struct B { v: i32 }
+impl Eq for A {
+  fn eq(self, other: Self) -> bool { return self.v == other.v; }
+}
+impl Eq for B {
+  fn eq(self, other: Self) -> bool { return self.v == other.v; }
+}
+fn main() -> i32 {
+  let x: dyn Eq = new A { v: 1 };
+  let y: dyn Eq = new A { v: 1 };
+  let z: dyn Eq = new B { v: 1 };
+  printf("dyn-eq: {} {}\n", x.eq(y), x.eq(z));
+  return 0;
+}

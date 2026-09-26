@@ -1,0 +1,8 @@
+// pending: gap/static-annotation-fit
+// expect: gap_decl_static_fit_test.rho:8:
+// spec: type-system.md §2 — statics fold in the same fixpoint as consts and are held to the same law: the initializer must comptime-fit the annotation. The pin branch never runs for NT_STATIC, so `static mut S: i8 = 300` folds an i32 300 and seeds the slot out of range, silently.
+// The pin names this file at the marked line: any
+// diagnostic reported there satisfies the refusal,
+// whatever its future wording.
+//
+static mut S: i8 = 300;

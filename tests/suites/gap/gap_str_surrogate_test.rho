@@ -1,0 +1,11 @@
+// pending: gap/escape-set
+// expect: gap_str_surrogate_test.rho:9:
+// spec: syntax.md §2.5 — \u{…} encodes one code point; surrogates (D800–DFFF) are not code points, yet boot encodes them.
+// The pin names this file at the marked line: any
+// diagnostic reported there satisfies the refusal,
+// whatever its future wording.
+fn main() -> i32 {
+//
+  let s = "x\u{D800}y";
+  return 0;
+}

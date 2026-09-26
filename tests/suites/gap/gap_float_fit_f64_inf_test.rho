@@ -1,0 +1,9 @@
+// pending: gap/t312-float-fit
+// expect: gap_float_fit_f64_inf_test.rho:6:
+// spec: type-system.md §1 — the fit law holds for f64 consumers too; today 1e400 compiles to a silent inf.
+fn main() -> i32 {
+//
+  let x: f64 = 1e400;
+  printf("{}\n", x);
+  return 0;
+}

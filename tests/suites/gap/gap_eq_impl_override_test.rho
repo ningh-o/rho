@@ -1,0 +1,20 @@
+// out: override: true false
+// exit: 0
+// pending: gap/t312-operator-traits
+// spec: type-system.md §15 — until an `impl Eq for T` exists the
+// slotwise default holds; the impl's eq then REPLACES the default
+// entirely (never merges). Here eq deliberately ignores y, so
+// (1, 2) == (1, 9) must be true — the merge shape would say false.
+struct Pt { x: i32, y: i32 }
+impl Eq for Pt {
+  fn eq(self, other: Self) -> bool {
+    return self.x == other.x;
+  }
+}
+fn main() -> i32 {
+  let a = new Pt { x: 1, y: 2 };
+  let b = new Pt { x: 1, y: 9 };
+  let c = new Pt { x: 5, y: 2 };
+  printf("override: {} {}\n", a == b, a == c);
+  return 0;
+}

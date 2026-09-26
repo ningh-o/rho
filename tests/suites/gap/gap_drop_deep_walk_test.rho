@@ -1,0 +1,24 @@
+// out: deep-walk=0
+// exit: 0
+// pending: gap/rc-drop-walk-depth
+// spec: spec.md §1.4 — the container ownership walk releases every
+// owned element at the death check, transitively. Today the drop
+// walker releases only pointer/string/slice/dyn fields and skips an
+// inline struct field that itself owns a managed field, so the inner
+// box leaks and the weak still sees it alive after the outer dies.
+struct Box { s: string }
+struct Inner { b: *Box }
+struct Outer { inn: Inner }
+fn main() -> i32 {
+  let mut w: ?weak[Box] = Option.None;
+  {
+    let o = new Outer { inn: *new Inner { b: new Box { s: format("deep") } } };
+    w = Option.Some(weak.from(o.inn.b));
+  }
+  let r = match w {
+    Option.Some(wk) => match wk.get() { Option.Some(_) => 1, Option.None => 0 },
+    Option.None => 0 - 1,
+  };
+  printf("deep-walk={}\n", r);
+  return 0;
+}

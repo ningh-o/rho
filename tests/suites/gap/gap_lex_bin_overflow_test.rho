@@ -1,0 +1,11 @@
+// pending: gap/bin-literal-overflow
+// expect: gap_lex_bin_overflow_test.rho:9:
+// spec: syntax.md §2.2 — a literal whose value does not fit is a compile error; the 65-digit binary literal wraps mod 2^64 silently (the hex and decimal branches both diagnose). The u64 annotation isolates the wrap: the wrapped value 2^64-1 fits u64, so today nothing diagnoses at all.
+// The pin names this file at the marked line: any
+// diagnostic reported there satisfies the refusal,
+// whatever its future wording.
+fn main() -> i32 {
+//
+  let big: u64 = 0b11111111111111111111111111111111111111111111111111111111111111111;
+  return 0;
+}

@@ -1,0 +1,13 @@
+// exit: 101
+// err: unwrap on empty
+// pending: gap/t312-option-methods
+// spec: spec.md §3 — the panic catalog's fourth entry:
+// `unwrap on empty` (the message names the operation) when a
+// prelude Option.get()-family method meets None. No Option/Result
+// methods exist in boot's prelude at all yet.
+fn main() -> i32 {
+  let x: ?i32 = Option.None;
+  let y = x.get();
+  printf("{}\n", y);
+  return 0;
+}

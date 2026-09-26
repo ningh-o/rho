@@ -1,0 +1,9 @@
+// pending: gap/t312-float-fit
+// expect: gap_float_fit_narrow_test.rho:6:
+// spec: type-system.md §1 — fit is judged against the consumer's width: 1e300 is finite in f64 but rounds to inf in f32, so the f32 annotation makes it a compile error.
+fn main() -> i32 {
+//
+  let x: f32 = 1e300;
+  printf("{}\n", x);
+  return 0;
+}

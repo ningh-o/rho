@@ -1,0 +1,11 @@
+// pending: gap/intrinsics-not-surface
+// expect: gap_intrinsics_surface_test.rho:9:
+// spec: spec.md §1.2 — the intrinsics namespace is "not in 0.1.0's prelude surface; reserved"; user code names intrinsics.f64_bits today and it answers.
+// The pin names this file at the marked line: any
+// diagnostic reported there satisfies the refusal,
+// whatever its future wording.
+fn main() -> i32 {
+//
+  let h = intrinsics.f64_bits(1.0);
+  return 0;
+}

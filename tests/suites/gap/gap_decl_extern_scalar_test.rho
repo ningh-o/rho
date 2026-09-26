@@ -1,0 +1,8 @@
+// pending: gap/extern-fn-type
+// expect: gap_decl_extern_scalar_test.rho:8:
+// spec: syntax.md §4.3 — extern name ':' fn_type ';': the extern's type is grammatically a fn type; boot parses any type.
+// The pin names this file at the marked line: any
+// diagnostic reported there satisfies the refusal,
+// whatever its future wording.
+//
+extern conf: i32;

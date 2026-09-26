@@ -1,0 +1,10 @@
+// pending: gap/grammar-trailing-commas
+// expect: gap_call_trailing_comma_test.rho:7:
+// spec: syntax.md — the trailing-comma grants cover structs/enums/traits/use-items/pattern-binders only; call arguments carry none, yet boot accepts f(1,).
+fn f(a: i32) -> i32 { return a; }
+fn main() -> i32 {
+//
+  let y = f(1,) + 0;
+  printf("{}\n", y);
+  return 0;
+}

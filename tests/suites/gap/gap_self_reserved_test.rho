@@ -1,0 +1,11 @@
+// expect: gap_self_reserved_test.rho:9:
+// spec: syntax.md §2.1 — Self is reserved in every position it could
+// collide; it is not in boot's keyword table at all, so it parses as
+// an ordinary identifier. Any diagnostic on the marked line satisfies
+// the refusal.
+fn main() -> i32 {
+//
+  let Self = 3;
+  printf("{}\n", Self);
+  return 0;
+}

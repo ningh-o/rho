@@ -1,0 +1,18 @@
+// out: 18048242333072577479
+// out: 18048242333072577479
+// exit: 0
+// pending: gap/t312-operator-traits
+// spec: type-system.md §15 — the default hash folds the values the
+// == law compares: 64-bit FNV-1a (basis 0xcbf29ce484222325, prime
+// 0x100000001b3) over the slots in declaration order — the i32
+// little-endian (01 00 00 00), then the string's content bytes
+// ("AB"). The golden 18048242333072577479 is exact; two equal values must
+// also hash equal (second line).
+struct P { a: i32, b: string }
+fn main() -> i32 {
+  let p = new P { a: 1, b: "AB" };
+  let q = new P { a: 1, b: "AB" };
+  printf("{}\n", p.hash());
+  printf("{}\n", q.hash());
+  return 0;
+}
