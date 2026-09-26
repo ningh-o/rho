@@ -2,6 +2,8 @@
 // each command fills in as its phase lands (see TODO.md Phase 1).
 #include "rho.h"
 #include <unistd.h>
+#include <errno.h>
+#include <string.h>
 #include "sem.h"
 
 int emit_program(Program *p, bool debug, char **wat_out, size_t *wat_len);
@@ -69,7 +71,10 @@ int cmd_build(int argc, char **argv) {
   FILE *wf = fopen(watpath, "w");
   fwrite(wat, 1, wat_len, wf);
   fclose(wf);
-  // executable outputs always go through tmp + rename (standing law)
+  // executable outputs always go through tmp + rename (standing law);
+  // the rename retries — a freshly-executed target can report busy
+  // briefly under heavy /tmp churn (macOS), and a spurious EBUSY must
+  // never fail a deterministic build
   snprintf(tmppath, sizeof tmppath, "%s.tmp", wasmpath);
   char cmd[1024];
   snprintf(cmd, sizeof cmd, "wat2wasm %s -o %s", watpath, tmppath);
@@ -77,8 +82,16 @@ int cmd_build(int argc, char **argv) {
     fprintf(stderr, "rho: wat2wasm failed; WAT kept at %s\n", watpath);
     return 1;
   }
-  if (rename(tmppath, wasmpath) != 0) {
-    fprintf(stderr, "rho: rename %s -> %s failed\n", tmppath, wasmpath);
+  int rn = -1;
+  for (int tries = 0; tries < 5; tries++) {
+    rn = rename(tmppath, wasmpath);
+    if (rn == 0)
+      break;
+    usleep(20 * 1000);
+  }
+  if (rn != 0) {
+    fprintf(stderr, "rho: rename %s -> %s failed: %s\n", tmppath,
+            wasmpath, strerror(errno));
     return 1;
   }
   return 0;
