@@ -1,0 +1,20 @@
+// out: sub
+// exit: 0
+// spec: syntax.md §7
+// Match arms are `arm_pat => (expr | block)` with no comma required by
+// the law — a block-delimited arm ends unambiguously at its `}`. Today
+// the parser refuses a comma-less block arm (it closes the match at
+// the first arm's block), so blocks must currently carry a trailing
+// comma to work.
+enum Op {
+  Add(i32),
+  Sub,
+}
+fn main() -> i32 {
+  let e = Op.Sub;
+  match e {
+    Op.Add(n) => { printf("add {}\n", n); }
+    Op.Sub => { printf("sub\n"); }
+  }
+  return 0;
+}

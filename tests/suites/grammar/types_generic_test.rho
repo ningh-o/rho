@@ -1,5 +1,6 @@
 // out: pair=3 x val=77 inner=19
-// out: wrap=5 empty=none id=7
+// out: wrap=5 empty=none
+// out: id=7
 // exit: 0
 // spec: syntax.md §3, §4.1, §4.2
 // Generic declarations use square brackets: struct Box[T], two-param

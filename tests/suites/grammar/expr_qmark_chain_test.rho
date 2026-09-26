@@ -1,0 +1,45 @@
+// out: first=true
+// out: second=6
+// out: combined=10
+// exit: 0
+// spec: syntax.md §6.9
+// `?` sits at the postfix level, so it chains with method calls, and
+// one function may use several in sequence — each `e?` yields T and
+// propagates None out of an Option-returning function. `?` is only
+// legal where the enclosing function returns a compatible
+// Option/Result, so these helpers carry the propagation (mixing an
+// Option `?` into a Result function is refused, and vice versa).
+fn find(x: i32) -> ?i32 {
+  if x > 0 {
+    return Option.Some(x);
+  }
+  return Option.None;
+}
+fn as_text(x: i32) -> ?string {
+  let v = find(x)?;
+  return Option.Some(v.to_str());
+}
+fn second(x: i32) -> ?i32 {
+  let v = find(x)?;
+  return Option.Some(v);
+}
+fn combined(a: i32, b: i32) -> ?i32 {
+  let x = find(a)?;
+  let y = find(b)?;
+  return Option.Some(x + y);
+}
+fn main() -> i32 {
+  match as_text(6) {
+    Option.Some(s) => printf("first={}\n", s == "6"),
+    Option.None => printf("first=none\n"),
+  }
+  match second(6) {
+    Option.Some(v) => printf("second={}\n", v),
+    Option.None => printf("second=none\n"),
+  }
+  match combined(4, 6) {
+    Option.Some(v) => printf("combined={}\n", v),
+    Option.None => printf("combined=none\n"),
+  }
+  return 0;
+}

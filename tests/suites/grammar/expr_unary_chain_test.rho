@@ -1,0 +1,30 @@
+// out: bools=true false true
+// out: minus=6 -6 tilde=-7
+// out: float=-2.5
+// out: chain=42
+// exit: 0
+// spec: syntax.md §6.1, §6.2
+// Unary chains stack: `!!x` double bool-not, `-(-x)` (the lexer keeps
+// `-` unary so --x is two negations, not a decrement — there is no
+// ++/--), `~~x` double bitwise-not, and a run of `*` derefs walks
+// nested boxes (`(*(*(*p).p).p).v`).
+struct Cell {
+  v: i32,
+}
+struct Mid {
+  p: *Cell,
+}
+struct Top {
+  p: *Mid,
+}
+fn main() -> i32 {
+  let b = true;
+  printf("bools={} {} {}\n", !!b, !!!b, !(1 > 2));
+  let x: i32 = 6;
+  printf("minus={} {} tilde={}\n", -(-x), -x, ~x);
+  let f: f64 = 2.5;
+  printf("float={}\n", -f);
+  let p = new Top { p: new Mid { p: new Cell { v: 41 } } };
+  printf("chain={}\n", (*(*(*p).p).p).v + 1);
+  return 0;
+}

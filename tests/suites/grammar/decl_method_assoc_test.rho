@@ -1,5 +1,6 @@
 // out: assoc=16 area=24
-// out: bare=2 moved=11 12 mutself=10 2
+// out: bare=2 moved=11 12
+// out: mutself=10 2
 // out: typed=5
 // exit: 0
 // spec: syntax.md §4.1

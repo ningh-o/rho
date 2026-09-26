@@ -1,0 +1,19 @@
+// out: ladder=6
+// out: amp=11 or=5
+// out: shift_vs_add=32 not=-7 tilde2=6
+// out: u8_not=255
+// exit: 0
+// spec: syntax.md §6.1
+// The bitwise ladder is level 3 `&`, level 2 `^`, level 1 `|` — each
+// binds tighter than the one below it. The identities distinguish the
+// legal reading from its regroupings: 12 & 10 ^ 3 = (12&10)^3 = 11
+// (not 12&(10^3)=8), and 6 ^ 3 | 5 = (6^3)|5 = 5 (not 6^(3|5)=1).
+// `<<`/`>>` sit between `+` and the relational operators, and unary
+// `~` is integer bitwise-not at any width.
+fn main() -> i32 {
+  printf("ladder={}\n", 2 | 4 ^ 4 & 3);
+  printf("amp={} or={}\n", 12 & 10 ^ 3, 6 ^ 3 | 5);
+  printf("shift_vs_add={} not={} tilde2={}\n", 1 << 2 + 3, ~6, ~~6);
+  printf("u8_not={}\n", ~(0 as u8));
+  return 0;
+}

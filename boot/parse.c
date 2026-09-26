@@ -615,9 +615,11 @@ static NodeRef parse_primary(Parser *p) {
         if (accept(p, K_IF))
           node_get(arm)->c = parse_expr(p); // §19 guard
         expect(p, T_FATARROW, "in match arm");
-        if (is(p, T_LBRACE))
+        bool blocked = false;
+        if (is(p, T_LBRACE)) {
           node_get(arm)->b = parse_block(p);
-        else {
+          blocked = true;
+        } else {
           node_get(arm)->b = parse_expr(p);
           // an assignment is a statement: an arm body that is one
           // needs a block — diagnose instead of derailing the parse
@@ -630,7 +632,9 @@ static NodeRef parse_primary(Parser *p) {
           }
         }
         reflist_add(node_get(r)->list, arm);
-        if (!accept(p, T_COMMA))
+        if (blocked)
+          accept(p, T_COMMA); // a block arm ends at '}': comma optional
+        else if (!accept(p, T_COMMA))
           break;
         if (is(p, T_RBRACE) || is(p, T_RBRACK) || is(p, T_RPAREN))
           break;
@@ -1445,6 +1449,8 @@ static NodeRef parse_decl(Parser *p) {
               reflist_add(vn->list, f);
               if (!accept(p, T_COMMA))
                 break;
+              if (is(p, T_RBRACE))
+                break; // the payload is `fields`: a trailing ',' is legal
             }
           }
           expect(p, T_RBRACE, "to close the variant payload");

@@ -1,0 +1,15 @@
+// out: code_after_comment=3
+// exit: 0
+// spec: syntax.md §1
+// Comments start with // and run to end of line — full-line, trailing
+// (after code), and dense runs of them all vanish from the parse.
+// There are no block comments in the law.
+// a full-line comment
+fn main() -> i32 { // a trailing comment
+  // several
+  // comment lines
+  let one = 1; // after code
+  let two = 2; // another
+  printf("code_after_comment={}\n", one + two); // final
+  return 0; // done
+}

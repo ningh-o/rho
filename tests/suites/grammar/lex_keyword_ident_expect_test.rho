@@ -1,0 +1,9 @@
+// expect: expected identifier as the let name, found 'fn'
+// spec: syntax.md §2.1
+// Keywords are reserved in every position they could collide with —
+// `fn` cannot name a let (and the list is final for 0.1.0; reserved-
+// for-future words are not held back).
+fn main() -> i32 {
+  let fn = 1;
+  return 0;
+}

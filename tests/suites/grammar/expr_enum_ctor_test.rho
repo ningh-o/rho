@@ -1,0 +1,37 @@
+// out: unit=true tuple=true rec=73
+// out: payload_eq=true
+// out: generic=12
+// exit: 0
+// spec: syntax.md §6.2
+// Enum variant constructors are paths: unit variants are bare paths
+// (Op.None), tuple variants take positional payloads (Shape.Circle(r)),
+// struct variants take named arguments (Shape.Rect(w: 7, h: 3)).
+// Equality compares tag then payload element-wise.
+enum Op {
+  None,
+  Add(i32),
+  Rec { w: i32, h: i32 },
+}
+enum Opt2[T] {
+  Some2(T),
+  None2,
+}
+fn rec_sum(e: Op) -> i32 {
+  return match e {
+    Op.Rec { w: a, h: b } => a * 10 + b,
+    _ => 0 - 1,
+  };
+}
+fn main() -> i32 {
+  let u = Op.None;
+  let t = Op.Add(9);
+  let r = Op.Rec(w: 7, h: 3);
+  printf("unit={} tuple={} rec={}\n", u == Op.None, t == Op.Add(9), rec_sum(r));
+  printf("payload_eq={}\n", Op.Add(9) == Op.Add(9));
+  let g = Opt2.Some2(12);
+  match g {
+    Opt2.Some2(v) => printf("generic={}\n", v),
+    Opt2.None2 => printf("generic=none\n"),
+  }
+  return 0;
+}

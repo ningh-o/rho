@@ -1,5 +1,5 @@
 // out: fields=1 2 trailing=ok
-// out: empty=ok unit=true tuple=9 rec=7 3
+// out: empty=ok unit=true tuple=9 rec=73
 // out: generic=42 wrapped
 // exit: 0
 // spec: syntax.md §4.2
@@ -25,6 +25,19 @@ enum GWrap[T] {
   Got(T),
   Miss,
 }
+fn mixed_tag(m: Mixed) -> i32 {
+  return match m {
+    Mixed.A => 0,
+    Mixed.B(v) => v,
+    _ => 1,
+  };
+}
+fn rec_sum(m: Mixed) -> i32 {
+  return match m {
+    Mixed.C { w: a, h: b } => a * 10 + b,
+    _ => 0 - 1,
+  };
+}
 fn main() -> i32 {
   let t = new Trailing { a: 1, b: 2 };
   let e = new En {};
@@ -32,7 +45,7 @@ fn main() -> i32 {
   let m1 = Mixed.A;
   let m2 = Mixed.B(9);
   let m3 = Mixed.C(w: 7, h: 3);
-  printf("empty=ok unit={} tuple={} rec={} {}\n", m1 == Mixed.A, m2, m3.w, m3.h);
+  printf("empty=ok unit={} tuple={} rec={}\n", m1 == Mixed.A, mixed_tag(m2), rec_sum(m3));
   let g = new GBox[i32] { v: 42 };
   let w = GWrap.Got(1);
   match w {

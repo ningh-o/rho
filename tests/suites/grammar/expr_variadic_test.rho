@@ -1,0 +1,35 @@
+// out: empty=1 sums=6 60
+// out: spread=60 mixed=tag:30
+// exit: 0
+// spec: syntax.md §4.1
+// The last parameter may be variadic — `rest: T...` is a concrete
+// element type T seen as []T in the body; a call may pass any number
+// of trailing arguments, and a spread call `xs...` feeds a slice as
+// the trailing arguments.
+fn sum(base: i64, rest: i64...) -> i64 {
+  let mut t: i64 = base;
+  let mut i: usize = 0;
+  while i < len(rest) {
+    t += rest[i];
+    i += 1;
+  }
+  return t;
+}
+fn join(sep: string, parts: string...) -> string {
+  let mut out: string = "";
+  let mut i: usize = 0;
+  while i < len(parts) {
+    if i > 0 {
+      out = out + sep;
+    }
+    out = out + parts[i];
+    i += 1;
+  }
+  return out;
+}
+fn main() -> i32 {
+  let xs: []i64 = [10, 20, 30];
+  printf("empty={} sums={} {}\n", sum(1), sum(1, 2, 3), sum(0, 10, 20, 30));
+  printf("spread={} mixed={}\n", sum(0, xs...), join(":", "tag", "30"));
+  return 0;
+}

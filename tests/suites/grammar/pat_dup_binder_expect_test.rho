@@ -1,0 +1,11 @@
+// expect: binder 'x' appears twice
+// spec: syntax.md §7
+// The same binder twice in one pattern is an error — each arm's
+// bindings must be unique.
+fn main() -> i32 {
+  match Option.Some(1) {
+    Some(x, x) => printf("never\n"),
+    _ => printf("other\n"),
+  }
+  return 0;
+}

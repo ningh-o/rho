@@ -1,0 +1,20 @@
+// out: S=1
+// out: S=11
+// exit: 0
+// spec: syntax.md §5
+// The deferred assignment form (`defer lvalue op= expr;`) really
+// performs the store: a defer inside an inner block bumps the static
+// at block exit, observable after the block.
+static mut S: i32 = 0;
+fn peek() -> i32 {
+  return S;
+}
+fn main() -> i32 {
+  S += 1;
+  printf("S={}\n", peek());
+  {
+    defer S += 10;
+  }
+  printf("S={}\n", peek());
+  return 0;
+}

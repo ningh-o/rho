@@ -1,0 +1,36 @@
+// out: work
+// out: v=3 str=abcd eq=true
+// out: add 3
+// out: r=8
+// exit: 0
+// spec: syntax.md §5, §7
+// `return` with and without a value; expression statements (a call, an
+// operator expression, a match) discard their value; a match used as a
+// statement takes block arms (comma after each block).
+fn work() {
+  printf("work\n");
+  return;
+}
+enum Op {
+  Add(i32),
+  Sub,
+}
+fn main() -> i32 {
+  work();
+  1 + 2;
+  let s = "ab" + "cd";
+  printf("v={} str={} eq={}\n", (1 + 2), s, s == "abcd");
+  let e = Op.Add(3);
+  match e {
+    Op.Add(n) => { printf("add {}\n", n); },
+    Op.Sub => { printf("sub\n"); },
+  }
+  let r = 3;
+  let q = match r {
+    1 => 10,
+    2 => 20,
+    _ => 8,
+  };
+  printf("r={}\n", q);
+  return 0;
+}

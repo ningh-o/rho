@@ -2008,12 +2008,15 @@ static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
   case NT_QMARK: {
     // the operand is Option/Result; the value is the payload; the
     // enclosing return must be compatible (Option: any payload;
-    // Result: exact error type)
-    Type *ot = check_expr(c, e->a, NULL);
+    // Result: exact error type). The enclosing return flows in as the
+    // operand's expected type so a bare `Option.None?` infers its
+    // arguments from the return (a bare unit variant of a generic
+    // enum cannot infer on its own)
+    Type *ot = check_expr(c, e->a, c->ret);
     EnumDef *opt = prelude_enum("Option");
     EnumDef *res = prelude_enum("Result");
     Type *payload = NULL;
-    if (is_option_of(ot, opt) && ot->nargs == 1) {
+    if (is_option_of(ot, opt) && ot->nargs == 1 && ot->args) {
       payload = ot->args[0];
       if (c->ret) {
         if (!(is_option_of(c->ret, opt) && c->ret->nargs == 1))
@@ -2021,7 +2024,7 @@ static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
                        "Option, it returns %s",
                  type_name(c->ret));
       }
-    } else if (is_option_of(ot, res) && ot->nargs == 2) {
+    } else if (is_option_of(ot, res) && ot->nargs == 2 && ot->args) {
       payload = ot->args[0];
       if (c->ret) {
         if (!(is_option_of(c->ret, res) && c->ret->nargs == 2 &&
@@ -2350,6 +2353,37 @@ static void check_pattern(FnCtx *c, Node *p, Type *st) {
   case NT_PLIT:
     return; // literal pattern (values checked against subject in emit)
   case NT_PVAR: {
+    // struct pattern (§7 struct_pat): the path names the struct; subs
+    // bind by field name against the struct's own field types
+    if (st->kind == TY_STRUCT) {
+      const char *sname = strrchr(p->name, '.');
+      sname = sname ? sname + 1 : p->name;
+      if (strcmp(sname, st->sdef->name) != 0) {
+        err_at(c, p, "pattern %s does not name struct %s", p->name,
+               st->sdef->name);
+        return;
+      }
+      TBind sb = {st->sdef->gparams, st->args,
+                  st->args ? st->sdef->ngparams : 0};
+      for (size_t i = 0; i < reflist_len(p->list); i++) {
+        Node *sub = node_get(reflist_at(p->list, i));
+        if (sub->kind != NT_FIELD) {
+          err_at(c, sub, "struct patterns bind by field name");
+          continue;
+        }
+        bool found = false;
+        for (size_t k = 0; k < st->sdef->nfields; k++)
+          if (strcmp(st->sdef->fields[k].name, sub->name) == 0) {
+            check_pattern(c, node_get(sub->a),
+                          tsubst(st->sdef->fields[k].ty, &sb));
+            found = true;
+          }
+        if (!found)
+          err_at(c, sub, "struct %s has no field '%s'", st->sdef->name,
+                 sub->name);
+      }
+      return;
+    }
     // Enum.Variant pattern: must be a variant of the subject enum
     if (st->kind != TY_ENUM) {
       err_at(c, p, "variant pattern on non-enum %s", type_name(st));

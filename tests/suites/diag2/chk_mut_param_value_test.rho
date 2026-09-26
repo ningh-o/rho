@@ -1,4 +1,4 @@
-// expect: 'mut' marks a view parameter (*T, []T); 'x' is a value
+// expect: 'mut' marks a view parameter (*T, []T, string, dyn); 'x' is a value
 // spec: TODO.md §18
 // the mut marker exists only on write-through views (pointers and
 // slices); marking a by-value parameter claims a write the callee

@@ -530,6 +530,29 @@ section — no placeholder stages. boot is the reference compiler.
       Acceptance: dual-run byte-compare over the whole corpus, the
       wat→wasm→wat fixpoint leg (fmt's law, applied to assembly), and
       a readable decode diff for the T3.2 canary.
+- [ ] **T3.10** The bug-fix-wave mirror re-adaptation (opened
+      2026-09-26): boot grew six real fixes (value-struct field
+      stores, float compound assignment, the narrow-width shift mask,
+      the comptime &&/|| bool fold, static-from-const initializers,
+      ordered float compares) and the mirror binary — compiled BY
+      boot — moved with them: its parser/checker state machines were
+      calibrated against the broken faces (feature tables kept their
+      initial values because field stores silently vanished; folded
+      conditions took the wrong branch). The corpus differential sits
+      at floor 84 with 17 legs refusing (030/032/056/084–089/092/
+      095/098/105/n02/n12–n14/t03/t09) and 045 joining the :diff set
+      (new mask law). The mirror source needs the same error-driven
+      adaptation the mut law got; each leg that closes lifts the
+      floor. Also ledgered from the coverage agents: dead diagnostics
+      to prune (check.c "invalid type syntax", check3's non-comptime
+      const report path — `const_resolve_all` has no callers,
+      check2's "tuple variants bind positionally" and the positional
+      format-values arm, parse.c's race-only "cannot open file");
+      `tok_spell` quoting inconsistency (some tokens render bare,
+      others quoted); check time is quadratic in fn count (16k fns ≈
+      10s); `pub use sub;` module re-export still flat (B-7); float
+      literals beyond the consumer's range compile to inf (spec
+      ambiguous — needs a ruling).
 - [x] **T3.9** Match arm ergonomics (§19): variant resolution by
       scrutinee (bare `Some`/`None`/`Ok`/`Err` and user-enum variants,
       full paths stay legal, no scope fallback), or-patterns with the

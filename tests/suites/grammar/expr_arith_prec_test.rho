@@ -1,0 +1,20 @@
+// out: prec=7 9
+// out: prec=8
+// out: left=5 5 reparsed=11
+// out: trunc=-3 mod=-1
+// out: float_div=3.5
+// exit: 0
+// spec: syntax.md §6.1
+// Arithmetic precedence (level 8 `*` `/` `%` binds tighter than
+// level 7 `+` `-`) and left associativity, proved by identities that
+// distinguish the readings: 1+2*3=7 but (1+2)*3=9; 10-2-3 = (10-2)-3
+// = 5, while 10-(2-3) = 11. Integer `/` truncates toward zero and `%`
+// keeps the dividend's sign; float division is IEEE.
+fn main() -> i32 {
+  printf("prec={} {}\n", 1 + 2 * 3, (1 + 2) * 3);
+  printf("prec={}\n", 2 * 3 + 4 / 2);
+  printf("left={} {} reparsed={}\n", 10 - 2 - 3, (10 - 2) - 3, 10 - (2 - 3));
+  printf("trunc={} mod={}\n", (0 - 7) / 2, (0 - 7) % 2);
+  printf("float_div={}\n", 7.0 / 2.0);
+  return 0;
+}

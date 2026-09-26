@@ -1,0 +1,7 @@
+// expect: expected '=' after the let name (initializer required)
+// spec: syntax.md §5
+// `let` requires an initializer — `let x;` is refused at parse time.
+fn main() -> i32 {
+  let x;
+  return 0;
+}

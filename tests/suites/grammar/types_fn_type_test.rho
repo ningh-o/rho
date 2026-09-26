@@ -1,4 +1,5 @@
-// out: value=11 var=9 returned=8
+// out: value=11 var=9
+// out: returned=8
 // out: void
 // out: no_return_fn=ok
 // exit: 0

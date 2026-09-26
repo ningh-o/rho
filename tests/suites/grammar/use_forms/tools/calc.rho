@@ -11,9 +11,6 @@ impl Doubler for N {
     return self.k * 2;
   }
 }
-fn N.collatz(self: *N, d: i32) -> i32 {
-  return self.k * 2 + d;
-}
 pub fn doubled() -> i32 {
   let n = new N { k: 4 };
   return n.dbl();

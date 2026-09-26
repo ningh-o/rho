@@ -1,0 +1,10 @@
+// expect: 'x' is already bound in this scope
+// spec: syntax.md §5
+// Two lets of the same name in the SAME scope are an error; inner
+// shadowing needs a deeper scope (the legal form is pinned in
+// stmt_let_shadow_test).
+fn main() -> i32 {
+  let x = 1;
+  let x = 2;
+  return 0;
+}

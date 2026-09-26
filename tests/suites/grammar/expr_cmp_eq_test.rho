@@ -1,0 +1,18 @@
+// out: rel=true false true
+// out: relprec=true
+// out: eq=true false true
+// out: eq=false
+// out: str_eq=true false
+// exit: 0
+// spec: syntax.md §6.1, type-system.md §10
+// Relational operators (level 5) bind tighter than equality
+// (level 4): 1 < 2 == 3 < 4 parses as (1 < 2) == (3 < 4). Equality
+// compares value for primitives and CONTENT for strings.
+fn main() -> i32 {
+  printf("rel={} {} {}\n", 1 < 2, 2 <= 1, 3 >= 3);
+  printf("relprec={}\n", 1 < 2 == 3 < 4);
+  printf("eq={} {} {}\n", 5 == 5, 5 != 5, 2.5 == 2.5);
+  printf("eq={}\n", true == false);
+  printf("str_eq={} {}\n", "ab" == "ab", "ab" == "abc");
+  return 0;
+}

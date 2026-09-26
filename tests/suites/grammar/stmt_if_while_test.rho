@@ -1,0 +1,33 @@
+// out: chain=mid
+// out: counted=3
+// out: guarded=7
+// exit: 0
+// spec: syntax.md §5
+// `if`/`else if`/`else` and `while` — the condition is a bool, there
+// is no truthiness, and compound conditions compose with the logical
+// operators.
+fn main() -> i32 {
+  let v: i32 = 42;
+  if v < 10 {
+    printf("chain=small\n");
+  } else if v < 100 {
+    printf("chain=mid\n");
+  } else {
+    printf("chain=big\n");
+  }
+  let mut i: i32 = 0;
+  let mut hits: i32 = 0;
+  while i < 10 && hits < 3 {
+    hits += 1;
+    i += 1;
+  }
+  printf("counted={}\n", hits);
+  while hits < 10 || false {
+    if hits == 7 {
+      break;
+    }
+    hits += 1;
+  }
+  printf("guarded={}\n", hits);
+  return 0;
+}

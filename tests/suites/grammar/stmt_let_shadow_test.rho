@@ -1,0 +1,32 @@
+// out: plain=7 typed=300 mut=301
+// out: inner=2
+// out: outer=1
+// out: copy=100
+// exit: 0
+// spec: syntax.md §5
+// `let` requires an initializer; the annotation is optional when the
+// initializer's type is determined (an integer literal with none
+// types i32). Inner shadowing rebinds an outer name in a nested
+// scope; two lets in the SAME scope would be an error. Value
+// parameters are immutable copies — the body rebinds with
+// `let mut p = p;` to mutate its copy.
+fn with_copy(n: i32) -> i32 {
+  let mut p = n;
+  p = p * 100;
+  return p;
+}
+fn main() -> i32 {
+  let plain = 7;
+  let typed: i64 = 300;
+  let mut m = 300;
+  m += 1;
+  printf("plain={} typed={} mut={}\n", plain, typed, m);
+  let sh = 1;
+  {
+    let sh = 2;
+    printf("inner={}\n", sh);
+  }
+  printf("outer={}\n", sh);
+  printf("copy={}\n", with_copy(1));
+  return 0;
+}

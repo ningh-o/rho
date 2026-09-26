@@ -1,0 +1,24 @@
+// out: prec=88 88
+// out: unary=-300 chain=300.0 mixed=3
+// out: tag=1 widen=300 narrow=44
+// out: float_to_int=3 sat=2147483647
+// exit: 0
+// spec: syntax.md §6.7, type-system.md §3
+// `as` is the only conversion, at level 9 — looser than unary
+// (`-x as T` reads (-x) as T), tighter than every binary below it
+// (`x as u8 * 2` reads (x as u8) * 2). Casts truncate/wrap exactly
+// like variables; float→int truncates toward zero and saturates out
+// of range; enum→i32 yields the declared-order tag.
+enum Tagged {
+  A,
+  B,
+  C,
+}
+fn main() -> i32 {
+  let x: i32 = 300;
+  printf("prec={} {}\n", (x as u8) * 2, x as u8 * 2);
+  printf("unary={} chain={} mixed={}\n", -x as i64, (x as i64) as f64, 1 as i64 + 2 as i64);
+  printf("tag={} widen={} narrow={}\n", Tagged.B as i32, x, x as u8);
+  printf("float_to_int={} sat={}\n", 3.9 as i32, (1.0e30 as i32));
+  return 0;
+}

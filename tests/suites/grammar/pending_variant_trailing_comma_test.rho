@@ -1,0 +1,15 @@
+// out: loaded
+// exit: 0
+// spec: syntax.md §4.2
+// A variant's struct payload is `fields` — `field (',' field)* ','?` —
+// so a trailing comma inside `C { v: i32, }` is legal (fields in
+// structs, arms, and enum variant lists all take one). Today the
+// parser refuses it: "expected identifier as a payload field name".
+enum E {
+  A,
+  C { v: i32, },
+}
+fn main() -> i32 {
+  printf("loaded\n");
+  return 0;
+}

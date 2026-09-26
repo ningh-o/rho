@@ -1,6 +1,7 @@
-// expect: variant pattern on non-enum Q
+// expect: does not name struct Q
 // spec: check — match
-// variant patterns need an enum scrutinee; a struct has none
+// a variant-shaped pattern against a struct scrutinee is refused: the
+// path must name the struct (struct patterns bind by field name)
 struct Q { v: i32 }
 
 fn f(q: Q) -> i32 {

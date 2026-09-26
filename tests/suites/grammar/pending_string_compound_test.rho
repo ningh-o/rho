@@ -1,0 +1,18 @@
+// out: plus_eq=abcd len=4
+// out: reassign=abcd len=4
+// exit: 0
+// spec: syntax.md §5
+// Compound assignment is defined for every arithmetic operator on
+// mutable lvalues of matching type — `s += t` on a `mut` string
+// binding must append. Today `+=` on a string yields the EMPTY string
+// (the store drops the value) while the spelled-out form
+// `s = s + t` works, so the desugar loses the concatenation.
+fn main() -> i32 {
+  let mut t = "ab";
+  t += "cd";
+  printf("plus_eq={} len={}\n", t, len(t));
+  let mut u = "ab";
+  u = u + "cd";
+  printf("reassign={} len={}\n", u, len(u));
+  return 0;
+}

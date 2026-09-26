@@ -1,3 +1,0 @@
-pub trait Doubler {
-  fn dbl(self) -> i32,
-}

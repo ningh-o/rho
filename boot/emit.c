@@ -675,6 +675,19 @@ static void emit_div(FnCx *cx, int opkind, Type *t, size_t out,
 
 static bool emit_compound_op(FnCx *cx, Type *t, int opk, size_t res,
                              size_t oldv, size_t rhs) {
+  if (t->kind == TY_STRING) {
+    // the one compound a string supports: += is concat (§6); the
+    // result is a fresh string — the caller releases the old value
+    // it overwrites
+    if (opk != OP_ADD)
+      return false;
+    op(cx, "(call $rho_cat2 (local.get %zu) (local.get %zu) "
+           "(local.get %zu) (local.get %zu))\n", oldv, oldv + 1, rhs,
+       rhs + 1);
+    op(cx, "(local.set %zu (global.get $cat_ptr))\n", res);
+    op(cx, "(local.set %zu (global.get $cat_len))\n", res + 1);
+    return true;
+  }
   if (type_is_float(t)) {
     const char *fw = t->kind == TY_F32 ? "f32" : "f64";
     const char *finstr = opk == OP_ADD   ? "add"
@@ -1425,6 +1438,42 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
 
   case NT_CALL: {
     Node *callee = node_get(e->a);
+    // an immediate call of a fn-valued EXPRESSION — make_adder(5)(3),
+    // a parenthesized chain, a field holding a closure: evaluate the
+    // callee into its {code, capture} pair, then call through the table
+    {
+      Type *ct = (Type *)callee->sem;
+      if (callee->kind != NT_PATH && ct && ct->kind == TY_FN) {
+        FnSig *sig = ct->sig;
+        size_t cpair = cx_fresh(cx, ct);
+        emit_expr(cx, e->a, cpair);
+        size_t argregs3[16];
+        for (size_t i = 0; i < sig->nparams; i++) {
+          size_t v = cx_fresh(cx, sig->params[i].ty);
+          argregs3[i] = v;
+          Node *aw = i < reflist_len(e->list)
+                         ? node_get(reflist_at(e->list, i))
+                         : NULL;
+          if (aw && aw->kind == NT_POSARG)
+            emit_expr(cx, aw->a, v);
+        }
+        for (size_t i = 0; i < sig->nparams; i++) {
+          size_t n = shape_nlocals(sig->params[i].ty);
+          for (size_t k = 0; k < n; k++)
+            op(cx, "%s", L(cx, argregs3[i] + k));
+        }
+        op(cx, "%s\n", L(cx, cpair + 1)); // capture ptr
+        extern size_t clofn_type_idx(FnCx * cx, FnSig * sig);
+        op(cx, "(call_indirect (type $cloty_%zu) %s)\n",
+           clofn_type_idx(cx, sig), L(cx, cpair));
+        if (sig->ret->kind != TY_UNIT) {
+          size_t n = shape_nlocals(sig->ret);
+          for (size_t i = n; i > 0; i--)
+            op(cx, "(local.set %zu)\n", dst + i - 1);
+        }
+        return;
+      }
+    }
     if (callee->kind != NT_PATH) {
       op(cx, ";; call of non-name (T1.7c)\n");
       return;
@@ -2860,6 +2909,10 @@ static void emit_match(FnCx *cx, NodeRef er, size_t dst) {
       if (pa_kind_is_wild(pat) || pa_kind_is_bind(pat)) {
         // a wildcard or a top-level binder matches everything left
         op(cx, "(if (i32.eqz %s) (then\n", L(cx, matched));
+      } else if (pat->kind == NT_PVAR && st->kind == TY_STRUCT) {
+        // struct pattern: no tag — the arm always matches; the
+        // matched flag keeps it exclusive with earlier arms
+        op(cx, "(if (i32.eqz %s) (then\n", L(cx, matched));
       } else if (pat->kind == NT_PVAR) {
         for (size_t k = 0; k < st->edef->nvariants; k++)
           if (strcmp(st->edef->variants[k].name,
@@ -2889,8 +2942,14 @@ static void emit_match(FnCx *cx, NodeRef er, size_t dst) {
                  "(local.get %zu) (i32.const %zu) (i32.const %zu)) "
                  "(i32.eqz %s)) (then\n", v, v + 1, at, pat->sval.n,
              L(cx, matched));
+        } else if (pat->op == 1) { // float: IEEE eq at the subject's width
+          const char *fw = scalar_wty(st) == W_F32 ? "f32" : "f64";
+          double fv = scalar_wty(st) == W_F32 ? (double)(float)pat->fval
+                                              : pat->fval;
+          op(cx, "(if (i32.and (%s.eq (local.get %zu) (%s.const %.17g)) "
+                 "(i32.eqz %s)) (then\n", fw, v, fw, fv, L(cx, matched));
         } else {
-          op(cx, ";; float literal arm (with the prelude to_str era)\n");
+          op(cx, ";; unhandled literal arm form\n");
           opened = false;
           continue;
         }
@@ -2903,6 +2962,9 @@ static void emit_match(FnCx *cx, NodeRef er, size_t dst) {
       cx->scope++;
       size_t slot = v + 1;
       if (pa_kind_is_bind(pat))
+        slot = v;
+      // a struct pattern has no tag: its subs bind from the run start
+      if (pat->kind == NT_PVAR && st->kind == TY_STRUCT)
         slot = v;
       register_pattern_binders(cx, pat, st);
       bind_pattern(cx, pat, st, &slot, v);
@@ -3016,19 +3078,87 @@ static void bind_pattern(FnCx *cx, Node *pat, Type *st, size_t *slot,
     return;
   }
   if (pat->kind == NT_PVAR) {
-    // variant pattern: sub-patterns bind the variant's fields in order
+    // variant pattern: subs bind the variant's payload fields. The
+    // entry *slot is the payload start (the arm's tag compare already
+    // consumed the tag) and every slot is the OUTER enum's canonical
+    // layout — widening is per flat position across variants, so a
+    // nested field's slots stay outer-driven; only a nested variant's
+    // own tag is skipped (+1). A VAR_STRUCT sub may name a subset:
+    // resolve by field NAME, not position (§7).
+    StructDef *sd = st && st->kind == TY_STRUCT ? st->sdef : NULL;
+    if (sd) {
+      // struct pattern: the subject rides its flat field run from
+      // *slot (no tag); subs bind by field NAME at the field's own
+      // offset — slots are the struct's own representation, so plain
+      // copies are exact
+      for (size_t i = 0; i < reflist_len(pat->list); i++) {
+        Node *sub = node_get(reflist_at(pat->list, i));
+        if (sub->kind != NT_FIELD)
+          continue; // checker reported
+        Node *subpat = node_get(sub->a);
+        size_t k = (size_t)-1;
+        for (size_t fk = 0; fk < sd->nfields; fk++)
+          if (strcmp(sd->fields[fk].name, sub->name) == 0)
+            k = fk;
+        if (k == (size_t)-1)
+          continue; // checker reported
+        size_t fstart = *slot;
+        for (size_t fk = 0; fk < k; fk++)
+          fstart += shape_nlocals(inst_ty(st, sd->fields[fk].ty));
+        size_t save = *slot;
+        *slot = fstart;
+        bind_pattern(cx, subpat, st, slot, base);
+        *slot = save;
+      }
+      return;
+    }
+    EnumDef *ed = st && st->kind == TY_ENUM ? st->edef : NULL;
+    EnumVariant *var = NULL;
+    // the pattern's name may be the full path ("Sh.Rec") or the bare
+    // variant ("Rec", §19): resolve against the last dot segment
+    const char *vname = pat->name;
+    if (vname) {
+      const char *dot = strrchr(vname, '.');
+      if (dot)
+        vname = dot + 1;
+    }
+    if (ed && vname) {
+      for (size_t vi = 0; vi < ed->nvariants; vi++)
+        if (strcmp(ed->variants[vi].name, vname) == 0)
+          var = &ed->variants[vi];
+    }
     for (size_t i = 0; i < reflist_len(pat->list); i++) {
       Node *sub = node_get(reflist_at(pat->list, i));
-      if (pat->op == VAR_STRUCT && sub->kind == NT_FIELD)
-        bind_pattern(cx, node_get(sub->a), st, slot, base);
-      else if (sub->kind == NT_PBIND || sub->kind == NT_PWILD ||
-               sub->kind == NT_PVAR)
-        bind_pattern(cx, sub, st, slot, base);
-      // literal sub-patterns consume their slots without binding
-      else {
-        extern size_t pattern_slot_size(Node *);
-        *slot += pattern_slot_size(sub);
+      Node *subpat = sub;
+      size_t k = i; // payload field index
+      if (pat->op == VAR_STRUCT && sub->kind == NT_FIELD) {
+        subpat = node_get(sub->a);
+        k = (size_t)-1;
+        if (var)
+          for (size_t fk = 0; fk < var->nfields; fk++)
+            if (strcmp(var->fields[fk].name, sub->name) == 0)
+              k = fk;
+        if (k == (size_t)-1)
+          return; // checker reported the unknown field
       }
+      // the field's slot offset within the payload
+      size_t fstart = *slot;
+      if (var)
+        for (size_t fk = 0; fk < k && fk < var->nfields; fk++)
+          fstart += shape_nlocals(inst_ty(st, var->fields[fk].ty));
+      size_t save = *slot;
+      if (subpat->kind == NT_PBIND || subpat->kind == NT_PWILD) {
+        *slot = fstart;
+        bind_pattern(cx, subpat, st, slot, base);
+      } else if (subpat->kind == NT_PVAR) {
+        // a nested variant pattern: its field is enum-typed, its own
+        // tag rides fstart — bind from the payload
+        *slot = fstart + 1;
+        bind_pattern(cx, subpat, st, slot, base);
+      } else {
+        // literal sub-pattern: consume its slots without binding
+      }
+      *slot = save;
     }
     return;
   }
@@ -3728,6 +3858,9 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
         // compound: op(old, rhs) into a fresh result
         size_t res = cx_fresh(cx, lt);
         if (emit_compound_op(cx, lt, s->op, res, v->vreg, rhs)) {
+          // the overwrite kills the old value's own ref (a string +=,
+          // say — the op already read the old bytes)
+          release(cx, lt, v->vreg);
           size_t n = shape_nlocals(lt);
           for (size_t i = 0; i < n; i++)
             op(cx, "(local.set %zu %s)\n", v->vreg + i, L(cx, res + i));

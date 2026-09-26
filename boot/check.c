@@ -1768,16 +1768,18 @@ bool check_program(Program *p) {
           if (pp->op == 2 && sig->params[k].ty)
             sig->params[k].ty = type_slice(sig->params[k].ty); // []T
           sig->params[k].variadic = pp->op == 2;
-          // the mut view law (§18): `mut` marks a view parameter —
-          // pointers and slices; on a value it is refused
+          // the mut view law (§18): `mut` marks a handle-typed view
+          // parameter (*T, []T, string, dyn); on a value it is refused
           if (pp->bval && sig->params[k].ty &&
               sig->params[k].ty->kind != TY_PTR &&
               sig->params[k].ty->kind != TY_SLICE &&
+              sig->params[k].ty->kind != TY_STRING &&
+              sig->params[k].ty->kind != TY_DYN &&
               pp->op != 1) // bare self: the receiver's mut is decided
                            // by the receiver type, checked at the call
             diag_at(DIAG_ERROR, m->path, pp->line, pp->col,
-                    "'mut' marks a view parameter (*T, []T); '%s' is a "
-                    "value",
+                    "'mut' marks a view parameter (*T, []T, string, "
+                    "dyn); '%s' is a value",
                     pp->name ? pp->name : "?");
         }
         sig->ret = d->c != NO_REF ? resolve_type(m, d->c, &g) : ty_unit;

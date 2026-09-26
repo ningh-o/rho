@@ -1,0 +1,10 @@
+// expect: expected ')' to close parenthesized expression, found '='
+// spec: syntax.md §5
+// Assignment is a statement, not an expression — it has no value — so
+// `let y = (x = 3);` cannot parse: after `(` an expression is
+// expected and `x =` is not one.
+fn main() -> i32 {
+  let x: i32 = 5;
+  let y = (x = 3);
+  return 0;
+}

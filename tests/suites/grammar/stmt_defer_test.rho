@@ -1,0 +1,43 @@
+// out: log early-defer
+// out: r=7
+// out: in block
+// out: log block-exit
+// out: after block
+// out: log fn-exit
+// out: log second
+// out: log first
+// exit: 0
+// spec: syntax.md §5
+// `defer expr;` and `defer lvalue op= expr;` run when the enclosing
+// scope exits — LIFO across defers, on every exit path (including an
+// early return), except panic. A defer inside an inner block fires at
+// the block's exit, before the function's.
+static mut S: i32 = 0;
+fn note(tag: string) -> i32 {
+  printf("log {}\n", tag);
+  return 0;
+}
+fn early(flag: bool) -> i32 {
+  defer note("early-defer");
+  if flag {
+    return 7;
+  }
+  return 8;
+}
+fn inner_scope() -> i32 {
+  defer note("fn-exit");
+  {
+    defer note("block-exit");
+    printf("in block\n");
+  }
+  printf("after block\n");
+  return 0;
+}
+fn main() -> i32 {
+  printf("r={}\n", early(true));
+  inner_scope();
+  defer note("first");
+  defer note("second");
+  defer S += 5;
+  return 0;
+}

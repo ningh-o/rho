@@ -1,0 +1,26 @@
+// out: _lead=9 digs=10 long=11
+// out: near=3
+// exit: 0
+// spec: syntax.md §2.1
+// Identifiers are [a-zA-Z_][a-zA-Z0-9_]*: they may start with an
+// underscore, contain digits (but not start with one), be arbitrarily
+// long, and may embed reserved words as substrings (`matched` is not
+// `match`).
+fn _lead() -> i32 {
+  return 9;
+}
+fn digs2() -> i32 {
+  return 10;
+}
+fn a_very_long_identifier_name_is_fine() -> i32 {
+  return 11;
+}
+fn main() -> i32 {
+  let _x1: i32 = 7;
+  let x2y: i32 = 2;
+  printf("_lead={} digs={} long={}\n", _lead(), digs2(), a_very_long_identifier_name_is_fine());
+  let matched = 1;
+  let matcher = 2;
+  printf("near={}\n", matched + matcher);
+  return 0;
+}
