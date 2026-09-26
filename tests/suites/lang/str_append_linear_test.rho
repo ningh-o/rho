@@ -1,0 +1,17 @@
+// spec: spec.md §1.4 + design §6 (the amortized concat)
+// out: len=1200000
+// tail=30000
+// the loop idiom `s = s + piece` appends in place (rc==1 — the
+// counting law holds every copy): MB-scale building stays linear,
+// where the never-reusing cat died against the 4 GiB ceiling at
+// ~30 K concats
+fn main() -> i32 {
+  let mut s: string = "";
+  let mut i: usize = 0;
+  while i < 30000 {
+    s = s + "0123456789012345678901234567890123456789";
+    i = i + 1;
+  }
+  printf("len={}\n", len(s));
+  return 0;
+}

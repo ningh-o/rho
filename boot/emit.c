@@ -3850,6 +3850,36 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
         }
         return;
       }
+      // Â§6's amortized concat, single-tail only: `s += e` and
+      // `s = s + e` exactly â the whole left operand is the target.
+      // rc(a)==1 at runtime proves the block unaliased (the counting
+      // law holds every string copy); capacity rides the block header
+      // (sz at data-20). rho_app owns the old ref's fate â in place
+      // the old value did not die, it grew; no release here. Longer
+      // chains stay on cat2: the checker folds lit+hole sub-chains
+      // into format desugars whose conditional piece assembly must
+      // not interleave with sequential apps (the T3.1 ledger).
+      if (lt && lt->kind == TY_STRING) {
+        Node *rv = node_get(s->b);
+        NodeRef tail = NO_REF;
+        if (s->op == OP_ADD) {
+          tail = s->b; // s += e
+        } else if (s->op == OP_NONE && rv && rv->kind == NT_BINARY &&
+                   rv->op == OP_ADD && node_get(rv->a)->kind == NT_PATH &&
+                   strcmp(node_get(rv->a)->name, lv->name) == 0) {
+          tail = rv->b; // s = s + e
+        }
+        if (tail != NO_REF) {
+          size_t rhsv = cx_fresh(cx, ty_string);
+          emit_expr(cx, tail, rhsv);
+          op(cx, "(call $rho_app (local.get %zu) (local.get %zu) "
+                 "%s %s)\n",
+             v->vreg, v->vreg + 1, L(cx, rhsv), L(cx, rhsv + 1));
+          op(cx, "(local.set %zu (global.get $cat_ptr))\n", v->vreg);
+          op(cx, "(local.set %zu (global.get $cat_len))\n", v->vreg + 1);
+          return;
+        }
+      }
       size_t rhs = cx_fresh(cx, lt);
       emit_expr(cx, s->b, rhs);
       if (node_get(s->b)->kind == NT_PATH &&
@@ -4347,8 +4377,10 @@ int emit_program(Program *p, bool debug, char **wat_out, size_t *wat_len) {
   tprintf(o, "  (func $rho_cat2 (param $a i32) (param $al i32) "
              "(param $b i32) (param $bl i32)\n");
   tprintf(o, "    (local $p i32) (local $i i32)\n");
-  tprintf(o, "    (local.set $p (call $rho_alloc (i32.add (local.get $al) "
-             "(local.get $bl))))\n");
+  // half-again headroom: a cat result is append-ready
+  tprintf(o, "    (local.set $p (call $rho_alloc (i32.add (i32.add "
+             "(local.get $al) (local.get $bl)) (i32.div_u (i32.add "
+             "(local.get $al) (local.get $bl)) (i32.const 2)))))\n");
   tprintf(o, "    (local.set $i (i32.const 0))\n");
   tprintf(o, "    (block $d1 (loop $c1 (br_if $d1 (i32.ge_u (local.get $i) "
              "(local.get $al)))\n");
@@ -4371,6 +4403,62 @@ int emit_program(Program *p, bool debug, char **wat_out, size_t *wat_len) {
              "(i32.const 24)))\n");
   tprintf(o, "    (global.set $cat_len (i32.add (local.get $al) "
              "(local.get $bl))))\n");
+  // string append, the amortized concat: in place when the block is
+  // unaliased (rc==1 â the counting law) and the header's capacity
+  // takes the tail; fresh results carry half-again headroom so the
+  // next appends ride the slack. app owns the old ref: the fresh path
+  // releases it, in place the value grew
+  tprintf(o, "  (func $rho_app (param $a i32) (param $al i32) "
+             "(param $b i32) (param $bl i32)\n");
+  tprintf(o, "    (local $n i32) (local $p i32) (local $i i32)\n");
+  tprintf(o, "    (if (i32.and (i32.ge_u (local.get $a) "
+             "(global.get $data_top))\n");
+  tprintf(o, "              (i32.and (i32.eq (i32.load (i32.sub "
+             "(local.get $a) (i32.const 24))) (i32.const 1))\n");
+  tprintf(o, "                       (i32.le_u (i32.add (local.get $al) "
+             "(local.get $bl))\n");
+  tprintf(o, "                                 (i32.load (i32.sub "
+             "(local.get $a) (i32.const 20))))))\n");
+  tprintf(o, "      (then\n");
+  tprintf(o, "        (local.set $i (i32.const 0))\n");
+  tprintf(o, "        (block $a1 (loop $b1 (br_if $a1 (i32.ge_u "
+             "(local.get $i) (local.get $bl)))\n");
+  tprintf(o, "          (i32.store8 (i32.add (i32.add (local.get $a) "
+             "(local.get $al)) (local.get $i))\n");
+  tprintf(o, "            (i32.load8_u (i32.add (local.get $b) "
+             "(local.get $i))))\n");
+  tprintf(o, "          (local.set $i (i32.add (local.get $i) "
+             "(i32.const 1))) (br $b1)))\n");
+  tprintf(o, "        (global.set $cat_ptr (local.get $a))\n");
+  tprintf(o, "        (global.set $cat_len (i32.add (local.get $al) "
+             "(local.get $bl)))\n");
+  tprintf(o, "        (return)))\n");
+  tprintf(o, "    (local.set $n (i32.add (local.get $al) "
+             "(local.get $bl)))\n");
+  tprintf(o, "    (local.set $p (call $rho_alloc (i32.add (local.get $n) "
+             "(i32.div_u (local.get $n) (i32.const 2)))))\n");
+  tprintf(o, "    (local.set $i (i32.const 0))\n");
+  tprintf(o, "    (block $a2 (loop $b2 (br_if $a2 (i32.ge_u "
+             "(local.get $i) (local.get $al)))\n");
+  tprintf(o, "      (i32.store8 (i32.add (i32.add (local.get $p) "
+             "(i32.const 24)) (local.get $i))\n");
+  tprintf(o, "        (i32.load8_u (i32.add (local.get $a) "
+             "(local.get $i))))\n");
+  tprintf(o, "      (local.set $i (i32.add (local.get $i) (i32.const 1))) "
+             "(br $b2)))\n");
+  tprintf(o, "    (local.set $i (i32.const 0))\n");
+  tprintf(o, "    (block $a3 (loop $b3 (br_if $a3 (i32.ge_u "
+             "(local.get $i) (local.get $bl)))\n");
+  tprintf(o, "      (i32.store8 (i32.add (i32.add (i32.add (local.get $p) "
+             "(i32.const 24)) (local.get $al)) (local.get $i))\n");
+  tprintf(o, "        (i32.load8_u (i32.add (local.get $b) "
+             "(local.get $i))))\n");
+  tprintf(o, "      (local.set $i (i32.add (local.get $i) (i32.const 1))) "
+             "(br $b3)))\n");
+  tprintf(o, "    (global.set $cat_ptr (i32.add (local.get $p) "
+             "(i32.const 24)))\n");
+  tprintf(o, "    (global.set $cat_len (local.get $n))\n");
+  tprintf(o, "    (call $rho_release (local.get $a)))\n");
   tprintf(o, "  (func $rho_streq (param $a i32) (param $al i32) "
              "(param $b i32) (param $bl i32) (result i32)\n");
   tprintf(o, "    (local $i i32)\n");
