@@ -1,0 +1,7 @@
+// spec: module-system.md §3
+use geom;
+fn main() -> i32 {
+  printf("{}\n", geom.f());
+  return 0;
+}
+// expect: ambiguous

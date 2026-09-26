@@ -1,0 +1,30 @@
+// exit: 0
+// out: same tag+payload: eq=true
+// out: diff payload: eq=false
+// out: diff tag: eq=false ne=true
+// out: payloadless: eq=true
+// spec: type-system.md §10 — enums compare tag, then payload
+// element-wise
+// enum equality decides the tag first: same tag falls through to the
+// payload compared element by element, a different tag is unequal
+// whatever the payload words happen to hold, and a payloadless
+// variant is the tag alone
+enum Op {
+  Add(i32, i32),
+  Neg(i32),
+  Zero,
+}
+
+fn main() -> i32 {
+  let a: Op = Op.Add(3, 4);
+  let b: Op = Op.Add(3, 4);
+  let c: Op = Op.Add(3, 5);
+  let n: Op = Op.Neg(3);
+  let z1: Op = Op.Zero;
+  let z2: Op = Op.Zero;
+  printf("same tag+payload: eq={}\n", (a == b));
+  printf("diff payload: eq={}\n", (a == c));
+  printf("diff tag: eq={} ne={}\n", (a == n), (a != z1));
+  printf("payloadless: eq={}\n", (z1 == z2));
+  return 0;
+}

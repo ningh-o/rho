@@ -12,6 +12,12 @@
 
 extern const char *kernel_wat_src(void); // kernel_wat.c
 
+// the test verb (§17): when set (an entry-module symbol name of the
+// form "test:<name>"), _start calls that synthesized test fn instead
+// of main — the selection rides the emission side, one program
+// instance per test. NULL in every other mode.
+const char *g_emit_test_name = NULL;
+
 // ================================================================ text
 
 typedef struct Buf {
@@ -372,6 +378,12 @@ static Type *slot_type(FnCx *cx, size_t vreg) {
 static VarInfo *cx_var(FnCx *cx, const char *name) {
   for (size_t i = VLEN(cx->vars); i > 0; i--) {
     VarInfo *v = VAT(cx->vars, VarInfo, i - 1);
+    // match-arm binders keep their entries until the block-end
+    // release walk; once the arm's scope has exited they must not
+    // answer lookups again (they used to shadow the outer binding
+    // forever)
+    if (v->scope > cx->scope)
+      continue;
     if (strcmp(v->name, name) == 0)
       return v;
   }
@@ -604,8 +616,8 @@ __attribute__((unused)) static void emit_div(FnCx *cx, int opkind, Type *t, size
   bool uns = t->kind >= TY_U8;
   // divisor zero → panic "division by zero"
   op(cx, "(if (%s.eqz (local.get %zu)) (then\n", w, b);
-  size_t msg = data_intern("division by zero", 18);
-  op(cx, "  (call $rho_panic (i32.const %zu) (i32.const 18))))\n", msg);
+  size_t msg = data_intern("division by zero", 16);
+  op(cx, "  (call $rho_panic (i32.const %zu) (i32.const 16))))\n", msg);
   if (!uns) {
     // wasm traps on MIN/-1: the defined answers are MIN (div) and 0
     // (rem) — spec §11; branch around the trapping instruction. The
@@ -2648,6 +2660,10 @@ static void emit_match(FnCx *cx, NodeRef er, size_t dst) {
       }
     }
     cx->scope--;
+    // the binder ENTRIES stay until the block-end walk releases them
+    // (rc timing unchanged); cx_var skips entries whose scope has
+    // exited, so a stale binder can no longer shadow the outer
+    // binding after the arm
     if (!wildcard)
       op(cx, "))\n");
     else if (has_wild)
@@ -3660,11 +3676,13 @@ static void emit_fndef(Em *em, FnDef *f) {
 // ============================================================ module
 
 static void emit_start(Em *em) {
-  Sym *main = symtab_get(em->p->entry->syms, "main");
+  Sym *main = g_emit_test_name
+                  ? symtab_get(em->p->entry->syms, g_emit_test_name)
+                  : symtab_get(em->p->entry->syms, "main");
   Buf b;
   buf_init(&b);
   tprintf(&b, "  (func $_start\n");
-  {
+  if (!g_emit_test_name) {
     Sym *main0 = symtab_get(em->p->entry->syms, "main");
     if (main0 && main0->kind == SYM_FN &&
         main0->u.fns->sig->ret->kind != TY_UNIT)
@@ -3716,10 +3734,17 @@ static void emit_start(Em *em) {
   }
   if (main && main->kind == SYM_FN) {
     FnDef *mf = main->u.fns;
-    tprintf(&b, "    (local.set $rc (call $%s))\n", fn_wat_name(mf));
-    // POSIX exit semantics: the status travels as its low byte
-    tprintf(&b, "    (call $proc_exit (i32.and (local.get $rc) "
-               "(i32.const 255)))\n");
+    if (g_emit_test_name) {
+      // a test instance: clean return = exit 0; a panic exits 101
+      // through the kernel's own path (§17 judges panic vs clean)
+      tprintf(&b, "    (call $%s)\n", fn_wat_name(mf));
+      tprintf(&b, "    (call $proc_exit (i32.const 0))\n");
+    } else {
+      tprintf(&b, "    (local.set $rc (call $%s))\n", fn_wat_name(mf));
+      // POSIX exit semantics: the status travels as its low byte
+      tprintf(&b, "    (call $proc_exit (i32.and (local.get $rc) "
+                 "(i32.const 255)))\n");
+    }
   } else {
     tprintf(&b, "    (call $proc_exit (i32.const 0))\n");
   }
@@ -3779,6 +3804,9 @@ static void prereg_drop_walkers_stmt(Node *s) {
 }
 
 static void emit_all_fns(Em *em) {
+  // test blocks ride only under the verb, and only the selected test's
+  // fn emits (§17: the selection rides the emission side)
+  bool test_mode = g_emit_test_name != NULL;
   // the pre-pass walks modules × symbol order (the emission order)
   for (Module *m = em->p->modules; m; m = m->next) {
     if (!m->syms)
@@ -3787,6 +3815,9 @@ static void emit_all_fns(Em *em) {
       if (s->kind != SYM_FN)
         continue;
       for (FnDef *f = s->u.fns; f; f = f->next_overload) {
+        if (node_get(f->decl)->kind == NT_TEST &&
+            !(test_mode && strcmp(f->name, g_emit_test_name) == 0))
+          continue;
         // generic templates never run — only their instantiations do
         if (f->body != NO_REF && !f->ngparams)
           prereg_drop_walkers_stmt(node_get(f->body));
@@ -3806,6 +3837,9 @@ static void emit_all_fns(Em *em) {
       if (s->kind != SYM_FN)
         continue;
       for (FnDef *f = s->u.fns; f; f = f->next_overload) {
+        if (node_get(f->decl)->kind == NT_TEST &&
+            !(test_mode && strcmp(f->name, g_emit_test_name) == 0))
+          continue;
         if (f->body != NO_REF && !f->ngparams)
           emit_fndef(em, f);
         // generic instances emit right after their template

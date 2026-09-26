@@ -1,0 +1,14 @@
+// exit: 0
+// out: hello, world
+// set: WHO=world
+// spec: spec.md §6 — --set overrides a root const whose type has a
+// text form; the string face takes the raw text as the value
+// the string face: the headers pin the default build (WHO as
+// declared); the override lands through `--set WHO=<text>`, e.g.
+// `rho run set_string_test.rho --set WHO=rho` prints hello, rho
+const WHO: string = "world";
+
+fn main() -> i32 {
+  printf("hello, {}\n", WHO);
+  return 0;
+}

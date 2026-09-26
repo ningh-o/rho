@@ -121,7 +121,24 @@ static void fmt_strlit(F *f, Str s) {
   fp(f, "\"");
 }
 
-static void fmt_params(F *f, RefList *ps) {
+// the receiver's written type is redundant when it spells exactly the
+// derived form: *Recv for a struct/enum target, Recv itself for a
+// builtin primitive (§18/T3.10) — the typed form is accepted, never
+// required, and fmt canonicalizes it away
+static bool recv_annotation_derived(Node *t, const char *recv) {
+  if (!recv)
+    return false;
+  // a named type parses as NT_APP (bare name: list == NULL)
+  if (t->kind == NT_PTR && t->a != NO_REF &&
+      NG(t->a)->kind == NT_APP && !NG(t->a)->list &&
+      strcmp(NG(t->a)->name, recv) == 0)
+    return true;
+  if (t->kind == NT_BUILTIN && strcmp(t->name, recv) == 0)
+    return true;
+  return false;
+}
+
+static void fmt_params(F *f, RefList *ps, const char *recv) {
   fp(f, "(");
   for (size_t i = 0; i < reflist_len(ps); i++) {
     Node *p = NG(reflist_at(ps, i));
@@ -129,7 +146,9 @@ static void fmt_params(F *f, RefList *ps) {
       fp(f, ", ");
     if (p->bval)
       fp(f, "mut ");
-    if (p->a != NO_REF) { // a bare trait-sig self has no annotation
+    if (p->a != NO_REF && !(i == 0 && p->name &&
+                            strcmp(p->name, "self") == 0 &&
+                            recv_annotation_derived(NG(p->a), recv))) {
       fp(f, "%s: ", p->name);
       fmt_type(f, NG(p->a));
     } else {
@@ -336,7 +355,7 @@ static void fmt_expr(F *f, Node *e) {
     return;
   case NT_CLOSURE:
     fp(f, "fn");
-    fmt_params(f, e->list);
+    fmt_params(f, e->list, NULL);
     if (e->b != NO_REF) {
       fp(f, " -> ");
       fmt_type(f, NG(e->b));
@@ -566,7 +585,7 @@ void fmt_program(FILE *out, Program *p) {
           }
           fp(&f, "]");
         }
-        fmt_params(&f, d->list);
+        fmt_params(&f, d->list, d->name2);
         if (d->c != NO_REF) {
           fp(&f, " -> ");
           fmt_type(&f, NG(d->c));
@@ -664,7 +683,7 @@ void fmt_program(FILE *out, Program *p) {
           Node *sig = NG(reflist_at(d->list, si));
           findent(&f);
           fp(&f, "fn %s", sig->name);
-          fmt_params(&f, sig->list);
+          fmt_params(&f, sig->list, NULL);
           if (sig->c != NO_REF) {
             fp(&f, " -> ");
             fmt_type(&f, NG(sig->c));
@@ -681,11 +700,15 @@ void fmt_program(FILE *out, Program *p) {
         fmt_type(&f, NG(d->b));
         fp(&f, " {\n");
         f.depth++;
+        // members may write the receiver redundantly; the impl target
+        // is the derivation home (§18/T3.10)
+        const char *irecv =
+            d->b != NO_REF ? NG(d->b)->name : NULL;
         for (size_t fi = 0; fi < reflist_len(d->list); fi++) {
           Node *fn = NG(reflist_at(d->list, fi));
           findent(&f);
           fp(&f, "fn %s", fn->name);
-          fmt_params(&f, fn->list);
+          fmt_params(&f, fn->list, irecv);
           if (fn->c != NO_REF) {
             fp(&f, " -> ");
             fmt_type(&f, NG(fn->c));
@@ -696,6 +719,12 @@ void fmt_program(FILE *out, Program *p) {
         f.depth--;
         findent(&f);
         fp(&f, "}\n\n");
+        break;
+      }
+      case NT_TEST: {
+        fp(&f, "test \"%s\"", d->name);
+        fmt_block(&f, NG(d->d));
+        fp(&f, "\n");
         break;
       }
       case NT_CONST: {

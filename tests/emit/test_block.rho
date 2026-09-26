@@ -1,0 +1,11 @@
+// test blocks never ride a normal build: the program behaves exactly
+// as if they were absent, and the file still fmt-round-trips
+fn main() -> i32 {
+  printf("main ran\n");
+  return 0;
+}
+
+test "addition holds" {
+  assert_eq(2 + 2, 4);
+}
+// out: main ran

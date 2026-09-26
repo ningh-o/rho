@@ -1,0 +1,45 @@
+// exit: 0
+// spec: type-system.md §9 — ?T parses as Option[T]
+// spec: type-system.md §12 — ? propagates None; the enclosing fn returns Option
+// out: halve some 10
+// out: halve none
+// out: char [r]
+// out: char none
+// out: char none
+// ? unwraps a Some and propagates a None out of a ?T-returning function
+fn halve(o: ?i32) -> ?i32 {
+  let v: i32 = o?;
+  return Option.Some(v / 2);
+}
+
+fn first_char(s: ?string) -> ?string {
+  let t: string = s?;
+  if len(t) == 0 {
+    return Option.None;
+  }
+  return Option.Some(t[0..1]);
+}
+
+fn main() -> i32 {
+  match halve(Option.Some(21)) {
+    Option.Some(v) => printf("halve some {}\n", v),
+    Option.None => printf("halve none\n"),
+  }
+  match halve(Option.None) {
+    Option.Some(v) => printf("halve some {}\n", v),
+    Option.None => printf("halve none\n"),
+  }
+  match first_char(Option.Some("rho")) {
+    Option.Some(c) => printf("char [{}]\n", c),
+    Option.None => printf("char none\n"),
+  }
+  match first_char(Option.Some("")) {
+    Option.Some(c) => printf("char [{}]\n", c),
+    Option.None => printf("char none\n"),
+  }
+  match first_char(Option.None) {
+    Option.Some(c) => printf("char [{}]\n", c),
+    Option.None => printf("char none\n"),
+  }
+  return 0;
+}

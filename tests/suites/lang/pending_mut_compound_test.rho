@@ -1,0 +1,19 @@
+// expect: mut
+// pending: T3.6
+// spec: TODO.md §18
+// PENDING the T3.6 mut-view law (TODO.md §18, ratified but not
+// implemented): compound assignment is a store — `r.x += 4` through a
+// binding declared without `mut` is a write through a read-only view
+// and must fail check once T3.6 lands. Today it is accepted, so this
+// case FAILS its own criteria (check passes) — correct pending
+// behavior.
+struct P {
+  x: i32,
+  y: i32,
+}
+fn main() -> i32 {
+  let r = new P { x: 10, y: 20 };
+  r.x += 4;
+  printf("r.x={}\n", r.x);
+  return 0;
+}

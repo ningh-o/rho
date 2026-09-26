@@ -1,0 +1,30 @@
+// exit: 0
+// spec: syntax.md §2.5 — triple-quoted strings are fully verbatim
+// spec: spec.md §5 — the newline after the opening """ is content
+// out: [
+// out: line one \ not a tab: \t here
+// out: a quote " rides mid-line
+// out:   indented content is content
+// out: last]
+// out: len=90
+// out: first byte=10
+// backslashes, quotes, interior indentation and newlines all ride
+// verbatim — nothing decodes, nothing strips
+fn main() -> i32 {
+  let doc: string = """
+line one \ not a tab: \t here
+a quote " rides mid-line
+  indented content is content
+last""";
+  printf("[{}]\n", doc);
+  printf("len={}\n", len(doc));
+  // byte 0 is the newline that follows the opening """
+  printf("first byte={}\n", doc[0]);
+  assert_eq(len(doc), 90);
+  assert_eq(doc[0..1], "\n");
+  assert_eq(doc[10..11], "\\");
+  assert_eq(doc[23..25], "\\t");
+  assert_eq(doc[39..40], "\"");
+  assert_eq(doc[86..90], "last");
+  return 0;
+}

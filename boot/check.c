@@ -19,6 +19,10 @@ void init_builtin_types(void);
 
 static Type *new_type(TyKind k) {
   Type *t = arena_alloc(g_arena, sizeof(Type), 8);
+  // zero the whole struct: the type walks (ty_has_param and friends)
+  // branch on base/args unconditionally, and recycled malloc pages
+  // hand back garbage that used to be walked as pointers
+  memset(t, 0, sizeof(Type));
   t->kind = k;
   return t;
 }
@@ -589,13 +593,16 @@ static void expand_pub_uses(Program *p) {
 bool program_load_graph(Program *p, const char *entry_path) {
   g_program_for_load = p;
   // the prelude exists before ANY collection (load-time preparation
-  // resolves ?T through it)
+  // resolves ?T through it). It is a process-global singleton, but
+  // EVERY program carries it in its module list — a verb run compiles
+  // many programs in one process, and a program whose module list
+  // lacks the prelude cannot resolve Show/Option/Result at all.
   if (!g_prelude_mod) {
     extern const char *prelude_src(void);
     g_prelude_mod = module_parse_src("<prelude>", prelude_src());
-    program_add(p, g_prelude_mod, NULL);
     module_prepare(p, g_prelude_mod);
   }
+  program_add(p, g_prelude_mod, NULL);
   p->entry = module_load(g_arena, entry_path);
   program_add(p, p->entry, NULL);
   // the entry is the fold root from load time on: body folds during
@@ -1006,6 +1013,56 @@ static void collect_module(Program *p, Module *m) {
 
 // pass 3: consts, statics, externs, fn signatures
 static void collect_one_fn(Program *p, Module *m, NodeRef dr);
+static void collect_one_test(Program *p, Module *m, NodeRef dr);
+
+// the bare receiver's type, derived from the method's home: *T for a
+// struct/enum target (the type's own generic parameters ride as
+// TY_PARAMs), the value itself for a builtin primitive; NULL when the
+// receiver names no type in scope (existing NULL-typed behavior)
+static Type *bare_self_type(Program *p, Module *m, const char *recv) {
+  extern Type *ty_i8, *ty_i16, *ty_i32, *ty_i64, *ty_u8, *ty_u16,
+      *ty_u32, *ty_u64, *ty_usize, *ty_f32, *ty_f64, *ty_bool,
+      *ty_string;
+  if (!strcmp(recv, "i8")) return ty_i8;
+  if (!strcmp(recv, "i16")) return ty_i16;
+  if (!strcmp(recv, "i32")) return ty_i32;
+  if (!strcmp(recv, "i64")) return ty_i64;
+  if (!strcmp(recv, "u8")) return ty_u8;
+  if (!strcmp(recv, "u16")) return ty_u16;
+  if (!strcmp(recv, "u32")) return ty_u32;
+  if (!strcmp(recv, "u64")) return ty_u64;
+  if (!strcmp(recv, "usize")) return ty_usize;
+  if (!strcmp(recv, "f32")) return ty_f32;
+  if (!strcmp(recv, "f64")) return ty_f64;
+  if (!strcmp(recv, "bool")) return ty_bool;
+  if (!strcmp(recv, "string")) return ty_string;
+  for (Module *tm = p->modules; tm; tm = tm->next) {
+    Sym *ts = tm->syms ? symtab_get(tm->syms, recv) : NULL;
+    if (!ts || !(tm == m || ts->pub))
+      continue;
+    if (ts->kind == SYM_STRUCT) {
+      StructDef *sd = ts->u.sdef;
+      Type **args = NULL;
+      if (sd->ngparams) {
+        args = arena_alloc(g_arena, sd->ngparams * sizeof(Type *), 8);
+        for (size_t i = 0; i < sd->ngparams; i++)
+          args[i] = type_param(sd->gparams[i]);
+      }
+      return type_ptr(type_struct(sd, args, sd->ngparams));
+    }
+    if (ts->kind == SYM_ENUM) {
+      EnumDef *ed = ts->u.edef;
+      Type **args = NULL;
+      if (ed->ngparams) {
+        args = arena_alloc(g_arena, ed->ngparams * sizeof(Type *), 8);
+        for (size_t i = 0; i < ed->ngparams; i++)
+          args[i] = type_param(ed->gparams[i]);
+      }
+      return type_ptr(type_enum(ed, args, ed->ngparams));
+    }
+  }
+  return NULL;
+}
 
 static void collect_fns(Program *p, Module *m) {
   (void)p;
@@ -1028,11 +1085,44 @@ static void collect_fns(Program *p, Module *m) {
       }
       continue;
     }
+    if (d->kind == NT_TEST) {
+      collect_one_test(p, m, dr);
+      continue;
+    }
     if (d->kind != NT_CONST && d->kind != NT_STATIC && d->kind != NT_EXTERN &&
         d->kind != NT_FN)
       continue;
     collect_one_fn(p, m, dr);
   }
+}
+
+// a test block is a synthesized void fn in its own module (§17): it
+// sees everything the module sees (white-box) and is judged by panic
+// versus clean return. The symbol name carries the 'test:' prefix so
+// no user identifier can ever reach it.
+static void collect_one_test(Program *p, Module *m, NodeRef dr) {
+  (void)p;
+  Node *d = node_get(dr);
+  const char *sym = aprintf(g_arena, "test:%s", d->name);
+  if (symtab_get(m->syms, sym)) {
+    diag_at(DIAG_ERROR, m->path, d->line, d->col, "duplicate test '%s'",
+            d->name);
+    return;
+  }
+  Sym *s = symtab_add(m->syms, sym);
+  s->kind = SYM_FN;
+  s->pub = false;
+  FnDef *fd = arena_alloc(g_arena, sizeof(FnDef), 8);
+  memset(fd, 0, sizeof(FnDef));
+  fd->name = sym;
+  fd->mod = m;
+  fd->decl = dr;
+  fd->body = d->d;
+  fd->sig = arena_alloc(g_arena, sizeof(FnSig), 8);
+  fd->sig->params = NULL;
+  fd->sig->nparams = 0;
+  fd->sig->ret = ty_unit;
+  s->u.fns = fd;
 }
 
 static void collect_one_fn(Program *p, Module *m, NodeRef dr) {
@@ -1180,6 +1270,10 @@ bool check_program(Program *p) {
       if (s->kind != SYM_FN)
         continue;
       for (FnDef *fd = s->u.fns; fd; fd = fd->next_overload) {
+        // a test block's signature was built at collection time (no
+        // params, unit return); its decl is not an NT_FN
+        if (node_get(fd->decl)->kind == NT_TEST)
+          continue;
         Node *d = node_get(fd->decl);
         // a method/assoc fn on a GENERIC type implicitly carries the
         // type's own generic parameters (bound from each receiver use):
@@ -1257,6 +1351,13 @@ bool check_program(Program *p) {
           sig->params[k].variadic = pp->op == 2;
         }
         sig->ret = d->c != NO_REF ? resolve_type(m, d->c, &g) : ty_unit;
+        // a bare receiver (§18/T3.10): the type comes from the
+        // method's home — *T for a struct/enum target, the value
+        // itself for a builtin primitive. The fully-typed form stays
+        // legal (accepted, never required); fmt canonicalizes it away
+        if (fd->is_method && fd->recv && sig->nparams > 0 &&
+            sig->params[0].ty == NULL)
+          sig->params[0].ty = bare_self_type(p, m, fd->recv);
         fd->sig = sig;
       }
     }

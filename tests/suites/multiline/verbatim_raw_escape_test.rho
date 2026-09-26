@@ -1,0 +1,21 @@
+// exit: 0
+// spec: syntax.md §2.5 — no escape sequences decode in triple-quoted strings
+// spec: spec.md §5 — byte-based len counts the raw characters
+// out: [a\nb\tc]
+// out: len=7
+// out: byte1=92 byte2=110 byte3=98
+// the \n and \t inside are TWO characters each (0x5C then the letter);
+// len must count 7, not the decoded 5 a decoded string would give
+fn main() -> i32 {
+  let raw: string = """a\nb\tc""";
+  printf("[{}]\n", raw);
+  printf("len={}\n", len(raw));
+  printf("byte1={} byte2={} byte3={}\n", raw[1], raw[2], raw[3]);
+  assert_eq(len(raw), 7);
+  assert_eq(raw[0..1], "a");
+  assert_eq(raw[1..2], "\\");
+  assert_eq(raw[2..3], "n");
+  assert_eq(raw[3..4], "b");
+  assert_eq(raw[4..6], "\\t");
+  return 0;
+}

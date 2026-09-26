@@ -9,7 +9,7 @@ static void usage(FILE *out) {
           "usage:\n"
           "  rho build <file.rho> [-o out.wasm] [--set name=value]... [-g]\n"
           "  rho run   <file.rho> [--set name=value]... [-- <args>]\n"
-          "  rho test  <dir-or-file>\n"
+          "  rho test  <path>... [filter]\n"
           "  rho fmt   <file.rho>\n"
           "  rho check <file.rho> [--set name=value]...\n"
           "  rho dump-ast <file.rho>\n"

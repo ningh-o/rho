@@ -1,0 +1,53 @@
+// out: break hits=5 i=1
+// out: continue sum=4
+// out: label var=3
+// exit: 0
+// spec: syntax.md §5
+// Labels, Go form: `outer: while` / `spin: loop` with `break outer;`
+// and `continue outer;` — break leaves the labeled loop from any
+// nesting depth, continue restarts the labeled body; labels live in
+// their own function-unique namespace, so a label may share a
+// variable's name (`spin: loop` mutating `let mut spin`).
+fn main() -> i32 {
+  let mut hits: i32 = 0;
+  let mut i: i32 = 0;
+  outer: while i < 10 {
+    i += 1;
+    let mut j: i32 = 0;
+    while j < 10 {
+      j += 1;
+      if i * j >= 6 {
+        break outer;
+      }
+      hits += 1;
+    }
+  }
+  printf("break hits={} i={}\n", hits, i);
+  let mut sum: i32 = 0;
+  let mut k: i32 = 0;
+  skip: while k < 5 {
+    k += 1;
+    if k == 2 {
+      continue skip;
+    }
+    let mut m: i32 = 0;
+    while m < 3 {
+      m += 1;
+      if m == 2 {
+        continue skip;
+      }
+      sum += m;
+    }
+    sum += 100;
+  }
+  printf("continue sum={}\n", sum);
+  let mut spin: i32 = 0;
+  spin: loop {
+    spin = spin + 1;
+    if spin >= 3 {
+      break spin;
+    }
+  }
+  printf("label var={}\n", spin);
+  return 0;
+}

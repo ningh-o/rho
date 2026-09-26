@@ -202,6 +202,11 @@ void dump_node(FILE *out, Node *n) {
     dump_opt_node(out, n->a);
     fputc(')', out);
     return;
+  case NT_TEST:
+    fprintf(out, "(test \"%s\" ", n->name);
+    dump_opt_node(out, n->d);
+    fputc(')', out);
+    return;
   case NT_USE: {
     static const char *forms[] = {"use", "pub-use-mod", "pub-use-item",
                                   "pub-use-as", "pub-use-star"};

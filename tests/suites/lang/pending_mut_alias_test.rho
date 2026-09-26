@@ -1,0 +1,20 @@
+// expect: mut
+// pending: T3.6
+// spec: TODO.md §18
+// PENDING the T3.6 mut-view law (TODO.md §18, ratified but not
+// implemented): the view is per-binding and shallow — a handle copied
+// out of a non-mut binding is governed by the new binding's own
+// `mut`, so storing through the plain alias `q` (`q.y = 7`) must fail
+// check once T3.6 lands. Today the write is accepted, so this case
+// FAILS its own criteria (check passes) — correct pending behavior.
+struct P {
+  x: i32,
+  y: i32,
+}
+fn main() -> i32 {
+  let p = new P { x: 1, y: 2 };
+  let q = p;
+  q.y = 7;
+  printf("q.y={} p.y={}\n", q.y, p.y);
+  return 0;
+}

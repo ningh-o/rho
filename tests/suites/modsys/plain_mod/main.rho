@@ -1,0 +1,7 @@
+// spec: module-system.md §2
+use helper;
+fn main() -> i32 {
+  printf("{}\n", helper.twice(21));
+  return 0;
+}
+// out: 42

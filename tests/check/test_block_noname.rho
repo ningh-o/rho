@@ -1,0 +1,5 @@
+// the block form demands a quoted name
+test 5 {
+  assert_eq(1, 1);
+}
+// expect: expected a quoted test name after 'test'

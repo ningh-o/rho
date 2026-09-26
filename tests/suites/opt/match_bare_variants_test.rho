@@ -1,0 +1,25 @@
+// pending: T3.9
+// spec: TODO.md §19 — variant resolution by scrutinee: no Option. prefix needed
+// spec: syntax.md §7 — a variant name in an arm resolves against the matched enum
+// out: some
+// out: none
+// PENDING the T3.9 scrutinee-resolution law (TODO.md §19, ratified but
+// not implemented): the bare `None` arm must resolve against the
+// scrutinee's enum — no `Option.` prefix. Today the bare name parses
+// as an ordinary binder pattern, so the match fails exhaustiveness
+// ("missing Option.None") — that check failure is the pending marker.
+// The tuple-payload half of the law (`Some(v) => …` bare) cannot live
+// here yet: `Some(` does not even parse today (arm grammar rejects the
+// paren). When T3.9 lands this case goes green and can grow that arm.
+fn describe(o: ?i32) -> string {
+  return match o {
+    Option.Some(v) => "some",
+    None => "none",
+  };
+}
+
+fn main() -> i32 {
+  printf("{}\n", describe(Option.Some(3)));
+  printf("{}\n", describe(Option.None));
+  return 0;
+}

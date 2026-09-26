@@ -377,7 +377,7 @@ section — no placeholder stages. boot is the reference compiler.
       old boot-vs-mirror differential retired with the old code — the
       fuzz framework is the price of the clean slate; rebuild it before
       calling anything done.)
-- [ ] **T3.5** The test protocol (§17) — **lands before T3.4, so the
+- [x] **T3.5** The test protocol (§17) — **lands before T3.4, so the
       suites are written directly on the real verb and no second runner
       ever exists.** boot grows the `test` block and rebuilds the
       `rho test` verb from its script-forwarding stub into the real
@@ -395,7 +395,12 @@ section — no placeholder stages. boot is the reference compiler.
       promotion = the marker comes off). Fixtures are the suites' first
       directories; the suite leg wires into make test. The self-hosted
       compiler mirrors the surface when its CLI lands (a T2 dogfood
-      leg: rho's test suite running rho).
+      leg: rho's test suite running rho). Landed 2026-09-26: the
+      block form through lex/parse/check/emit/fmt, the in-binary
+      runner (collection, name sort, filter, per-test isolation under
+      a 10 s hard cap, honest zero-match exit 1), the six headers with
+      PROMOTE counted as failure until the marker comes off, and the
+      suites leg wired into make test.
 - [ ] **T3.4** Suites: lang/modsys/opt/eq/params/multiline/strops/diag
       rebuilt for the new language, incl. the fixes the design mandates
       (aggregate let-position values are legal; `as` truncates constants
@@ -416,7 +421,10 @@ section — no placeholder stages. boot is the reference compiler.
       promoting per case when its task lands. The suite runs on
       T3.5's verb — it is the verb's fixtures and acceptance; no
       interim runner exists. The existing tests/check
-      negatives stay put — no migration churn.
+      negatives stay put — no migration churn. The skeleton is
+      seeded (lang/modsys/eq/params/strops/multiline/opt/diag, green
+      tier + the §18/§19/T3.7 pending ledger); the full §11 map keeps
+      growing per area until the map is complete.
 - [ ] **T3.6** The mut view law (§18) + the usize lane. Boot surface
       map: parse grows the `mut` argument prefix in call argument
       lists (params already carry the flag); check_fn_body keeps the
@@ -472,13 +480,18 @@ section — no placeholder stages. boot is the reference compiler.
       referencing bindings, guarded-only match demanding a fallback;
       fmt round-trips all three forms. Boot implements; the self-host
       mirrors.
-- [ ] **T3.10** Bare receiver in impl methods (§18): `self` = `*T`
+- [x] **T3.10** Bare receiver in impl methods (§18): `self` = `*T`
       read-only, `mut self` = writable — the type inferred from the
       implemented type; fully-typed receivers stay legal; signature
       match (impl vs trait) keeps the receiver mut form. Acceptance:
       bare-self impl satisfies a trait, bare `mut self` writes through
       with the §18 gates, typed and bare forms mix in one impl, fmt
-      round-trips.
+      round-trips. Landed 2026-09-26: the signature pass derives the
+      bare receiver from its home (*T for a struct/enum target with
+      the type's own parameters, the value for a builtin primitive),
+      the typed form is accepted and never required, and fmt
+      canonicalizes it away. The §18-gated acceptance legs ride
+      T3.6's commit (the gates do not exist yet anywhere).
 
 ## Phase 4 — kernel boundary and the std library
 

@@ -1221,6 +1221,27 @@ static NodeRef parse_decl(Parser *p) {
     n->d = parse_block(p);
     return r;
   }
+  case K_TEST: {
+    if (pub) {
+      diag_at(DIAG_ERROR, p->m->path, cur(p)->line, cur(p)->col,
+              "a test block cannot be 'pub'");
+      pub = false;
+    }
+    eat(p);
+    NodeRef r = nnew(p, NT_TEST);
+    Node *n = node_get(r);
+    if (!is(p, T_STRING)) {
+      diag_at(DIAG_ERROR, p->m->path, cur(p)->line, cur(p)->col,
+              "expected a quoted test name after 'test', found %s",
+              tok_spell(kind(p)));
+      n->name = intern_c("?");
+    } else {
+      n->name = intern(cur(p)->text.p, cur(p)->text.n);
+      eat(p);
+    }
+    n->d = parse_block(p);
+    return r;
+  }
   case K_STRUCT: {
     eat(p);
     NodeRef r = nnew(p, NT_STRUCT);

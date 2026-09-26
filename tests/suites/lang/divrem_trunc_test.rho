@@ -1,0 +1,22 @@
+// out: i32: 7/2=3 7%2=1 -7/2=-3 -7%2=-1
+// out: i32: 7/-2=-3 7%-2=1 -7/-2=3 -7%-2=-1
+// out: i8: -7/2=-3 -7%2=-1
+// out: i64: -7/2=-3 -7%2=-1
+// out: u32: 9/2=4 9%2=1
+// exit: 0
+// spec: spec.md §4
+// Signed / and % truncate toward zero (C semantics): the quotient
+// rounds toward zero and the remainder takes the dividend's sign;
+// unsigned / and % are plain division on the unsigned domain.
+fn main() -> i32 {
+  let n: i32 = (-7);
+  printf("i32: 7/2={} 7%2={} -7/2={} -7%2={}\n", (7 / 2), (7 % 2), (n / 2), (n % 2));
+  printf("i32: 7/-2={} 7%-2={} -7/-2={} -7%-2={}\n", (7 / (-2)), (7 % (-2)), (n / (-2)), (n % (-2)));
+  let n8: i8 = (-7);
+  printf("i8: -7/2={} -7%2={}\n", (n8 / 2), (n8 % 2));
+  let n64: i64 = (-7);
+  printf("i64: -7/2={} -7%2={}\n", (n64 / 2), (n64 % 2));
+  let u: u32 = 9;
+  printf("u32: 9/2={} 9%2={}\n", (u / 2), (u % 2));
+  return 0;
+}

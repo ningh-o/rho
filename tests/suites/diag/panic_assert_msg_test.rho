@@ -1,0 +1,9 @@
+// exit: 101
+// err: panic: value must be positive
+// spec: spec.md §2
+// assert(cond, msg) panics with the caller's message — one stderr
+// line `panic: <msg>`, exit 101; there is no catch or recover
+fn main() -> i32 {
+  assert((1 == 2), "value must be positive");
+  return 0;
+}

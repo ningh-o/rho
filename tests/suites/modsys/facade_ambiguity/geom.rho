@@ -1,0 +1,4 @@
+// a file module whose name collides with the package directory
+pub fn f() -> i32 {
+  return 2;
+}

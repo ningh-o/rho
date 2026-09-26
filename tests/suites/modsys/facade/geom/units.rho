@@ -1,0 +1,4 @@
+// interior files are package-private; only pub use publishes them
+pub fn scale(v: i32, k: i32) -> i32 {
+  return v * k;
+}

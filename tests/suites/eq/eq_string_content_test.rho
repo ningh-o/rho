@@ -1,0 +1,20 @@
+// exit: 0
+// out: built==lit: true
+// out: sliced==lit: true
+// out: other content: ne=true
+// out: same content: ne=false
+// spec: type-system.md §10 — string compares by content (bytes)
+// string equality is content, never allocation: a runtime concat and
+// a slice that spell the same bytes equal the literal, whatever
+// storage each one lives in
+fn main() -> i32 {
+  let lit: string = "hello";
+  let stem: string = "hell world"[0..4];
+  let built: string = stem + "o";
+  let sliced: string = "hello world"[0..5];
+  printf("built==lit: {}\n", (built == lit));
+  printf("sliced==lit: {}\n", (sliced == lit));
+  printf("other content: ne={}\n", (lit != "hellx"));
+  printf("same content: ne={}\n", (lit != "hello"));
+  return 0;
+}

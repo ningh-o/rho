@@ -1,0 +1,7 @@
+// spec: module-system.md §4
+use geom;
+fn main() -> i32 {
+  printf("{} {}\n", geom.area(3, 4), geom.scale(5, 2));
+  return 0;
+}
+// out: 12 10

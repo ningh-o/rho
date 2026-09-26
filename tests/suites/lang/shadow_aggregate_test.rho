@@ -1,0 +1,60 @@
+// out: blk 2
+// out: outer 1
+// out: loop-shadow 99
+// out: outer tag=0
+// out: arm 5 v=1
+// out: agg-shape 9
+// out: agg-slice 10 30 3
+// out: agg-ptr 3 4
+// exit: 0
+// spec: syntax.md §5
+// Inner shadowing is allowed: a `let` in an inner scope (a bare
+// block, a loop body) may rebind an outer name, even at a different
+// type, and the outer binding resumes afterwards; a match-arm binder
+// receives the payload as a fresh value binding; aggregate values all
+// bind by value in let position (enum with payload, slice, pointer to
+// struct).
+fn main() -> i32 {
+  let x: i32 = 1;
+  {
+    let x: i64 = 2;
+    printf("blk {}\n", x);
+  }
+  printf("outer {}\n", x);
+  let mut i: i32 = 0;
+  let tag: i32 = 0;
+  while i < 2 {
+    let tag: i64 = 99;
+    i += 1;
+    if i == 2 {
+      printf("loop-shadow {}\n", tag);
+    }
+  }
+  printf("outer tag={}\n", tag);
+  let o: ?i32 = Option.Some(5);
+  let v: i32 = 1;
+  let w: i32 = match o {
+    Option.Some(b) => b,
+    Option.None => 0,
+  };
+  printf("arm {} v={}\n", w, v);
+  let s: Shape = Shape.Circ(9);
+  let r: i64 = match s {
+    Shape.Circ(rad) => rad,
+    Shape.Dot => 0,
+  };
+  printf("agg-shape {}\n", r);
+  let sl: []i32 = [10, 20, 30];
+  printf("agg-slice {} {} {}\n", sl[0], sl[2], len(sl));
+  let p = new P { x: 3, y: 4 };
+  printf("agg-ptr {} {}\n", p.x, p.y);
+  return 0;
+}
+struct P {
+  x: i32,
+  y: i32,
+}
+enum Shape {
+  Dot,
+  Circ(i64),
+}

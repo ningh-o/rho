@@ -1,0 +1,8 @@
+// spec: module-system.md §6
+use math.add as add;
+fn main() -> i32 {
+  printf("{}\n", add(2, 3));
+  return 0;
+}
+// out: 5
+// pending: T3.7

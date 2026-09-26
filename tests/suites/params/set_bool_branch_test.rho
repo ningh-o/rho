@@ -1,0 +1,20 @@
+// exit: 0
+// out: VERBOSE=true
+// out: verbose: on
+// set: VERBOSE=true
+// spec: spec.md §6 — --set overrides a root const whose type has a
+// text form; the bool face takes true/false
+// the bool face: the headers pin the default build (VERBOSE as
+// declared); the override flips the branch through
+// `--set VERBOSE=false`, which prints VERBOSE=false / verbose: off
+const VERBOSE: bool = true;
+
+fn main() -> i32 {
+  printf("VERBOSE={}\n", VERBOSE);
+  if VERBOSE {
+    printf("verbose: on\n");
+  } else {
+    printf("verbose: off\n");
+  }
+  return 0;
+}

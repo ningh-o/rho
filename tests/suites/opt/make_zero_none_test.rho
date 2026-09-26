@@ -1,0 +1,30 @@
+// exit: 0
+// spec: spec.md §1.3 — new and make yield zeroed memory: every byte reads 0 first
+// spec: type-system.md §9 — ?T is Option[T]; the prelude puts None on tag 0
+// out: len=4
+// out: b0=none b1=none b3=none
+// out: after b0=none b1=some
+// out: payload 7
+// the zeroed-None law: a fresh make of a ?T slice reads as None at
+// every index before anything is assigned, and only a store turns a
+// slot into Some
+fn peek(o: ?i32) -> string {
+  return match o {
+    Option.Some(v) => "some",
+    Option.None => "none",
+  };
+}
+
+fn main() -> i32 {
+  let mut buf: []?i32 = make([]?i32, 4);
+  printf("len={}\n", len(buf));
+  printf("b0={} b1={} b3={}\n", peek(buf[0]), peek(buf[1]), peek(buf[3]));
+  buf[1] = Option.Some(7);
+  printf("after b0={} b1={}\n", peek(buf[0]), peek(buf[1]));
+  match buf[1] {
+    Option.Some(v) => printf("payload {}\n", v),
+    Option.None => printf("payload none\n"),
+  }
+  assert_eq(peek(buf[0]) == peek(buf[2]) && peek(buf[2]) == peek(buf[3]), true);
+  return 0;
+}

@@ -1,0 +1,7 @@
+// the facade: own items plus re-exports travel under the package name
+pub fn area(w: i32, h: i32) -> i32 {
+  return w * h;
+}
+
+use units;
+pub use units.scale;

@@ -2422,11 +2422,15 @@ bool check_bodies(Program *p) {
       }
     }
   }
-  // the entry module must define main
-  Sym *main = p->entry->syms ? symtab_get(p->entry->syms, "main") : NULL;
-  if (!main || main->kind != SYM_FN) {
-    diag_at(DIAG_ERROR, p->entry->path, 0, 0,
-            "the entry module must define fn main");
+  // the entry module must define main — except when the test verb
+  // compiles a test-block file, whose per-test programs have no main
+  extern bool g_test_main_optional;
+  if (!g_test_main_optional) {
+    Sym *main = p->entry->syms ? symtab_get(p->entry->syms, "main") : NULL;
+    if (!main || main->kind != SYM_FN) {
+      diag_at(DIAG_ERROR, p->entry->path, 0, 0,
+              "the entry module must define fn main");
+    }
   }
   return !g_had_error;
 }

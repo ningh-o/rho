@@ -28,9 +28,13 @@ void *arena_alloc(Arena *a, size_t n, size_t align) {
     while (t->next)
       t = t->next;
     t->next = na;
-    if (pad + n <= na->cap) {
-      na->used = pad + n;
-      return na->base + pad;
+    // the new block's base is 16-aligned: alignment restarts at zero.
+    // Applying the OLD block's pad here handed every chained
+    // allocation a (used & (align-1)) skewed address whenever the
+    // head happened to fill at a non-aligned offset
+    if (n <= na->cap) {
+      na->used = n;
+      return na->base;
     }
     assert(!"arena block too small");
   }
@@ -286,7 +290,7 @@ static const struct { NodeKind k; const char *s; } k_node_names[] = {
     {NT_ENUM, "enum"},              {NT_TRAIT, "trait"},
     {NT_IMPL, "impl"},              {NT_CONST, "const"},
     {NT_STATIC, "static"},          {NT_EXTERN, "extern"},
-    {NT_USE, "use"},                {NT_GPARAM, "generic-param"},
+    {NT_USE, "use"},                {NT_TEST, "test"},                {NT_GPARAM, "generic-param"},
     {NT_FIELD, "field"},            {NT_ENUMVAR, "variant"},
     {NT_ARM, "arm"},                {NT_FIELDINIT, "field-init"},
     {NT_POSARG, "pos-arg"},         {NT_PARAM, "param"},
@@ -378,8 +382,9 @@ static const struct { TokKind k; const char *s; } k_tok_names[] = {
     {K_MUT, "'mut'"},          {K_NEW, "'new'"},
     {K_NULL, "'null'"},        {K_PUB, "'pub'"},
     {K_RETURN, "'return'"},    {K_STATIC, "'static'"},
-    {K_STRUCT, "'struct'"},    {K_TRAIT, "'trait'"},
-    {K_TRUE, "'true'"},        {K_USE, "'use'"},
+    {K_STRUCT, "'struct'"},    {K_TEST, "'test'"},
+    {K_TRAIT, "'trait'"},      {K_TRUE, "'true'"},
+    {K_USE, "'use'"},
     {K_WHILE, "'while'"},      {K_I8, "'i8'"},
     {K_I16, "'i16'"},          {K_I32, "'i32'"},
     {K_I64, "'i64'"},          {K_U8, "'u8'"},

@@ -1,0 +1,14 @@
+// exit: 0
+// out: RATE=0.25
+// set: RATE=0.25
+// spec: spec.md §6 — --set overrides a root const whose type has a
+// text form; the f64 face parses the exact decimal text
+// the f64 face: the headers pin the default build (RATE as
+// declared); the override lands through `--set RATE=<decimal>`, e.g.
+// `rho run set_float_test.rho --set RATE=2.75` prints RATE=2.75
+const RATE: f64 = 0.25;
+
+fn main() -> i32 {
+  printf("RATE={}\n", RATE);
+  return 0;
+}

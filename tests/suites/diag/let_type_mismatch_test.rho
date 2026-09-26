@@ -1,0 +1,8 @@
+// expect: expected i32, found string
+// spec: type-system.md §1
+// a string literal has its own type and never adapts: flowing into an
+// i32-annotated let is a type mismatch, not a coercion
+fn main() -> i32 {
+  let x: i32 = "hello";
+  return 0;
+}
