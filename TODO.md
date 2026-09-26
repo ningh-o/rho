@@ -480,21 +480,27 @@ section — no placeholder stages. boot is the reference compiler.
       ceiling: the never-reusing concat allocator's quadratic —
       `s = s + piece` at MB scale (a 1.2 MB build dies at ~30 K
       concats through boot's own kernel too; measured).
-      THE APPEND LAW (designed, hazard mapped, not landed): blocks
-      already carry [rc][sz] headers and the carve is upward, so
+      THE APPEND LAW — the single-tail form LANDED green with the
+      whole gate (the lang suite pins 30 K appends linear, 1.2 MB):
       `$rho_app(a, al, b, bl)` extends in place when a ≥ data_top,
       rc(a)==1 (the counting law is complete for strings —
-      assignment/argument/field retains all emit), and al+bl ≤ sz;
-      fresh results take half-again headroom. The single-tail form
-      (`s = s + e`, `s += e`) passed the WHOLE gate once; the
+      assignment/argument/field retains all emit), and al+bl ≤ sz
+      (capacity rides the block header; cat2 results carry half-again
+      headroom so a cat-fed accumulator is append-ready). The
       flattened multi-tail chain corrupts exactly one piece when a
       tail rides the to_str/format fusion (the fb two-phase assembly
       interleaves with sequential apps — a `(if len>0` elision
       swallowed adjacent literal pieces; gens3's child lost one
-      `(local.get N)` line). Landing it needs either the fusion
-      taught about app continuations or the interception restricted
-      to tails the fusion never touches. Until then the mirror's
-      self-emission stays behind the quadratic wall.
+      `(local.get N)` line) — longer chains stay on cat2. The
+      MIRROR still quakes: mechanically splitting its 283 chains
+      into single-tail statements breaks at emit.rho's chain 91
+      (push_string's i64.const push) with a check-stage
+      `index out of bounds` INSIDE the mirror — app-independent
+      (fires with in-place disabled and the release removed), so
+      the split source itself shifts the mirror's checker into a
+      bug; bisect limit=90 green / 91 red. The self-chain unblocks
+      behind either that mirror-checker bug or the fusion taught
+      about app continuations.
 - [ ] **T3.2 Pure-source trust root**: every gate run rebuilds the seed
       from boot's C source on the spot. The pinned `seed.wasm` stays in
       the repo **as a canary**: rebuild, compare byte-for-byte (D1 makes
