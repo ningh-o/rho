@@ -514,6 +514,29 @@ section — no placeholder stages. boot is the reference compiler.
       anonymous form — the last emission slice before gate.sh leg 4
       (child/grandchild byte-identity + the probe) is the 0.1.0
       heart beating.
+      THE CENSUS CLOSED (2026-09-27): $u_len is GONE (68 → 0) and
+      the fix surfaced what the undefined calls had masked — wabt
+      skips validation when resolution fails, and behind it sat 217
+      VALIDATION-level miscompiles in the child WAT, now 125 and
+      falling. Fixed families (each pinned by boot-vs-mirror repros
+      s1–s6): element strides (string/[]T/dyn elements ride 16-byte
+      pairs — the VAR-base, FIELD-base, and make/literal stores all
+      read stride 8 against stride-16 writes); len() over
+      string-element slice elements; return/args of slice VIEWS
+      (xs[a..b] fell through emit_expr into the BIN template — a
+      view's op=3 IS the div opcode, so every view arg rendered as
+      a bogus division; build_string_pair now widens slice-typed
+      bases); let over a slice-returning call (the string build
+      claimed the kind-1 lane — now the []X return parks its pair
+      and records its element text); an Option-scrutinee's payload
+      through a ?*T FIELD (st.val binders ride the pointer lane);
+      expr_ptr_type through indexed fields (p.tbl[i]); array
+      literals with pair elements (16-stride pair stores, elemtext
+      from the annotation); oob checks emitted BEFORE the index they
+      check. Still open in the child: statement-match pair tails,
+      match-over-call scrutinee parks, fn-tail implicit pair
+      returns, the fold_string/push_string call-arg deficits — the
+      iceberg under the self-chain's waterline.
 - [ ] **T3.2 Pure-source trust root**: every gate run rebuilds the seed
       from boot's C source on the spot. The pinned `seed.wasm` stays in
       the repo **as a canary**: rebuild, compare byte-for-byte (D1 makes
