@@ -539,20 +539,37 @@ section — no placeholder stages. boot is the reference compiler.
       calibrated against the broken faces (feature tables kept their
       initial values because field stores silently vanished; folded
       conditions took the wrong branch). The corpus differential sits
-      at floor 84 with 17 legs refusing (030/032/056/084–089/092/
-      095/098/105/n02/n12–n14/t03/t09) and 045 joining the :diff set
-      (new mask law). The mirror source needs the same error-driven
+      at floor 84 with 24 legs open (19 :refuse — the mirror lacks
+      traits/dyn/package/pub-use-forms/weak/rc and friends; 4 :diff on
+      041/045/046/048 — the new mask law; 1 :w2w — 005 still emits on
+      the old 64-bit usize lane; zero :build — boot compiles the
+      mirror cleanly). The mirror source needs the same error-driven
       adaptation the mut law got; each leg that closes lifts the
-      floor. Also ledgered from the coverage agents: dead diagnostics
-      to prune (check.c "invalid type syntax", check3's non-comptime
-      const report path — `const_resolve_all` has no callers,
-      check2's "tuple variants bind positionally" and the positional
-      format-values arm, parse.c's race-only "cannot open file");
-      `tok_spell` quoting inconsistency (some tokens render bare,
-      others quoted); check time is quadratic in fn count (16k fns ≈
-      10s); `pub use sub;` module re-export still flat (B-7); float
-      literals beyond the consumer's range compile to inf (spec
-      ambiguous — needs a ruling).
+      floor. The boot-side hygiene ledger from the coverage agents
+      closed same-day (the hygiene wave): `pub use sub;` re-export
+      landed with T3.11 (B-7 done); three dead diagnostics pruned
+      (resolve_type's unreachable "invalid type syntax", the never-
+      called const_resolve_all and its report path, the format-values
+      non-POSARG arm); "tuple variants bind positionally" was dead as
+      written and now fires where its case actually lands — a braced
+      pattern on a tuple payload refuses "named patterns need a
+      struct-form variant"; parse.c's "cannot open file" is ALIVE (the
+      entry-file message — agent misjudged); tok_spell's bare/quoted
+      split is a convention (categories bare, literals quoted — now
+      documented at the table, zero drift found); and the quadratic
+      check time was not check at all — arena_alloc's grow path
+      created a fresh block AND walked the whole chain per overflowing
+      allocation once the 1 MiB head filled; continuing from the tail
+      made 16k fns go 15 s → 0.53 s, every compile faster. The sweep
+      also uncovered and fixed a real silent-miscompile family: const
+      initializers that read another module's const (qualified b.K,
+      item import, facade) folded too early and silently read 0 —
+      consts_converge now re-folds post-BFS and the comptime law is
+      hard (cyclic / non-comptime / annotation-mismatch consts error).
+      Still open from the old ledger: the float-literal-beyond-range
+      → inf spec ruling. New strictness question parked for a ruling:
+      positional binding of a struct-form variant (`V(x)` on
+      `V { x }`) is silently accepted — allow or refuse.
 - [x] **T3.11** Grammar-campaign leftovers (opened and closed
       2026-09-26): the 68-fixture grammar suite (tests/suites/grammar)
       closed one crash (`Option.None?` segfault — ? now infers the

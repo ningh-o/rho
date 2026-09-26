@@ -651,10 +651,8 @@ static Type *check_format_call(FnCtx *c, Node *call, Type *expected) {
   }
   for (size_t i = 1; i < reflist_len(args); i++) {
     Node *aw = node_get(reflist_at(args, i));
-    if (aw->kind != NT_POSARG) {
-      err_at(c, aw, "format values are positional");
-      continue;
-    }
+    // every arg here is NT_POSARG: the parser refuses named arguments
+    // outside constructors before a format fn can ever see one
     Type *vt = check_expr(c, aw->a, NULL);
     switch (vt->kind) {
     case TY_I8: case TY_I16: case TY_I32: case TY_I64:
@@ -2520,6 +2518,13 @@ static void check_pattern(FnCtx *c, Node *p, Type *st) {
                st->edef->name, var->name, var->nfields);
         return;
       }
+      if (p->op == VAR_STRUCT && var->form != VAR_STRUCT) {
+        // braced named binding on a positional payload — the pattern
+        // grammar parses `V { x }` for any variant, so the mismatch
+        // surfaces here, not in the parser
+        err_at(c, p, "named patterns need a struct-form variant");
+        return;
+      }
       for (size_t i = 0; i < reflist_len(p->list); i++) {
         Node *sub = node_get(reflist_at(p->list, i));
         if (p->op == VAR_STRUCT) {
@@ -2534,8 +2539,6 @@ static void check_pattern(FnCtx *c, Node *p, Type *st) {
           if (!found)
             err_at(c, sub, "variant %s has no payload field '%s'",
                    var->name, sub->name);
-        } else if (sub->kind == NT_FIELD) {
-          err_at(c, sub, "tuple variants bind positionally");
         } else {
           check_pattern(c, sub,
                         var->nfields > i ? tsubst(var->fields[i].ty, &tb)

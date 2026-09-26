@@ -3,11 +3,9 @@
 // exit: 0
 // spec: syntax.md §4.3 — static initializers must be acyclic and
 // comptime-evaluable: literals, consts, and plain constructors of them
-// OBSERVED TODAY (bug B-9): a static initialized from a const or a
-// comptime const-expression is ACCEPTED but the value is dropped —
-// the static reads 0. `static mut s2: i32 = B;` (B=42) prints 0.
-// The outputs below are the LAW; the case promotes when const-valued
-// static initializers land.
+// the bug below is FIXED (statics fold in the same fixpoint as
+// consts); the outputs are the law: a static initialized from a const
+// or a comptime const-expression reads that value, never 0.
 const B: i32 = 42;
 const A: i32 = 6;
 static mut with_const: i32 = B;

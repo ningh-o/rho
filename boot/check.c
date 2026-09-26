@@ -954,6 +954,10 @@ bool program_load_graph(Program *p, const char *entry_path) {
   // item imports bind last — every possible owner is prepared, so the
   // module-first-then-item law can see both candidates (§2)
   bind_item_imports(p);
+  // cross-module consts converge now — uses are bound and every owner
+  // prepared, so b.K / item-import / facade initializers fold; what
+  // still refuses breaks the comptime law and errors here (§2/§6)
+  consts_converge(p);
   // deferred field types resolve against the complete graph
   for (size_t i = 0; i < VLEN(g_deferred_tys); i++) {
     DeferredTy *dt = VAT(g_deferred_tys, DeferredTy, i);
@@ -1159,7 +1163,10 @@ static Type *resolve_type(Module *m, NodeRef tr, GScope *g) {
   default:
     break;
   }
-  diag_at(DIAG_ERROR, m->path, t->line, t->col, "invalid type syntax");
+  // unreachable in practice: parse_type emits only the kinds handled
+  // above, and its depth hole arrives with the diag gate already set
+  // (one-error mode) — a silent fallback keeps hostile input on the
+  // clean-refusal path without a diagnostic nothing can ever print
   return ty_i32;
 }
 

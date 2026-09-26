@@ -15,8 +15,22 @@ Arena *arena_new(size_t cap) {
 void *arena_alloc(Arena *a, size_t n, size_t align) {
   assert(align <= 16);
   size_t pad = (align - (a->used & (align - 1))) & (align - 1);
-  if (a->used + pad + n > a->cap) {
-    // grow by chained blocks; big allocations get their own block
+  if (a->used + pad + n <= a->cap) {
+    void *p = a->base + a->used + pad;
+    a->used += pad + n;
+    return p;
+  }
+  // the head is full: continue allocating from the chained tail —
+  // steady state stays O(1): one short walk over block-sized fills,
+  // a new block only when the tail cannot take the allocation. The
+  // old grow path created a fresh block for EVERY overflowing call
+  // (and walked the whole chain to reach it), which made any compile
+  // big enough to fill the head quadratic in its allocation count.
+  Arena *t = a;
+  while (t->next)
+    t = t->next;
+  pad = (align - (t->used & (align - 1))) & (align - 1);
+  if (t->used + pad + n > t->cap) {
     size_t bc = a->cap * 2;
     if (bc < n + pad + 64)
       bc = n + pad + 64;
@@ -24,22 +38,16 @@ void *arena_alloc(Arena *a, size_t n, size_t align) {
     na->base = malloc(bc);
     na->cap = bc;
     // chain at the tail so traversal order is creation order
-    Arena *t = a;
-    while (t->next)
-      t = t->next;
     t->next = na;
+    t = na;
     // the new block's base is 16-aligned: alignment restarts at zero.
     // Applying the OLD block's pad here handed every chained
     // allocation a (used & (align-1)) skewed address whenever the
-    // head happened to fill at a non-aligned offset
-    if (n <= na->cap) {
-      na->used = n;
-      return na->base;
-    }
-    assert(!"arena block too small");
+    // block happened to fill at a non-aligned offset
+    pad = 0;
   }
-  void *p = a->base + a->used + pad;
-  a->used += pad + n;
+  void *p = t->base + t->used + pad;
+  t->used += pad + n;
   return p;
 }
 
@@ -360,6 +368,10 @@ const char *op_spell(int op) {
   return "?";
 }
 
+// spelling law for diagnostics: CATEGORIES render bare (identifier,
+// integer, string, end of file), literal tokens render quoted ('(',
+// 'as', 'mut') — the same split rustc uses. Hand-written format
+// strings follow it: quoted literals, bare categories, no drift.
 static const struct { TokKind k; const char *s; } k_tok_names[] = {
     {T_EOF, "end of file"},
     {T_IDENT, "identifier"},   {T_INT, "integer"},

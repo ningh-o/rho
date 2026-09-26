@@ -19,6 +19,8 @@
 // with the unified truncating semantics.
 typedef struct FoldEnv {
   SymTab *consts; // name → SYM_CONST with a resolved CVal
+  Module *mod;    // the owning module: its use binds resolve qualified
+                  // const reads (b.K) that the plain chain cannot see
   struct FoldEnv *up;
 } FoldEnv;
 
@@ -37,6 +39,32 @@ static CVal cv_int(Type *t, uint64_t raw) {
 }
 
 static CVal fold_expr(FoldEnv *env, NodeRef er);
+
+// the module a use alias binds to in m's use list (§4: a use is a
+// scope entry); NULL when the alias is unknown here
+static Module *fold_bind_target(Module *m, const char *alias) {
+  if (!m)
+    return NULL;
+  for (size_t k = 0; k < VLEN(m->uses); k++) {
+    UseBind *ub = VAT(m->uses, UseBind, k);
+    if (strcmp(ub->alias, alias) == 0)
+      return ub->target;
+  }
+  return NULL;
+}
+
+// the owning module of a qualified base chain (b, or b.sub): the
+// leftmost segment binds in m's use list, each following segment binds
+// in the previous module's own list; NULL when a hop misses
+static Module *fold_qual_base(Module *m, Node *n) {
+  if (n->kind == NT_PATH)
+    return fold_bind_target(m, n->name);
+  if (n->kind == NT_FIELD_E) {
+    Module *up = fold_qual_base(m, node_get(n->a));
+    return up ? fold_bind_target(up, n->name) : NULL;
+  }
+  return NULL;
+}
 
 static uint64_t trunc_to(uint64_t v, Type *t) {
   switch (t->kind) {
@@ -326,6 +354,20 @@ static CVal fold_expr(FoldEnv *env, NodeRef er) {
     }
     return g_bad;
   }
+  case NT_FIELD_E: {
+    // a module-qualified const read (§4): b.K or b.sub.K — the base
+    // chain walks use binds to the owning module, the tail names a
+    // public const whose cval folds like a local one
+    for (FoldEnv *fe = env; fe; fe = fe->up) {
+      if (!fe->mod)
+        continue;
+      Module *t = fold_qual_base(fe->mod, node_get(e->a));
+      Sym *s = t && t->syms ? symtab_get(t->syms, e->name) : NULL;
+      if (s && s->kind == SYM_CONST && s->u.konst->cval)
+        return *(CVal *)s->u.konst->cval;
+    }
+    return g_bad;
+  }
   case NT_UNARY: {
     CVal v = fold_expr(env, e->a);
     if (!cv_ok(v))
@@ -362,8 +404,9 @@ static CVal fold_expr(FoldEnv *env, NodeRef er) {
 
 // fold a condition against a module's consts (plus the root's)
 static bool fold_cond_modules(Module *m, NodeRef er, bool *out) {
-  FoldEnv root = {g_entry_mod ? g_entry_mod->syms : NULL, NULL};
-  FoldEnv env = {m ? m->syms : NULL, &root};
+  FoldEnv root = {g_entry_mod ? g_entry_mod->syms : NULL, g_entry_mod,
+                  NULL};
+  FoldEnv env = {m ? m->syms : NULL, m, &root};
   CVal v = fold_expr(&env, er);
   if (getenv("RHO_DEBUG_FOLD"))
     fprintf(stderr, "[cond] kind=%d -> ok=%d kind=%d b=%d\n",
@@ -379,7 +422,12 @@ static bool fold_cond_modules(Module *m, NodeRef er, bool *out) {
 
 // Fixpoint per module: infer types and values for every const whose
 // initializer folds from literals and already-resolved consts.
-static void resolve_module_consts(Module *m, bool report) {
+// Returns whether this call resolved anything new — the post-BFS
+// convergence (consts_converge) loops it across modules until still.
+// Reporting is NOT here: the per-module fixpoint runs before the BFS
+// binds uses, so a const reading another module's const legitimately
+// stays unresolved this early — consts_converge owns the law.
+static bool resolve_module_consts(Module *m) {
   bool progress = true;
   size_t resolved = 0, total = 0;
   for (Sym *s = m->syms->order_head; s; s = s->order_next)
@@ -399,8 +447,10 @@ static void resolve_module_consts(Module *m, bool report) {
       ConstDef *cd = s->u.konst;
       FoldEnv root = {g_entry_mod && g_entry_mod != m
                           ? g_entry_mod->syms
-                          : NULL, NULL};
-      FoldEnv env = {m->syms, &root};
+                          : NULL,
+                      g_entry_mod && g_entry_mod != m ? g_entry_mod : NULL,
+                      NULL};
+      FoldEnv env = {m->syms, m, &root};
       Node *d = node_get(cd->decl);
       // annotation pinning: fold under the annotation's type face
       CVal v = fold_expr(&env, cd->init);
@@ -429,15 +479,38 @@ static void resolve_module_consts(Module *m, bool report) {
       progress = true;
     }
   }
-  if (report && resolved < total)
-    for (Sym *s = m->syms->order_head; s; s = s->order_next)
-      if (s->kind == SYM_CONST && !s->u.konst->cval) {
-        Node *d = node_get(s->u.konst->decl);
-        diag_at(DIAG_ERROR, m->path, d->line, d->col,
-                "const '%s' initializer is not comptime-evaluable "
-                "(or is cyclic)",
-                s->name);
-      }
+  return resolved > 0;
+}
+
+// cross-module const convergence (§2/§4): the per-module fixpoint ran
+// before the BFS bound uses and item imports, so a const reading
+// another module's const — the qualified b.K, the item-imported K, or
+// a facade re-export — folded too early and stayed unresolved, and
+// today the program silently read 0. Re-run every module's fold until
+// no module makes progress, then enforce the comptime law: whatever
+// still refuses is a hard error, never a silent zero.
+void consts_converge(Program *p) {
+  bool progress = true;
+  while (progress) {
+    progress = false;
+    for (Module *m = p->modules; m; m = m->next)
+      if (m->syms && resolve_module_consts(m))
+        progress = true;
+  }
+  for (Module *m = p->modules; m; m = m->next) {
+    if (!m->syms)
+      continue;
+    for (Sym *s = m->syms->order_head; s; s = s->order_next) {
+      if ((s->kind != SYM_CONST && s->kind != SYM_STATIC) ||
+          s->u.konst->cval)
+        continue;
+      Node *d = node_get(s->u.konst->decl);
+      diag_at(DIAG_ERROR, m->path, d->line, d->col,
+              "%s '%s' initializer is not comptime-evaluable "
+              "(or is cyclic)",
+              s->kind == SYM_STATIC ? "static" : "const", s->name);
+    }
+  }
 }
 
 // entry consts pre-resolve (before the module graph loads, so dead
@@ -445,7 +518,7 @@ static void resolve_module_consts(Module *m, bool report) {
 void pre_resolve_entry_consts(Module *entry) {
   if (!entry->syms)
     return; // not collected yet: raw parse-level pass below
-  resolve_module_consts(entry, false);
+  resolve_module_consts(entry);
 }
 
 // parse a --set value against a const's type; false = refusal
@@ -571,14 +644,6 @@ int sets_apply(Program *p) {
 
 // ============================================================ T1.6 driver
 
-void const_resolve_all(Program *p) {
-  // entry first (root build params), then the rest in load order
-  resolve_module_consts(p->entry, true);
-  for (Module *m = p->modules; m; m = m->next)
-    if (m != p->entry && m->syms)
-      resolve_module_consts(m, true);
-}
-
 // try folding an if condition; on success mark the node and report
 // which branch is live (1 then / 0 else, -1 none)
 bool fold_if_condition(Module *m, Node *ifnode, int *live) {
@@ -687,4 +752,4 @@ void for_each_live_use(Module *m, bool (*cb)(Module *, NodeRef)) {
   }
 }
 
-void const_resolve_module_pub(Module *m) { resolve_module_consts(m, false); }
+void const_resolve_module_pub(Module *m) { resolve_module_consts(m); }
