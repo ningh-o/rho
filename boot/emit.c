@@ -192,7 +192,7 @@ static WTy local_wty(Type *t, size_t j) {
 
 // ================================================================ module
 
-#define DATA_BASE 65536  // data literals start here (the fmt scratch owns [64,65536))
+#define DATA_BASE 4096   // data literals start here
 #define FMT_LO 64
 
 typedef struct DataEnt {

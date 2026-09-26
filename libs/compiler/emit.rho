@@ -433,9 +433,17 @@ const NONEBOX: string = """
   (global $w_none_box (mut i64) (i64.const 0))
 """;
 
-const ALLOC: string = """
-  (global $w_alloc_top (mut i32) (i32.const 65528))
-  (global $w_floor (mut i32) (i32.const 4096))
+// the allocator's globals init at the POOL TOP (spliced at assembly —
+// a program-sized pool reaches megabytes; a fixed 64K top carves into
+// it and corrupts the data segments)
+fn alloc_wat(pool_top: i64) -> string {
+  return "  (global $w_alloc_top (mut i32) (i32.const " +
+         pool_top.to_str() + "))\n" +
+         "  (global $w_floor (mut i32) (i32.const " +
+         pool_top.to_str() + "))\n";
+}
+
+const ALLOC_BODY: string = """
   (func $w_alloc (param $n i32) (result i32)
     (local $p i32) (local $k i32) (local $old i32)
     (global.set $w_alloc_top
@@ -9415,7 +9423,8 @@ pub fn emit(prog: *Prog) -> string {
   out = out + UINT;
   out = out + CAT;
   out = out + ITOA;
-  out = out + ALLOC;
+  out = out + alloc_wat((pool.next + 7) / 8 * 8);
+  out = out + ALLOC_BODY;
   out = out + STREQ;
   out = out + ENUQ;
   out = out + NONEBOX;
