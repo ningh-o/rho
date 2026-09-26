@@ -414,6 +414,20 @@ section — no placeholder stages. boot is the reference compiler.
       from the anchors, and a rule whose test does not exist is a rule
       not implemented. Multi-file cases (packages, facades) are
       directories with a `main.rho` entry carrying the same headers.
+      OPEN LEDGER (refined 2026-09-26 by probe): the value-struct
+      face is a modeling seam in the emitter. `new V{}` checks and
+      rides as `*V` (pointer identity == — eq_pointer_identity pins
+      this), so a TY_STRUCT-typed `==` operand only arises for nested
+      value-struct fields (`w1.inner == w2.inner`) — and that path
+      fails to emit at all: the FIELDINIT staging allocates the
+      field's flat slot run (i64 slot first for `V{i64, ...}`) while
+      the initializer's block pointer is i32 (pre-existing wat2wasm
+      type mismatch; the corpus never exercises nested value-struct
+      construction, which is why it survived). Unifying the face —
+      struct-typed expressions ride as block pointers everywhere
+      (lets, fieldinit staging, args, returns; rc through the block's
+      dropfn) — is its own task; the §10 element-wise struct `==`
+      lands with it.
       Two tiers: green files gate; a case for law already ratified
       but not yet implemented (§18 mut view, §19 match ergonomics,
       T3.7 item imports, the T3.6 usize lane) carries
