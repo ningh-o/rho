@@ -553,6 +553,22 @@ section — no placeholder stages. boot is the reference compiler.
       10s); `pub use sub;` module re-export still flat (B-7); float
       literals beyond the consumer's range compile to inf (spec
       ambiguous — needs a ruling).
+- [ ] **T3.11** Grammar-campaign leftovers (opened 2026-09-26): the
+      68-fixture grammar suite (tests/suites/grammar) closed one
+      crash (`Option.None?` segfault — ? now infers the payload from
+      the enclosing return) and eight gaps (struct patterns §7,
+      immediate closure calls `make_adder(5)(3)`, float literal
+      patterns, `s += "cd"` on strings, `mut` on string/dyn params,
+      comma-less block match arms, variant-payload trailing commas,
+      subset variant binders by name). Still open: `pub use sub;`
+      module re-export (the suite's one pending, shared with B-7);
+      three spec-strictness refusals the agent surfaced but did not
+      pin — closures capturing a `mut` local must be a compile error
+      (§6.8; captures copy), a trailing comma in fn parameter lists
+      must refuse (the grammar has no `','?` there), and the
+      fn-body tail expression face (`fn f() -> i32 { 3 }`) parses
+      but emits an unreachable trap — either make it return the
+      block's value or refuse it at check.
 - [x] **T3.9** Match arm ergonomics (§19): variant resolution by
       scrutinee (bare `Some`/`None`/`Ok`/`Err` and user-enum variants,
       full paths stay legal, no scope fallback), or-patterns with the
