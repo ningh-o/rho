@@ -1,0 +1,31 @@
+// spec: module-system.md §4/§6 + TODO T4.3 (the facade is the whole
+// public surface)
+// Black-box facade pin: every factory re-exported by lib.rho resolves
+// through the package name and constructs, and the strutil helpers
+// ride the facade too. This file is what catches a typo in a `pub use`
+// line: boot drops a re-export whose item is missing or private
+// without a diagnostic (reexport_sym, boot/check.c:654), so only a
+// consumer naming every binding pins the facade for real.
+use std.collections;
+fn main() -> i32 {
+  let a = collections.vec_i32(0);
+  let b = collections.vec_i64(0);
+  let c = collections.vec_usize(0);
+  let d = collections.vec_u8(0);
+  let e = collections.vec_str(0);
+  printf("{} {} {} {} {}\n", a.len(), b.len(), c.len(), d.len(), e.len());
+  let f = collections.smap_str(0);
+  let g = collections.smap_i32(0);
+  let h = collections.smap_i64(0);
+  let i = collections.imap_str(0);
+  let j = collections.imap_i32(0);
+  let k = collections.imap_i64(0);
+  printf("{} {} {} {} {} {}\n", f.len(), g.len(), h.len(), i.len(), j.len(),
+         k.len());
+  printf("{} {}\n", collections.str_lt("a", "b"),
+         collections.str_eq("a", "a"));
+  return 0;
+}
+// out: 0 0 0 0 0
+// out: 0 0 0 0 0 0
+// out: true true

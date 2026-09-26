@@ -1,0 +1,14 @@
+// spec: TODO T4.3 + design D3 + spec §3
+// Ordered iteration past the last rank is a defined panic (the map
+// never returns junk keys).
+use std.collections;
+fn main() -> i32 {
+  let mut m = collections.smap_str(2);
+  m.insert("only", "one");
+  printf("k0={}\n", m.key_at(0));
+  printf("k1={}\n", m.key_at(1));
+  return 0;
+}
+// out: k0=only
+// err: index out of bounds
+// exit: 101

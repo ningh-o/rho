@@ -1,0 +1,54 @@
+// strutil.rho — string ordering helpers for the map keys.
+// spec: TODO T4.3 + design D3 (the documented string key order)
+//
+// Package-private sibling module: plain `len` is unusable inside a
+// module that declares methods named `len` (the methods join the
+// plain-call overload set and the call goes ambiguous — probed
+// 2026-09-27), and StringMap's/IntMap's `len` methods live in
+// map.rho. The comparator lives here where the prelude `len` resolves
+// cleanly.
+//
+// Why not the builtin `<`: boot compares string operands by data
+// pointer, not content (probed 2026-09-27 — equal contents can order
+// either way depending on allocation layout). `==` IS content
+// equality; only the `<` leg rides this comparator. When boot's
+// string `<` reads bytes, callers collapse to the operator.
+
+pub fn str_lt(a: string, b: string) -> bool {
+  let mut i: usize = 0;
+  while i < len(a) && i < len(b) {
+    if a[i] != b[i] {
+      return a[i] < b[i];
+    }
+    i = i + 1;
+  }
+  return len(a) < len(b);
+}
+
+// byte-wise equality would ride `==` (content equality, proven); kept
+// here only as the ordering law's second face for readability of the
+// call sites
+pub fn str_eq(a: string, b: string) -> bool {
+  if len(a) != len(b) {
+    return false;
+  }
+  let mut i: usize = 0;
+  while i < len(a) {
+    if a[i] != b[i] {
+      return false;
+    }
+    i = i + 1;
+  }
+  return true;
+}
+
+test "str_lt is byte-wise lexicographic" {
+  assert(str_lt("apple", "cherry"), "a < c");
+  assert(!str_lt("cherry", "apple"), "c > a");
+  assert(str_lt("aa", "ab"), "prefix orders before the longer key");
+  assert(str_lt("a", "aa"), "the shorter prefix comes first");
+  assert(!str_lt("aa", "a"), "the longer key comes after");
+  assert(!str_lt("same", "same"), "equal keys are not less");
+  assert(str_eq("ap" + "ple", "apple"), "runtime concat equals the literal");
+  assert(!str_eq("ap", "apple"), "prefix is not equal");
+}

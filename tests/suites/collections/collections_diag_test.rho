@@ -1,0 +1,12 @@
+// spec: type-system.md §5 (exact-match-unique overload resolution)
+// Diagnostic pin: the element type is fixed per instantiation, so a
+// string into an i32 vec has no matching push.
+use std.collections;
+fn main() -> i32 {
+  let mut v = collections.vec_i32(2);
+  v.push(1);
+  v.push("str");
+  printf("len={}\n", v.len());
+  return 0;
+}
+// expect: expected i32, found string

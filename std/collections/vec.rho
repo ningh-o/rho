@@ -1,0 +1,413 @@
+// vec.rho — the growable array (TODO T4.3, design §14, spec §8:
+// "library containers have a deterministic, documented iteration
+// order"). Idiom lifted from the compiler's own growth tables
+// (libs/compiler/parse.rho, stmt_grow / parse_block): a capacity
+// buffer + a live count, doubled on demand, sliced out at the tail.
+// One deliberate variant: the factor here is *2 + 1, not the
+// compiler's bare *2 — the factories accept capacity 0, and doubling
+// zero stays zero forever.
+//
+// Boot capability note (2026-09-27 probes, see WORKTREE-NOTES.md):
+// `make([]T, n)` cannot be spelled inside a body that gets
+// instantiated (the make intrinsic resolves its bracket type-arg in
+// module scope), and callers cannot name a package's generic type.
+// So the element-type-specific, allocating methods (push, insert)
+// land as concrete per-instantiation overloads beside one
+// struct-parameter method set for everything that does not allocate.
+// When boot carries the make type-arg through instantiation, the
+// concrete sets collapse into the generic forms unchanged.
+//
+// Iteration order (D3): a Vec keeps insertion order — index i holds
+// the i-th pushed element until insert/remove shift it. `view` hands
+// out the live prefix for while+index loops.
+
+pub struct Vec[T] {
+  data: []T,     // the capacity buffer; len(data) == cap (invariant)
+  n: usize,      // live elements; data[0..n] is the live prefix
+  cap: usize,    // capacity; grows by *2 + 1 when full
+}
+
+// ------------------------------------------------------------ length
+
+fn Vec.len(self: *Vec) -> usize {
+  return self.n;
+}
+
+// ------------------------------------------------------- element read
+
+fn Vec.get(self: *Vec, i: usize) -> T {
+  if i >= self.n {
+    panic("index out of bounds");
+  }
+  return self.data[i];
+}
+
+// bounds-checked element write (the language's assignment lvalue
+// grammar cannot store through a call result, so writes ride this)
+fn Vec.set(mut self: *Vec, i: usize, v: T) {
+  if i >= self.n {
+    panic("index out of bounds");
+  }
+  self.data[i] = v;
+}
+
+// the live prefix as a slice view: while+index loops and sub-slices
+// (v.view()[a..b]) compose on it; the view aliases the buffer and dies
+// with it under the rc law
+fn Vec.view(self: *Vec) -> []T {
+  return self.data[0..self.n];
+}
+
+// ------------------------------------------------------ tail and bulk
+
+// value membership by == (legal for the value element types this
+// package instantiates; §10's never-list stays refused per instance)
+fn Vec.contains(self: *Vec, v: T) -> bool {
+  let mut i: usize = 0;
+  while i < self.n {
+    if self.data[i] == v {
+      return true;
+    }
+    i = i + 1;
+  }
+  return false;
+}
+
+// drop every element; the capacity is kept
+fn Vec.clear(mut self: *Vec) {
+  self.n = 0;
+}
+
+// ------------------------------------------------- insert and remove
+
+// remove and return the element at i; the tail shifts left one slot
+fn Vec.remove(mut self: *Vec, i: usize) -> T {
+  if i >= self.n {
+    panic("index out of bounds");
+  }
+  let old: T = self.data[i];
+  let mut j: usize = i;
+  while j + 1 < self.n {
+    self.data[j] = self.data[j + 1];
+    j = j + 1;
+  }
+  self.n = self.n - 1;
+  return old;
+}
+
+// pop the last element (?T: None on the empty vec)
+fn Vec.pop(mut self: *Vec) -> ?T {
+  if self.n == 0 {
+    return Option.None;
+  }
+  self.n = self.n - 1;
+  return Option.Some(self.data[self.n]);
+}
+
+// --------------------------------------------- per-element-type layer
+//
+// The allocating methods, concretized for the value element types the
+// tree instantiates today. Each body is the compiler's growth idiom
+// with the *2 + 1 factor (see the header): when the buffer is full,
+// carve one of double-plus-one the capacity and copy the live prefix.
+// Amortized O(1) push, O(n) insert.
+
+fn Vec.push(mut self: *Vec[i32], v: i32) {
+  if self.n == self.cap {
+    let mut big: []i32 = make([]i32, self.cap * 2 + 1);
+    let mut i: usize = 0;
+    while i < self.n {
+      big[i] = self.data[i];
+      i = i + 1;
+    }
+    self.data = big;
+    self.cap = self.cap * 2 + 1;
+  }
+  self.data[self.n] = v;
+  self.n = self.n + 1;
+}
+
+fn Vec.push(mut self: *Vec[i64], v: i64) {
+  if self.n == self.cap {
+    let mut big: []i64 = make([]i64, self.cap * 2 + 1);
+    let mut i: usize = 0;
+    while i < self.n {
+      big[i] = self.data[i];
+      i = i + 1;
+    }
+    self.data = big;
+    self.cap = self.cap * 2 + 1;
+  }
+  self.data[self.n] = v;
+  self.n = self.n + 1;
+}
+
+fn Vec.push(mut self: *Vec[usize], v: usize) {
+  if self.n == self.cap {
+    let mut big: []usize = make([]usize, self.cap * 2 + 1);
+    let mut i: usize = 0;
+    while i < self.n {
+      big[i] = self.data[i];
+      i = i + 1;
+    }
+    self.data = big;
+    self.cap = self.cap * 2 + 1;
+  }
+  self.data[self.n] = v;
+  self.n = self.n + 1;
+}
+
+fn Vec.push(mut self: *Vec[u8], v: u8) {
+  if self.n == self.cap {
+    let mut big: []u8 = make([]u8, self.cap * 2 + 1);
+    let mut i: usize = 0;
+    while i < self.n {
+      big[i] = self.data[i];
+      i = i + 1;
+    }
+    self.data = big;
+    self.cap = self.cap * 2 + 1;
+  }
+  self.data[self.n] = v;
+  self.n = self.n + 1;
+}
+
+fn Vec.push(mut self: *Vec[string], v: string) {
+  if self.n == self.cap {
+    let mut big: []string = make([]string, self.cap * 2 + 1);
+    let mut i: usize = 0;
+    while i < self.n {
+      big[i] = self.data[i];
+      i = i + 1;
+    }
+    self.data = big;
+    self.cap = self.cap * 2 + 1;
+  }
+  self.data[self.n] = v;
+  self.n = self.n + 1;
+}
+
+// insert at i, shifting the tail right; i <= n (i == n appends)
+fn Vec.insert(mut self: *Vec[i32], i: usize, v: i32) {
+  if i > self.n {
+    panic("index out of bounds");
+  }
+  self.push(v);
+  let mut j: usize = self.n - 1;
+  while j > i {
+    self.data[j] = self.data[j - 1];
+    j = j - 1;
+  }
+  self.data[i] = v;
+}
+
+fn Vec.insert(mut self: *Vec[i64], i: usize, v: i64) {
+  if i > self.n {
+    panic("index out of bounds");
+  }
+  self.push(v);
+  let mut j: usize = self.n - 1;
+  while j > i {
+    self.data[j] = self.data[j - 1];
+    j = j - 1;
+  }
+  self.data[i] = v;
+}
+
+fn Vec.insert(mut self: *Vec[usize], i: usize, v: usize) {
+  if i > self.n {
+    panic("index out of bounds");
+  }
+  self.push(v);
+  let mut j: usize = self.n - 1;
+  while j > i {
+    self.data[j] = self.data[j - 1];
+    j = j - 1;
+  }
+  self.data[i] = v;
+}
+
+fn Vec.insert(mut self: *Vec[u8], i: usize, v: u8) {
+  if i > self.n {
+    panic("index out of bounds");
+  }
+  self.push(v);
+  let mut j: usize = self.n - 1;
+  while j > i {
+    self.data[j] = self.data[j - 1];
+    j = j - 1;
+  }
+  self.data[i] = v;
+}
+
+fn Vec.insert(mut self: *Vec[string], i: usize, v: string) {
+  if i > self.n {
+    panic("index out of bounds");
+  }
+  self.push(v);
+  let mut j: usize = self.n - 1;
+  while j > i {
+    self.data[j] = self.data[j - 1];
+    j = j - 1;
+  }
+  self.data[i] = v;
+}
+
+// -------------------------------------------------------- factories
+//
+// Construction rides these because a caller outside the package
+// cannot name Vec[T] (no qualified type expressions in rho). Each
+// returns a zeroed buffer of the requested capacity (make is zeroed
+// memory, spec §1.3); cap 0 is legal — the first push grows.
+
+pub fn vec_i32(cap: usize) -> *Vec[i32] {
+  return new Vec[i32] { data: make([]i32, cap), n: 0, cap: cap };
+}
+
+pub fn vec_i64(cap: usize) -> *Vec[i64] {
+  return new Vec[i64] { data: make([]i64, cap), n: 0, cap: cap };
+}
+
+pub fn vec_usize(cap: usize) -> *Vec[usize] {
+  return new Vec[usize] { data: make([]usize, cap), n: 0, cap: cap };
+}
+
+pub fn vec_u8(cap: usize) -> *Vec[u8] {
+  return new Vec[u8] { data: make([]u8, cap), n: 0, cap: cap };
+}
+
+pub fn vec_str(cap: usize) -> *Vec[string] {
+  return new Vec[string] { data: make([]string, cap), n: 0, cap: cap };
+}
+
+// ------------------------------------------------------------ tests
+
+test "vec push grows and len tracks" {
+  let mut v = vec_i32(1);
+  v.push(10);
+  v.push(20);
+  v.push(30);
+  assert_eq(v.len(), 3);
+  assert_eq(v.cap, 3); // cap 1 grows by *2 + 1 on the second push
+  assert_eq(v.data[0..v.n][2], 30);
+}
+
+test "vec get set and view" {
+  let mut v = vec_i32(4);
+  v.push(1);
+  v.push(2);
+  v.push(3);
+  v.set(1, 9);
+  assert_eq(v.get(1), 9);
+  let view: []i32 = v.view();
+  assert_eq(view[0], 1);
+  assert_eq(view[2], 3);
+  let mid: []i32 = v.view()[1..3];
+  assert_eq(mid[0], 9);
+  assert_eq(mid[1], 3);
+}
+
+test "vec pop returns last then None" {
+  let mut v = vec_str(2);
+  v.push("a");
+  v.push("b");
+  match v.pop() {
+    Some(x) => assert_eq(x, "b"),
+    None => assert(false, "expected a value"),
+  }
+  assert_eq(v.len(), 1);
+  match v.pop() {
+    Some(x) => assert_eq(x, "a"),
+    None => assert(false, "expected a value"),
+  }
+  match v.pop() {
+    Some(_) => assert(false, "expected None"),
+    None => assert(true, "None is the empty pop"),
+  }
+  assert_eq(v.len(), 0);
+}
+
+test "vec insert shifts and remove unshifts" {
+  let mut v = vec_i64(2);
+  v.push(1 as i64);
+  v.push(3 as i64);
+  v.insert(1, 2 as i64);
+  assert_eq(v.len(), 3);
+  assert_eq(v.get(0), 1 as i64);
+  assert_eq(v.get(1), 2 as i64);
+  assert_eq(v.get(2), 3 as i64);
+  let gone: i64 = v.remove(1);
+  assert_eq(gone, 2 as i64);
+  assert_eq(v.len(), 2);
+  assert_eq(v.get(1), 3 as i64);
+}
+
+test "vec insert at the end appends" {
+  let mut v = vec_str(4);
+  v.insert(0, "x");
+  v.insert(1, "y");
+  assert_eq(v.len(), 2);
+  assert_eq(v.get(0), "x");
+  assert_eq(v.get(1), "y");
+}
+
+test "vec zero capacity grows on first push" {
+  let mut v = vec_usize(0);
+  v.push(7);
+  assert_eq(v.len(), 1);
+  assert_eq(v.get(0), 7);
+}
+
+test "vec u8 and usize instances" {
+  let mut b = vec_u8(1);
+  b.push(65 as u8);
+  b.push(66 as u8);
+  assert_eq(b.len(), 2);
+  assert_eq(b.get(0), 65 as u8);
+  let mut w = vec_usize(1);
+  w.push(12);
+  w.push(13);
+  assert_eq(w.get(1), 13);
+}
+
+test "vec contains and clear" {
+  let mut v = vec_i32(2);
+  v.push(4);
+  v.push(5);
+  assert(v.contains(5), "5 should be present");
+  assert(!v.contains(6), "6 should be absent");
+  v.clear();
+  assert_eq(v.len(), 0);
+  assert(!v.contains(4), "cleared vec is empty");
+}
+
+test "vec growth follows the documented *2 + 1 factor" {
+  let mut v = vec_i32(3);
+  let cap0: usize = v.cap;
+  v.push(1);
+  v.push(2);
+  v.push(3);
+  assert_eq(v.cap, cap0);
+  v.push(4);
+  assert_eq(v.cap, cap0 * 2 + 1); // the growth law itself, exactly
+  assert_eq(v.len(), 4);
+  assert_eq(v.get(3), 4);
+}
+
+test "vec insert exists for every element type" {
+  let mut a = vec_i32(1);
+  a.insert(0, 1);
+  assert_eq(a.get(0), 1);
+  let mut b = vec_i64(1);
+  b.insert(0, 2 as i64);
+  assert_eq(b.get(0), 2 as i64);
+  let mut c = vec_usize(1);
+  c.insert(0, 3);
+  assert_eq(c.get(0), 3);
+  let mut d = vec_u8(1);
+  d.insert(0, 4 as u8);
+  assert_eq(d.get(0), 4 as u8);
+  let mut e = vec_str(1);
+  e.insert(0, "five");
+  assert_eq(e.get(0), "five");
+}

@@ -1,0 +1,15 @@
+// spec: TODO T4.3 + spec §2/§3 (the panic catalog is the only failure
+// channel; bounds violations are defined panics, exit 101)
+// Vec.get past the end panics with the catalog message.
+use std.collections;
+fn main() -> i32 {
+  let mut v = collections.vec_i32(4);
+  v.push(1);
+  printf("before={}\n", v.len());
+  let boom: i32 = v.get(1);
+  printf("unreachable {} \n", boom);
+  return 0;
+}
+// out: before=1
+// err: index out of bounds
+// exit: 101

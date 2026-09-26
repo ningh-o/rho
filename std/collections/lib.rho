@@ -1,0 +1,29 @@
+// lib.rho — the std.collections facade (TODO T4.3, design §14).
+// Vec lives in vec.rho, the ordered maps in map.rho, the string key
+// order in strutil.rho. The re-exports name the factories and
+// helpers item-by-item: a `pub use vec.*;` would copy the struct
+// symbols into the facade's table and boot's type resolver then sees
+// 'Vec' as pub in two modules ("ambiguous type", probed 2026-09-27).
+// The struct types stay package-held — callers receive them from the
+// factories and work through methods.
+//
+// The law this package implements: design §14 (collections are a
+// package, never the kernel), D3 + spec §8 (library containers have a
+// deterministic, documented iteration order). See README.md for the
+// order law and the extension recipe.
+
+pub use vec.vec_i32;
+pub use vec.vec_i64;
+pub use vec.vec_usize;
+pub use vec.vec_u8;
+pub use vec.vec_str;
+
+pub use map.smap_str;
+pub use map.smap_i32;
+pub use map.smap_i64;
+pub use map.imap_str;
+pub use map.imap_i32;
+pub use map.imap_i64;
+
+pub use strutil.str_lt;
+pub use strutil.str_eq;

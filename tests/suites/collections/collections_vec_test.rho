@@ -1,0 +1,42 @@
+// spec: TODO T4.3 + design §14 + spec §8
+// Black-box Vec pipeline through the package facade: factories,
+// push/pop/get/set/len, view composition, insert/remove shifting,
+// while+index iteration. (The `collections` spelling rides the
+// two-base rule against a root symlink to std/collections; the
+// reserved `use std.collections;` form is pinned by
+// std_collections_pending_test.rho until T4.2 lands.)
+use std.collections;
+fn main() -> i32 {
+  let mut v = collections.vec_i32(1);
+  v.push(10);
+  v.push(20);
+  v.push(30);
+  v.set(1, 21);
+  printf("len={} get1={}\n", v.len(), v.get(1));
+  v.insert(0, 5);
+  printf("after insert0: {}\n", v.view()[0]);
+  let gone: i32 = v.remove(0);
+  printf("removed {} len={}\n", gone, v.len());
+  let all: []i32 = v.view();
+  let mut i: usize = 0;
+  while i < len(all) {
+    printf("{}:{}", i, all[i]);
+    i = i + 1;
+  }
+  printf("\n");
+  let head: []i32 = v.view()[0..2];
+  printf("head {} {}\n", head[0], head[1]);
+  match v.pop() {
+    Some(x) => printf("popped {}\n", x),
+    None => printf("empty\n"),
+  }
+  printf("final len={}\n", v.len());
+  return 0;
+}
+// out: len=3 get1=21
+// out: after insert0: 5
+// out: removed 5 len=3
+// out: 0:101:212:30
+// out: head 10 21
+// out: popped 30
+// out: final len=2

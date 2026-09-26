@@ -1,0 +1,622 @@
+// map.rho — ordered maps: StringMap[V] (string keys) and IntMap[V]
+// (i64 keys). TODO T4.3, design §14, D3, spec §8.
+//
+// String keys order through strutil.str_lt (imported below): the
+// builtin `<` on strings compares data pointers in boot today, not
+// content.
+//
+// D3 — the iteration order law: **iteration is ascending by key.**
+// String keys order by unsigned byte-wise lexicographic comparison
+// (for UTF-8 input this is code-point order); i64 keys order
+// numerically. The order does not depend on insertion history, and
+// repeating the same inserts yields the same sequence. The
+// implementation is the law: keys live in a sorted parallel array
+// (binary search on lookup, shift on insert/remove), so the stored
+// order IS ascending key order at every observable point.
+//
+// Boot capability note (2026-09-27 probes, WORKTREE-NOTES.md): the
+// value-carrying, allocating method (insert) is concretized per value
+// type — `make([]V, n)` cannot be spelled inside an instantiated
+// body, and callers cannot name a package's generic type — while
+// every non-allocating method is one struct-parameter generic. When
+// boot carries the make type-arg through instantiation, the concrete
+// inserts collapse into the generic form.
+//
+// Operator traits (Eq/Ord/Hash, T3.12) are not landed, so `<` cannot
+// order user types yet: keys are pinned to the two builtin orders
+// (string, i64). After T3.12 a generic OrdMap[K, V] over `impl Ord`
+// keys replaces both without changing the method surface.
+
+use strutil;
+
+pub struct StringMap[V] {
+  keys: []string, // sorted ascending, byte-wise unsigned; len == cap
+  vals: []V,      // parallel values; keys[i] <-> vals[i]
+  n: usize,       // live entries
+  cap: usize,     // capacity of both arrays
+}
+
+pub struct IntMap[V] {
+  keys: []i64, // sorted ascending, numeric; len == cap
+  vals: []V,   // parallel values; keys[i] <-> vals[i]
+  n: usize,
+  cap: usize,
+}
+
+// ------------------------------------------------------------- length
+
+fn StringMap.len(self: *StringMap) -> usize {
+  return self.n;
+}
+
+fn IntMap.len(self: *IntMap) -> usize {
+  return self.n;
+}
+
+// ------------------------------------------------- ordered iteration
+
+// the key at rank i, ascending (D3's iteration face); pins the
+// catalog's out-of-bounds panic past the end
+fn StringMap.key_at(self: *StringMap, i: usize) -> string {
+  if i >= self.n {
+    panic("index out of bounds");
+  }
+  return self.keys[i];
+}
+
+fn StringMap.val_at(self: *StringMap, i: usize) -> V {
+  if i >= self.n {
+    panic("index out of bounds");
+  }
+  return self.vals[i];
+}
+
+fn IntMap.key_at(self: *IntMap, i: usize) -> i64 {
+  if i >= self.n {
+    panic("index out of bounds");
+  }
+  return self.keys[i];
+}
+
+fn IntMap.val_at(self: *IntMap, i: usize) -> V {
+  if i >= self.n {
+    panic("index out of bounds");
+  }
+  return self.vals[i];
+}
+
+// ------------------------------------------------------ lookup
+
+// binary search: the first rank with keys[rank] >= k (== n when k is
+// past every key)
+fn StringMap.lower(self: *StringMap, k: string) -> usize {
+  let mut lo: usize = 0;
+  let mut hi: usize = self.n;
+  while lo < hi {
+    let mid: usize = (lo + hi) / 2;
+    if strutil.str_lt(self.keys[mid], k) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  return lo;
+}
+
+fn IntMap.lower(self: *IntMap, k: i64) -> usize {
+  let mut lo: usize = 0;
+  let mut hi: usize = self.n;
+  while lo < hi {
+    let mid: usize = (lo + hi) / 2;
+    if self.keys[mid] < k {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  return lo;
+}
+
+// the value under k, or None
+fn StringMap.get(self: *StringMap, k: string) -> ?V {
+  let pos: usize = self.lower(k);
+  if pos < self.n && self.keys[pos] == k {
+    return Option.Some(self.vals[pos]);
+  }
+  return Option.None;
+}
+
+fn IntMap.get(self: *IntMap, k: i64) -> ?V {
+  let pos: usize = self.lower(k);
+  if pos < self.n && self.keys[pos] == k {
+    return Option.Some(self.vals[pos]);
+  }
+  return Option.None;
+}
+
+fn StringMap.contains(self: *StringMap, k: string) -> bool {
+  let pos: usize = self.lower(k);
+  return pos < self.n && self.keys[pos] == k;
+}
+
+fn IntMap.contains(self: *IntMap, k: i64) -> bool {
+  let pos: usize = self.lower(k);
+  return pos < self.n && self.keys[pos] == k;
+}
+
+// remove k; the removed value, or None when absent; the tail shifts
+// left and the stored order stays ascending
+fn StringMap.remove(mut self: *StringMap, k: string) -> ?V {
+  let pos: usize = self.lower(k);
+  if pos >= self.n || self.keys[pos] != k {
+    return Option.None;
+  }
+  let old: V = self.vals[pos];
+  let mut j: usize = pos;
+  while j + 1 < self.n {
+    self.keys[j] = self.keys[j + 1];
+    self.vals[j] = self.vals[j + 1];
+    j = j + 1;
+  }
+  self.n = self.n - 1;
+  return Option.Some(old);
+}
+
+fn IntMap.remove(mut self: *IntMap, k: i64) -> ?V {
+  let pos: usize = self.lower(k);
+  if pos >= self.n || self.keys[pos] != k {
+    return Option.None;
+  }
+  let old: V = self.vals[pos];
+  let mut j: usize = pos;
+  while j + 1 < self.n {
+    self.keys[j] = self.keys[j + 1];
+    self.vals[j] = self.vals[j + 1];
+    j = j + 1;
+  }
+  self.n = self.n - 1;
+  return Option.Some(old);
+}
+
+// drop every entry; capacity is kept
+fn StringMap.clear(mut self: *StringMap) {
+  self.n = 0;
+}
+
+fn IntMap.clear(mut self: *IntMap) {
+  self.n = 0;
+}
+
+// -------------------------------------------------- insert (per V)
+//
+// Upsert: an existing key is replaced in place (returning the old
+// value), a fresh key lands at its sorted rank. Growth doubles both
+// parallel arrays together with the *2 + 1 factor — the compiler's
+// growth idiom plus one, so a zero-capacity map grows on the first
+// insert (bare doubling from 0 stays 0). Amortized O(n) per insert
+// (the shift dominates; the search is O(log n)).
+
+fn StringMap.insert(mut self: *StringMap[string], k: string,
+                    v: string) -> ?string {
+  let pos: usize = self.lower(k);
+  if pos < self.n && self.keys[pos] == k {
+    let old: string = self.vals[pos];
+    self.vals[pos] = v;
+    return Option.Some(old);
+  }
+  if self.n == self.cap {
+    let mut nk: []string = make([]string, self.cap * 2 + 1);
+    let mut nv: []string = make([]string, self.cap * 2 + 1);
+    let mut i: usize = 0;
+    while i < self.n {
+      nk[i] = self.keys[i];
+      nv[i] = self.vals[i];
+      i = i + 1;
+    }
+    self.keys = nk;
+    self.vals = nv;
+    self.cap = self.cap * 2 + 1;
+  }
+  let mut j: usize = self.n;
+  while j > pos {
+    self.keys[j] = self.keys[j - 1];
+    self.vals[j] = self.vals[j - 1];
+    j = j - 1;
+  }
+  self.keys[pos] = k;
+  self.vals[pos] = v;
+  self.n = self.n + 1;
+  return Option.None;
+}
+
+fn StringMap.insert(mut self: *StringMap[i32], k: string,
+                    v: i32) -> ?i32 {
+  let pos: usize = self.lower(k);
+  if pos < self.n && self.keys[pos] == k {
+    let old: i32 = self.vals[pos];
+    self.vals[pos] = v;
+    return Option.Some(old);
+  }
+  if self.n == self.cap {
+    let mut nk: []string = make([]string, self.cap * 2 + 1);
+    let mut nv: []i32 = make([]i32, self.cap * 2 + 1);
+    let mut i: usize = 0;
+    while i < self.n {
+      nk[i] = self.keys[i];
+      nv[i] = self.vals[i];
+      i = i + 1;
+    }
+    self.keys = nk;
+    self.vals = nv;
+    self.cap = self.cap * 2 + 1;
+  }
+  let mut j: usize = self.n;
+  while j > pos {
+    self.keys[j] = self.keys[j - 1];
+    self.vals[j] = self.vals[j - 1];
+    j = j - 1;
+  }
+  self.keys[pos] = k;
+  self.vals[pos] = v;
+  self.n = self.n + 1;
+  return Option.None;
+}
+
+fn StringMap.insert(mut self: *StringMap[i64], k: string,
+                    v: i64) -> ?i64 {
+  let pos: usize = self.lower(k);
+  if pos < self.n && self.keys[pos] == k {
+    let old: i64 = self.vals[pos];
+    self.vals[pos] = v;
+    return Option.Some(old);
+  }
+  if self.n == self.cap {
+    let mut nk: []string = make([]string, self.cap * 2 + 1);
+    let mut nv: []i64 = make([]i64, self.cap * 2 + 1);
+    let mut i: usize = 0;
+    while i < self.n {
+      nk[i] = self.keys[i];
+      nv[i] = self.vals[i];
+      i = i + 1;
+    }
+    self.keys = nk;
+    self.vals = nv;
+    self.cap = self.cap * 2 + 1;
+  }
+  let mut j: usize = self.n;
+  while j > pos {
+    self.keys[j] = self.keys[j - 1];
+    self.vals[j] = self.vals[j - 1];
+    j = j - 1;
+  }
+  self.keys[pos] = k;
+  self.vals[pos] = v;
+  self.n = self.n + 1;
+  return Option.None;
+}
+
+fn IntMap.insert(mut self: *IntMap[string], k: i64,
+                 v: string) -> ?string {
+  let pos: usize = self.lower(k);
+  if pos < self.n && self.keys[pos] == k {
+    let old: string = self.vals[pos];
+    self.vals[pos] = v;
+    return Option.Some(old);
+  }
+  if self.n == self.cap {
+    let mut nk: []i64 = make([]i64, self.cap * 2 + 1);
+    let mut nv: []string = make([]string, self.cap * 2 + 1);
+    let mut i: usize = 0;
+    while i < self.n {
+      nk[i] = self.keys[i];
+      nv[i] = self.vals[i];
+      i = i + 1;
+    }
+    self.keys = nk;
+    self.vals = nv;
+    self.cap = self.cap * 2 + 1;
+  }
+  let mut j: usize = self.n;
+  while j > pos {
+    self.keys[j] = self.keys[j - 1];
+    self.vals[j] = self.vals[j - 1];
+    j = j - 1;
+  }
+  self.keys[pos] = k;
+  self.vals[pos] = v;
+  self.n = self.n + 1;
+  return Option.None;
+}
+
+fn IntMap.insert(mut self: *IntMap[i32], k: i64, v: i32) -> ?i32 {
+  let pos: usize = self.lower(k);
+  if pos < self.n && self.keys[pos] == k {
+    let old: i32 = self.vals[pos];
+    self.vals[pos] = v;
+    return Option.Some(old);
+  }
+  if self.n == self.cap {
+    let mut nk: []i64 = make([]i64, self.cap * 2 + 1);
+    let mut nv: []i32 = make([]i32, self.cap * 2 + 1);
+    let mut i: usize = 0;
+    while i < self.n {
+      nk[i] = self.keys[i];
+      nv[i] = self.vals[i];
+      i = i + 1;
+    }
+    self.keys = nk;
+    self.vals = nv;
+    self.cap = self.cap * 2 + 1;
+  }
+  let mut j: usize = self.n;
+  while j > pos {
+    self.keys[j] = self.keys[j - 1];
+    self.vals[j] = self.vals[j - 1];
+    j = j - 1;
+  }
+  self.keys[pos] = k;
+  self.vals[pos] = v;
+  self.n = self.n + 1;
+  return Option.None;
+}
+
+fn IntMap.insert(mut self: *IntMap[i64], k: i64, v: i64) -> ?i64 {
+  let pos: usize = self.lower(k);
+  if pos < self.n && self.keys[pos] == k {
+    let old: i64 = self.vals[pos];
+    self.vals[pos] = v;
+    return Option.Some(old);
+  }
+  if self.n == self.cap {
+    let mut nk: []i64 = make([]i64, self.cap * 2 + 1);
+    let mut nv: []i64 = make([]i64, self.cap * 2 + 1);
+    let mut i: usize = 0;
+    while i < self.n {
+      nk[i] = self.keys[i];
+      nv[i] = self.vals[i];
+      i = i + 1;
+    }
+    self.keys = nk;
+    self.vals = nv;
+    self.cap = self.cap * 2 + 1;
+  }
+  let mut j: usize = self.n;
+  while j > pos {
+    self.keys[j] = self.keys[j - 1];
+    self.vals[j] = self.vals[j - 1];
+    j = j - 1;
+  }
+  self.keys[pos] = k;
+  self.vals[pos] = v;
+  self.n = self.n + 1;
+  return Option.None;
+}
+
+// -------------------------------------------------------- factories
+//
+// Construction rides these (callers outside the package cannot name
+// StringMap[V]/IntMap[V]); capacity 0 is legal — the first insert
+// grows.
+
+pub fn smap_str(cap: usize) -> *StringMap[string] {
+  return new StringMap[string] {
+    keys: make([]string, cap),
+    vals: make([]string, cap),
+    n: 0,
+    cap: cap,
+  };
+}
+
+pub fn smap_i32(cap: usize) -> *StringMap[i32] {
+  return new StringMap[i32] {
+    keys: make([]string, cap),
+    vals: make([]i32, cap),
+    n: 0,
+    cap: cap,
+  };
+}
+
+pub fn smap_i64(cap: usize) -> *StringMap[i64] {
+  return new StringMap[i64] {
+    keys: make([]string, cap),
+    vals: make([]i64, cap),
+    n: 0,
+    cap: cap,
+  };
+}
+
+pub fn imap_str(cap: usize) -> *IntMap[string] {
+  return new IntMap[string] {
+    keys: make([]i64, cap),
+    vals: make([]string, cap),
+    n: 0,
+    cap: cap,
+  };
+}
+
+pub fn imap_i32(cap: usize) -> *IntMap[i32] {
+  return new IntMap[i32] {
+    keys: make([]i64, cap),
+    vals: make([]i32, cap),
+    n: 0,
+    cap: cap,
+  };
+}
+
+pub fn imap_i64(cap: usize) -> *IntMap[i64] {
+  return new IntMap[i64] {
+    keys: make([]i64, cap),
+    vals: make([]i64, cap),
+    n: 0,
+    cap: cap,
+  };
+}
+
+// ------------------------------------------------------------ tests
+
+test "smap insert get upsert" {
+  let mut m = smap_i32(2);
+  match m.insert("b", 2) {
+    Some(_) => assert(false, "fresh insert returns None"),
+    None => assert(true, "fresh insert"),
+  }
+  m.insert("a", 1);
+  assert_eq(m.len(), 2);
+  match m.get("a") {
+    Some(x) => assert_eq(x, 1),
+    None => assert(false, "a should be present"),
+  }
+  match m.insert("b", 20) {
+    Some(old) => assert_eq(old, 2),
+    None => assert(false, "upsert returns the old value"),
+  }
+  assert_eq(m.len(), 2);
+  match m.get("b") {
+    Some(x) => assert_eq(x, 20),
+    None => assert(false, "b should hold the new value"),
+  }
+}
+
+test "smap iterates ascending regardless of insert order" {
+  let mut m = smap_str(2);
+  m.insert("cherry", "c");
+  m.insert("apple", "a");
+  m.insert("banana", "b");
+  assert_eq(m.len(), 3);
+  assert_eq(m.key_at(0), "apple");
+  assert_eq(m.val_at(0), "a");
+  assert_eq(m.key_at(1), "banana");
+  assert_eq(m.key_at(2), "cherry");
+  // the whole while+index loop shape users write (D3's face)
+  let mut i: usize = 0;
+  let mut prev: string = "";
+  let mut sorted: bool = true;
+  while i < m.len() {
+    let k: string = m.key_at(i);
+    if i > 0 && strutil.str_lt(k, prev) {
+      sorted = false;
+    }
+    prev = k;
+    i = i + 1;
+  }
+  assert(sorted, "iteration must ascend");
+}
+
+test "smap iteration is repeatable" {
+  let mut m = smap_i64(1);
+  m.insert("x", 1 as i64);
+  m.insert("y", 2 as i64);
+  let first: string = m.key_at(0) + m.key_at(1);
+  let second: string = m.key_at(0) + m.key_at(1);
+  assert_eq(first, second);
+  assert_eq(first, "xy");
+}
+
+test "smap remove keeps order" {
+  let mut m = smap_i32(2);
+  m.insert("a", 1);
+  m.insert("b", 2);
+  m.insert("c", 3);
+  match m.remove("b") {
+    Some(old) => assert_eq(old, 2),
+    None => assert(false, "b should be removable"),
+  }
+  assert_eq(m.len(), 2);
+  assert(!m.contains("b"), "b must be gone");
+  assert_eq(m.key_at(0), "a");
+  assert_eq(m.key_at(1), "c");
+  match m.remove("zz") {
+    Some(_) => assert(false, "removing an absent key is None"),
+    None => assert(true, "absent remove"),
+  }
+}
+
+test "smap byte order and prefixes" {
+  let mut m = smap_i32(1);
+  m.insert("b", 1);
+  m.insert("ab", 2);
+  m.insert("aa", 3);
+  m.insert("a", 4);
+  assert_eq(m.key_at(0), "a");
+  assert_eq(m.key_at(1), "aa");
+  assert_eq(m.key_at(2), "ab");
+  assert_eq(m.key_at(3), "b");
+}
+
+test "imap orders numerically, negatives included" {
+  let mut m = imap_str(1);
+  m.insert(5, "five");
+  m.insert(-3 as i64, "minus");
+  m.insert(0, "zero");
+  assert_eq(m.key_at(0), -3 as i64);
+  assert_eq(m.key_at(1), 0);
+  assert_eq(m.key_at(2), 5);
+  match m.get(-3 as i64) {
+    Some(x) => assert_eq(x, "minus"),
+    None => assert(false, "negative key should be present"),
+  }
+  match m.get(4) {
+    Some(_) => assert(false, "4 was never inserted"),
+    None => assert(true, "miss returns None"),
+  }
+}
+
+test "imap insert replace and clear" {
+  let mut m = imap_i64(1);
+  m.insert(10, 1 as i64);
+  m.insert(20, 2 as i64);
+  match m.insert(10, 100 as i64) {
+    Some(old) => assert_eq(old, 1 as i64),
+    None => assert(false, "replace returns the old value"),
+  }
+  assert_eq(m.len(), 2);
+  match m.get(10) {
+    Some(x) => assert_eq(x, 100 as i64),
+    None => assert(false, "10 should hold 100"),
+  }
+  m.clear();
+  assert_eq(m.len(), 0);
+  assert(!m.contains(10), "cleared map is empty");
+}
+
+test "imap i32 values" {
+  let mut m = imap_i32(0);
+  m.insert(7, 700);
+  assert_eq(m.len(), 1);
+  match m.get(7) {
+    Some(x) => assert_eq(x, 700),
+    None => assert(false, "value should survive growth"),
+  }
+}
+
+test "smap grows past the initial capacity" {
+  let mut m = smap_i32(1);
+  m.insert("k1", 1);
+  m.insert("k2", 2);
+  m.insert("k3", 3);
+  m.insert("k4", 4);
+  assert_eq(m.len(), 4);
+  assert_eq(m.cap, 7); // cap 1 grows *2 + 1 at inserts 2 and 4: 1 -> 3 -> 7
+  assert_eq(m.key_at(0), "k1");
+  assert_eq(m.key_at(3), "k4");
+}
+
+test "lower is the first rank at or past the key" {
+  let mut m = smap_i32(2);
+  m.insert("b", 1);
+  m.insert("d", 2);
+  assert_eq(m.lower("a"), 0); // before every key
+  assert_eq(m.lower("b"), 0); // an exact hit is its own rank
+  assert_eq(m.lower("bb"), 1); // prefix orders before the longer key
+  assert_eq(m.lower("c"), 1); // between b and d
+  assert_eq(m.lower("d"), 1);
+  assert_eq(m.lower("e"), 2); // past every key: the rank == len face
+  let mut n = imap_i32(2);
+  n.insert(10, 1);
+  n.insert(30, 2);
+  assert_eq(n.lower(5), 0);
+  assert_eq(n.lower(10), 0);
+  assert_eq(n.lower(20), 1);
+  assert_eq(n.lower(30), 1);
+  assert_eq(n.lower(40), 2);
+}

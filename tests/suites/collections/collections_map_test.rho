@@ -1,0 +1,57 @@
+// spec: TODO T4.3 + design D3 + spec §8 (deterministic documented
+// iteration order)
+// Black-box map pipeline through the package facade: upsert insert,
+// get miss/hit, ordered key_at/val_at iteration ascending by key
+// regardless of insertion order, remove keeping order, contains.
+use std.collections;
+fn main() -> i32 {
+  let mut m = collections.smap_i32(1);
+  m.insert("cherry", 3);
+  m.insert("apple", 1);
+  m.insert("banana", 2);
+  match m.insert("apple", 100) {
+    Some(old) => printf("upsert old={}\n", old),
+    None => printf("fresh\n"),
+  }
+  printf("len={} contains_banana={}\n", m.len(), m.contains("banana"));
+  match m.get("apple") {
+    Some(x) => printf("apple={}\n", x),
+    None => printf("missing\n"),
+  }
+  match m.get("pear") {
+    Some(_) => printf("unexpected\n"),
+    None => printf("pear absent\n"),
+  }
+  // D3: ascending by key, insertion order irrelevant
+  let mut i: usize = 0;
+  while i < m.len() {
+    printf("{}={}\n", m.key_at(i), m.val_at(i));
+    i = i + 1;
+  }
+  match m.remove("banana") {
+    Some(old) => printf("removed banana old={}\n", old),
+    None => printf("absent\n"),
+  }
+  printf("after remove len={} first={}\n", m.len(), m.key_at(0));
+  match m.get("banana") {
+    Some(_) => printf("unexpected\n"),
+    None => printf("banana gone\n"),
+  }
+  // i64 keys order numerically, negatives first
+  let mut im = collections.imap_str(1);
+  im.insert(5, "five");
+  im.insert(-3 as i64, "minus");
+  printf("ikeys {} {}\n", im.key_at(0), im.key_at(1));
+  return 0;
+}
+// out: upsert old=1
+// out: len=3 contains_banana=true
+// out: apple=100
+// out: pear absent
+// out: apple=100
+// out: banana=2
+// out: cherry=3
+// out: removed banana old=2
+// out: after remove len=2 first=apple
+// out: banana gone
+// out: ikeys -3 5

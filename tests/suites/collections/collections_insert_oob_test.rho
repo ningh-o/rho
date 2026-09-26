@@ -1,0 +1,18 @@
+// spec: TODO T4.3 + spec §2/§3 (the panic catalog is the only failure
+// channel; bounds violations are defined panics, exit 101)
+// Vec.insert is the one bounds guard shaped differently from
+// get/set/remove (i > n, not i >= n): i == n is the legal append
+// (pinned white-box, "vec insert at the end appends"), i == n + 1 must
+// panic before any write. This file pins the panic leg.
+use std.collections;
+fn main() -> i32 {
+  let mut v = collections.vec_i32(4);
+  v.push(1);
+  printf("len before={}\n", v.len());
+  v.insert(2, 9);
+  printf("unreachable {}\n", v.len());
+  return 0;
+}
+// out: len before=1
+// err: index out of bounds
+// exit: 101
