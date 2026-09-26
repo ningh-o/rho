@@ -13,6 +13,7 @@ typedef struct Lexer {
   size_t pos, len;
   int line, col;
   Vec toks; // of Token
+  Vec cmts; // of LexComment — recorded verbatim for fmt
 } Lexer;
 
 static const struct { const char *spell; TokKind kind; } k_keywords[] = {
@@ -532,6 +533,7 @@ Lexer *lex_file(Arena *a, const char *path, const char *src) {
   lx->line = 1;
   lx->col = 1;
   vec_init(&lx->toks, sizeof(Token));
+  vec_init(&lx->cmts, sizeof(LexComment));
 
   while (lx->pos < lx->len) {
     char c = peek(lx);
@@ -540,8 +542,18 @@ Lexer *lex_file(Arena *a, const char *path, const char *src) {
       continue;
     }
     if (c == '/' && peek2(lx) == '/') {
+      int cline = lx->line, ccol = lx->col;
+      size_t start = lx->pos;
       while (peek(lx) != '\n' && peek(lx) != 0)
         advance(lx);
+      size_t n = lx->pos - start;
+      char *txt = malloc(n + 1);
+      memcpy(txt, lx->src + start, n);
+      txt[n] = 0;
+      LexComment *cm = vec_push(&lx->cmts);
+      cm->text = txt;
+      cm->line = cline;
+      cm->col = ccol;
       continue;
     }
     if (c == '"') {
@@ -565,4 +577,9 @@ Lexer *lex_file(Arena *a, const char *path, const char *src) {
 const Token *lex_tokens(const Lexer *lx, size_t *n) {
   *n = vec_len(&lx->toks);
   return (const Token *)lx->toks.data;
+}
+
+const LexComment *lex_comments(const Lexer *lx, size_t *n) {
+  *n = vec_len(&lx->cmts);
+  return (const LexComment *)lx->cmts.data;
 }

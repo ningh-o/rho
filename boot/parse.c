@@ -62,6 +62,13 @@ static Token *expect(Parser *p, TokKind k, const char *what) {
   return cur(p);
 }
 
+// fmt-only bookkeeping: the construct's last consumed token's line (the
+// formatter replays comments against these spans; 0 = unstamped)
+static void stamp_end(Parser *p, NodeRef r) {
+  if (r != NO_REF && p->pos > 0)
+    node_get(r)->end_line = p->m->toks[p->pos - 1].line;
+}
+
 // deep nesting must fail with a diagnostic, never a C stack smash:
 // the guarded entries (expr/unary/type/pattern/block) bump a shared
 // depth; past the cap the parse reports one error, swallows the rest
@@ -73,6 +80,7 @@ static NodeRef parse_type_inner(Parser *p);
 static NodeRef parse_pattern_inner(Parser *p);
 static NodeRef parse_block_inner(Parser *p);
 static NodeRef parse_unary_inner(Parser *p);
+static NodeRef parse_stmt_inner(Parser *p);
 static NodeRef parse_depth_hole(Parser *p, const char *what) {
   diag_at(DIAG_ERROR, p->m->path, cur(p)->line, cur(p)->col,
           "%s nests too deeply (over %d levels)", what, PARSE_DEPTH_CAP);
@@ -646,6 +654,7 @@ static NodeRef parse_primary(Parser *p) {
           }
         }
         reflist_add(node_get(r)->list, arm);
+        stamp_end(p, arm);
         if (blocked)
           accept(p, T_COMMA); // a block arm ends at '}': comma optional
         else if (!accept(p, T_COMMA))
@@ -1065,10 +1074,17 @@ static NodeRef parse_block_inner(Parser *p) {
     }
   }
   expect(p, T_RBRACE, "to close the block");
+  stamp_end(p, r);
   return r;
 }
 
 static NodeRef parse_stmt(Parser *p) {
+  NodeRef r = parse_stmt_inner(p);
+  stamp_end(p, r);
+  return r;
+}
+
+static NodeRef parse_stmt_inner(Parser *p) {
   switch (kind(p)) {
   case K_LET: {
     eat(p);
@@ -1415,6 +1431,7 @@ static NodeRef parse_decl(Parser *p) {
         node_get(f)->name = intern(fnm->text.p, fnm->text.n);
         expect(p, T_COLON, "after the field name");
         node_get(f)->a = parse_type(p);
+        stamp_end(p, f);
         reflist_add(n->list, f);
         if (!accept(p, T_COMMA))
           break;
@@ -1467,6 +1484,7 @@ static NodeRef parse_decl(Parser *p) {
               node_get(f)->name = intern(fnm->text.p, fnm->text.n);
               expect(p, T_COLON, "after the payload field name");
               node_get(f)->a = parse_type(p);
+              stamp_end(p, f);
               reflist_add(vn->list, f);
               if (!accept(p, T_COMMA))
                 break;
@@ -1478,6 +1496,7 @@ static NodeRef parse_decl(Parser *p) {
         } else {
           vn->op = VAR_UNIT;
         }
+        stamp_end(p, v);
         reflist_add(n->list, v);
         if (!accept(p, T_COMMA))
           break;
@@ -1509,6 +1528,7 @@ static NodeRef parse_decl(Parser *p) {
         if (accept(p, T_ARROW))
           sn->c = parse_type(p);
         sn->d = NO_REF; // signature: no body
+        stamp_end(p, sig);
         reflist_add(n->list, sig);
         if (!accept(p, T_COMMA))
           break;
@@ -1541,6 +1561,7 @@ static NodeRef parse_decl(Parser *p) {
       if (accept(p, T_ARROW))
         fn->c = parse_type(p);
       fn->d = parse_block(p);
+      stamp_end(p, f);
       reflist_add(n->list, f);
     }
     expect(p, T_RBRACE, "to close the impl body");
@@ -1679,6 +1700,7 @@ Module *module_parse_src(const char *path, const char *src) {
   m->src = (char *)src;
   Lexer *lx = lex_file(g_arena, path, src);
   m->toks = lex_tokens(lx, &m->ntoks);
+  m->cmts = lex_comments(lx, &m->ncmts);
   m->decls = reflist();
   vec_init(&m->uses, sizeof(UseBind));
 
@@ -1687,6 +1709,7 @@ Module *module_parse_src(const char *path, const char *src) {
     if (accept(&p, T_SEMI))
       continue; // stray semicolons between decls
     NodeRef d = parse_decl(&p);
+    stamp_end(&p, d);
     if (node_get(d)->kind != NT_EXPRSTMT || node_get(d)->list)
       reflist_add(m->decls, d);
   }

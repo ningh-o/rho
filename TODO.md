@@ -158,6 +158,23 @@ section — no placeholder stages. boot is the reference compiler.
       emitter); `rho test` delegates to the shell runners (selftest +
       check + emit + fmt + corpus; the in-binary form lands with the
       gate); fmt canonical roundtrip green (27/27).
+      THE COMMENT LAW (2026-09-27): fmt may not drop or edit a
+      comment — test headers (`// out:`, `// spec:`) and every other
+      comment replay verbatim. The lexer records comments in a side
+      table (they never become tokens); the parser stamps each
+      construct's end_line (stmt/decl wrappers, blocks, arms, struct
+      fields, enum variants and payload fields, trait sigs, impl
+      members); fmt walks a monotonic cursor — a comment on the
+      construct's own last line rides as its trailing note, every
+      other comment leads the next construct at the current indent
+      (gofmt's law, sized for an AST printer). run-fmt-tests.sh now
+      asserts the comment multiset survives (not just the fixpoint),
+      tests/emit/fmt_comments.rho pins headers, fields, variants,
+      arms, members, and file-tail comments, and the else-spelling
+      wart (`} else  {`) died in both formatters. The mirror's fmt
+      still strips comments (its fixtures are comment-free so parity
+      holds) — the mirror grows the same law with its fmt parity
+      breadth (T2.2's ledger).
 - [x] **T1.10(tranches 1+2+3)** — 108 in-repo programs with goldens
       judged against the archive (n10 restored; floats/enum-payload/
       statics/to_str/null-family/assoc/MIN-division all landed

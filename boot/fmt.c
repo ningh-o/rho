@@ -3,6 +3,7 @@
 // braces on every block. fmt output is a parse fixed point.
 #include "sem.h"
 
+#include <limits.h>
 #include <stdarg.h>
 
 static Node *NG(NodeRef r) {
@@ -41,6 +42,39 @@ static void fp(F *f, const char *fmt, ...) {
 static void findent(F *f) {
   for (int i = 0; i < f->depth; i++)
     fp(f, "  ");
+}
+
+// Comment replay — fmt may not drop a comment. Every comment the lexer
+// recorded prints: one on the construct's own last line rides as its
+// trailing note; every other comment leads the next construct at the
+// current indent. The cursor is monotonic: print order is source order.
+static const LexComment *g_cmts;
+static size_t g_ncmts, g_ci;
+
+static void cmt_flush(F *f, int before_line) {
+  while (g_ci < g_ncmts && g_cmts[g_ci].line < before_line) {
+    findent(f);
+    fp(f, "%s\n", g_cmts[g_ci].text);
+    g_ci++;
+  }
+}
+// the construct's printer wrote no newline yet: append in place
+static void cmt_tail(F *f, Node *n) {
+  if (n->end_line > 0 && g_ci < g_ncmts &&
+      g_cmts[g_ci].line == n->end_line) {
+    fp(f, "  %s", g_cmts[g_ci].text);
+    g_ci++;
+  }
+}
+// the construct's printer already wrote its newline: back over it
+static void cmt_tail_back(F *f, Node *n) {
+  if (n->end_line > 0 && g_ci < g_ncmts &&
+      g_cmts[g_ci].line == n->end_line) {
+    if (f->n > 0 && f->p[f->n - 1] == '\n')
+      f->n--;
+    fp(f, "  %s\n", g_cmts[g_ci].text);
+    g_ci++;
+  }
 }
 
 static void fmt_type(F *f, Node *t);
@@ -165,11 +199,15 @@ static void fmt_block(F *f, Node *b) {
   f->depth++;
   for (size_t i = 0; i < reflist_len(b->list); i++) {
     Node *s = NG(reflist_at(b->list, i));
+    cmt_flush(f, s->line);
     findent(f);
     fmt_stmt(f, s);
+    cmt_tail(f, s);
     fp(f, "\n");
   }
   f->depth--;
+  if (b->end_line > 0)
+    cmt_flush(f, b->end_line); // comments above the closing brace
   findent(f);
   fp(f, "}");
 }
@@ -195,11 +233,16 @@ static void fmt_match(F *f, Node *m) {
   fp(f, " {\n");
   f->depth++;
   for (size_t i = 0; i < reflist_len(m->list); i++) {
+    Node *arm = NG(reflist_at(m->list, i));
+    cmt_flush(f, arm->line);
     findent(f);
-    fmt_arm(f, NG(reflist_at(m->list, i)));
+    fmt_arm(f, arm);
+    cmt_tail(f, arm);
     fp(f, "\n");
   }
   f->depth--;
+  if (m->end_line > 0)
+    cmt_flush(f, m->end_line); // comments above the closing brace
   findent(f);
   fp(f, "}");
 }
@@ -375,13 +418,14 @@ static void fmt_expr(F *f, Node *e) {
   case NT_IF_EXPR:
     fp(f, "if ");
     fmt_expr(f, NG(e->a));
-        fmt_block(f, NG(e->b));
+    fmt_block(f, NG(e->b));
     if (e->c != NO_REF) {
-      fp(f, " else ");
       Node *els = NG(e->c);
       if (els->kind == NT_IF_EXPR) {
+        fp(f, " else ");
         fmt_expr(f, els);
       } else {
+        fp(f, " else");
         fmt_block(f, els);
       }
     }
@@ -492,14 +536,16 @@ static void fmt_stmt(F *f, Node *s) {
       fp(f, "%s: ", s->name);
     fp(f, "if ");
     fmt_expr(f, NG(s->a));
-        fmt_block(f, NG(s->b));
+    fmt_block(f, NG(s->b));
     if (s->c != NO_REF) {
-      fp(f, " else ");
       Node *els = NG(s->c);
-      if (els->kind == NT_IF)
+      if (els->kind == NT_IF) {
+        fp(f, " else ");
         fmt_stmt(f, els);
-      else
+      } else {
+        fp(f, " else");
         fmt_block(f, els);
+      }
     }
     return;
   case NT_WHILE:
@@ -575,8 +621,12 @@ void fmt_program(FILE *out, Program *p) {
       continue;
     if (m != p->entry) // one file in, one file out: imports stay put
       continue;
+    g_cmts = m->cmts;
+    g_ncmts = m->ncmts;
+    g_ci = 0;
     for (size_t i = 0; i < reflist_len(m->decls); i++) {
       Node *d = NG(reflist_at(m->decls, i));
+      cmt_flush(&f, d->line);
       switch (d->kind) {
       case NT_FN: {
         if (d->bval)
@@ -626,10 +676,13 @@ void fmt_program(FILE *out, Program *p) {
         f.depth++;
         for (size_t fi = 0; fi < reflist_len(d->list); fi++) {
           Node *fd = NG(reflist_at(d->list, fi));
+          cmt_flush(&f, fd->line);
           findent(&f);
           fp(&f, "%s: ", fd->name);
           fmt_type(&f, NG(fd->a));
-          fp(&f, ",\n");
+          fp(&f, ",");
+          cmt_tail(&f, fd);
+          fp(&f, "\n");
         }
         f.depth--;
         findent(&f);
@@ -655,6 +708,7 @@ void fmt_program(FILE *out, Program *p) {
         f.depth++;
         for (size_t vi = 0; vi < reflist_len(d->list); vi++) {
           Node *v = NG(reflist_at(d->list, vi));
+          cmt_flush(&f, v->line);
           findent(&f);
           fp(&f, "%s", v->name);
           if (v->op == VAR_TUPLE) {
@@ -664,22 +718,31 @@ void fmt_program(FILE *out, Program *p) {
                 fp(&f, ", ");
               fmt_type(&f, NG(reflist_at(v->list, k)));
             }
-            fp(&f, "),\n");
+            fp(&f, "),");
+            cmt_tail(&f, v);
+            fp(&f, "\n");
           } else if (v->op == VAR_STRUCT) {
             fp(&f, " {\n");
             f.depth++;
             for (size_t k = 0; k < reflist_len(v->list); k++) {
               Node *fd = NG(reflist_at(v->list, k));
+              cmt_flush(&f, fd->line);
               findent(&f);
               fp(&f, "%s: ", fd->name);
               fmt_type(&f, NG(fd->a));
-              fp(&f, ",\n");
+              fp(&f, ",");
+              cmt_tail(&f, fd);
+              fp(&f, "\n");
             }
             f.depth--;
             findent(&f);
-            fp(&f, "},\n");
+            fp(&f, "},");
+            cmt_tail(&f, v);
+            fp(&f, "\n");
           } else {
-            fp(&f, ",\n");
+            fp(&f, ",");
+            cmt_tail(&f, v);
+            fp(&f, "\n");
           }
         }
         f.depth--;
@@ -694,6 +757,7 @@ void fmt_program(FILE *out, Program *p) {
         f.depth++;
         for (size_t si = 0; si < reflist_len(d->list); si++) {
           Node *sig = NG(reflist_at(d->list, si));
+          cmt_flush(&f, sig->line);
           findent(&f);
           fp(&f, "fn %s", sig->name);
           fmt_params(&f, sig->list, NULL);
@@ -701,7 +765,9 @@ void fmt_program(FILE *out, Program *p) {
             fp(&f, " -> ");
             fmt_type(&f, NG(sig->c));
           }
-          fp(&f, ",\n");
+          fp(&f, ",");
+          cmt_tail(&f, sig);
+          fp(&f, "\n");
         }
         f.depth--;
         findent(&f);
@@ -719,6 +785,7 @@ void fmt_program(FILE *out, Program *p) {
             d->b != NO_REF ? NG(d->b)->name : NULL;
         for (size_t fi = 0; fi < reflist_len(d->list); fi++) {
           Node *fn = NG(reflist_at(d->list, fi));
+          cmt_flush(&f, fn->line);
           findent(&f);
           fp(&f, "fn %s", fn->name);
           fmt_params(&f, fn->list, irecv);
@@ -727,6 +794,7 @@ void fmt_program(FILE *out, Program *p) {
             fmt_type(&f, NG(fn->c));
           }
           fmt_block(&f, NG(fn->d));
+          cmt_tail(&f, fn);
           fp(&f, "\n");
         }
         f.depth--;
@@ -804,7 +872,9 @@ void fmt_program(FILE *out, Program *p) {
       default:
         break;
       }
+      cmt_tail_back(&f, d);
     }
+    cmt_flush(&f, INT_MAX); // trailing comments after the last decl
   }
   fwrite(f.p, 1, f.n, out);
   free(f.p);

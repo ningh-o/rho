@@ -115,9 +115,17 @@ typedef struct Token {
   char *serr;  // string decode error text, else NULL
 } Token;
 
+// comments never become tokens; the lexer records them verbatim so the
+// formatter can replay them (fmt may not drop any comment)
+typedef struct LexComment {
+  const char *text; // from "//" to end of line, no newline, NUL-terminated
+  int line, col;
+} LexComment;
+
 typedef struct Lexer Lexer;
 Lexer *lex_file(Arena *a, const char *path, const char *src);
 const Token *lex_tokens(const Lexer *lx, size_t *n);
+const LexComment *lex_comments(const Lexer *lx, size_t *n);
 
 // ---------------------------------------------------------------- AST
 //
@@ -156,6 +164,7 @@ struct Node {
   NodeKind kind;
   const char *file;
   int line, col;
+  int end_line; // fmt-only: line of the construct's last token (0 = unstamped)
   void *sem;  // checker-annotated Type* (emit reads it)
   void *sem2; // checker-annotated FnDef* (chosen overload)
   const char *name;  // identifier payload (many kinds)
@@ -226,6 +235,8 @@ typedef struct Module {
   char *src;
   const Token *toks;
   size_t ntoks;
+  const LexComment *cmts; // the file's comments, in source order
+  size_t ncmts;
   RefList *decls;
   struct Module *next;
   bool is_package; // loaded via a lib.rho facade

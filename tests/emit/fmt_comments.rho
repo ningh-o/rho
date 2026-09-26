@@ -1,0 +1,48 @@
+// out: circle
+// out: pos
+// out: (1, 2)
+// module header — fmt must keep every comment
+// second header line
+struct Pt {
+  x: i32,  // horizontal
+  y: i32,  // vertical
+}
+
+enum Shape {
+  Circle,  // round
+  Rect(i32, i32),  // boxy
+}
+
+trait Show {
+  fn to_str(self) -> string,  // one method
+}
+
+impl Show for Pt {
+  fn to_str(self) -> string {
+    // build the text
+    return format("({}, {})", self.x, self.y);  // done
+  }
+}
+
+// entry point
+fn main() -> i32 {
+  let p = new Pt {x: 1, y: 2};  // origin-ish
+  // decide by shape
+  match Shape.Circle {
+    Shape.Circle => printf("circle\n"),  // round arm
+    _ => printf("other\n"),
+  }
+  // nested control
+  if p.x > 0 {
+    // positive branch
+    printf("pos\n");
+  } else {
+    printf("neg\n");  // else note
+  }
+  // tail comment before end
+  let s = p.to_str();
+  printf("{}\n", s);
+  return 0;
+}
+
+// trailing file comment

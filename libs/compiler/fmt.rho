@@ -461,7 +461,7 @@ pub fn fmt_line(st: *Stmt, depth: usize) -> string {
     out = out + fmt_block(st.body, depth + 1);
     out = out + ind;
     out = out + "}";
-    // else-if chains ride inline; a plain else takes two spaces
+    // else-if chains ride inline; a plain else takes one space
     let mut tail: []*Stmt = st.body2;
     let mut d: usize = depth;
     while len(tail) == 1 && tail[0].tag == parse.ST_IF {
@@ -480,7 +480,7 @@ pub fn fmt_line(st: *Stmt, depth: usize) -> string {
       tail = nx.body2;
     }
     if len(tail) > 0 {
-      out = out + " else  {\n";
+      out = out + " else {\n";
       out = out + fmt_block(tail, depth + 1);
       out = out + ind;
       out = out + "}";
