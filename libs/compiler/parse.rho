@@ -1006,10 +1006,11 @@ fn parse_atom(mut c: *PCur) -> *Expr {
     // fn(params) -> T { body } — the closure literal (params bind at
     // 64-bit lanes; captures resolve in the emitter's env)
     tkadv(mut c); // fn
-    let mut pstr2: []bool = make([]bool, 8);
-    let mut pslc2: []bool = make([]bool, 8);
-    let mut ptypes2: []string = make([]string, 8);
-    let mut pvar2: []bool = make([]bool, 8);
+    let cap2: usize = count_params(c) + 1;
+    let mut pstr2: []bool = make([]bool, cap2);
+    let mut pslc2: []bool = make([]bool, cap2);
+    let mut ptypes2: []string = make([]string, cap2);
+    let mut pvar2: []bool = make([]bool, cap2);
     let params = parse_params2(mut c, mut pstr2, mut pslc2, mut ptypes2, mut pvar2);
     let rtype2: string = eat_arrow_typed(mut c);
     let mut body2: []*Stmt = make([]*Stmt, 0);
@@ -1919,7 +1920,8 @@ fn parse_stmt(mut c: *PCur) -> *Stmt {
 // everything else is i64
 fn parse_params2(mut c: *PCur, mut pstr: []bool, mut pslc: []bool,
                  mut ptypes: []string, mut pvar: []bool) -> []string {
-  let mut names: []string = make([]string, 8);
+  let cap: usize = count_params(c) + 1;
+  let mut names: []string = make([]string, cap);
   let mut n: usize = 0;
   if !eat_punct(mut c, 40) {
     return names[0..0];
@@ -1981,6 +1983,53 @@ fn parse_params2(mut c: *PCur, mut pstr: []bool, mut pslc: []bool,
     }
   }
   return names[0..n];
+}
+
+// pre-count the parameter list the cursor sits on: top-level commas
+// between '(' and its matching ')' (brackets nest — a param type's
+// Option[Pair[i64, i32]] commas never count); the param tables size
+// from this and the fixed-cap class dies at its last holdout
+fn count_params(c: *PCur) -> usize {
+  if !is_punct(tk(c), 40) {
+    return 0;
+  }
+  let mut n: usize = 0;
+  let mut depth: i64 = 0;
+  let mut i: usize = c.pos;
+  while i < len(c.toks) {
+    if is_punct(c.toks[i], 40) {
+      depth = depth + 1;
+    } else {
+      if is_punct(c.toks[i], 91) {
+        depth = depth + 1;
+      } else {
+        if is_punct(c.toks[i], 93) {
+          depth = depth - 1;
+        } else {
+          if is_punct(c.toks[i], 41) {
+            depth = depth - 1;
+            if depth == 0 {
+              break;
+            }
+          } else {
+            if is_punct(c.toks[i], 44) && depth == 1 {
+              n = n + 1;
+            }
+          }
+        }
+      }
+    }
+    i = i + 1;
+  }
+  // '()' is zero params; otherwise commas + 1
+  let mut j: usize = c.pos + 1;
+  while j < len(c.toks) && j <= i {
+    if !is_punct(c.toks[j], 41) {
+      return n + 1;
+    }
+    break;
+  }
+  return n;
 }
 
 // the optional '-> type' tail; returns the composed type text or ""
@@ -2536,10 +2585,11 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
         }
       }
       // a user fn: params, arrow, body
-      let mut pstr: []bool = make([]bool, 8);
-      let mut pslc: []bool = make([]bool, 8);
-      let mut ptypes: []string = make([]string, 8);
-      let mut pvar: []bool = make([]bool, 8);
+      let cap3: usize = count_params(c) + 1;
+      let mut pstr: []bool = make([]bool, cap3);
+      let mut pslc: []bool = make([]bool, cap3);
+      let mut ptypes: []string = make([]string, cap3);
+      let mut pvar: []bool = make([]bool, cap3);
       let params = parse_params2(mut c, mut pstr, mut pslc, mut ptypes, mut pvar);
       let rtype: string = eat_arrow_typed(mut c);
       let mut body: []*Stmt = make([]*Stmt, 0);
@@ -2887,6 +2937,36 @@ fn mods_qual_expr(mut e: *Expr, mp: *Prog, canon: string,
   }
 }
 
+// append one struct (the table grows by one — bare registration:
+// module-local `new` and type texts key on the bare name; the root's
+// own tables ride parse()'s fixed 32s, so the merge owns its growth)
+fn mods_struct_add(mut prog: *Prog, sd: *StructDef) {
+  let old: []*StructDef = prog.structs;
+  let mut bigger: []*StructDef = make([]*StructDef, len(old) + 1);
+  let mut i: usize = 0;
+  while i < len(old) {
+    bigger[i] = old[i];
+    i = i + 1;
+  }
+  bigger[len(old)] = sd;
+  prog.structs = bigger;
+  prog.nstructs = prog.nstructs + 1;
+}
+
+// append one enum (same growth law)
+fn mods_enum_add(mut prog: *Prog, ed: *EnumDef) {
+  let old: []*EnumDef = prog.enums;
+  let mut bigger: []*EnumDef = make([]*EnumDef, len(old) + 1);
+  let mut i: usize = 0;
+  while i < len(old) {
+    bigger[i] = old[i];
+    i = i + 1;
+  }
+  bigger[len(old)] = ed;
+  prog.enums = bigger;
+  prog.nenums = prog.nenums + 1;
+}
+
 // append one fn under a qualified name (the table grows by one —
 // len() IS the count everywhere downstream)
 fn mods_fn_add(mut prog: *Prog, fd: *FnDef) {
@@ -3101,6 +3181,20 @@ fn mods_load(mut prog: *Prog, mods: string, path: string,
                      mp.cexprs[ci2]);
     }
     ci2 = ci2 + 1;
+  }
+  // the module's structs and enums register bare — module-local `new`
+  // and the type texts key on the bare name (qualified struct
+  // resolution is the checker's later growth; today's modules keep
+  // unique names, the merge keeps the law honest about it)
+  let mut si3: usize = 0;
+  while si3 < mp.nstructs {
+    mods_struct_add(mut prog, mp.structs[si3]);
+    si3 = si3 + 1;
+  }
+  let mut ei3: usize = 0;
+  while ei3 < mp.nenums {
+    mods_enum_add(mut prog, mp.enums[ei3]);
+    ei3 = ei3 + 1;
   }
   return canon;
 }

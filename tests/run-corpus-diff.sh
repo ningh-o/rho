@@ -19,7 +19,14 @@ RHO=${RHO:-./build/rho}
 # address width with the declared-width shift-count mask — closing
 # all ten legs (086/088/092/098/105 mut surface; 005/041/045/046/048
 # the lane and the mask). 108 again, on the merged law.
-PINNED=108
+#
+# 108 → 110 at the T3.1 frontier round: two new legs pin the
+# self-compile fixes — 106 (a ten-parameter signature; the mirror's
+# fixed cap of eight indexed past its param tables and collapsed the
+# whole parse) and 107 (a struct and enum born inside a package; the
+# module merge never registered them, so module-local `new` stayed
+# unknown to the self-host's own checker).
+PINNED=110
 
 # one file's differential; echoes "pass" or the failure label
 check_one() {

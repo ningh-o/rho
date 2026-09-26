@@ -1,0 +1,12 @@
+// exit: 0
+// 107 — a struct born inside a package: the module's structs and
+// enums register for the whole program (a `new Pt` inside a module
+// stayed unknown to the self-host's checker until the merge landed)
+use geom;
+
+fn main() -> i32 {
+  printf("sum={}\n", geom.shape_sum(3, 4));
+  printf("sum2={}\n", geom.shape_sum(10, 0 - 4));
+  printf("tag={}\n", geom.shape_tag());
+  return 0;
+}

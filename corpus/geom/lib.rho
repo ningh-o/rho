@@ -3,3 +3,5 @@
 use point;
 pub use point;
 pub use point.origin as zero;
+use shapes;
+pub use shapes;

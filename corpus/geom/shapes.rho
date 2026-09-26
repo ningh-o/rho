@@ -1,0 +1,28 @@
+// a struct and an enum born in the interior: constructed, read, and
+// returned through the facade — module-local `new` and match key on
+// the merged tables (the merge gap kept them unknown to the
+// self-host's own checker)
+struct Pt {
+  x: i64,
+  y: i64,
+}
+
+enum Hue {
+  Red,
+  Blue,
+}
+
+pub fn shape_sum(a: i64, b: i64) -> i64 {
+  let mut p = new Pt { x: a, y: b };
+  p.x = p.x + p.y;
+  return p.x;
+}
+
+pub fn shape_tag() -> i64 {
+  let h: Hue = Hue.Red;
+  match h {
+    Hue.Red => { return 1; },
+    Hue.Blue => { return 2; },
+  }
+  return 0;
+}
