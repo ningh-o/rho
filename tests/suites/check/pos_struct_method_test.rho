@@ -1,3 +1,4 @@
+// out: twelve
 struct Rect {
   w: i32,
   h: i32,

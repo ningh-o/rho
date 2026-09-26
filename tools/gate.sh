@@ -29,11 +29,16 @@ cap 120 make all >/dev/null || fail "boot build"
 echo "== gate: boot selftest"
 cap 60 "$RHO" selftest >/dev/null || fail "selftest"
 
-# --- leg 2: the script legs ---
-for s in run-check-tests run-emit-tests run-fmt-tests run-fmt-self run-set-tests; do
+# --- leg 2: the script legs (behavioral tests live in the suites; these
+# are the formatter and cross-compiler infrastructure legs) ---
+for s in run-fmt-tests run-fmt-self; do
   echo "== gate: $s"
   cap 300 ./tests/$s.sh >/dev/null || fail "$s"
 done
+
+# --- leg 2b: the conformance suites (the main test framework) ---
+echo "== gate: the suites (rho test tests/suites)"
+cap 900 "$RHO" test tests/suites >/dev/null || fail "the suites"
 
 # --- leg 3: the corpus differential (108/108, pinned) ---
 echo "== gate: corpus differential"

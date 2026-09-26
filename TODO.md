@@ -625,8 +625,24 @@ section — no placeholder stages. boot is the reference compiler.
       `// pending: T3.x` and runs as an expected-fail ledger,
       promoting per case when its task lands. The suite runs on
       T3.5's verb — it is the verb's fixtures and acceptance; no
-      interim runner exists. The existing tests/check
-      negatives stay put — no migration churn. The skeleton is
+      interim runner exists. ~~The existing tests/check negatives
+      stay put — no migration churn.~~ MIGRATED (2026-09-27): the
+      verb is now the main test framework. tests/emit (30 behavioral
+      fixtures) moved to suites/emit as *_test.rho — they now RUN
+      under the verb with their `// out:` pins (stronger than the old
+      stdout-only leg: exit codes are judged too; pos_labels pins
+      `// exit: 1`); tests/check (24 diagnostic + 8 positive) moved
+      to suites/check — expect: files judge whole, positives gained
+      `// out:` pins and actually execute; run-set-tests' six --set
+      faces became suites/set (one variant per override, the range
+      refusal rides `// expect:` after the refusal learned to speak
+      diag). The migration caught and fixed a real verb bug:
+      g_set_refused was a process latch — one refused case poisoned
+      every later compile; it now resets per case (the isolation
+      law). run-check/emit/set-tests.sh retired; make test and
+      gate.sh run the suites (gate leg 2b, 900 s cap) plus only the
+      cross-compiler shell legs (fmt roundtrip, fmt-self, selfhost,
+      differentials, corpus replay, robustness). The skeleton is
       seeded (lang/modsys/eq/params/strops/multiline/opt/diag, green
       tier + the §18/§19/T3.7 pending ledger); the full §11 map keeps
       growing per area until the map is complete.

@@ -17,11 +17,8 @@ selftest: $(BIN)
 	./$(BIN) selftest
 
 test: selftest
-	./tests/run-check-tests.sh
-	./tests/run-emit-tests.sh
 	./tests/run-fmt-tests.sh
 	./tests/run-fmt-self.sh
-	./tests/run-set-tests.sh
 	./tests/run-selfhost.sh
 	./tests/run-diff.sh
 	./tests/run-corpus-diff.sh

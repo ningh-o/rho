@@ -40,4 +40,17 @@ that lands the law. A stale ledger cannot hide under a green gate.
 (build-parameter folding; the optimizer suite arrives with T2.x) ·
 `eq` the comparability law · `params` build parameters · `multiline`
 verbatim strings · `strops` the string law · `diag` diagnostics and
-the panic catalog.
+the panic catalog · `emit` behavioral emit fixtures (the old
+tests/emit leg, now judged by the verb: they run and pin stdout) ·
+`check` diagnostic and positive check fixtures (the old tests/check
+leg — `// expect:` pins refusal diagnostics, positives now RUN with
+`// out:` pins) · `set` the --set widened face (the old
+run-set-tests.sh leg — one variant per override, the refusal rides
+`// expect:`).
+
+The verb is the main test framework (2026-09-27 migration): every
+language-behavior test lives here. The shell legs that remain in
+`make test` are cross-compiler infrastructure — the fmt roundtrip,
+fmt-self parity, the selfhost loop, the boot-vs-mirror differential,
+the corpus replay, and the robustness probes — none of them is
+expressible as a single-program test.

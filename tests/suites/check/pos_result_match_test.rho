@@ -1,3 +1,4 @@
+// out: err=negative
 fn parse(n: i32) -> Result[i32, string] {
   if n < 0 {
     return Result.Err("negative");

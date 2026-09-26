@@ -1,0 +1,13 @@
+// spec: spec.md §7
+// set: BIG=18446744073709551615
+// out: w=4 m=true r=0.5 n=plain b=18446744073709551615
+const WIDTH: i32 = 4;
+const MODE: bool = true;
+const RATE: f64 = 0.5;
+const NAME: string = "plain";
+const BIG: u64 = 100;
+
+fn main() -> i32 {
+  printf("w={} m={} r={} n={} b={}\n", WIDTH, MODE, RATE, NAME, BIG);
+  return 0;
+}

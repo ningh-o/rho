@@ -1,3 +1,4 @@
+// out: one
 // dead branches are parsed then skipped whole: the unknown name inside
 // is never checked
 const MODE: i32 = 1;

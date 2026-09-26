@@ -6,7 +6,7 @@ set -u
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 RHO=${RHO:-./build/rho}
 pass=0; fail=0
-for f in tests/emit/*.rho; do
+for f in tests/suites/emit/*_test.rho; do
   name=$(basename "$f")
   if "$RHO" fmt "$f" >$T/fmt-a.txt 2>/dev/null && \
      "$RHO" fmt $T/fmt-a.txt >$T/fmt-b.txt 2>/dev/null && \

@@ -144,6 +144,10 @@ static void diags_reset(void) {
   // a depth bomb in one case must not blind the next case's diags
   extern void diag_gate_clear(void);
   diag_gate_clear();
+  // same law for the set-refusal latch: one refused case must not
+  // poison every later case's compile
+  extern bool g_set_refused;
+  g_set_refused = false;
 }
 
 static char *capture_diags(void) {
@@ -574,6 +578,8 @@ int cmd_test(int argc, char **argv) {
     fprintf(stderr, "rho test <path>... [filter]\n");
     return EXIT_USAGE;
   }
+  extern bool g_test_verb;
+  g_test_verb = true; // refusals ride the diag pipeline, not raw stderr
   const char *filter = NULL;
   vec_init(&g_tests, sizeof(TestCase));
   for (int i = 0; i < argc; i++) {

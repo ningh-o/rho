@@ -614,6 +614,7 @@ static bool parse_set_value(ConstDef *cd, const char *text, CVal *out) {
 }
 
 bool g_set_refused;
+bool g_test_verb; // the test runner suppresses the direct stderr line
 
 // returns 0 ok, 2 = refusal (a diagnostic is printed)
 int sets_apply(Program *p) {
@@ -621,17 +622,27 @@ int sets_apply(Program *p) {
     SetOverride *so = VAT(p->sets, SetOverride, i);
     Sym *s = p->entry->syms ? symtab_get(p->entry->syms, so->name) : NULL;
     if (!s || s->kind != SYM_CONST) {
-      fprintf(stderr, "rho: --set %s: no root const named '%s'\n",
-              so->name, so->name);
+      // the refusal also rides the diag pipeline: the test verb pins it
+      // with `// expect:` (the CLI exits 2 before printing diags)
+      diag_at(DIAG_ERROR, p->entry->path, 1, 1,
+              "--set %s: no root const named '%s'", so->name, so->name);
+      if (!g_test_verb)
+        fprintf(stderr, "rho: --set %s: no root const named '%s'\n",
+                so->name, so->name);
       return 2;
     }
     ConstDef *cd = s->u.konst;
     CVal v;
     if (!parse_set_value(cd, so->value, &v)) {
-      fprintf(stderr,
-              "rho: --set %s=%s: value refused for type %s (malformed "
-              "or out of range)\n",
+      diag_at(DIAG_ERROR, p->entry->path, 1, 1,
+              "--set %s=%s: value refused for type %s (malformed or out "
+              "of range)",
               so->name, so->value, type_name(cd->ty));
+      if (!g_test_verb)
+        fprintf(stderr,
+                "rho: --set %s=%s: value refused for type %s (malformed "
+                "or out of range)\n",
+                so->name, so->value, type_name(cd->ty));
       return 2;
     }
     CVal *slot = arena_alloc(g_arena, sizeof(CVal), 8);

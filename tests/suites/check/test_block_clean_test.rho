@@ -1,3 +1,4 @@
+// out: main ran
 // a test block checks like any declaration: the block bodies are
 // checked in every mode, and a green file with blocks checks clean
 fn main() -> i32 {

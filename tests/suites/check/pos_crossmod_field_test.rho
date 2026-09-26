@@ -1,3 +1,4 @@
+// out: 3 3
 // cross-module struct fields: the using module's struct names a type
 // from a module that loads later in the BFS (deferred resolution)
 use mods.shapes;
