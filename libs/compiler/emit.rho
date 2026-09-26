@@ -57,23 +57,23 @@ fn clo_ty_need(gi: *GenInsts, ari: i64, kind: i64) {
 }
 
 fn ginsts_new() -> *GenInsts {
-  return new GenInsts { bases: make([]string, 32), keys: make([]string, 32),
-                        sufs: make([]string, 32), fds: make([]*FnDef, 32),
-                        clo_fds: make([]*FnDef, 32),
-                        clo_caps: make([]string, 256),
-                        clo_params: make([]string, 256),
-                        ids: make([]i64, 32),
+  return new GenInsts { bases: make([]string, 512), keys: make([]string, 512),
+                        sufs: make([]string, 512), fds: make([]*FnDef, 512),
+                        clo_fds: make([]*FnDef, 512),
+                        clo_caps: make([]string, 4096),
+                        clo_params: make([]string, 4096),
+                        ids: make([]i64, 512),
                         n: 0, cfn: 0,
-                        clo_wasms: make([]string, 32),
+                        clo_wasms: make([]string, 512),
                         clo_ty: make([]i64, 4) };
 }
 
 pub fn new_pool() -> *Pool {
-  return new Pool { segs: make([]string, 64), lens: make([]i64, 64),
-                    addrs: make([]i64, 64), n: 0, next: 1024,
+  return new Pool { segs: make([]string, 2048), lens: make([]i64, 2048),
+                    addrs: make([]i64, 2048), n: 0, next: 4104,
                     gi: ginsts_new(),
-                    rel_names: make([]string, 64),
-                    rel_texts: make([]string, 64), rel_n: 0 };
+                    rel_names: make([]string, 2048),
+                    rel_texts: make([]string, 2048), rel_n: 0 };
 }
 
 // a hex digit's value, -1 when not hex
@@ -7034,7 +7034,7 @@ fn emit_closure_fn(wat: string, caps: []string,
                    captypes: []string, ncaps: usize,
                    params: []string, body: []*Stmt, pool: *Pool,
                    prog: *Prog) -> string {
-  let env = env_new(64);
+  let env = env_new(1024);
   env_bind_consts(env, prog, pool);
   let nparams: i64 = 1 + (len(params) as i64);
   let nl = new NextLocal { v: nparams + 5 };
@@ -8714,7 +8714,7 @@ fn capture_at_after(fd: *FnDef) -> i64 {
 
 fn emit_fn(fd: *FnDef, pool: *Pool, prog: *Prog,
            wname: string) -> string {
-  let env = env_new(64);
+  let env = env_new(1024);
   env_bind_consts(env, prog, pool);
   let nl = new NextLocal { v: 0 };
   let param_slots: i64 = capture_at_after(fd);
@@ -9277,7 +9277,7 @@ fn float_runtime_wat(pool: *Pool) -> string {
 
 pub fn emit(prog: *Prog) -> string {
   let pool = new_pool();
-  let env = env_new(64);
+  let env = env_new(1024);
   env_bind_consts(env, prog, pool);
   let nl = new NextLocal { v: 6 }; // 0/1 capture, 2 exit, 3 $t, 4 $r, 5 $d
   let loops = loops_new();
@@ -9366,7 +9366,17 @@ pub fn emit(prog: *Prog) -> string {
               "(result i32)))\n";
   out = out + "  (import \"wasi_snapshot_preview1\" \"proc_exit\"\n";
   out = out + "    (func $proc_exit (param i32)))\n";
-  out = out + "  (memory 1)\n";
+  // memory: enough pages for the data segments (the pool interned the
+  // program's every string BEFORE this line — a program-sized source
+  // rides the data pool and must fit at instantiation; the allocator
+  // grows past it at runtime)
+  let mut mpages: i64 = 1;
+  let dtop: i64 = pool.next;
+  mpages = (dtop + 65535) / 65536;
+  if mpages < 1 {
+    mpages = 1;
+  }
+  out = out + "  (memory " + mpages.to_str() + ")\n";
   out = out + "  (export \"memory\" (memory 0))\n";
   let mut gi: usize = 0;
   while gi < prog.nconsts {

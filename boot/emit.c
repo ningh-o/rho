@@ -192,7 +192,7 @@ static WTy local_wty(Type *t, size_t j) {
 
 // ================================================================ module
 
-#define DATA_BASE 4096   // data literals start here
+#define DATA_BASE 65536  // data literals start here (the fmt scratch owns [64,65536))
 #define FMT_LO 64
 
 typedef struct DataEnt {
@@ -236,7 +236,8 @@ typedef struct FnNameEnt {
   const char *name;
 } FnNameEnt;
 
-static Em *em_cur; // current emitter (single-shot compiler)
+static Em *em_cur;
+static const char *g_kernel_wat; // kernel text with HEAPBASE spliced // current emitter (single-shot compiler)
 
 static void em_init(Em *em, Program *p, bool debug) {
   memset(em, 0, sizeof *em);
@@ -3828,8 +3829,38 @@ int emit_program(Program *p, bool debug, char **wat_out, size_t *wat_len) {
   // assemble: kernel interior + functions + data segments
   Buf *o = &em.o;
   tputs(o, "(module\n");
+  // the heap starts one page past the data top (the kernel text
+  // carries the HEAPBASE placeholder — a program-sized string pool
+  // must never sit under the heap's first allocation)
+  {
+    char hb[64];
+    size_t heap_base = (em.data_off + 65535) & ~(size_t)65535;
+    snprintf(hb, sizeof hb, "%zu", heap_base);
+    // splice into a copy of the kernel source
+    const char *kw0 = kernel_wat_src();
+    if (strstr(kw0, "HEAPBASE")) {
+      // every placeholder rides the same number
+      size_t n_ph = 0;
+      for (const char *q = kw0; (q = strstr(q, "HEAPBASE")); q += 8)
+        n_ph++;
+      size_t out_len = strlen(kw0) - n_ph * 8 + n_ph * strlen(hb) + 1;
+      char *kbuf = arena_alloc(g_arena, out_len, 1);
+      char *w = kbuf;
+      const char *r = kw0;
+      const char *q;
+      while ((q = strstr(r, "HEAPBASE"))) {
+        memcpy(w, r, (size_t)(q - r));
+        w += q - r;
+        memcpy(w, hb, strlen(hb));
+        w += strlen(hb);
+        r = q + 8;
+      }
+      strcpy(w, r);
+      g_kernel_wat = kbuf;
+    }
+  }
   // kernel: strip the (module …) wrapper, take the interior
-  const char *kw = kernel_wat_src();
+  const char *kw = g_kernel_wat ? g_kernel_wat : kernel_wat_src();
   size_t kn = strlen(kw);
   size_t start = 0;
   // find the first line after "(module"
@@ -3924,6 +3955,14 @@ int emit_program(Program *p, bool debug, char **wat_out, size_t *wat_len) {
   memcpy(o->p + o->n, em.fnbuf.p, em.fnbuf.n);
   o->n += em.fnbuf.n;
 
+  // memory: pages enough for every data segment (data_off is final
+  // here — the segments below are the last writes)
+  {
+    size_t pages = (em.data_off + 65535) / 65536;
+    if (pages < 1)
+      pages = 1;
+    tprintf(o, "  (memory (export \"memory\") %zu)\n", pages);
+  }
   // data segments
   for (size_t i = 0; i < VLEN(em.data); i++) {
     DataEnt *d = VAT(em.data, DataEnt, i);
