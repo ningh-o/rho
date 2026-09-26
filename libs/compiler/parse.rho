@@ -2537,6 +2537,54 @@ fn mods_slashes(p: string) -> string {
   return out;
 }
 
+// register a const under a (possibly qualified) name; the six
+// tables grow together
+fn mods_const_add(prog: *Prog, nm: string, cv: i64, ct: string,
+                  ce: *Expr) {
+  let n2: usize = prog.nconsts;
+  let c2: []string = make([]string, n2 + 1);
+  let v2: []i64 = make([]i64, n2 + 1);
+  let s2: []bool = make([]bool, n2 + 1);
+  let t2: []string = make([]string, n2 + 1);
+  let m2: []bool = make([]bool, n2 + 1);
+  let e2: []*Expr = make([]*Expr, n2 + 1);
+  let mut qi: usize = 0;
+  while qi < n2 {
+    c2[qi] = prog.consts[qi];
+    v2[qi] = prog.cvals[qi];
+    s2[qi] = prog.cstatic[qi];
+    t2[qi] = prog.ctypes[qi];
+    m2[qi] = prog.cmuts[qi];
+    e2[qi] = prog.cexprs[qi];
+    qi = qi + 1;
+  }
+  c2[n2] = nm;
+  v2[n2] = cv;
+  s2[n2] = false;
+  t2[n2] = ct;
+  m2[n2] = false;
+  e2[n2] = ce;
+  prog.consts = c2;
+  prog.cvals = v2;
+  prog.cstatic = s2;
+  prog.ctypes = t2;
+  prog.cmuts = m2;
+  prog.cexprs = e2;
+  prog.nconsts = n2 + 1;
+}
+
+// is a const registered under this (possibly qualified) name?
+fn mods_const_in(prog: *Prog, nm: string) -> bool {
+  let mut i: usize = 0;
+  while i < prog.nconsts {
+    if prog.consts[i] == nm {
+      return true;
+    }
+    i = i + 1;
+  }
+  return false;
+}
+
 // an export row: (owner, item, target)
 fn mods_export_add(prog: *Prog, own: string, item: string,
                    tar: string) {
@@ -2575,32 +2623,34 @@ fn mods_fn_in(mp: *Prog, nm: string) -> bool {
   return false;
 }
 
-fn mods_qualify_stmt(st: *Stmt, mp: *Prog, canon: string) {
+fn mods_qualify_stmt(st: *Stmt, mp: *Prog, canon: string,
+                     prog: *Prog, bnames: []string,
+                     bcans: []string, nb: usize) {
   let mut k: usize = 0;
   while k < len(st.args) {
-    mods_qual_expr(st.args[k], mp, canon);
+    mods_qual_expr(st.args[k], mp, canon, prog, bnames, bcans, nb);
     k = k + 1;
   }
   match st.val {
     Option.Some(v6) => {
-      mods_qual_expr(v6, mp, canon);
+      mods_qual_expr(v6, mp, canon, prog, bnames, bcans, nb);
     },
     Option.None => {},
   }
   match st.sub {
     Option.Some(s6) => {
-      mods_qualify_stmt(s6, mp, canon);
+      mods_qualify_stmt(s6, mp, canon, prog, bnames, bcans, nb);
     },
     Option.None => {},
   }
   let mut b: usize = 0;
   while b < len(st.body) {
-    mods_qualify_stmt(st.body[b], mp, canon);
+    mods_qualify_stmt(st.body[b], mp, canon, prog, bnames, bcans, nb);
     b = b + 1;
   }
   let mut b2: usize = 0;
   while b2 < len(st.body2) {
-    mods_qualify_stmt(st.body2[b2], mp, canon);
+    mods_qualify_stmt(st.body2[b2], mp, canon, prog, bnames, bcans, nb);
     b2 = b2 + 1;
   }
   let mut m3: usize = 0;
@@ -2608,38 +2658,63 @@ fn mods_qualify_stmt(st: *Stmt, mp: *Prog, canon: string) {
     let arm3: *MatchArm = st.marms[m3];
     match arm3.val {
       Option.Some(av3) => {
-        mods_qual_expr(av3, mp, canon);
+        mods_qual_expr(av3, mp, canon, prog, bnames, bcans, nb);
       },
       Option.None => {},
     }
     let mut sb3: usize = 0;
     while sb3 < len(arm3.body) {
-      mods_qualify_stmt(arm3.body[sb3], mp, canon);
+      mods_qualify_stmt(arm3.body[sb3], mp, canon, prog, bnames, bcans, nb);
       sb3 = sb3 + 1;
     }
     m3 = m3 + 1;
   }
 }
 
-fn mods_qual_expr(e: *Expr, mp: *Prog, canon: string) {
+fn mods_qual_expr(e: *Expr, mp: *Prog, canon: string,
+                   prog: *Prog, bnames: []string,
+                   bcans: []string, nb: usize) {
   if e.tag == EX_CALL && mods_fn_in(mp, e.name) {
     e.name = canon + "." + e.name;
   }
+  if e.tag == EX_FIELD {
+    // binding.CONST — another module's const through a use binding
+    // (lex.TK_EOF and friends: the self-compile's bread and butter)
+    match e.lhs {
+      Option.Some(rb) => {
+        if rb.tag == EX_VAR {
+          let mut qb: usize = 0;
+          while qb < nb {
+            if bnames[qb] == rb.name {
+              let qname: string = bcans[qb] + "." + e.name;
+              if mods_const_in(prog, qname) {
+                e.tag = EX_VAR;
+                e.name = qname;
+                e.lhs = Option.None;
+              }
+            }
+            qb = qb + 1;
+          }
+        }
+      },
+      Option.None => {},
+    }
+  }
   match e.lhs {
     Option.Some(l7) => {
-      mods_qual_expr(l7, mp, canon);
+      mods_qual_expr(l7, mp, canon, prog, bnames, bcans, nb);
     },
     Option.None => {},
   }
   match e.rhs {
     Option.Some(r7) => {
-      mods_qual_expr(r7, mp, canon);
+      mods_qual_expr(r7, mp, canon, prog, bnames, bcans, nb);
     },
     Option.None => {},
   }
   let mut k: usize = 0;
   while k < len(e.args) {
-    mods_qual_expr(e.args[k], mp, canon);
+    mods_qual_expr(e.args[k], mp, canon, prog, bnames, bcans, nb);
     k = k + 1;
   }
   let mut m4: usize = 0;
@@ -2647,13 +2722,13 @@ fn mods_qual_expr(e: *Expr, mp: *Prog, canon: string) {
     let arm4: *MatchArm = e.marms[m4];
     match arm4.val {
       Option.Some(av4) => {
-        mods_qual_expr(av4, mp, canon);
+        mods_qual_expr(av4, mp, canon, prog, bnames, bcans, nb);
       },
       Option.None => {},
     }
     let mut sb4: usize = 0;
     while sb4 < len(arm4.body) {
-      mods_qualify_stmt(arm4.body[sb4], mp, canon);
+      mods_qualify_stmt(arm4.body[sb4], mp, canon, prog, bnames, bcans, nb);
       sb4 = sb4 + 1;
     }
     m4 = m4 + 1;
@@ -2836,7 +2911,8 @@ fn mods_load(prog: *Prog, mods: string, path: string,
     if len(fd2.name) > 0 && fd2.name != "main" {
       let mut si2: usize = 0;
       while si2 < len(fd2.body) {
-        mods_qualify_stmt(fd2.body[si2], mp, canon);
+        mods_qualify_stmt(fd2.body[si2], mp, canon, prog,
+                          bnames, bcans, nb);
         si2 = si2 + 1;
       }
     }
@@ -2855,49 +2931,18 @@ fn mods_load(prog: *Prog, mods: string, path: string,
     }
     fi2 = fi2 + 1;
   }
-  // module-local consts join the shared table (root consts are
-  // visible everywhere; a module's own consts ride its uses' closure)
+  // the module's consts register BOTH bare (module-local refs) and
+  // qualified canon.name (other modules' binding.CONST refs)
   let mut ci2: usize = 0;
   while ci2 < mp.nconsts {
-    let mut dup: bool = false;
-    let mut di: usize = 0;
-    while di < prog.nconsts {
-      if prog.consts[di] == mp.consts[ci2] {
-        dup = true;
-      }
-      di = di + 1;
+    if !mods_const_in(prog, mp.consts[ci2]) {
+      mods_const_add(prog, mp.consts[ci2], mp.cvals[ci2],
+                     mp.ctypes[ci2], mp.cexprs[ci2]);
     }
-    if !dup {
-      let n2: usize = prog.nconsts;
-      let c2: []string = make([]string, n2 + 1);
-      let v2: []i64 = make([]i64, n2 + 1);
-      let s2: []bool = make([]bool, n2 + 1);
-      let t2: []string = make([]string, n2 + 1);
-      let m2: []bool = make([]bool, n2 + 1);
-      let e2: []*Expr = make([]*Expr, n2 + 1);
-      let mut qi: usize = 0;
-      while qi < n2 {
-        c2[qi] = prog.consts[qi];
-        v2[qi] = prog.cvals[qi];
-        s2[qi] = prog.cstatic[qi];
-        t2[qi] = prog.ctypes[qi];
-        m2[qi] = prog.cmuts[qi];
-        e2[qi] = prog.cexprs[qi];
-        qi = qi + 1;
-      }
-      c2[n2] = mp.consts[ci2];
-      v2[n2] = mp.cvals[ci2];
-      s2[n2] = mp.cstatic[ci2];
-      t2[n2] = mp.ctypes[ci2];
-      m2[n2] = mp.cmuts[ci2];
-      e2[n2] = mp.cexprs[ci2];
-      prog.consts = c2;
-      prog.cvals = v2;
-      prog.cstatic = s2;
-      prog.ctypes = t2;
-      prog.cmuts = m2;
-      prog.cexprs = e2;
-      prog.nconsts = n2 + 1;
+    let qn: string = canon + "." + mp.consts[ci2];
+    if !mods_const_in(prog, qn) {
+      mods_const_add(prog, qn, mp.cvals[ci2], mp.ctypes[ci2],
+                     mp.cexprs[ci2]);
     }
     ci2 = ci2 + 1;
   }
@@ -2908,6 +2953,28 @@ fn mods_load(prog: *Prog, mods: string, path: string,
 // exported fn (check and emit then see one known name)
 fn mods_resolve_expr(e: *Expr, prog: *Prog, bnames: []string,
                      bcans: []string, nb: usize) {
+  if e.tag == EX_FIELD {
+    // binding.CONST — a module's exported const as a value
+    match e.lhs {
+      Option.Some(rb2) => {
+        if rb2.tag == EX_VAR {
+          let mut qb2: usize = 0;
+          while qb2 < nb {
+            if bnames[qb2] == rb2.name {
+              let qname2: string = bcans[qb2] + "." + e.name;
+              if mods_const_in(prog, qname2) {
+                e.tag = EX_VAR;
+                e.name = qname2;
+                e.lhs = Option.None;
+              }
+            }
+            qb2 = qb2 + 1;
+          }
+        }
+      },
+      Option.None => {},
+    }
+  }
   if e.tag == EX_MCALL {
     match e.lhs {
       Option.Some(r3) => {
