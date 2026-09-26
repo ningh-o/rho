@@ -9258,7 +9258,15 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
         body = body + oob_check(mut pool, "(local.get " + len_slot.to_str() +
                                ")");
         if env_slice_elemtext(env, st.name) == "string" {
-          // a string element writes its pair at a 16-byte stride
+          // a string element writes its pair at a 16-byte stride. The
+          // LHS index parks in its OWN slot first: the RHS pair build
+          // reuses $t for its own element reads and used to clobber
+          // it, writing the pair back at the RHS's index (bs[2] =
+          // bs[1] stored element 1 twice and element 2 stayed zeroed)
+          let isv: i64 = nl.v;
+          nl.v = nl.v + 1;
+          body = body + "    (local.get $t)\n";
+          body = body + "    (local.set " + isv.to_str() + ")\n";
           match st.val {
             Option.Some(sv) => {
               let spsv = build_string_pair(sv, mut pool, mut env, mut prog, mut nl);
@@ -9267,7 +9275,9 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                 body = body + "    (i64.store (i32.add (i32.wrap_i64 ";
                 body = body + "(local.get ";
                 body = body + addr_slot.to_str();
-                body = body + ")) (i32.mul (i32.wrap_i64 (local.get $t)) ";
+                body = body + ")) (i32.mul (i32.wrap_i64 (local.get ";
+                body = body + isv.to_str();
+                body = body + ")) ";
                 body = body + "(i32.const 16))) (local.get ";
                 body = body + spsv.a.to_str();
                 body = body + "))\n";
@@ -9275,7 +9285,9 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                 body = body + "(i32.wrap_i64 (local.get ";
                 body = body + addr_slot.to_str();
                 body = body + ")) (i32.mul ";
-                body = body + "(i32.wrap_i64 (local.get $t)) (i32.const 16))) ";
+                body = body + "(i32.wrap_i64 (local.get ";
+                body = body + isv.to_str();
+                body = body + ")) (i32.const 16))) ";
                 body = body + "(i32.const 8)) (local.get ";
                 body = body + spsv.l.to_str();
                 body = body + "))\n";
@@ -9651,7 +9663,32 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
             if len(st.args) > 0 {
               // base.f[i] = e: the field is a slice — load its pair,
               // park the len in $r, bounds-check $t against it, then
-              // store the element at base.f.addr + i*8
+              // store the element at base.f.addr + i*stride. The
+              // stride follows the ELEMENT's shape: a pair-shaped
+              // element (string, a nested slice, a dyn) writes both
+              // halves at 16 bytes, a struct element its whole slot
+              // block, scalars and pointers one slot at 8
+              let mut fety: string = fty;
+              if len(fety) >= 2 && fety[0] == 91 && fety[1] == 93 {
+                fety = fety[2..len(fety)];
+              } else {
+                fety = "";
+              }
+              let mut estride: i64 = 8;
+              let mut epair: bool = false;
+              if fety == "string" ||
+                  (len(fety) >= 2 && fety[0] == 91 && fety[1] == 93) {
+                estride = 16;
+                epair = true;
+              }
+              if is_dyn_type(fety) {
+                estride = 16;
+                epair = true;
+              }
+              let esi: i64 = st_index(mut prog, fety);
+              if esi >= 0 {
+                estride = st_nslots(mut prog, esi) * 8;
+              }
               let idx: *Expr = st.args[0];
               body = body + emit_expr(mut pool, idx, mut env, mut prog, mut nl);
               body = body + "    (local.set $t)\n";
@@ -9670,16 +9707,73 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
               body = body + off.to_str();
               body = body + ")))\n";
               body = body + "    (i32.add (i32.wrap_i64) (i32.mul ";
-              body = body + "(i32.wrap_i64 (local.get $t)) (i32.const 8)))\n";
+              body = body + "(i32.wrap_i64 (local.get $t)) (i32.const ";
+              body = body + estride.to_str();
+              body = body + ")))\n";
               body = body + "    (local.set $a)\n";
-              match st.val {
-                Option.Some(e) => {
-                  body = body + emit_expr(mut pool, e, mut env, mut prog, mut nl);
-                },
-                Option.None => {},
+              if epair {
+                // the RHS pair parks in fresh slots ($a is already
+                // computed, so the build may reuse $t freely)
+                match st.val {
+                  Option.Some(e16) => {
+                    let spe = build_string_pair(e16, mut pool, mut env,
+                                                mut prog, mut nl);
+                    if spe.ok {
+                      body = body + spe.text;
+                      body = body + "    (i64.store (local.get $a) (local.get ";
+                      body = body + spe.a.to_str();
+                      body = body + "))\n";
+                      body = body + "    (i64.store (i32.add (local.get $a) ";
+                      body = body + "(i32.const 8)) (local.get ";
+                      body = body + spe.l.to_str();
+                      body = body + "))\n";
+                    } else {
+                      body = body + emit_expr(mut pool, e16, mut env,
+                                              mut prog, mut nl);
+                      body = body + "    (local.set $t)\n";
+                      body = body + "    (i64.store (local.get $a) ";
+                      body = body + "(local.get $t))\n";
+                    }
+                  },
+                  Option.None => {},
+                }
+              } else {
+                if esi >= 0 {
+                  // a struct element: the block copies from the
+                  // value's address
+                  let esn: i64 = st_nslots(mut prog, esi);
+                  match st.val {
+                    Option.Some(e16) => {
+                      body = body + struct_addr_of(mut pool, e16, mut env,
+                                                   mut prog, mut nl);
+                    },
+                    Option.None => {},
+                  }
+                  body = body + "    (local.set $t)\n";
+                  let mut esj: i64 = 0;
+                  while esj < esn {
+                    body = body + "    (i64.load (i32.add (i32.wrap_i64 ";
+                    body = body + "(local.get $t)) (i32.const ";
+                    body = body + (esj * 8).to_str();
+                    body = body + ")))\n";
+                    body = body + "    (local.set $r)\n";
+                    body = body + "    (i64.store (i32.add (local.get $a) ";
+                    body = body + "(i32.const ";
+                    body = body + (esj * 8).to_str();
+                    body = body + ")) (local.get $r))\n";
+                    esj = esj + 1;
+                  }
+                } else {
+                  match st.val {
+                    Option.Some(e) => {
+                      body = body + emit_expr(mut pool, e, mut env, mut prog, mut nl);
+                    },
+                    Option.None => {},
+                  }
+                  body = body + "    (local.set $t)\n";
+                  body = body + "    (i64.store (local.get $a) (local.get $t))\n";
+                }
               }
-              body = body + "    (local.set $t)\n";
-              body = body + "    (i64.store (local.get $a) (local.get $t))\n";
             } else {
               body = body + "    (i32.add (i32.wrap_i64 (local.get ";
               body = body + a_slot.to_str();

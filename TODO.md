@@ -591,8 +591,16 @@ section — no placeholder stages. boot is the reference compiler.
       push_string's field gate and build_string_pair's field branch
       now take slice fields beside strings (the pair layout is
       identical) (slicefieldarg) — this one family was ~40 of the
-      57. Still open in the child (15): six orphan (i64.add)s in
-      emit_arg's self-compile, five branch-tail surpluses, two
+      57. THE FOURTH WAVE (same day, all silent miscompiles, pinned
+      by the strstore leg): (1) a string-element ISTORE evaluated the
+      RHS pair build AFTER parking the LHS index in $t — the build's
+      own element reads clobbered it and bs[2] = bs[1] wrote element
+      1 twice; the LHS index now parks in its own slot; (2) the
+      indexed FIELD store (base.f[i] = e) hardcoded one 8-byte slot
+      at stride 8 — pair elements now store both halves at 16, a
+      struct element its whole slot block. Still open in the child
+      (15): six orphan (i64.add)s in emit_arg's self-compile, five
+      branch-tail surpluses (dyn_hole_dispatch's arm tails), two
       pair-return singles, a pair of one-offs.
 - [ ] **T3.2 Pure-source trust root**: every gate run rebuilds the seed
       from boot's C source on the spot. The pinned `seed.wasm` stays in
