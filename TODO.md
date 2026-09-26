@@ -1280,11 +1280,24 @@ operator overloading with one shape, no magic:
   trait_satisfied unifies Self structurally (through * / slice /
   args — `*Self` vs `*Pt`). Self anywhere else is an unknown type.
   Two lang fixtures pin both directions; the suites and the corpus
-  differential hold. REMAINING: the prelude Eq/Ord/Hash traits
-  themselves, the six operators resolving through them (`==` on
-  user types refuses without `impl Eq`, direct emission for
-  builtins, the never-list), the Hash default (FNV-1a over the §11
-  slot law), and the mirror side.
+  differential hold. THE OPERATOR TRAITS LANDED (2026-09-27): the prelude carries
+      Eq/Ord/Hash (pointer-Self sigs — the boxed idiom; prelude.rho
+      was reconstructed from the embedded truth first: the T3.6 wave
+      had adapted prelude.c directly and left the .rho behind, and a
+      blind re-embed regressed every mut view). ==/!= over user types
+      REWRITE into the eq call when an impl exists (the full method
+      machinery rides; a dangling-Node* across node_new corrupted the
+      prelude's own check first — allocations move g_nodes), else the
+      §10 defaults hold. Ordering over user types is impl-Ord-only:
+      < calls lt, > is lt swapped, <= and >= the negations; the
+      refusal names impl Ord. The default Hash is a synthesized FNV-1a
+      fold over the == law's slots (op=7; slot-width bytes, i32 pair
+      and pointer slots wrap to the i64 lane); impl Hash replaces it;
+      the never-list refuses with its own message. Five fixtures pin
+      eq-override/default/ord-derivations/ord-refusal/hash — suites
+      518. REMAINING: [T: Eq] bounds static dispatch, dyn Eq virtual
+      dispatch, the cycle-through-user-eq overflow doc, and the
+      mirror side.
 - `trait Hash { fn hash(self) -> u64 }` — the default folds the same
   values the `==` law compares, FNV-1a 64-bit over the slots in
   declaration order (string = content bytes; `*T` = the 32-bit
