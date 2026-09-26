@@ -36,8 +36,24 @@ struct GenInsts {
   n: usize,
   cfn: usize,      // closure table entries (names in clo_wasms)
   clo_wasms: []string,
-  clo_ty: []i64,   // 1 where an indirect-call arity (param count)
-                   // is used: [1]=fn(), [2]=fn(x), [3]=fn(x,y)
+  clo_ty: []i64,   // indirect-call arity flags: +1 scalar result,
+                   // +2 pair result — [1]=fn(), [2]=fn(x), [3]=fn(x,y)
+}
+
+fn clo_ty_need(gi: *GenInsts, ari: i64, kind: i64) {
+  if ari < 1 || ari > 3 {
+    return;
+  }
+  let old: i64 = gi.clo_ty[ari as usize];
+  if kind == 1 {
+    if old == 0 || old == 2 {
+      gi.clo_ty[ari as usize] = old + 1;
+    }
+  } else {
+    if old == 0 || old == 1 {
+      gi.clo_ty[ari as usize] = old + 2;
+    }
+  }
 }
 
 fn ginsts_new() -> *GenInsts {
@@ -818,10 +834,7 @@ fn emit_arg(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
       pool.gi.clo_wasms[pool.gi.cfn] = "$u_" + tname;
       pool.gi.cfn = pool.gi.cfn + 1;
       let tari: i64 = 1 + (len(tfd.params) as i64);
-      if tari >= 1 && tari <= 3 {
-        let cty2: []i64 = pool.gi.clo_ty;
-        cty2[tari as usize] = 1;
-      }
+      clo_ty_need(pool.gi, tari, 1);
       already = pool.gi.cfn as i64 - 1;
     }
     return "    (i64.const " + already.to_str() + ")\n" +
@@ -1249,6 +1262,9 @@ fn type_slots_d(prog: *Prog, ty: string, depth: i64) -> i64 {
     return 2;
   }
   if ty == "string" {
+    return 2;
+  }
+  if is_dyn_type(ty) {
     return 2;
   }
   if depth < 8 {
@@ -1938,7 +1954,9 @@ fn expr_ptr_type(e: *Expr, env: *Env, prog: *Prog) -> string {
     return "";
   }
   if e.tag == parse.EX_CALL {
-    return type_ptr_target(fn_rtype_of(prog, e.name));
+    // the CALL's own type: a generic's return rides its
+    // instantiation's bind (the declared *Pair[T,T] never substitutes)
+    return type_ptr_target(call_fn_rtype(prog, e, env));
   }
   if e.tag == parse.EX_MCALL {
     let mut recv: *Expr = parse.lit(0);
@@ -2098,6 +2116,24 @@ fn rel_field_walk(pool: *Pool, prog: *Prog, si: i64) -> string {
   while j < nf {
     let fty: string = prog.structs[si as usize].types[j as usize];
     let off: i64 = st_field_off(prog, si, j as i64) * 8;
+    if is_dyn_type(fty) {
+      // a dyn field releases its obj through the field's own vtable
+      // slot (nmethods = the release thunk's index)
+      let dtr: string = dyn_trait(fty);
+      let dnm: i64 = trait_method_count(prog, dtr);
+      walk = walk +
+             "            (i64.load (i32.add (i32.wrap_i64 " +
+             "(local.get $p)) (i32.const " + (off + 8).to_str() +
+             ")))\n" +
+             "            (i64.load (i32.add (i32.wrap_i64 " +
+             "(i64.load (i32.add (i32.wrap_i64 (local.get $p)) " +
+             "(i32.const " + off.to_str() + ")))) (i32.const " +
+             (dnm * 8).to_str() + ")))\n" +
+             "            (i32.wrap_i64)\n" +
+             "            call_indirect (type $clv1)\n";
+      j = j + 1;
+      continue;
+    }
     let fc: string = rel_callee(pool, prog, fty);
     if len(fc) > 0 {
       walk = walk + "            (i64.load (i32.add (i32.wrap_i64 " +
@@ -2337,14 +2373,92 @@ static mut DYN_TEXT: string = "";
 static mut DYN_A: i64 = 0;
 static mut DYN_L: i64 = 0;
 
-// when an arg is a dyn value (a fat-pair binding or a dyn-element
-// read), emit its to_str dispatch and park the pair; true when done
+// a struct field's or slice element's dyn pair loads into fresh
+// (vtable, obj) slots; "" text when the location is not one. The
+// struct base rides $r; the element read is bounds-checked
+fn dyn_pair_load(arg: *Expr, pool: *Pool, env: *Env, prog: *Prog,
+                 nl: *NextLocal) -> string {
+  let vbox: i64 = nl.v;
+  let obj: i64 = nl.v + 1;
+  nl.v = nl.v + 2;
+  if arg.tag == parse.EX_FIELD {
+    let mut base: *Expr = parse.lit(0);
+    match arg.lhs {
+      Option.Some(b) => {
+        base = b;
+      },
+      Option.None => {},
+    }
+    let bt: string = field_base_type(base, env, prog);
+    if len(bt) > 0 {
+      let si: i64 = st_index(prog, bt);
+      let fi: i64 = st_field_index(prog, si, arg.name);
+      if fi >= 0 &&
+          is_dyn_type(prog.structs[si as usize].types[fi as usize]) {
+        let off: i64 = st_field_off(prog, si, fi) * 8;
+        let mut out: string = emit_expr(pool, base, env, prog, nl) +
+               "    (local.set $r)\n" +
+               "    (i64.load (i32.add (i32.wrap_i64 (local.get $r))" +
+               " (i32.const " + off.to_str() + ")))\n" +
+               "    (local.set " + vbox.to_str() + ")\n" +
+               "    (i64.load (i32.add (i32.wrap_i64 (local.get $r))" +
+               " (i32.const " + (off + 8).to_str() + ")))\n" +
+               "    (local.set " + obj.to_str() + ")\n";
+        return out;
+      }
+    }
+    return "";
+  }
+  if arg.tag == parse.EX_IDX {
+    let mut base: *Expr = parse.lit(0);
+    match arg.lhs {
+      Option.Some(b) => {
+        base = b;
+      },
+      Option.None => {},
+    }
+    if base.tag == parse.EX_VAR && env_kind_of(env, base.name) == 2 &&
+        is_dyn_type(env_slice_elemtext(env, base.name)) {
+      let a: i64 = env_str_look(env, base.name);
+      let addr_slot: i64 = (0 - a) - 1;
+      let len_slot: i64 = env_str_len_slot(env, base.name);
+      let mut idx: *Expr = parse.lit(0);
+      match arg.rhs {
+        Option.Some(i2) => {
+          idx = i2;
+        },
+        Option.None => {},
+      }
+      let mut out: string = emit_expr(pool, idx, env, prog, nl) +
+             "    (local.set $t)\n" +
+             oob_check(pool, "(local.get " + len_slot.to_str() + ")") +
+             "    (i64.load (i32.add (i32.add (i32.wrap_i64 " +
+             "(local.get " + addr_slot.to_str() + ")) (i32.mul " +
+             "(i32.wrap_i64 (local.get $t)) (i32.const 16)))" +
+             " (i32.const 0)))\n" +
+             "    (local.set " + vbox.to_str() + ")\n" +
+             "    (i64.load (i32.add (i32.add (i32.wrap_i64 " +
+             "(local.get " + addr_slot.to_str() + ")) (i32.mul " +
+             "(i32.wrap_i64 (local.get $t)) (i32.const 16)))" +
+             " (i32.const 8)))\n" +
+             "    (local.set " + obj.to_str() + ")\n";
+      return out;
+    }
+    return "";
+  }
+  return "";
+}
+
+// when an arg is a dyn value (a fat-pair binding, a dyn-element read,
+// a dyn field, or a method call on a dyn receiver), emit its to_str
+// dispatch and park the pair; true when done
 fn dyn_hole_dispatch(arg: *Expr, pool: *Pool, env: *Env,
                      prog: *Prog, nl: *NextLocal) -> bool {
   let mut trt: string = "";
   let mut vbox: i64 = 0;
   let mut obj: i64 = 0;
   let mut pre: string = "";
+  let mut loaded: bool = false;
   if arg.tag == parse.EX_VAR &&
       is_dyn_type(env_slice_elemtext(env, arg.name)) {
     trt = dyn_trait(env_slice_elemtext(env, arg.name));
@@ -2353,10 +2467,9 @@ fn dyn_hole_dispatch(arg: *Expr, pool: *Pool, env: *Env,
     obj = env_str_len_slot(env, arg.name);
   } else {
     if arg.tag == parse.EX_MCALL {
-      // a dyn method call whose declared return is string rides its
-      // parked pair (any trait method, not only to_str)
-      // d.to_str() on a dyn receiver — the dispatch parks the pair;
-      // ride it (the arg's own text already parked into nl slots)
+      // a method call on a dyn receiver: the dispatch's own result
+      // is the hole's value (string rides its parked pair; a scalar
+      // renders through the int/bool text)
       let mut rv9: *Expr = parse.lit(0);
       match arg.lhs {
         Option.Some(r9b) => {
@@ -2364,19 +2477,176 @@ fn dyn_hole_dispatch(arg: *Expr, pool: *Pool, env: *Env,
         },
         Option.None => {},
       }
+      let mut recv_dyn: bool = false;
       if rv9.tag == parse.EX_VAR &&
           is_dyn_type(env_slice_elemtext(env, rv9.name)) {
-        // evaluate the dispatch (it parks its pair in fresh slots
-        // and rides the address — dropped, the pair is the value)
-        let base9: i64 = nl.v;
-        let t9: string = emit_expr(pool, arg, env, prog, nl);
-        DYN_TEXT = t9 + "    drop\n";
-        DYN_A = base9;
-        DYN_L = base9 + 1;
-        return true;
+        recv_dyn = true;
+        trt = dyn_trait(env_slice_elemtext(env, rv9.name));
+      }
+      if !recv_dyn &&
+          (rv9.tag == parse.EX_FIELD || rv9.tag == parse.EX_IDX) {
+        // the receiver itself is a dyn field read or element read:
+        // load the fat pair, then dispatch through it
+        let vt9: string = dyn_recv_trait(rv9, env, prog);
+        if len(vt9) > 0 {
+          let ld9: string = dyn_pair_load(rv9, pool, env, prog, nl);
+          if len(ld9) > 0 {
+            trt = vt9;
+            vbox = nl.v - 2;
+            obj = nl.v - 1;
+            pre = pre + ld9;
+            loaded = true;
+          }
+        }
+      }
+      if len(trt) > 0 {
+        // the declared return picks the rendering shape
+        let mut rtype9: string = "i64";
+        let mut t9: usize = 0;
+        while t9 < prog.ntraits {
+          if prog.traits[t9].name == trt {
+            let mut m9: usize = 0;
+            while m9 < prog.traits[t9].nmethods {
+              if prog.traits[t9].methods[m9] == arg.name &&
+                  m9 < len(prog.traits[t9].rtypes) {
+                rtype9 = prog.traits[t9].rtypes[m9];
+              }
+              m9 = m9 + 1;
+            }
+          }
+          t9 = t9 + 1;
+        }
+        if loaded {
+          // dispatch arg.name through the loaded fat pair, rendering
+          // by the declared return shape
+          let ord9: i64 = trait_ordinal(prog, trt, arg.name);
+          if ord9 < 0 {
+            return false;
+          }
+          if rtype9 == "string" {
+            let ta9: i64 = nl.v;
+            let tl9: i64 = nl.v + 1;
+            nl.v = nl.v + 2;
+            pre = pre + "    (local.get " + obj.to_str() + ")\n" +
+                   "    (i64.load (i32.add (i32.wrap_i64 " +
+                   "(local.get " + vbox.to_str() + ")) (i32.const " +
+                   (ord9 * 8).to_str() + ")))\n" +
+                   "    (i32.wrap_i64)\n" +
+                   "    call_indirect (type $clp1)\n" +
+                   "    (local.set " + tl9.to_str() + ")\n" +
+                   "    (local.set " + ta9.to_str() + ")\n";
+            DYN_TEXT = pre;
+            DYN_A = ta9;
+            DYN_L = tl9;
+            return true;
+          }
+          let tb9: i64 = nl.v;
+          nl.v = nl.v + 1;
+          let ta9: i64 = nl.v;
+          let tl9: i64 = nl.v + 1;
+          nl.v = nl.v + 2;
+          pre = pre + "    (local.get " + obj.to_str() + ")\n" +
+                 "    (i64.load (i32.add (i32.wrap_i64 " +
+                 "(local.get " + vbox.to_str() + ")) (i32.const " +
+                 (ord9 * 8).to_str() + ")))\n" +
+                 "    (i32.wrap_i64)\n" +
+                 "    call_indirect (type $cl1)\n" +
+                 "    (local.set " + tb9.to_str() + ")\n" +
+                 "    (local.get " + tb9.to_str() + ")\n";
+          if rtype9 == "bool" {
+            pre = pre + "    call $w_bool\n" +
+                   "    (local.set $l)\n" +
+                   "    (i64.extend_i32_u)\n" +
+                   "    (local.set " + ta9.to_str() + ")\n" +
+                   "    (i64.extend_i32_u (local.get $l))\n" +
+                   "    (local.set " + tl9.to_str() + ")\n";
+          } else {
+            pre = pre + "    call $w_itoa\n" +
+                   "    (local.set " + tl9.to_str() + ")\n" +
+                   "    (local.set " + ta9.to_str() + ")\n";
+          }
+          DYN_TEXT = pre;
+          DYN_A = ta9;
+          DYN_L = tl9;
+          return true;
+        }
+        if rtype9 == "string" {
+            // the dispatch reserves its pair first — base9 holds it
+            let base9: i64 = nl.v;
+            let t9s: string = emit_expr(pool, arg, env, prog, nl);
+            DYN_TEXT = t9s + "    drop\n";
+            DYN_A = base9;
+            DYN_L = base9 + 1;
+            return true;
+          }
+          // a scalar result: dispatch, then render through the
+          // value's own text (ints the decimal printer, bools the
+          // word, floats the exact-decimal cluster)
+          let tb9: i64 = nl.v;
+          nl.v = nl.v + 1;
+          let ta9: i64 = nl.v;
+          let tl9: i64 = nl.v + 1;
+          nl.v = nl.v + 2;
+          let mut t9b: string = emit_expr(pool, arg, env, prog, nl);
+          t9b = t9b + "    (local.set " + tb9.to_str() + ")\n" +
+                "    (local.get " + tb9.to_str() + ")\n";
+          if rtype9 == "bool" {
+            t9b = t9b + "    call $w_bool\n" +
+                   "    (local.set $l)\n" +
+                   "    (i64.extend_i32_u)\n" +
+                   "    (local.set " + ta9.to_str() + ")\n" +
+                   "    (i64.extend_i32_u (local.get $l))\n" +
+                   "    (local.set " + tl9.to_str() + ")\n";
+          } else {
+            if rtype9 == "f64" || rtype9 == "f32" {
+              FLOAT_WANTED = 1;
+              if rtype9 == "f32" {
+                t9b = t9b + "    (f64.reinterpret_i64)\n" +
+                       "    (f32.demote_f64)\n" +
+                       "    (f64.promote_f32)\n" +
+                       "    (i64.reinterpret_f64)\n" +
+                       "    call $u___f32_text\n";
+              } else {
+                t9b = t9b + "    call $u___f64_text\n";
+              }
+            } else {
+              t9b = t9b + "    call $w_itoa\n" +
+                     "    (local.set " + tl9.to_str() + ")\n" +
+                     "    (local.set " + ta9.to_str() + ")\n";
+            }
+          }
+          if rtype9 == "f64" || rtype9 == "f32" {
+            t9b = t9b + "    (local.set " + tl9.to_str() +
+                   ")\n" +
+                   "    (local.set " + ta9.to_str() + ")\n";
+          }
+          DYN_TEXT = t9b;
+          DYN_A = ta9;
+          DYN_L = tl9;
+          return true;
+        }
+        return false;
+    } else {
+      if arg.tag == parse.EX_FIELD || arg.tag == parse.EX_IDX {
+        // a dyn field read or element read: load the fat pair, then
+        // dispatch to_str through it
+        let vt2: string = dyn_recv_trait(arg, env, prog);
+        if len(vt2) == 0 {
+          return false;
+        }
+        let ld2: string = dyn_pair_load(arg, pool, env, prog, nl);
+        if len(ld2) == 0 {
+          return false;
+        }
+        trt = vt2;
+        vbox = nl.v - 2;
+        obj = nl.v - 1;
+        pre = pre + ld2;
+        loaded = true;
+      } else {
+        return false;
       }
     }
-    return false;
   }
   let ord: i64 = trait_ordinal(prog, trt, "to_str");
   if ord < 0 {
@@ -2399,6 +2669,47 @@ fn dyn_hole_dispatch(arg: *Expr, pool: *Pool, env: *Env,
   return true;
 }
 
+// the trait of a dyn-valued FIELD or ELEMENT read (the written type
+// at the location), "" when the location is not dyn-typed
+fn dyn_recv_trait(e: *Expr, env: *Env, prog: *Prog) -> string {
+  if e.tag == parse.EX_FIELD {
+    let mut base: *Expr = parse.lit(0);
+    match e.lhs {
+      Option.Some(b) => {
+        base = b;
+      },
+      Option.None => {},
+    }
+    let bt: string = field_base_type(base, env, prog);
+    if len(bt) > 0 {
+      let si: i64 = st_index(prog, bt);
+      let fi: i64 = st_field_index(prog, si, e.name);
+      if fi >= 0 {
+        let fty: string =
+            prog.structs[si as usize].types[fi as usize];
+        if is_dyn_type(fty) {
+          return dyn_trait(fty);
+        }
+      }
+    }
+    return "";
+  }
+  if e.tag == parse.EX_IDX {
+    let mut base: *Expr = parse.lit(0);
+    match e.lhs {
+      Option.Some(b) => {
+        base = b;
+      },
+      Option.None => {},
+    }
+    if base.tag == parse.EX_VAR &&
+        is_dyn_type(env_slice_elemtext(env, base.name)) {
+      return dyn_trait(env_slice_elemtext(env, base.name));
+    }
+  }
+  return "";
+}
+
 // ---- dyn: fat {vtable, obj} pairs, dispatch through the fn table ----
 
 // is a type text the fat-dispatch type?
@@ -2413,6 +2724,19 @@ fn dyn_trait(ty: string) -> string {
     return ty[4..len(ty)];
   }
   return "";
+}
+
+// a trait's method count (the vtable's release slot sits at
+// nmethods — the +1 the box allocates)
+fn trait_method_count(prog: *Prog, trt: string) -> i64 {
+  let mut i: usize = 0;
+  while i < prog.ntraits {
+    if prog.traits[i].name == trt {
+      return prog.traits[i].nmethods as i64;
+    }
+    i = i + 1;
+  }
+  return 0;
 }
 
 // a trait method's ordinal (the vtable slot), -1 when absent
@@ -2457,10 +2781,30 @@ fn method_table_idx(pool: *Pool, prog: *Prog, tname: string,
   // the arity the dispatch will use: receiver + args (bounded 3)
   let fdm2: *FnDef = fn_def_of(prog, tname + "." + mname);
   let ari: i64 = 1 + (len(fdm2.params) as i64) - 1;
-  if ari >= 1 && ari <= 3 {
-    let cty3: []i64 = pool.gi.clo_ty;
-    cty3[ari as usize] = 1;
+  clo_ty_need(pool.gi, ari, 1);
+  pool.gi.cfn = pool.gi.cfn + 1;
+  return (pool.gi.cfn as i64) - 1;
+}
+
+// the table index of a type's release walker (registering it once);
+// -1 when the type owns nothing
+fn rel_table_idx(pool: *Pool, prog: *Prog, tname: string) -> i64 {
+  let relnm: string = rel_callee(pool, prog, "*" + tname);
+  if len(relnm) == 0 {
+    return 0 - 1;
   }
+  let mut i: usize = 0;
+  while i < pool.gi.cfn {
+    if pool.gi.clo_wasms[i] == relnm {
+      return i as i64;
+    }
+    i = i + 1;
+  }
+  if pool.gi.cfn >= len(pool.gi.clo_wasms) {
+    return 0 - 1;
+  }
+  pool.gi.clo_wasms[pool.gi.cfn] = relnm;
+  clo_ty_need(pool.gi, 1, 1);
   pool.gi.cfn = pool.gi.cfn + 1;
   return (pool.gi.cfn as i64) - 1;
 }
@@ -2505,6 +2849,15 @@ fn dyn_vtable(pool: *Pool, prog: *Prog, trt: string,
            "(local.get $r)) (i32.const " + (k * 8).to_str() +
            ")) (i64.const " + midx.to_str() + "))\n";
     k = k + 1;
+  }
+  // slot nmethods: the release walker — a dyn's death dispatches
+  // through the vtable (the mirror of boot's header drop slot)
+  let ridx: i64 = rel_table_idx(pool, prog, tname);
+  if ridx >= 0 {
+    text = text + "    (i64.store (i32.add (i32.wrap_i64 " +
+           "(local.get $r)) (i32.const " +
+           ((td.nmethods as i64) * 8).to_str() +
+           ")) (i64.const " + ridx.to_str() + "))\n";
   }
   text = text + "    (local.get $r)\n";
   // cache: bases carries the key, keys carries the emitted text
@@ -3185,14 +3538,13 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
     }
     // DISABLED with the dyn emit (084's crash); re-lands with the
     // coercion above
-    if false && recv.tag == parse.EX_VAR &&
+    if recv.tag == parse.EX_VAR &&
         is_dyn_type(env_slice_elemtext(env, recv.name)) {
       let trt8: string =
           dyn_trait(env_slice_elemtext(env, recv.name));
       let ord8: i64 = trait_ordinal(prog, trt8, e.name);
 
-      if ord8 >= 0 {
-        let a0r: i64 = env_str_look(env, recv.name);
+      if ord8 >= 0 {        let a0r: i64 = env_str_look(env, recv.name);
         let vbox8: i64 = (0 - a0r) - 1;
         let obj8: i64 = env_str_len_slot(env, recv.name);
         // the declared return rides the trait table (the dispatch
@@ -3213,9 +3565,18 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
           t8 = t8 + 1;
         }
         let mut out8: string = "";
-        if len(e.args) > 0 {
-          // dispatch with arguments (bounded: $cl2)
-          out8 = out8 + emit_arg(pool, e.args[0], env, prog, nl);
+        // a string result's pair slots reserve FIRST — args may take
+        // temps between here and the park, and callers (the hole
+        // dispatch) key on the reserved pair's position
+        let mut pa8: i64 = 0 - 1;
+        if rtype8 == "string" {
+          pa8 = nl.v;
+          nl.v = nl.v + 2;
+        }
+        let mut ai8: usize = 0;
+        while ai8 < len(e.args) && ai8 < 2 {
+          out8 = out8 + emit_arg(pool, e.args[ai8], env, prog, nl);
+          ai8 = ai8 + 1;
         }
         out8 = out8 + "    (local.get " + obj8.to_str() + ")\n" +
                "    (i64.load (i32.add (i32.wrap_i64 (local.get " +
@@ -3223,18 +3584,98 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
                (ord8 * 8).to_str() + ")))\n" +
                "    (i32.wrap_i64)\n";
         if rtype8 == "string" {
-          // a pair result parks into slots; the address rides the
-          // scalar lane (the stringy pattern)
-          out8 = out8 + "    call_indirect (type $clp1)\n" +
-                 "    (local.set " + (nl.v + 1).to_str() +
-                 ")\n" +
-                 "    (local.set " + nl.v.to_str() + ")\n" +
-                 "    (local.get " + nl.v.to_str() + ")\n";
-          nl.v = nl.v + 2;
+          // a pair result parks into the reserved slots; the address
+          // rides the scalar lane (the stringy pattern). The calling
+          // type keys on the arity: receiver + args ($clp1..$clp3)
+          let mut ari8: i64 = 1 + (len(e.args) as i64);
+          if ari8 > 3 {
+            ari8 = 3;
+          }
+          clo_ty_need(pool.gi, ari8, 2);
+          out8 = out8 + "    call_indirect (type $clp" +
+                 ari8.to_str() + ")\n" +
+                 "    (local.set " + (pa8 + 1).to_str() + ")\n" +
+                 "    (local.set " + pa8.to_str() + ")\n" +
+                 "    (local.get " + pa8.to_str() + ")\n";
         } else {
-          out8 = out8 + "    call_indirect (type $cl1)\n";
+          let mut ari9: i64 = 1 + (len(e.args) as i64);
+          if ari9 > 3 {
+            ari9 = 3;
+          }
+          clo_ty_need(pool.gi, ari9, 1);
+          out8 = out8 + "    call_indirect (type $cl" +
+                 ari9.to_str() + ")\n";
         }
         return out8;
+      }
+    }
+    // a dyn FIELD or ELEMENT receiver: its fat pair loads first,
+    // then the dispatch rides the loaded vtable/obj slots
+    if recv.tag == parse.EX_FIELD || recv.tag == parse.EX_IDX {
+      let vt10: string = dyn_recv_trait(recv, env, prog);
+      if len(vt10) > 0 {
+        let ord10: i64 = trait_ordinal(prog, vt10, e.name);
+        let ld10: string = dyn_pair_load(recv, pool, env, prog, nl);
+        if ord10 >= 0 && len(ld10) > 0 {
+          let vbox10: i64 = nl.v - 2;
+          let obj10: i64 = nl.v - 1;
+          // the declared return rides the trait table
+          let mut rtype10: string = "i64";
+          let mut t10: usize = 0;
+          while t10 < prog.ntraits {
+            if prog.traits[t10].name == vt10 {
+              let mut m10: usize = 0;
+              while m10 < prog.traits[t10].nmethods {
+                if prog.traits[t10].methods[m10] == e.name &&
+                    m10 < len(prog.traits[t10].rtypes) {
+                  rtype10 = prog.traits[t10].rtypes[m10];
+                }
+                m10 = m10 + 1;
+              }
+            }
+            t10 = t10 + 1;
+          }
+          let mut out10: string = ld10;
+          let mut pa10: i64 = 0 - 1;
+          if rtype10 == "string" {
+            pa10 = nl.v;
+            nl.v = nl.v + 2;
+          }
+          let mut ai10: usize = 0;
+          while ai10 < len(e.args) && ai10 < 2 {
+            out10 = out10 + emit_arg(pool, e.args[ai10], env,
+                                     prog, nl);
+            ai10 = ai10 + 1;
+          }
+          out10 = out10 + "    (local.get " + obj10.to_str() +
+                  ")\n" +
+                  "    (i64.load (i32.add (i32.wrap_i64 " +
+                  "(local.get " + vbox10.to_str() + ")) (i32.const " +
+                  (ord10 * 8).to_str() + ")))\n" +
+                  "    (i32.wrap_i64)\n";
+          if rtype10 == "string" {
+            let mut ari10: i64 = 1 + (len(e.args) as i64);
+            if ari10 > 3 {
+              ari10 = 3;
+            }
+            clo_ty_need(pool.gi, ari10, 2);
+            out10 = out10 + "    call_indirect (type $clp" +
+                    ari10.to_str() + ")\n" +
+                    "    (local.set " + (pa10 + 1).to_str() +
+                    ")\n" +
+                    "    (local.set " + pa10.to_str() + ")\n" +
+                    "    (local.get " + pa10.to_str() + ")\n";
+          } else {
+            let mut ari11: i64 = 1 + (len(e.args) as i64);
+            if ari11 > 3 {
+              ari11 = 3;
+            }
+            clo_ty_need(pool.gi, ari11, 1);
+            out10 = out10 + "    call_indirect (type $cl" +
+                    ari11.to_str() + ")\n";
+          }
+          return out10;
+        }
       }
     }
     // w.get() — the absence probe: the header's rc decides
@@ -3468,6 +3909,30 @@ fn emit_expr(pool: *Pool, e: *Expr, env: *Env, prog: *Prog,
                    a_slot.to_str() + ")) (i32.const " + (off + vj * 8).to_str() +
                    ")) (local.get " + tv0.to_str() + "))\n";
             vj = vj + 1;
+          }
+        } else if is_dyn_type(fty) {
+          // a dyn field: the init coerces — the fat pair (vtable,
+          // obj) with the obj retained (the field owns a reference)
+          let ftr: string = dyn_trait(fty);
+          let fot: string = expr_ptr_type(e.args[k], env, prog);
+          let fvt: string = dyn_vtable(pool, prog, ftr, fot);
+          if len(fvt) > 0 {
+            let fvb: i64 = nl.v;
+            let fob: i64 = nl.v + 1;
+            nl.v = nl.v + 2;
+            out = out + fvt;
+            out = out + "    (local.set " + fvb.to_str() + ")\n";
+            out = out + emit_expr(pool, e.args[k], env, prog, nl);
+            out = out + "    (local.set " + fob.to_str() + ")\n";
+            out = out + retain_if_shared(e.args[k], fob);
+            out = out + "    (i64.store (i32.add (i32.wrap_i64 " +
+                   "(local.get " + a_slot.to_str() + ")) (i32.const " +
+                   off.to_str() + ")) (local.get " + fvb.to_str() +
+                   "))\n";
+            out = out + "    (i64.store (i32.add (i32.wrap_i64 " +
+                   "(local.get " + a_slot.to_str() + ")) (i32.const " +
+                   (off + 8).to_str() + ")) (local.get " +
+                   fob.to_str() + "))\n";
           }
         } else if kind == 1 || kind == 2 {
           let ta: i64 = nl.v;
@@ -4748,6 +5213,14 @@ fn build_string_pair(e: *Expr, pool: *Pool, env: *Env, prog: *Prog,
             nl.v = nl.v + 2;
           },
           Option.None => {
+            if dyn_hole_dispatch(arg, pool, env, prog, nl) {
+              // a dyn value renders through its vtable's to_str slot
+              text = text + DYN_TEXT;
+              chain_a[na] = DYN_A;
+              chain_l[na] = DYN_L;
+              DYN_TEXT = "";
+              na = na + 1;
+            } else {
             let mut akind: i64 = 0 - 2;
             if arg.tag == parse.EX_VAR {
               akind = env_kind_of(env, arg.name);
@@ -4842,6 +5315,7 @@ fn build_string_pair(e: *Expr, pool: *Pool, env: *Env, prog: *Prog,
               }
               }
               }
+            }
             }
           },
         }
@@ -5745,6 +6219,15 @@ fn expr_type(e: *Expr, env: *Env, prog: *Prog) -> string {
     if sk == 1 {
       return "string";
     }
+    if sk == 2 {
+      // a slice binding types by its element text ([]*Pt and the
+      // string/slice pairs alike)
+      let et2: string = env_slice_elemtext(env, e.name);
+      if len(et2) > 0 {
+        return "[]" + et2;
+      }
+      return "[]i64";
+    }
     if env_fkind_of(env, e.name) == 1 {
       return "f64";
     }
@@ -6099,7 +6582,8 @@ fn ginst_call_name(pool: *Pool, prog: *Prog, e: *Expr,
     ntypes[pi] = subbed;
     // the substituted kind rewrites the ABI flags: a T bound to
     // string rides its pair, a []T as a slice pair
-    npstr[pi] = subbed == "string";
+    npstr[pi] = subbed == "string" ||
+        (len(subbed) >= 2 && subbed[0] == 91 && subbed[1] == 93);
     npslc[pi] = len(subbed) >= 2 && subbed[0] == 91 &&
         subbed[1] == 93;
     pi = pi + 1;
@@ -6192,7 +6676,8 @@ fn ginst_method_target(pool: *Pool, prog: *Prog, rtype: string,
       }
     }
     ntypes[pi] = pt4;
-    npstr[pi] = pt4 == "string";
+    npstr[pi] = pt4 == "string" ||
+        (len(pt4) >= 2 && pt4[0] == 91 && pt4[1] == 93);
     npslc[pi] = len(pt4) >= 2 && pt4[0] == 91 && pt4[1] == 93;
     pi = pi + 1;
   }
@@ -6537,10 +7022,7 @@ fn emit_closure_value(e: *Expr, pool: *Pool, env: *Env,
   pool.gi.cfn = pool.gi.cfn + 1;
   // the arity the body's calls will use (box + params)
   let ari: i64 = 1 + (len(e.fnames) as i64);
-  if ari >= 1 && ari <= 3 {
-    let cty0: []i64 = pool.gi.clo_ty;
-    cty0[ari as usize] = 1;
-  }
+  clo_ty_need(pool.gi, ari, 1);
   out = out + "    (i64.const " + idx.to_str() + ")\n" +
          "    (local.get " + b_slot.to_str() + ")\n";
   return out;
@@ -6686,7 +7168,7 @@ fn emit_print_fd(pool: *Pool, fmt: string, args: []*Expr, env: *Env,
                 "    (local.set " + t_a[q].to_str() + ")\n";
           kinds[q] = 4;
         } else {
-        let dyn_pair: bool = false &&
+        let dyn_pair: bool =
             dyn_hole_dispatch(arg, pool, env, prog, nl);
         if dyn_pair {
           // a dyn value renders through its vtable's to_str slot
@@ -6951,7 +7433,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
     if st.tag == parse.ST_LET {
       match st.val {
         Option.Some(e) => {
-          if false && is_dyn_type(st.fmt) {
+          if is_dyn_type(st.fmt) {
             // DISABLED: the dyn coercion emit crashes indirect calls
             // (084); the static accident handles homogeneous dyn.
             // Next growth re-lands this with the crash fixed.
@@ -6975,6 +7457,17 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
               body = body + retain_if_shared(e, ob7);
               env_str_bind_runtime(env, st.name, vb7, ob7, 3);
               env_bind_sliceelem(env, st.name, st.fmt);
+              // the scope-exit release dispatches through the
+              // vtable's release slot (a rebind updates the pair
+              // slots in place, so the exit sees the live value)
+              let nm7: i64 = trait_method_count(prog, trt7);
+              drel_push(dstack, st.name,
+                        "    (local.get " + ob7.to_str() + ")\n" +
+                        "    (i64.load (i32.add (i32.wrap_i64 " +
+                        "(local.get " + vb7.to_str() + ")) (i32.const " +
+                        (nm7 * 8).to_str() + ")))\n" +
+                        "    (i32.wrap_i64)\n" +
+                        "    call_indirect (type $clv1)\n");
             } else {
               body = body + emit_expr(pool, e, env, prog, nl);
               body = body + "    (local.set " + nl.v.to_str() +
@@ -7027,8 +7520,9 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
             if stelem >= 0 {
               esz = st_nslots(prog, stelem);
             } else {
-              if e.name == "string" {
-                // a string element rides its pair: 16 bytes each
+              if e.name == "string" || is_dyn_type(e.name) {
+                // a string element rides its pair and a dyn element
+                // its fat pair: 16 bytes each
                 esz = 2;
               }
             }
@@ -7103,6 +7597,19 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
               if kind == 1 {
                 esz = 1;
               }
+              // a slice base's element stride: strings and dyn pairs
+              // ride 16 bytes, a struct element its slot block
+              let bet: string = env_slice_elemtext(env, bname);
+              if bkind == 2 && len(bet) > 0 {
+                if bet == "string" || is_dyn_type(bet) {
+                  esz = 16;
+                } else {
+                  let bsi: i64 = st_index(prog, bet);
+                  if bsi >= 0 {
+                    esz = st_nslots(prog, bsi) * 8;
+                  }
+                }
+              }
               let a_slot: i64 = nl.v;
               nl.v = nl.v + 1;
               let l_slot: i64 = nl.v;
@@ -7165,6 +7672,11 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
               body = body + "    (local.set " + a_slot.to_str() +
                      ")\n";
               env_str_bind_runtime(env, st.name, a_slot, l_slot, kind);
+              // the view carries the base's element text (element
+              // reads and stores key on it)
+              if bkind == 2 && len(bet) > 0 {
+                env_bind_sliceelem(env, st.name, bet);
+              }
             } else {
               match fold_string(e, env) {
                 Option.Some(raw) => {
@@ -7474,6 +7986,62 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
         } else {
         let stelem2: i64 = st_index(prog,
                                     env_slice_elemtext(env, st.name));
+        if is_dyn_type(env_slice_elemtext(env, st.name)) {
+          // a dyn element: the fat pair stores at the 16-byte
+          // stride; the new obj retains, the old element's obj
+          // releases through ITS vtable's release slot
+          let dtr5: string =
+              dyn_trait(env_slice_elemtext(env, st.name));
+          let dnm5: i64 = trait_method_count(prog, dtr5);
+          let mut e5: *Expr = parse.lit(0);
+          match st.val {
+            Option.Some(ev5) => {
+              e5 = ev5;
+            },
+            Option.None => {},
+          }
+          let objt5: string = expr_ptr_type(e5, env, prog);
+          let vt5: string = dyn_vtable(pool, prog, dtr5, objt5);
+          if len(vt5) > 0 {
+            let vb5: i64 = nl.v;
+            let ob5: i64 = nl.v + 1;
+            nl.v = nl.v + 2;
+            body = body + "    (i32.add (i32.wrap_i64 (local.get " +
+                   addr_slot.to_str() + ")) (i32.mul (i32.wrap_i64 " +
+                   "(local.get $t)) (i32.const 16)))\n" +
+                   "    (local.set $a)\n";
+            body = body + vt5;
+            body = body + "    (local.set " + vb5.to_str() + ")\n";
+            body = body + emit_expr(pool, e5, env, prog, nl);
+            body = body + "    (local.set " + ob5.to_str() + ")\n";
+            body = body + retain_if_shared(e5, ob5);
+            // the old element's obj releases through ITS vtable's
+            // release slot — guarded: a fresh zeroed element carries
+            // no vtable (a null obj must not dispatch)
+            let oe5: i64 = nl.v;
+            nl.v = nl.v + 1;
+            body = body + "    (i64.load (i32.add (local.get $a)" +
+                   " (i32.const 8)))\n" +
+                   "    (local.set " + oe5.to_str() + ")\n" +
+                   "    (if (i64.ne (local.get " + oe5.to_str() +
+                   ") (i64.const 0))\n" +
+                   "      (then\n" +
+                   "    (local.get " + oe5.to_str() + ")\n" +
+                   "    (i64.load (i32.add\n" +
+                   "      (i32.wrap_i64 (i64.load (i32.add " +
+                   "(local.get $a) (i32.const 0))))\n" +
+                   "      (i32.const " + (dnm5 * 8).to_str() +
+                   ")))\n" +
+                   "    (i32.wrap_i64)\n" +
+                   "    call_indirect (type $clv1)\n" +
+                   "      ))\n";
+            body = body + "    (i64.store (local.get $a) " +
+                   "(local.get " + vb5.to_str() + "))\n" +
+                   "    (i64.store (i32.add (local.get $a) " +
+                   "(i32.const 8)) (local.get " + ob5.to_str() +
+                   "))\n";
+          }
+        } else {
         if stelem2 >= 0 {
           // a struct element: the whole slot block copies from the
           // value's address (a frame-resident chain materializes a
@@ -7544,6 +8112,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
         }
         body = body + "    (local.set $t)\n";
         body = body + "    (i64.store (local.get $a) (local.get $t))\n";
+        }
         }
         }
         }
@@ -7726,6 +8295,55 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
                      a_slot.to_str() + ")) (i32.const " + off.to_str() +
                      "))\n";
               body = body + "    (local.set $a)\n";
+              if type_kind(fty) == 2 || fty == "string" {
+                // a pair field stores BOTH words: the rhs's own pair
+                // (a binding's slots, or a built pair) copies in
+                let mut rhv: *Expr = parse.lit(0);
+                match st.val {
+                  Option.Some(e18) => {
+                    rhv = e18;
+                  },
+                  Option.None => {},
+                }
+                let rha: i64 = 0 - 1;
+                let rhl: i64 = 0 - 1;
+                if rhv.tag == parse.EX_VAR &&
+                    env_kind_of(env, rhv.name) >= 0 {
+                  let ra0: i64 = env_str_look(env, rhv.name);
+                  let ral: i64 = env_str_len_slot(env, rhv.name);
+                  if ra0 < 0 {
+                    body = body + "    (local.get " +
+                           ((0 - ra0) - 1).to_str() +
+                           ")\n    (local.set $t)\n" +
+                           "    (local.get " + ral.to_str() +
+                           ")\n    (local.set $r)\n";
+                    body = body + "    (i64.store (local.get $a)" +
+                           " (local.get $t))\n" +
+                           "    (i64.store (i32.add (local.get $a)" +
+                           " (i32.const 8)) (local.get $r))\n";
+                  } else {
+                    body = body + "    (i64.const " + ra0.to_str() +
+                           ")\n    (local.set $t)\n" +
+                           "    (i64.const " + ral.to_str() +
+                           ")\n    (local.set $r)\n";
+                    body = body + "    (i64.store (local.get $a)" +
+                           " (local.get $t))\n" +
+                           "    (i64.store (i32.add (local.get $a)" +
+                           " (i32.const 8)) (local.get $r))\n";
+                  }
+                } else {
+                  match st.val {
+                    Option.Some(e19) => {
+                      body = body + emit_expr(pool, e19, env,
+                                              prog, nl);
+                    },
+                    Option.None => {},
+                  }
+                  body = body + "    (local.set $t)\n";
+                  body = body + "    (i64.store (local.get $a)" +
+                         " (local.get $t))\n";
+                }
+              } else {
               match st.val {
                 Option.Some(e) => {
                   body = body + emit_expr(pool, e, env, prog, nl);
@@ -7735,6 +8353,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
               }
               body = body + "    (local.set $t)\n";
               body = body + "    (i64.store (local.get $a) (local.get $t))\n";
+              }
             }
           }
         }
@@ -7761,6 +8380,46 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
                      env_str_len_slot(env, st.name).to_str() + ")\n";
             } else {
               body = body + emit_expr(pool, e, env, prog, nl);
+            }
+          } else {
+          if skind == 3 &&
+              is_dyn_type(env_slice_elemtext(env, st.name)) {
+            // a dyn rebind re-coerces: build the new fat pair (the
+            // new obj retains first), release the old obj through
+            // the OLD vtable's release slot, then store the pair
+            let trt6: string =
+                dyn_trait(env_slice_elemtext(env, st.name));
+            let dst_a: i64 = (0 - env_str_look(env, st.name)) - 1;
+            let dst_l: i64 = env_str_len_slot(env, st.name);
+            let objt6: string = expr_ptr_type(e, env, prog);
+            let vt6: string = dyn_vtable(pool, prog, trt6, objt6);
+            if len(vt6) > 0 {
+              let vb6: i64 = nl.v;
+              let ob6: i64 = nl.v + 1;
+              nl.v = nl.v + 2;
+              body = body + vt6;
+              body = body + "    (local.set " + vb6.to_str() +
+                     ")\n";
+              body = body + emit_expr(pool, e, env, prog, nl);
+              body = body + "    (local.set " + ob6.to_str() +
+                     ")\n";
+              body = body + retain_if_shared(e, ob6);
+              // the old pair's release: slot nmethods of its vtable
+              let nm6: i64 = trait_method_count(prog, trt6);
+              body = body + "    (local.get " + dst_l.to_str() +
+                     ")\n" +
+                     "    (i64.load (i32.add (i32.wrap_i64 " +
+                     "(local.get " + dst_a.to_str() + ")) (i32.const " +
+                     (nm6 * 8).to_str() + ")))\n" +
+                     "    (i32.wrap_i64)\n" +
+                     "    call_indirect (type $clv1)\n";
+              body = body + "    (local.get " + vb6.to_str() +
+                     ")\n    (local.set " + dst_a.to_str() + ")\n";
+              body = body + "    (local.get " + ob6.to_str() +
+                     ")\n    (local.set " + dst_l.to_str() + ")\n";
+            } else {
+              body = body + emit_expr(pool, e, env, prog, nl);
+              body = body + "    drop\n";
             }
           } else {
           if skind == 0 {
@@ -7835,7 +8494,8 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
           }
           }
           }
-        },
+          }
+          },
         Option.None => {},
       }
     }
@@ -8752,13 +9412,16 @@ pub fn emit(prog: *Prog) -> string {
   out = out + BOOLTEXT;
   if pool.gi.cfn > 0 {
     // the closure table: one funcref per entry, the indirect-call
-    // types for the arities the calls used
+    // types for the arities the calls used (flag 1 = scalar result,
+    // 2 = pair result; a slot needing both kinds declares both)
     let cty1: []i64 = pool.gi.clo_ty;
     out = out + "  (type $clp1 (func (param i64) (result i64)" +
                 " (result i64)))\n";
+    out = out + "  (type $clv1 (func (param i64)))\n";
     let mut ari: i64 = 1;
     while ari <= 3 {
-      if cty1[ari as usize] > 0 {
+      if cty1[ari as usize] == 1 || cty1[ari as usize] == 3 ||
+          ari == 1 {
         out = out + "  (type $cl" + ari.to_str() + " (func";
         let mut pk: i64 = 0;
         while pk < ari {
@@ -8766,6 +9429,15 @@ pub fn emit(prog: *Prog) -> string {
           pk = pk + 1;
         }
         out = out + " (result i64)))\n";
+      }
+      if cty1[ari as usize] >= 2 && ari > 1 {
+        out = out + "  (type $clp" + ari.to_str() + " (func";
+        let mut pk2: i64 = 0;
+        while pk2 < ari {
+          out = out + " (param i64)";
+          pk2 = pk2 + 1;
+        }
+        out = out + " (result i64) (result i64)))\n";
       }
       ari = ari + 1;
     }

@@ -394,10 +394,30 @@ section — no placeholder stages. boot is the reference compiler.
       type) and broadened the parked hole branch to any string-
       returning dyn method — with the hooks re-disabled, 084/085/t03
       all hold and the trait table now carries true rtypes for the
-      re-landing. Remain: the dyn emit's temp accounting (its
-      dispatched pairs push local indices past the declared count)
-      then 030/086-089; module loading (032/t09); 105's field-slice
-      stores; the mut law and usize lane (T3.6's mirror side)*
+      re-landing. The sixtieth cut (2026-09-26) re-lands the dyn emit
+      whole: the dispatched pair reserves its slots BEFORE the args
+      (callers key on the reservation), the vtable gains a release
+      slot at nmethods (a dyn's death dispatches through it — the
+      mirror of boot's header drop; rebinds, element stores, field
+      walkers, and scope exits all release there, with a null-obj
+      guard for zeroed elements), dyn slots ride the honest lane
+      accounting, dyn-typed fields and slice elements lay out as
+      16-byte fat pairs (make sizes, sub-slice strides, and stores
+      follow), a dyn method call renders through its vtable whether
+      the receiver is a binding, a field, or an element (string
+      results ride the pair; scalars print through $w_itoa — the
+      shared-scratch $w_i64 clobbered earlier holes' text), and the
+      coercion sites cover let/field-init/assignment/element-store.
+      Along the way three generic holes closed: a clone's substituted
+      slice param never flagged its pair ABI ($u_len fell out of
+      089), expr_type typed slice bindings (T bound from []*T), and
+      expr_ptr_type read the DECLARED return of a generic call — the
+      nested dup(dup(2)) bound Pair[T,T] instead of the
+      instantiation. Plus 105's pointer-base slice-field store now
+      writes BOTH pair words (it dropped the len). 030, 084, 086,
+      087, 088, 089, and 105 land byte-exact: 106 of 108 behavioral,
+      floor 106. Remain: module loading (032/t09); the mut law and
+      usize lane (T3.6's mirror side)*
 - [ ] **T2.x** Optimizer in the mirror: constant folding, dead-code
       elimination, globals tree-shaking, tail-call→loop — with the
       language suites (opt/eq/params/modsys/strops/multiline) rebuilt
