@@ -1045,18 +1045,23 @@ section — no placeholder stages. boot is the reference compiler.
       syscall tails). Nothing else. The standing law: **the kernel grows
       only when a language mechanism grows.**
 - [ ] **T4.2** `std` = the reserved in-repo directory; `use std.io;`
+      LANDED 2026-09-27 from the parallel wave (t42 worktree): a use whose first segment is std resolves against the reserved in-repo std/ tree (anchored at the boot/-marked repository root — the provisional ruling, recorded); ten stdrule fixtures.
       resolves by the single rule (first segment `std` → the reserved
       directory); every other `use` stays two-base relative.
 - [ ] **T4.3** std.collections: Vec and Map as real packages (extracted,
+      FIRST WAVE LANDED 2026-09-27 (t43): Vec and the ordered Maps (sorted parallel arrays under binary search; ascending iteration is structural) behind a facade; literal extraction and compiler consumption follow.
       not copied, from the compiler's own source; the compiler consumes
       them afterwards). Map iteration order is **deterministic and
       documented** (D3).
 - [ ] **T4.4** std.io: read_line, file read/write wrappers over the raw
+      LANDED 2026-09-27 (t44, reviewed and merged): fd_read/fd_close/path_open + four raw wrappers in the wasi tail; the prelude carries std.io's private __ window; read_line/read_file/write_file over Result; the verb gains // in: and --dir; the prelude's generic-instance chains reset per program (a real in-process compile fix the review caught); eleven io fixtures.
       tails.
 - [ ] **T4.5** json — the first real std package, written in rho and
+      LANDED 2026-09-27 (t45, reviewed): parser + serializers + the exact-decimal number core as std.json; the review fixed the validator's two off-by-ones and the grain-literal confusion; boot's float compound assignments take their own load/store arms; seven fixtures.
       installed/consumed through `rho pkg` (T3.15): encoder + decoder
       + the deterministic-map story it needs from T4.3.
 - [ ] **T4.6** (library, non-blocking) utf-8 package: code-point
+      LANDED 2026-09-27 (t46): the utf-8 package — one total panic-free decode step, strict validation, iteration and friends; six fixtures, the std-import pending promoted.
       iteration and friends — a package, never the kernel.
 
 ## Phase 5 — sites and course
