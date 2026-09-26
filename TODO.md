@@ -550,10 +550,32 @@ section — no placeholder stages. boot is the reference compiler.
       expr_ptr_type through indexed fields (p.tbl[i]); array
       literals with pair elements (16-stride pair stores, elemtext
       from the annotation); oob checks emitted BEFORE the index they
-      check. Still open in the child: statement-match pair tails,
-      match-over-call scrutinee parks, fn-tail implicit pair
-      returns, the fold_string/push_string call-arg deficits — the
-      iceberg under the self-chain's waterline.
+      check.
+      THE SECOND CENSUS WAVE (2026-09-27, 125 → 57): four more
+      families, each pinned by a run-selfhost leg — (1) `return xs`
+      over a plain slice/string binding fell into the single-value
+      return template (build_string_pair's EX_VAR branch now takes
+      kind-2 beside kind-1; pairret); (2) len(f(...)) — the len
+      template called emit_expr for the arg, but emit_expr's sret
+      branch collapses a pair-returning call onto its address lane,
+      stranding the template's second pop — the pair now comes from
+      build_string_pair directly (lenpaircall); (3) a slice rebind
+      (body = grow(body)) had NO ST_SET branch — the scalar lane
+      pushed the address alone and stranded it on the branch stack
+      while the binding's slots still held the stale initial value
+      (18-vs-20 behavioral divergence) — kind-2 rebinds now write
+      both pair slots in place (slicerebind); (4) `f(make([]T, n))` —
+      make-as-argument fell through emit_expr into the BIN template
+      and rendered as a lone (i64.add) (make's op is 0) — emit_arg
+      grows an EX_MAKE branch that rides the fresh pair into the
+      param slots (makearg). A fifth fix rides along: a CALL
+      scrutinee's Option-payload binder lanes (optpt_of_scrutinee
+      resolves the declared return — match fold_string(...) now
+      binds its string payload as a pair). The corpus differential
+      stays 108/108 through the wave. Still open in the child (57):
+      an arm-scope slot-scramble family (walk_arm's `nb` argument
+      emits nothing while `all` seems to ride param slots), orphan
+      i64.adds, and branch-tail surpluses.
 - [ ] **T3.2 Pure-source trust root**: every gate run rebuilds the seed
       from boot's C source on the spot. The pinned `seed.wasm` stays in
       the repo **as a canary**: rebuild, compare byte-for-byte (D1 makes
@@ -722,16 +744,33 @@ section — no placeholder stages. boot is the reference compiler.
       under the facade — the consumer's `pkg.inner` needs nested
       module-qualified access, machinery the checker does not have
       yet; until then the §6 module form behaves star-like.
-- [ ] **T3.8** The in-tree wasm toolchain, sequenced after the corpus
-      differential closes (108/108) so the mirror's climb is not
-      disturbed mid-growth: `std.wasm` — an encoder/decoder package
-      written in rho — plus boot's C counterpart, pinned
-      byte-identical against each other; the compiler pipeline grows
-      a module IR with two serializers (WAT text stays the debug and
-      interchange contract; the binary path retires wat2wasm).
-      Acceptance: dual-run byte-compare over the whole corpus, the
-      wat→wasm→wat fixpoint leg (fmt's law, applied to assembly), and
-      a readable decode diff for the T3.2 canary.
+- [ ] **T3.8** The compiler IR and the in-tree binary path — RULING
+      2026-09-27: adopt the archive's proven hub shape, strict SSA
+      over scalar virtual registers with structured control flow
+      (reducible CFGs from if/while/loop; phis exactly at value
+      merges; frame slots for everything else), restored onto the new
+      checker. Edges, each with its own byte acceptance:
+      (1) check → lower → IR — new code, ported shapes;
+      (2) IR → WAT serializer — byte-identical to today's emitted WAT
+      over the whole corpus, every suite, and the self-chain (the
+      one-time wholesale re-pin; T3.10's mirror work is untouched —
+      the IR does not go near the checker);
+      (3) IR → wasm binary serializer — byte-differential against
+      wat2wasm over that same WAT until green, then wat2wasm retires
+      from every default path and the T3.2 seed canary re-pins from
+      boot's own bytes (its first meaningful pin);
+      (4) WAT → IR decoder — the wat→wasm→wat fixpoint leg, the
+      debug/interchange contract, and the future std.wasm cross-pin;
+      (5) optimizer passes ride the pinned hub afterwards, in design
+      §13's order (rc-pair elimination / escape analysis first-class;
+      linear-scan register allocation waits for the Phase-7 native
+      backends — the wasm operand stack needs none). Boot stays
+      wasm-only: native emission belongs to the self-hosted side
+      (the Phase-7 std-library components, built on std.wasm) — the
+      IR hub's serializer edges are WAT and wasm, nothing else. The
+      mirror keeps its original sequencing: `std.wasm`, the
+      encoder/decoder package written in rho, still lands with the
+      differential closed, byte-pinned against boot's assembler.
 - [ ] **T3.10** The bug-fix-wave mirror re-adaptation (opened
       2026-09-26): boot grew six real fixes (value-struct field
       stores, float compound assignment, the narrow-width shift mask,
@@ -857,6 +896,64 @@ section — no placeholder stages. boot is the reference compiler.
       the typed form is accepted and never required, and fmt
       canonicalizes it away. The §18-gated acceptance legs ride
       T3.6's commit (the gates do not exist yet anywhere).
+- [ ] **T3.13** The in-boot wasm interpreter and in-process execution
+      (opened 2026-09-27, ruled by the owner: an external runtime on
+      the default path is not acceptable). run, fmt, and test are
+      boot verbs end to end — fmt already is; run and test complete
+      with the interpreter, no external tool on any path. Boot loads
+      the binary module it itself assembled (T3.8 edge 3) and
+      executes it in process. The interpreter's import surface IS
+      the kernel's import surface, by law — the two grow in the same
+      commit or the gate reds. With this task the kernel surface
+      grows to fd_write, proc_exit, args (args_get/args_sizes_get —
+      `rho run -- args` is dead today and comes back), and fd_read
+      (stdin; the archive kernel had both, the 0.1.0 rewrite dropped
+      them) — file tails (path_open &c.) still wait for std.io in
+      Phase 4; clock/random/environ never exist (the determinism
+      law). Interpreter-owned value/call-depth caps produce
+      `panic: stack overflow` (exit 101) deterministically,
+      replacing the wasmtime trap-grep translation in test.c/
+      driver.c. `rho run`, `rho test`, and the gate's behavioral
+      legs execute in process by default; the PATH dependency ends
+      with the silent-failure family (suppressed assembler stderr,
+      bare exit 1). Per-test isolation keeps §17: every case gets a
+      fresh instance. Acceptance before the switch: the whole
+      corpus, every suite, and the self-chain run 100% behavior-
+      identical (stdout + exit) under the interpreter and wasmtime,
+      floats bit-exact through the differential. Honesty note:
+      interpreting the self-hosting chain is slower than wasmtime by
+      roughly an order of magnitude; the reference legs carry the
+      heavy runs during transition, and interpreter hot-spot work is
+      a separate task if the wall clock ever demands it. After the
+      switch, wasmtime survives ONLY as the short-term test-
+      environment reference leg (ruling 2026-09-27), retired behind
+      an explicit opt-in flag once the interpreter has carried the
+      full self-chain plus one full gate cycle green. Production and
+      site paths never reference it.
+- [ ] **T3.14** The mirror source split (opened 2026-09-27): the
+      self-hosted compiler is 15.9k lines across six files with
+      emit.rho alone at 10.9k — restructure it into the module
+      system it compiles: a lib.rho facade with lex/parse/check/
+      emit/fmt as sibling modules (or subpackages), completing
+      T2.x's "port module by module" spirit and making the compiler
+      source the language's own showcase. Sequenced after T3.10's
+      differential floor stabilizes — the split touches every file
+      mid-adaptation otherwise. Acceptance: the differential floor
+      does not drop, fmt over the whole source stays clean, every
+      gate leg green, and the self-chain's multi-file source transit
+      unchanged.
+- [ ] **T3.15** The package manager, in boot (opened 2026-09-27,
+      ruled by the owner): `rho pkg` — init/add/install/lock/
+      vendor/build over the module-system's own package law (a
+      package is a directory behind a lib.rho facade; `std` stays
+      reserved). Manifests, a lockfile, and vendored path+git deps:
+      installed packages are vendored in-tree, so the bootstrap
+      chain keeps building from vendored sources only
+      (module-system §7 holds — the gate never touches a network).
+      This is boot work, not mirror work: the verb compiles nothing
+      itself, it fetches, pins, and lays out trees that `rho build`
+      already consumes. Unblocks T4.3/T4.5 — the std packages become
+      real, installable packages the compiler can consume.
 
 ## Phase 4 — kernel boundary and the std library
 
@@ -874,8 +971,9 @@ section — no placeholder stages. boot is the reference compiler.
       documented** (D3).
 - [ ] **T4.4** std.io: read_line, file read/write wrappers over the raw
       tails.
-- [ ] **T4.5** json as a package on the new language; rho-pkg updated
-      (manifests, lock, vendored path+git deps).
+- [ ] **T4.5** json — the first real std package, written in rho and
+      installed/consumed through `rho pkg` (T3.15): encoder + decoder
+      + the deterministic-map story it needs from T4.3.
 - [ ] **T4.6** (library, non-blocking) utf-8 package: code-point
       iteration and friends — a package, never the kernel.
 
@@ -1166,9 +1264,16 @@ binary post-processor: binaryen cannot know the rc-pair law
 (weak-observable death timing), so wasm-opt is not a long-term
 dependency. It remains the site-asset shrinker (T5.1) until the
 in-compiler optimizer demonstrably matches its effect, then retires.
-The in-tree assembler/decoder (`std.wasm` + boot's C counterpart,
-byte-pinned against each other) retires wat2wasm once the corpus
-differential closes (T3.8).
+The compiler grows the archive's hub back — strict SSA IR, lowered
+once, serialized many ways (T3.8): WAT as the debug and interchange
+contract pinned byte-identical through the refactor, the binary
+serializer retiring wat2wasm ahead of the corpus close, a WAT→IR
+decoder for the fixpoint leg, and the optimizer living in-compiler
+as passes over the pinned IR (rc-pairs first-class). A minimal
+in-boot interpreter (T3.13) executes the emitted surface in process,
+its import surface bound to the kernel's by law, demoting wasmtime
+to a short-term test-environment reference; boot stays wasm-only —
+native emission is the self-hosted side's (Phase 7).
 
 ### 14. Kernel and std
 
