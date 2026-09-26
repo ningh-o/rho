@@ -1,0 +1,14 @@
+// spec: module-system.md §7 + TODO T4.2 + T4.6 — the FINAL import
+// form of the package. The reserved `std` rule is ratified law that
+// boot does not implement yet: `use std.utf8;` is refused with "'std'
+// is reserved" (boot/check.c, resolve_use). This canary must FAIL
+// today; when T4.2 lands it passes — the verb prints PROMOTE — and
+// the marker comes off in the commit that lands the law.
+// out: utf8 count=6 valid=true
+use std.utf8;
+
+fn main() -> i32 {
+  let s: string = "a·€世🌍𝄞";
+  printf("utf8 count={} valid={}\n", utf8.code_point_count(s), utf8.is_valid(s));
+  return 0;
+}

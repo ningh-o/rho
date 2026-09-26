@@ -1,0 +1,46 @@
+// spec: TODO T4.6 + design §8 — the format round-trip: decoding a
+// string into code points and re-encoding each through its exact byte
+// slice (the only byte->string route the language offers today) must
+// reproduce the original byte-for-byte, at every width, including the
+// empty string. Byte widths must sum to len(s).
+//
+// utf8 -> std/utf8 (two-base lookup, module-system.md §2) because the
+// reserved `std` rule (§7, TODO T4.2) is not in boot yet. When T4.2
+// lands this line becomes `use std.utf8;`.
+// out: mixed roundtrip=true widths=17
+// out: boundaries roundtrip=true widths=17
+// out: ascii roundtrip=true widths=3
+// out: empty roundtrip=true widths=0
+use std.utf8;
+
+// decode -> re-encode via per-code-point byte slices; reports whether
+// the rebuild equals the original and pins the byte count
+fn roundtrip(name: string, s: string) {
+  let mut built: string = "";
+  let mut i: usize = 0;
+  let mut widths: usize = 0;
+  while i < len(s) {
+    match utf8.next(s, i) {
+      Char(_, nx) => {
+        built = built + s[i..nx];
+        widths += nx - i;
+        i = nx;
+      }
+      Bad(_) => {
+        panic("round-trip inputs must be valid");
+      }
+      End => {
+        break;
+      }
+    }
+  }
+  printf("{} roundtrip={} widths={}\n", name, built == s, widths);
+}
+
+fn main() -> i32 {
+  roundtrip("mixed", "a·€世🌍𝄞");
+  roundtrip("boundaries", "\u{0}\u{7F}\u{80}\u{7FF}\u{FFFF}\u{10000}\u{10FFFF}");
+  roundtrip("ascii", "rho");
+  roundtrip("empty", "");
+  return 0;
+}

@@ -1,0 +1,46 @@
+// spec: TODO T4.6 + design §8 (strings are immutable UTF-8 byte slices)
+// Golden: print every code point of a mixed-width string with its
+// code-point index, byte offset, byte width, and scalar value; then
+// rebuild the string from per-code-point byte slices.
+//
+// utf8 -> std/utf8 (two-base lookup, module-system.md §2) because the
+// reserved `std` rule (§7, TODO T4.2) is not in boot yet. When T4.2
+// lands this line becomes `use std.utf8;`.
+// out: len=17 cps=6
+// out: 0 0 1 97
+// out: 1 1 2 183
+// out: 2 3 3 8364
+// out: 3 6 3 19990
+// out: 4 9 4 127757
+// out: 5 13 4 119070
+// out: pieces: a·€世🌍𝄞
+// out: roundtrip=true
+use std.utf8;
+
+fn main() -> i32 {
+  let s: string = "a·€世🌍𝄞";
+  // bytes: 1 + 2 + 3 + 3 + 4 + 4 = 17; code points: 6
+  printf("len={} cps={}\n", len(s), utf8.code_point_count(s));
+  let mut i: usize = 0;
+  let mut k: usize = 0;
+  let mut built: string = "";
+  while i < len(s) {
+    match utf8.next(s, i) {
+      Char(cp, nx) => {
+        printf("{} {} {} {}\n", k, i, nx - i, cp);
+        built = built + s[i..nx];
+        i = nx;
+        k += 1;
+      }
+      Bad(_) => {
+        panic("the golden string must walk clean");
+      }
+      End => {
+        break;
+      }
+    }
+  }
+  printf("pieces: {}\n", built);
+  printf("roundtrip={}\n", built == s);
+  return 0;
+}

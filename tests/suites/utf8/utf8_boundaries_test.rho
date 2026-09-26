@@ -1,0 +1,41 @@
+// spec: TODO T4.6 + design §8 — the boundary code points decode at
+// every width: U+0000/U+007F (one byte), U+0080/U+07FF (two),
+// U+FFFF (three), U+10000/U+10FFFF (four). U+0000 is pinned by value —
+// a NUL byte cannot ride a `// out:` line.
+//
+// utf8 -> std/utf8 (two-base lookup, module-system.md §2) because the
+// reserved `std` rule (§7, TODO T4.2) is not in boot yet. When T4.2
+// lands this line becomes `use std.utf8;`.
+// out: len=17 cps=7 valid=true
+// out: 0 0 1 0
+// out: 1 1 1 127
+// out: 2 2 2 128
+// out: 3 4 2 2047
+// out: 4 6 3 65535
+// out: 5 9 4 65536
+// out: 6 13 4 1114111
+use std.utf8;
+
+fn main() -> i32 {
+  let s: string = "\u{0}\u{7F}\u{80}\u{7FF}\u{FFFF}\u{10000}\u{10FFFF}";
+  // widths: 1 + 1 + 2 + 2 + 3 + 4 + 4 = 17 bytes, 7 code points
+  printf("len={} cps={} valid={}\n", len(s), utf8.code_point_count(s), utf8.is_valid(s));
+  let mut i: usize = 0;
+  let mut k: usize = 0;
+  while i < len(s) {
+    match utf8.next(s, i) {
+      Char(cp, nx) => {
+        printf("{} {} {} {}\n", k, i, nx - i, cp);
+        i = nx;
+        k += 1;
+      }
+      Bad(_) => {
+        panic("the boundary string must walk clean");
+      }
+      End => {
+        break;
+      }
+    }
+  }
+  return 0;
+}

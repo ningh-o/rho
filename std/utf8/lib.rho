@@ -1,0 +1,619 @@
+// std.utf8 — code-point iteration and friends over strings (TODO T4.6).
+//
+// Law: a string is an immutable UTF-8 byte slice; len/index/slice are
+// byte-based and there is no built-in char abstraction (TODO design §8,
+// spec/spec.md §5). This package adds the code-point view as a library
+// — never the kernel (TODO design §14).
+//
+// Decoding policy (deterministic, documented — TODO design §5):
+//
+//   * `next` is total and panic-free: it never reads past the string
+//     and never panics on malformed bytes.
+//   * A malformed byte consumes exactly ONE byte: `Bad(next)` carries
+//     the resume index i+1. The bytes that followed a bad lead decode
+//     as their own steps (usually Bad themselves).
+//   * A sequence is rejected as a whole when its lead byte promises a
+//     width the tail cannot honor: truncated tails, non-continuation
+//     bytes, overlong encodings, surrogate encodings (U+D800..U+DFFF),
+//     and encodings beyond U+10FFFF are all malformed at their lead.
+//   * The code-point INDEX SPACE of the friends (`code_point_count`,
+//     `byte_offset`, `code_point_index`) is the step space: every step
+//     occupies one index. On valid input (see `is_valid`) steps are
+//     exactly the code points; on invalid input each malformed byte is
+//     one step, so the friends remain total and mutually inverse.
+
+// One decoding step: a valid code point with its end offset, a
+// malformed byte with its resume offset, or the end of the string.
+pub enum Step {
+  Char(u32, usize),
+  Bad(usize),
+  End,
+}
+
+// Decode the step starting at byte offset i of s. i at or past len(s)
+// yields End. A valid UTF-8 sequence starting at i yields Char(cp, i+w)
+// with w its width in bytes (1..=4); otherwise Bad(i+1) — exactly one
+// byte is consumed.
+pub fn next(s: string, i: usize) -> Step {
+  let n: usize = len(s);
+  if i >= n {
+    return Step.End;
+  }
+  let b0: u8 = s[i];
+  // one-byte: U+0000..U+007F
+  if b0 < 0x80 {
+    return Step.Char(b0 as u32, i + 1);
+  }
+  // 0x80..0xBF are continuation bytes (never leads); 0xC0/0xC1 can only
+  // encode overlong two-byte forms — all malformed at the lead
+  if b0 < 0xC2 {
+    return Step.Bad(i + 1);
+  }
+  // two-byte: C2..DF -> U+0080..U+07FF. The C2 lead floor above already
+  // excludes every overlong two-byte form (C0/C1), so a decoded cp is
+  // >= 0x80 by construction: no post-decode range check is needed here,
+  // unlike the three- and four-byte branches below, whose E0/F0 floors
+  // live inside the lead band and must be checked post-decode.
+  if b0 < 0xE0 {
+    if i + 1 >= n || !is_cont(s[i + 1]) {
+      return Step.Bad(i + 1);
+    }
+    let cp: u32 = (((b0 & 0x1F) as u32) << 6) | ((s[i + 1] & 0x3F) as u32);
+    return Step.Char(cp, i + 2);
+  }
+  // three-byte: E0..EF -> U+0800..U+FFFF minus the surrogate range
+  if b0 < 0xF0 {
+    if i + 2 >= n || !is_cont(s[i + 1]) || !is_cont(s[i + 2]) {
+      return Step.Bad(i + 1);
+    }
+    let cp: u32 = (((b0 & 0x0F) as u32) << 12) | (((s[i + 1] & 0x3F) as u32) << 6)
+      | ((s[i + 2] & 0x3F) as u32);
+    // E0 80..9F decodes below U+0800 (overlong); ED A0..BF is the
+    // surrogate range U+D800..U+DFFF — both malformed at the lead
+    if cp < 0x800 {
+      return Step.Bad(i + 1);
+    }
+    if cp >= 0xD800 && cp <= 0xDFFF {
+      return Step.Bad(i + 1);
+    }
+    return Step.Char(cp, i + 3);
+  }
+  // four-byte: F0..F4 -> U+10000..U+10FFFF
+  if b0 < 0xF5 {
+    if i + 3 >= n || !is_cont(s[i + 1]) || !is_cont(s[i + 2]) || !is_cont(s[i + 3]) {
+      return Step.Bad(i + 1);
+    }
+    let cp: u32 = (((b0 & 0x07) as u32) << 18) | (((s[i + 1] & 0x3F) as u32) << 12)
+      | (((s[i + 2] & 0x3F) as u32) << 6) | ((s[i + 3] & 0x3F) as u32);
+    // F0 80..8F decodes below U+10000 (overlong); F4 90..BF decodes
+    // beyond U+10FFFF — both malformed at the lead
+    if cp < 0x10000 || cp > 0x10FFFF {
+      return Step.Bad(i + 1);
+    }
+    return Step.Char(cp, i + 4);
+  }
+  // 0xF5..0xFF never start a sequence
+  return Step.Bad(i + 1);
+}
+
+// is b a UTF-8 continuation byte (10xxxxxx)?
+fn is_cont(b: u8) -> bool {
+  return (b & 0xC0) == 0x80;
+}
+
+// Does s hold well-formed UTF-8? Strict: overlong encodings, surrogate
+// encodings, anything beyond U+10FFFF, non-continuation tails, and
+// truncated tails all fail. The empty string is valid.
+pub fn is_valid(s: string) -> bool {
+  let mut i: usize = 0;
+  while i < len(s) {
+    match next(s, i) {
+      Step.Char(_, nx) => {
+        i = nx;
+      }
+      Step.Bad(_) => {
+        return false;
+      }
+      Step.End => {
+        break;
+      }
+    }
+  }
+  return true;
+}
+
+// The number of code points in s. Defined over any input via the step
+// space: on valid input the code-point count; on invalid input each
+// malformed byte counts as one step (see the header's decoding policy).
+pub fn code_point_count(s: string) -> usize {
+  let mut i: usize = 0;
+  let mut n: usize = 0;
+  while i < len(s) {
+    match next(s, i) {
+      Step.Char(_, nx) | Step.Bad(nx) => {
+        i = nx;
+        n += 1;
+      }
+      Step.End => {
+        break;
+      }
+    }
+  }
+  return n;
+}
+
+// The byte offset where the cp_index-th code point of s starts. One
+// past the last step (cp_index == code_point_count(s)) is the end
+// offset len(s) — a legal boundary for slicing. cp_index beyond that
+// is None. Indices ride the step space (see the header).
+pub fn byte_offset(s: string, cp_index: usize) -> ?usize {
+  let n: usize = len(s);
+  let mut i: usize = 0;
+  let mut k: usize = 0;
+  while i < n {
+    if k == cp_index {
+      return Option.Some(i);
+    }
+    match next(s, i) {
+      Step.Char(_, nx) | Step.Bad(nx) => {
+        i = nx;
+        k += 1;
+      }
+      Step.End => {
+        break;
+      }
+    }
+  }
+  if cp_index == k {
+    return Option.Some(n);
+  }
+  return Option.None;
+}
+
+// The code-point index of the byte offset `at` in s — None unless `at`
+// is a step boundary (a step's start offset, or len(s) itself). Indices
+// ride the step space (see the header).
+pub fn code_point_index(s: string, at: usize) -> ?usize {
+  if at > len(s) {
+    return Option.None;
+  }
+  let mut i: usize = 0;
+  let mut k: usize = 0;
+  while i < at {
+    match next(s, i) {
+      Step.Char(_, nx) | Step.Bad(nx) => {
+        if nx > at {
+          return Option.None;
+        }
+        i = nx;
+        k += 1;
+      }
+      Step.End => {
+        break;
+      }
+    }
+  }
+  return Option.Some(k);
+}
+
+// ------------------------------------------------------------ white box
+
+test "next walks ascii" {
+  let s: string = "A\x7F\x00z";
+  assert_eq(len(s), 4);
+  match next(s, 0) {
+    Step.Char(cp, nx) => {
+      assert_eq(cp, 0x41);
+      assert_eq(nx, 1);
+    }
+    _ => {
+      panic("A must decode");
+    }
+  }
+  match next(s, 1) {
+    Step.Char(cp, _) => {
+      assert_eq(cp, 0x7F);
+    }
+    _ => {
+      panic("U+007F must decode");
+    }
+  }
+  match next(s, 2) {
+    Step.Char(cp, _) => {
+      assert_eq(cp, 0);
+    }
+    _ => {
+      panic("U+0000 must decode");
+    }
+  }
+  match next(s, 4) {
+    Step.End => {}
+    _ => {
+      panic("end of string must be End");
+    }
+  }
+  match next(s, 9) {
+    Step.End => {}
+    _ => {
+      panic("past the end must be End");
+    }
+  }
+}
+
+test "next decodes every width" {
+  let s: string = "\x7F\u{80}\u{7FF}\u{FFFD}\u{FFFF}\u{10000}\u{10FFFF}";
+  // widths: 1 + 2 + 2 + 3 + 3 + 4 + 4 = 19 bytes, 7 code points
+  assert_eq(len(s), 19);
+  assert(is_valid(s), "boundary string must be valid");
+  assert_eq(code_point_count(s), 7);
+  let mut want: []u32 = make([]u32, 7);
+  want[0] = 0x7F;
+  want[1] = 0x80;
+  want[2] = 0x7FF;
+  want[3] = 0xFFFD;
+  want[4] = 0xFFFF;
+  want[5] = 0x10000;
+  want[6] = 0x10FFFF;
+  let mut i: usize = 0;
+  let mut k: usize = 0;
+  while i < len(s) {
+    match next(s, i) {
+      Step.Char(cp, nx) => {
+        assert_eq(cp, want[k]);
+        i = nx;
+        k += 1;
+      }
+      _ => {
+        panic("boundary string must walk clean");
+      }
+    }
+  }
+  assert_eq(k, 7);
+}
+
+test "next rejects every malformed class at the lead" {
+  // each fixture: the whole sequence is malformed at its lead byte;
+  // the walk consumes one byte per Bad step (documented policy)
+  let mut bads: []string = make([]string, 12);
+  bads[0] = "\x80";
+  bads[1] = "\xBF";
+  bads[2] = "\xC0\xAF";
+  bads[3] = "\xC1\xBF";
+  bads[4] = "\xE0\x80\xAF";
+  bads[5] = "\xF0\x80\x80\xAF";
+  bads[6] = "\xED\xA0\x80";
+  bads[7] = "\xED\xBF\xBF";
+  bads[8] = "\xF4\x90\x80\x80";
+  bads[9] = "\xF5\x80\x80\x80";
+  bads[10] = "\xFF";
+  bads[11] = "\xE2\x28\xA1";
+  let mut idx: usize = 0;
+  while idx < 12 {
+    assert(!is_valid(bads[idx]), "fixture must be invalid");
+    let mut i: usize = 0;
+    let mut bads_seen: usize = 0;
+    let mut chars_seen: usize = 0;
+    while i < len(bads[idx]) {
+      match next(bads[idx], i) {
+        Step.Char(_, nx) => {
+          i = nx;
+          chars_seen += 1;
+        }
+        Step.Bad(nx) => {
+          i = nx;
+          bads_seen += 1;
+        }
+        Step.End => {
+          break;
+        }
+      }
+    }
+    // the walk always reaches the end: consumed == len
+    assert_eq(chars_seen + bads_seen, code_point_count(bads[idx]));
+    idx += 1;
+  }
+}
+
+test "truncated tails are invalid" {
+  assert(!is_valid("\xC3"), "bare two-byte lead");
+  assert(!is_valid("\xE2\x82"), "two bytes of a three-byte run");
+  assert(!is_valid("\xF0\x9F\x8C"), "three bytes of a four-byte run");
+  assert(!is_valid("\xF0\x9F"), "two bytes of a four-byte run");
+  assert(!is_valid("\xF0"), "bare four-byte lead");
+}
+
+test "valid strings of every width" {
+  assert(is_valid(""), "empty is valid");
+  assert(is_valid("rho"), "ascii");
+  assert(is_valid("\u{A9}"), "two-byte U+00A9");
+  assert(is_valid("\u{20AC}"), "three-byte U+20AC");
+  assert(is_valid("\u{1F600}"), "four-byte U+1F600");
+  assert_eq(code_point_count("rho"), 3);
+  assert_eq(code_point_count(""), 0);
+}
+
+test "byte_offset and code_point_index are inverse" {
+  let s: string = "a\u{E9}\u{4E16}\u{1D11E}";
+  // widths: 1 + 2 + 3 + 4 = 10 bytes, 4 code points
+  assert_eq(len(s), 10);
+  let mut offs: []usize = make([]usize, 5);
+  offs[0] = 0;
+  offs[1] = 1;
+  offs[2] = 3;
+  offs[3] = 6;
+  offs[4] = 10;
+  let mut k: usize = 0;
+  while k <= 4 {
+    match byte_offset(s, k) {
+      Option.Some(off) => {
+        assert_eq(off, offs[k]);
+        match code_point_index(s, off) {
+          Option.Some(back) => {
+            assert_eq(back, k);
+          }
+          Option.None => {
+            panic("a step boundary must map back");
+          }
+        }
+      }
+      Option.None => {
+        panic("cp index within range must map");
+      }
+    }
+    k += 1;
+  }
+  // mid-sequence offsets and past-the-end indices are None
+  match code_point_index(s, 2) {
+    Option.None => {}
+    _ => {
+      panic("offset 2 is inside the U+00E9");
+    }
+  }
+  match code_point_index(s, 11) {
+    Option.None => {}
+    _ => {
+      panic("offset 11 is past the end");
+    }
+  }
+  match byte_offset(s, 5) {
+    Option.None => {}
+    _ => {
+      panic("cp index 5 is past the end");
+    }
+  }
+  // a bad byte is a one-byte step with its own boundary: the steps of
+  // "\xE2\x82\x28" are Bad@0 (E2), Bad@1 (82), Char@2 ('(')
+  let bad: string = "\xE2\x82\x28";
+  assert(!is_valid(bad), "fixture is invalid");
+  assert_eq(code_point_count(bad), 3);
+  match byte_offset(bad, 1) {
+    Option.Some(off) => {
+      assert_eq(off, 1);
+    }
+    Option.None => {
+      panic("step 1 must have an offset");
+    }
+  }
+  match byte_offset(bad, 2) {
+    Option.Some(off) => {
+      assert_eq(off, 2);
+    }
+    Option.None => {
+      panic("step 2 must have an offset");
+    }
+  }
+  match code_point_index(bad, 2) {
+    Option.Some(k2) => {
+      assert_eq(k2, 2);
+    }
+    Option.None => {
+      panic("offset 2 is a step boundary");
+    }
+  }
+  match code_point_index(bad, 1) {
+    Option.Some(k1) => {
+      assert_eq(k1, 1);
+    }
+    Option.None => {
+      panic("offset 1 is a step boundary");
+    }
+  }
+}
+
+test "two-byte branch edges" {
+  // the two-byte branch carries no post-decode range check: the C2 lead
+  // floor is the whole overlong defense. These edges pin that claim.
+  // C2 80 is the minimal two-byte form (U+0080) — the floor itself
+  match next("\xC2\x80", 0) {
+    Step.Char(cp, nx) => {
+      assert_eq(cp, 0x80);
+      assert_eq(nx, 2);
+    }
+    _ => {
+      panic("C2 80 is U+0080");
+    }
+  }
+  // DF BF is the maximal two-byte form (U+07FF)
+  match next("\xDF\xBF", 0) {
+    Step.Char(cp, nx) => {
+      assert_eq(cp, 0x7FF);
+      assert_eq(nx, 2);
+    }
+    _ => {
+      panic("DF BF is U+07FF");
+    }
+  }
+  // C0/C1 leads are malformed before any tail is read — they can only
+  // begin overlong two-byte forms, which the lead guard rejects whole
+  match next("\xC0\xAF", 0) {
+    Step.Bad(nx) => {
+      assert_eq(nx, 1);
+    }
+    _ => {
+      panic("C0 is a malformed lead");
+    }
+  }
+  match next("\xC1\xBF", 0) {
+    Step.Bad(nx) => {
+      assert_eq(nx, 1);
+    }
+    _ => {
+      panic("C1 is a malformed lead");
+    }
+  }
+}
+
+test "bads advance one byte across consecutive illegal sequences" {
+  // two overlong forms back to back: every step is Bad and every step
+  // resumes exactly one byte past its lead — no byte is skipped, none
+  // re-decoded
+  let s: string = "\xC0\xAF\xC0\xAF";
+  assert_eq(len(s), 4);
+  let mut i: usize = 0;
+  let mut k: usize = 0;
+  while i < len(s) {
+    match next(s, i) {
+      Step.Bad(nx) => {
+        assert_eq(nx, i + 1);
+        i = nx;
+        k += 1;
+      }
+      _ => {
+        panic("every step of consecutive overlong forms is Bad");
+      }
+    }
+  }
+  assert_eq(i, 4);
+  assert_eq(k, 4);
+  assert_eq(code_point_count(s), 4);
+  // a mixed run: bare continuation, illegal lead, broken three-byte
+  // tail, one ascii Char, trailing bare continuation — the resume
+  // positions stay exact across the Bads and the Char
+  let m: string = "\x80\xFF\xE2\x28\xA1";
+  assert_eq(len(m), 5);
+  assert(!is_valid(m), "the mixed run is invalid");
+  match next(m, 0) {
+    Step.Bad(nx) => {
+      assert_eq(nx, 1);
+    }
+    _ => {
+      panic("a bare continuation is Bad");
+    }
+  }
+  match next(m, 1) {
+    Step.Bad(nx) => {
+      assert_eq(nx, 2);
+    }
+    _ => {
+      panic("FF is a Bad lead");
+    }
+  }
+  match next(m, 2) {
+    Step.Bad(nx) => {
+      assert_eq(nx, 3);
+    }
+    _ => {
+      panic("E2 with a broken tail is Bad at its lead");
+    }
+  }
+  match next(m, 3) {
+    Step.Char(cp, nx) => {
+      assert_eq(cp, 0x28);
+      assert_eq(nx, 4);
+    }
+    _ => {
+      panic("the stranded 0x28 is a one-byte Char");
+    }
+  }
+  match next(m, 4) {
+    Step.Bad(nx) => {
+      assert_eq(nx, 5);
+    }
+    _ => {
+      panic("the trailing bare continuation is Bad");
+    }
+  }
+  assert_eq(code_point_count(m), 5);
+  // every step of m is one byte, so the step space is the byte space:
+  // the friends agree with the walk at every boundary
+  let mut b: usize = 0;
+  while b <= 5 {
+    match byte_offset(m, b) {
+      Option.Some(off) => {
+        assert_eq(off, b);
+        match code_point_index(m, off) {
+          Option.Some(back) => {
+            assert_eq(back, b);
+          }
+          Option.None => {
+            panic("a step boundary must map back");
+          }
+        }
+      }
+      Option.None => {
+        panic("boundary within range must map");
+      }
+    }
+    b += 1;
+  }
+}
+
+test "friends stay consistent across a bad lead and a bad tail" {
+  // steps: Bad@0 (80), Char U+20AC @1..4, Bad@4 (FF); count 3, len 5 —
+  // the offsets are no longer the identity, and mid-Char offsets are
+  // None exactly as on valid input
+  let s: string = "\x80\xE2\x82\xAC\xFF";
+  assert_eq(len(s), 5);
+  assert(!is_valid(s), "fixture is invalid");
+  assert_eq(code_point_count(s), 3);
+  let mut offs: []usize = make([]usize, 4);
+  offs[0] = 0;
+  offs[1] = 1;
+  offs[2] = 4;
+  offs[3] = 5;
+  let mut k: usize = 0;
+  while k <= 3 {
+    match byte_offset(s, k) {
+      Option.Some(off) => {
+        assert_eq(off, offs[k]);
+        match code_point_index(s, off) {
+          Option.Some(back) => {
+            assert_eq(back, k);
+          }
+          Option.None => {
+            panic("a step boundary must map back");
+          }
+        }
+      }
+      Option.None => {
+        panic("step boundary within range must map");
+      }
+    }
+    k += 1;
+  }
+  // inside the Char, and past the end: None on invalid input too
+  match code_point_index(s, 2) {
+    Option.None => {}
+    _ => {
+      panic("offset 2 is inside the U+20AC");
+    }
+  }
+  match code_point_index(s, 3) {
+    Option.None => {}
+    _ => {
+      panic("offset 3 is inside the U+20AC");
+    }
+  }
+  match code_point_index(s, 6) {
+    Option.None => {}
+    _ => {
+      panic("offset 6 is past the end");
+    }
+  }
+  match byte_offset(s, 4) {
+    Option.None => {}
+    _ => {
+      panic("cp index 4 is past the end");
+    }
+  }
+}

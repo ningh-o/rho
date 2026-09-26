@@ -1,0 +1,99 @@
+// spec: TODO T4.6 + design §8 — the malformed-sequence table: every
+// rejection class of UTF-8 (bared continuations, overlong forms at all
+// widths, surrogate encodings, beyond U+10FFFF, illegal leads,
+// truncated tails at every rung, broken continuations, consecutive
+// illegal sequences), each with at least one fixture. valid pins
+// strictness; bads pins the documented lenient-walk policy (a
+// malformed byte consumes exactly one byte); cps pins the step-space
+// count.
+//
+// utf8 -> std/utf8 (two-base lookup, module-system.md §2) because the
+// reserved `std` rule (§7, TODO T4.2) is not in boot yet. When T4.2
+// lands this line becomes `use std.utf8;`.
+// out: bare_cont_low valid=false bads=1 cps=1
+// out: bare_cont_high valid=false bads=1 cps=1
+// out: overlong_2 valid=false bads=2 cps=2
+// out: overlong_2_max valid=false bads=2 cps=2
+// out: overlong_3 valid=false bads=3 cps=3
+// out: overlong_4 valid=false bads=4 cps=4
+// out: surrogate_min valid=false bads=3 cps=3
+// out: surrogate_max valid=false bads=3 cps=3
+// out: beyond_max valid=false bads=4 cps=4
+// out: lead_f5 valid=false bads=4 cps=4
+// out: lead_ff valid=false bads=1 cps=1
+// out: lead_fe valid=false bads=1 cps=1
+// out: trunc_2 valid=false bads=1 cps=1
+// out: trunc_3 valid=false bads=2 cps=2
+// out: trunc_4 valid=false bads=3 cps=3
+// out: trunc_4_mid valid=false bads=2 cps=2
+// out: trunc_4_lead valid=false bads=1 cps=1
+// out: bad_cont_mid valid=false bads=2 cps=3
+// out: consec_overlong valid=false bads=4 cps=4
+// out: ascii valid=true bads=0 cps=1
+// out: two_byte valid=true bads=0 cps=1
+// out: three_byte valid=true bads=0 cps=1
+// out: four_byte valid=true bads=0 cps=1
+use std.utf8;
+
+fn count_bads(s: string) -> usize {
+  let mut i: usize = 0;
+  let mut n: usize = 0;
+  while i < len(s) {
+    match utf8.next(s, i) {
+      Char(_, nx) => {
+        i = nx;
+      }
+      Bad(nx) => {
+        i = nx;
+        n += 1;
+      }
+      End => {
+        break;
+      }
+    }
+  }
+  return n;
+}
+
+fn report(name: string, s: string) {
+  printf("{} valid={} bads={} cps={}\n", name, utf8.is_valid(s), count_bads(s), utf8.code_point_count(s));
+}
+
+fn main() -> i32 {
+  report("bare_cont_low", "\x80");
+  report("bare_cont_high", "\xBF");
+  // C0/C1 can only begin overlong two-byte forms
+  report("overlong_2", "\xC0\xAF");
+  report("overlong_2_max", "\xC1\xBF");
+  // E0 80..  decodes below U+0800
+  report("overlong_3", "\xE0\x80\xAF");
+  // F0 80..  decodes below U+10000
+  report("overlong_4", "\xF0\x80\x80\xAF");
+  // ED A0..  encodes the surrogate range U+D800..U+DFFF
+  report("surrogate_min", "\xED\xA0\x80");
+  report("surrogate_max", "\xED\xBF\xBF");
+  // F4 90..  encodes beyond U+10FFFF
+  report("beyond_max", "\xF4\x90\x80\x80");
+  // F5..FF never start a sequence
+  report("lead_f5", "\xF5\x80\x80\x80");
+  report("lead_ff", "\xFF");
+  report("lead_fe", "\xFE");
+  // truncated tails: the lead promises bytes the string does not hold —
+  // every rung of the four-byte ladder down to the bare lead
+  report("trunc_2", "\xC3");
+  report("trunc_3", "\xE2\x82");
+  report("trunc_4", "\xF0\x9F\x8C");
+  report("trunc_4_mid", "\xF0\x9F");
+  report("trunc_4_lead", "\xF0");
+  // a broken continuation splits the run: one Char ('(') among Bads
+  report("bad_cont_mid", "\xE2\x28\xA1");
+  // consecutive illegal sequences: two overlong forms back to back —
+  // every step is Bad, each resuming exactly one byte past its lead
+  report("consec_overlong", "\xC0\xAF\xC0\xAF");
+  // valid controls, one per width
+  report("ascii", "A");
+  report("two_byte", "\xC2\xA9");
+  report("three_byte", "\xE2\x82\xAC");
+  report("four_byte", "\xF0\x9F\x8C\x8D");
+  return 0;
+}

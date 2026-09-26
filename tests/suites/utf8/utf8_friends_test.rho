@@ -1,0 +1,85 @@
+// spec: TODO T4.6 + design §8 — the index friends: code_point_count,
+// byte_offset (code-point index -> byte offset), code_point_index
+// (byte offset -> code-point index), over valid and invalid input, and
+// their interplay with byte-based slicing. Indices ride the step space
+// documented in std/utf8/lib.rho.
+//
+// utf8 -> std/utf8 (two-base lookup, module-system.md §2) because the
+// reserved `std` rule (§7, TODO T4.2) is not in boot yet. When T4.2
+// lands this line becomes `use std.utf8;`.
+// out: count=6
+// out: off 0=0 1=1 2=3 3=6 4=9 5=13 6=17
+// out: cpidx 0=0 1=1 3=2 6=3 9=4 13=5 17=6
+// out: mid 2=none 4=none 8=none 12=none
+// out: past 18=none off7=none
+// out: slice=€
+// out: bad count=3
+// out: bad off 0=0 1=1 2=2 3=3
+// out: bad idx 0=0 1=1 2=2 3=3
+// out: mix count=3
+// out: mix off 0=0 1=1 2=4 3=5 4=none
+// out: mix idx 0=0 1=1 2=none 3=none 4=2 5=3 6=none
+// out: allbad valid=false count=4
+// out: allbad off 0=0 1=1 2=2 3=3 4=4 5=none
+// out: allbad idx 0=0 1=1 2=2 3=3 4=4 5=none
+// out: empty valid=true count=0 off0=0 idx0=0
+use std.utf8;
+
+fn show_off(s: string, k: usize) -> string {
+  return match utf8.byte_offset(s, k) {
+    Some(off) => format("{}", off),
+    None => "none",
+  };
+}
+
+fn show_idx(s: string, at: usize) -> string {
+  return match utf8.code_point_index(s, at) {
+    Some(k) => format("{}", k),
+    None => "none",
+  };
+}
+
+fn main() -> i32 {
+  let s: string = "a·€世🌍𝄞";
+  // widths: 1 + 2 + 3 + 3 + 4 + 4 = 17 bytes, 6 code points; the end
+  // offset 17 is the boundary one past the last code point
+  printf("count={}\n", utf8.code_point_count(s));
+  printf("off 0={} 1={} 2={} 3={} 4={} 5={} 6={}\n", show_off(s, 0), show_off(s, 1), show_off(s, 2), show_off(s, 3), show_off(s, 4), show_off(s, 5), show_off(s, 6));
+  printf("cpidx 0={} 1={} 3={} 6={} 9={} 13={} 17={}\n", show_idx(s, 0), show_idx(s, 1), show_idx(s, 3), show_idx(s, 6), show_idx(s, 9), show_idx(s, 13), show_idx(s, 17));
+  printf("mid 2={} 4={} 8={} 12={}\n", show_idx(s, 2), show_idx(s, 4), show_idx(s, 8), show_idx(s, 12));
+  printf("past 18={} off7={}\n", show_idx(s, 18), show_off(s, 7));
+  // the friends drive byte-based slicing: the third code point alone
+  let a: usize = match utf8.byte_offset(s, 2) {
+    Some(off) => off,
+    None => 0,
+  };
+  let b: usize = match utf8.byte_offset(s, 3) {
+    Some(off) => off,
+    None => 0,
+  };
+  printf("slice={}\n", s[a..b]);
+  // invalid input rides the step space: "\xE2\x82\x28" is
+  // Bad@0 (E2), Bad@1 (82), Char@2 ('(')
+  let bad: string = "\xE2\x82\x28";
+  printf("bad count={}\n", utf8.code_point_count(bad));
+  printf("bad off 0={} 1={} 2={} 3={}\n", show_off(bad, 0), show_off(bad, 1), show_off(bad, 2), show_off(bad, 3));
+  printf("bad idx 0={} 1={} 2={} 3={}\n", show_idx(bad, 0), show_idx(bad, 1), show_idx(bad, 2), show_idx(bad, 3));
+  // a bad lead AND a bad tail around one valid three-byte Char:
+  // "\x80\xE2\x82\xAC\xFF" steps Bad@0, Char U+20AC @1..4, Bad@4 —
+  // count 3; the offsets stop being the identity and the offsets inside
+  // the Char are None exactly as on valid input
+  let mix: string = "\x80\xE2\x82\xAC\xFF";
+  printf("mix count={}\n", utf8.code_point_count(mix));
+  printf("mix off 0={} 1={} 2={} 3={} 4={}\n", show_off(mix, 0), show_off(mix, 1), show_off(mix, 2), show_off(mix, 3), show_off(mix, 4));
+  printf("mix idx 0={} 1={} 2={} 3={} 4={} 5={} 6={}\n", show_idx(mix, 0), show_idx(mix, 1), show_idx(mix, 2), show_idx(mix, 3), show_idx(mix, 4), show_idx(mix, 5), show_idx(mix, 6));
+  // an all-bad string: every byte is its own one-byte Bad step, so the
+  // step space is the byte space — count = len and both conversions are
+  // the identity at every boundary, with the end offset len(s) legal
+  let allbad: string = "\x80\xC0\xAF\xFF";
+  printf("allbad valid={} count={}\n", utf8.is_valid(allbad), utf8.code_point_count(allbad));
+  printf("allbad off 0={} 1={} 2={} 3={} 4={} 5={}\n", show_off(allbad, 0), show_off(allbad, 1), show_off(allbad, 2), show_off(allbad, 3), show_off(allbad, 4), show_off(allbad, 5));
+  printf("allbad idx 0={} 1={} 2={} 3={} 4={} 5={}\n", show_idx(allbad, 0), show_idx(allbad, 1), show_idx(allbad, 2), show_idx(allbad, 3), show_idx(allbad, 4), show_idx(allbad, 5));
+  // the empty string: valid, zero steps, offset and index zero
+  printf("empty valid={} count={} off0={} idx0={}\n", utf8.is_valid(""), utf8.code_point_count(""), show_off("", 0), show_idx("", 0));
+  return 0;
+}
