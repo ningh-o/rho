@@ -13,6 +13,22 @@ pub trait Show {
   fn to_str(self) -> string,
 }
 
+// The operator traits (§11): ==/!= on user types compare element-wise
+// by default and an `impl Eq for T` replaces the default; ordering
+// needs an explicit `impl Ord` — one method, one meaning (a < b calls
+// lt, the other three derive); Hash's default folds the == law's
+// values under FNV-1a and an impl replaces it. Builtins never consult
+// the traits (direct emission); fn/dyn/slice/Result are locked out.
+pub trait Eq {
+  fn eq(self, other: *Self) -> bool,
+}
+pub trait Ord {
+  fn lt(self, other: *Self) -> bool,
+}
+pub trait Hash {
+  fn hash(self) -> u64,
+}
+
 // None rides tag 0: zeroed allocations (make/new, §2) read as the
 // absent form — a fresh []?T slot is None, not Some(junk)
 pub enum Option[T] {
@@ -121,23 +137,23 @@ fn dec_new() -> *Dec {
   return new Dec { limbs: make([]u32, 96), used: 1 };
 }
 
-fn dec_trim(d: *Dec) {
+fn dec_trim(mut d: *Dec) {
   while d.used > 1 && d.limbs[d.used - 1] == 0 {
     d.used = d.used - 1;
   }
   return;
 }
 
-fn dec_set(d: *Dec, v: u64) {
+fn dec_set(mut d: *Dec, v: u64) {
   d.limbs[0] = (v % 1000000000) as u32;
   d.limbs[1] = ((v / 1000000000) % 1000000000) as u32;
   d.limbs[2] = (v / 1000000000000000000) as u32;
   d.used = 3;
-  dec_trim(d);
+  dec_trim(mut d);
   return;
 }
 
-fn dec_mul_small(d: *Dec, m: u32) {
+fn dec_mul_small(mut d: *Dec, m: u32) {
   let mut carry: u64 = 0;
   let mut i: usize = 0;
   while i < d.used {
@@ -164,7 +180,7 @@ fn dec_to_u64(d: *Dec) -> u64 {
   return v;
 }
 
-fn dec_bump(d: *Dec) {
+fn dec_bump(mut d: *Dec) {
   let mut i: usize = 0;
   loop {
     if i >= d.used {
@@ -243,7 +259,7 @@ fn dec_top_digits(d: *Dec) -> i32 {
 
 // 5·10^(cut-1): half of the divisor 10^cut
 fn dec_half_of(cut: usize) -> *Dec {
-  let h: *Dec = dec_new();
+  let mut h: *Dec = dec_new();
   let pos: usize = cut - 1;
   let l: usize = pos / 9;
   let r: usize = pos % 9;
@@ -253,10 +269,10 @@ fn dec_half_of(cut: usize) -> *Dec {
 }
 
 // q = d div 10^cut (returned); d keeps d mod 10^cut
-fn dec_split(d: *Dec, cut: usize) -> *Dec {
+fn dec_split(mut d: *Dec, cut: usize) -> *Dec {
   let l: usize = cut / 9;
   let r: usize = cut % 9;
-  let q: *Dec = dec_new();
+  let mut q: *Dec = dec_new();
   if d.used <= l {
     return q;
   }
@@ -271,7 +287,7 @@ fn dec_split(d: *Dec, cut: usize) -> *Dec {
     rem = cur % p;
   }
   q.used = qn;
-  dec_trim(q);
+  dec_trim(mut q);
   if r > 0 {
     d.limbs[l] = rem as u32;
     d.used = l + 1;
@@ -282,7 +298,7 @@ fn dec_split(d: *Dec, cut: usize) -> *Dec {
     d.limbs[0] = 0;
     d.used = 1;
   }
-  dec_trim(d);
+  dec_trim(mut d);
   return q;
 }
 
@@ -326,27 +342,27 @@ fn dec_text(x: f64, prec: i32) -> string {
     e = (biased as i64) - 1075;
   }
   // exact digits: x == N / 10^sc
-  let d: *Dec = dec_new();
-  dec_set(d, m);
+  let mut d: *Dec = dec_new();
+  dec_set(mut d, m);
   let mut sc: i64 = 0;
   if e >= 0 {
     let mut k: i64 = e;
     while k >= 29 {
-      dec_mul_small(d, 536870912);
+      dec_mul_small(mut d, 536870912);
       k = k - 29;
     }
     if k > 0 {
-      dec_mul_small(d, pow2_small(k as i32));
+      dec_mul_small(mut d, pow2_small(k as i32));
     }
   } else {
     let mut k: i64 = -e;
     while k >= 12 {
-      dec_mul_small(d, 244140625);
+      dec_mul_small(mut d, 244140625);
       sc = sc + 12;
       k = k - 12;
     }
     if k > 0 {
-      dec_mul_small(d, pow5_small(k as i32));
+      dec_mul_small(mut d, pow5_small(k as i32));
       sc = sc + k;
     }
   }
@@ -356,10 +372,10 @@ fn dec_text(x: f64, prec: i32) -> string {
   let cut: i64 = sc + n - (prec as i64);
   let mut qv: u64 = 0;
   if cut > 0 {
-    let q: *Dec = dec_split(d, cut as usize);
+    let mut q: *Dec = dec_split(mut d, cut as usize);
     let c: i32 = dec_cmp(d, dec_half_of(cut as usize));
     if c > 0 || (c == 0 && (q.limbs[0] & 1) == 1) {
-      dec_bump(q);
+      dec_bump(mut q);
     }
     qv = dec_to_u64(q);
   } else {
@@ -368,11 +384,11 @@ fn dec_text(x: f64, prec: i32) -> string {
     } else {
       let mut k: i64 = -cut;
       while k >= 9 {
-        dec_mul_small(d, 1000000000);
+        dec_mul_small(mut d, 1000000000);
         k = k - 9;
       }
       if k > 0 {
-        dec_mul_small(d, pow10_u64(k as usize) as u32);
+        dec_mul_small(mut d, pow10_u64(k as usize) as u32);
       }
       qv = dec_to_u64(d);
     }

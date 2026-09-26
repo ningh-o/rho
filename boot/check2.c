@@ -289,8 +289,55 @@ static Type *check_block_value(FnCtx *c, NodeRef br, Type *expected);
 static Type *check_match(FnCtx *c, NodeRef er, Type *expected);
 static void check_pattern(FnCtx *c, Node *p, Type *st);
 static Type *check_call(FnCtx *c, NodeRef er, Type *expected);
-static Type *check_method(FnCtx *c, NodeRef er, Type *expected);
-static Module *qualify_module(FnCtx *c, Node *e);
+
+static FnDef **method_candidates(FnCtx *c, Type *t, const char *name,
+                                 size_t *count);
+static Type *check_expr(FnCtx *c, NodeRef er, Type *expected);
+
+// The operator traits (§11): an impl Eq/Ord for T replaces the default
+// comparison by REWRITING the operator into the method call — the full
+// overload machinery (receiver conventions, Self substitution, the
+// emitter) rides the ordinary method path. Derivations: a > b is
+// lt(b, a); a <= b is !(b < a); a >= b is !(a < b).
+static bool op_trait_rewrite(FnCtx *c, NodeRef er, Type *lt,
+                             const char *mname, bool swap, bool negate) {
+  size_t n = 0;
+  method_candidates(c, lt, mname, &n);
+  if (n == 0)
+    return false;
+  // every node_new may grow (and move) g_nodes: no raw Node* survives
+  // an allocation — fetch positions first, pointers last
+  Node *e0 = node_get(er);
+  NodeRef mref = node_new(NT_METHOD, e0->file, e0->line, e0->col);
+  NodeRef pos = node_new(NT_POSARG, e0->file, e0->line, e0->col);
+  RefList *lst = reflist();
+  reflist_add(lst, pos);
+  Node *e = node_get(er);
+  Node *mn = node_get(mref);
+  Node *pa = node_get(pos);
+  mn->a = swap ? e->b : e->a;
+  mn->name = mname;
+  pa->a = swap ? e->a : e->b;
+  mn->list = lst;
+  if (!negate) {
+    // the binary node becomes the method (its ref stays in the tree);
+    // mref is scratch and its stale copy is harmless
+    Node tmp = *e;
+    *e = *mn;
+    *mn = tmp;
+    return true;
+  }
+  e->kind = NT_UNARY;
+  e->op = OP_NOT;
+  e->a = mref;
+  e->b = NO_REF;
+  e->list = NULL;
+  e->sem = NULL;
+  e->sem2 = NULL;
+  return true;
+}
+
+static Type *check_method(FnCtx *c, NodeRef er, Type *expected);static Module *qualify_module(FnCtx *c, Node *e);
 static FnDef *instantiate_generic_seeded(FnCtx *c, FnDef *f, Node *call,
                                          Type *expected, Type **seed);
 static bool ty_has_param(Type *t);
@@ -1166,6 +1213,36 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
     err_at(c, m, "unknown intrinsic '%s'", m->name);
     return ty_unit;
   }
+  // the default Hash (§11): with no user hash method, a hashable
+  // receiver gets the compiler's FNV-1a fold over the == law's slots
+  // (builtins fold their bytes, *T the address, strings the content,
+  // structs their fields in order, enums tag-then-payload); the
+  // never-list never hashes, with or without an impl
+  if (strcmp(m->name, "hash") == 0 && reflist_len(m->list) == 0) {
+    size_t nh = 0;
+    Type *bt = check_expr(c, m->a, NULL);
+    Type *ht = bt->kind == TY_PTR ? bt->base : bt;
+    method_candidates(c, bt, "hash", &nh);
+    if (nh == 0) {
+      bool ok = type_is_scalar_builtin(bt) || bt->kind == TY_STRING ||
+                bt->kind == TY_PTR;
+      bool never = bt->kind == TY_SLICE || bt->kind == TY_FN ||
+                   bt->kind == TY_DYN ||
+                   (ht->kind == TY_ENUM && ht->edef->is_result);
+      if (never) {
+        err_at(c, m, "%s never hashes (the == law's never-list, §11)",
+               type_name(bt));
+        return ty_u64;
+      }
+      if (ok) {
+        node_get(er)->op = 7; // the synthetic fold marker
+        node_get(er)->sem2 = bt; // the receiver's type (sem is the
+                                 // node's own type slot — the parent
+                                 // checks stamp it with the return)
+        return ty_u64;
+      }
+    }
+  }
   // Type.assoc_fn(args): the receiver names a struct/enum type and
   // the call hits an associated fn (declared without self)
   Node *recvA = node_get(m->a);
@@ -1919,6 +1996,15 @@ static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
     switch (op) {
     case OP_EQ:
     case OP_NE: {
+      // an impl Eq for T replaces the element-wise default (§11);
+      // the operator becomes the eq call through the method machinery
+      // (a *T operand derefs one level — the method's value receiver)
+      Type *eqt = lt->kind == TY_PTR ? lt->base : lt;
+      if (eqt->kind == TY_STRUCT ||
+          (eqt->kind == TY_ENUM && !eqt->edef->is_result)) {
+        if (op_trait_rewrite(c, er, eqt, "eq", false, op == OP_NE))
+          return check_expr(c, er, ty_bool);
+      }
       // the == comparability law
       switch (lt->kind) {
       case TY_BOOL: case TY_F32: case TY_F64: case TY_STRING:
@@ -1947,11 +2033,25 @@ static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
       }
       return ty_bool;
     }
-    case OP_LT: case OP_LE: case OP_GT: case OP_GE:
+    case OP_LT: case OP_LE: case OP_GT: case OP_GE: {
+      Type *ordt = lt->kind == TY_PTR ? lt->base : lt;
+      if (ordt->kind == TY_STRUCT || ordt->kind == TY_ENUM) {
+        // ordering on user types is impl-Ord-only (§11): a < b calls
+        // lt, a > b is lt(b, a), a <= b is !(b < a), a >= b is !(a < b)
+        bool swap = op == OP_GT || op == OP_LE;
+        bool negate = op == OP_LE || op == OP_GE;
+        if (op_trait_rewrite(c, er, ordt, "lt", swap, negate))
+          return check_expr(c, er, ty_bool);
+        err_at(c, e, "ordering on %s needs `impl Ord for %s` — there is "
+               "no lexicographic auto-derive (§11)", type_name(ordt),
+               type_name(ordt));
+        return ty_bool;
+      }
       if (!type_is_num(lt) && lt->kind != TY_STRING)
         err_at(c, e, "ordering needs numbers or strings, got %s",
                type_name(lt));
       return ty_bool;
+    }
     default: {
       if (op == OP_ADD && lt->kind == TY_STRING)
         return ty_string; // + concatenates strings

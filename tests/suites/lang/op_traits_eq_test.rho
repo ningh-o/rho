@@ -1,0 +1,36 @@
+// spec: type-system.md §15 — an impl Eq for T replaces the element-wise
+// default; the default holds untouched without one
+// out: impl-eq
+// out: impl-ne
+// out: default-eq
+// out: default-ne
+// exit: 0
+struct Pt { x: i32, y: i32 }
+struct Q { a: i32, b: i32 }
+impl Eq for Pt {
+  fn eq(self, other: *Self) -> bool {
+    return self.x == other.x;
+  }
+}
+fn main() -> i32 {
+  let a = new Pt { x: 1, y: 2 };
+  let b = new Pt { x: 1, y: 9 };
+  if a == b {
+    printf("impl-eq\n");
+  } else {
+    printf("impl-differ\n");
+  }
+  if a != new Pt { x: 5, y: 2 } {
+    printf("impl-ne\n");
+  }
+  let q1 = (*new Q { a: 3, b: 4 });
+  let q2 = (*new Q { a: 3, b: 4 });
+  let q3 = (*new Q { a: 3, b: 5 });
+  if q1 == q2 {
+    printf("default-eq\n");
+  }
+  if q1 != q3 {
+    printf("default-ne\n");
+  }
+  return 0;
+}

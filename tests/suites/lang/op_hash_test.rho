@@ -1,0 +1,30 @@
+// spec: type-system.md §15 — the default Hash folds the == law's
+// values under FNV-1a (equal values hash equal); an impl Hash
+// replaces the fold; the never-list never hashes
+// out: equal-hash
+// out: differ-hash
+// out: 1066288888806436562
+// out: impl 42
+// exit: 0
+struct P { x: i32, tag: u8, s: string }
+struct Q { n: i64 }
+impl Hash for Q {
+  fn hash(self) -> u64 {
+    return 42;
+  }
+}
+fn main() -> i32 {
+  let a: *P = new P { x: 0x11223344, tag: 7, s: "rho" };
+  let b: *P = new P { x: 0x11223344, tag: 7, s: "rho" };
+  let c: *P = new P { x: 9, tag: 7, s: "rho" };
+  if a.hash() == b.hash() {
+    printf("equal-hash\n");
+  }
+  if a.hash() != c.hash() {
+    printf("differ-hash\n");
+  }
+  printf("{}\n", a.hash());
+  let q: *Q = new Q { n: 5 };
+  printf("impl {}\n", q.hash() as i64);
+  return 0;
+}

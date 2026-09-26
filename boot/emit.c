@@ -1320,6 +1320,150 @@ static void emit_block_value(FnCx *cx, NodeRef br, size_t dst) {
   (void)vt;
 }
 
+// ---- the default Hash (§11): FNV-1a 64 over the == law's slots ----
+// h ^= byte; h *= prime (0x100000001b3), mod 2^64 — i64.mul wraps
+#define FNV_PRIME 1099511628211ULL
+
+static void hash_step(FnCx *cx, size_t h, const char *byte_expr) {
+  op(cx, "(local.set %zu (i64.mul (i64.xor (local.get %zu) "
+         "(i64.and %s (i64.const 255))) (i64.const %llu)))\n", h, h,
+     byte_expr, FNV_PRIME);
+}
+
+// fold an i64 lane's low `nbytes` (little-endian bit patterns, §11)
+static void hash_fold_lane(FnCx *cx, size_t h, size_t v, int nbytes) {
+  for (int k = 0; k < nbytes; k++)
+    op(cx, "(local.set %zu (i64.mul (i64.xor (local.get %zu) "
+           "(i64.and (i64.shr_u (local.get %zu) (i64.const %d)) "
+           "(i64.const 255))) (i64.const %llu)))\n", h, h, v, 8 * k,
+       FNV_PRIME);
+}
+
+static void hash_fold_type(FnCx *cx, Type *t, size_t h, size_t v);
+static void hash_fold_enum(FnCx *cx, Type *et, size_t h, size_t v);
+
+// a string's content bytes: (va, vl) is the pair
+// (va, vl) ride the i64 lane — i32 pair slots wrap at the call site
+static void hash_fold_string(FnCx *cx, size_t h, size_t va, size_t vl) {
+  size_t i = cx_fresh(cx, ty_i64);
+  op(cx, "(local.set %zu (i64.const 0))\n", i);
+  op(cx, "(block $hb%zu (loop $hl%zu\n", i, i);
+  op(cx, "  (br_if $hb%zu (i64.ge_u (local.get %zu) (local.get %zu)))\n",
+     i, i, vl);
+  hash_step(cx, h,
+            aprintf(g_arena,
+                    "(i64.load8_u (i32.add (i32.wrap_i64 (local.get %zu)) "
+                    "(i32.wrap_i64 (local.get %zu))))", va, i));
+  op(cx, "  (local.set %zu (i64.add (local.get %zu) (i64.const 1)))\n", i,
+     i);
+  op(cx, "  (br $hl%zu)))\n", i);
+}
+
+// a struct at address v (byte offset boff): fields fold in
+// declaration order, each by its own type — strings content, pointers
+// address, a nested struct its own fields at the running offset
+static void hash_fold_struct_at(FnCx *cx, Type *st, size_t h, size_t v,
+                                size_t boff) {
+  StructDef *sd = st->sdef;
+  for (size_t f = 0; f < sd->nfields; f++) {
+    Type *ft = inst_ty(st, sd->fields[f].ty);
+    size_t fo = boff + field_offset(st, f);
+    if (ft->kind == TY_STRING) {
+      size_t ba = cx_fresh(cx, ty_i64), bl = cx_fresh(cx, ty_i64);
+      op(cx, "(local.set %zu (i64.load (i32.add (i32.wrap_i64 "
+             "(local.get %zu)) (i32.const %zu))))\n", ba, v, fo);
+      op(cx, "(local.set %zu (i64.load (i32.add (i32.wrap_i64 "
+             "(local.get %zu)) (i32.const %zu))))\n", bl, v, fo + 8);
+      hash_fold_string(cx, h, ba, bl);
+    } else if (ft->kind == TY_STRUCT) {
+      hash_fold_struct_at(cx, ft, h, v, fo);
+    } else if (ft->kind == TY_ENUM) {
+      // the box address folds tag-then-payload by the live variant
+      size_t ev = cx_fresh(cx, ty_i64);
+      op(cx, "(local.set %zu (i64.load (i32.add (i32.wrap_i64 "
+             "(local.get %zu)) (i32.const %zu))))\n", ev, v, fo);
+      hash_fold_enum(cx, ft, h, ev);
+    } else {
+      size_t fv = cx_fresh(cx, ty_i64);
+      const char *ld = type_is_float(ft) ? "reinterpret-load" : NULL;
+      (void)ld;
+      op(cx, "(local.set %zu (i64.load (i32.add (i32.wrap_i64 "
+             "(local.get %zu)) (i32.const %zu))))\n", fv, v, fo);
+      hash_fold_lane(cx, h, fv, (int)(type_size(ft) * 8) / 8);
+    }
+  }
+}
+
+// an enum box at v: the tag byte, then the live variant's payload
+// slots fold by their own types (tag then payload, §11)
+static void hash_fold_enum(FnCx *cx, Type *et, size_t h, size_t v) {
+  size_t tv = cx_fresh(cx, ty_i64);
+  op(cx, "(local.set %zu (i64.load (i32.wrap_i64 (local.get %zu))))\n",
+     tv, v);
+  hash_fold_lane(cx, h, tv, 1); // the tag rides slot 0
+  EnumDef *ed = et->edef;
+  for (size_t k = 0; k < ed->nvariants; k++) {
+    EnumVariant *var = &ed->variants[k];
+    if (var->nfields == 0)
+      continue;
+    op(cx, "(if (i32.eq (i32.wrap_i64 (local.get %zu)) (i32.const %d))\n",
+       tv, var->tag);
+    op(cx, "  (then\n");
+    size_t off = 8; // payload slots start past the tag
+    for (size_t q = 0; q < var->nfields; q++) {
+      Type *ft = inst_ty(et, var->fields[q].ty);
+      if (ft->kind == TY_STRING) {
+        size_t ba = cx_fresh(cx, ty_i64), bl = cx_fresh(cx, ty_i64);
+        op(cx, "(local.set %zu (i64.load (i32.add (i32.wrap_i64 "
+               "(local.get %zu)) (i32.const %zu))))\n", ba, v, off);
+        op(cx, "(local.set %zu (i64.load (i32.add (i32.wrap_i64 "
+               "(local.get %zu)) (i32.const %zu))))\n", bl, v, off + 8);
+        hash_fold_string(cx, h, ba, bl);
+      } else if (ft->kind == TY_STRUCT) {
+        // the payload's inline block folds in place
+        size_t sv = cx_fresh(cx, ty_i64);
+        op(cx, "(local.set %zu (i64.add (local.get %zu) (i64.const "
+               "%zu)))\n", sv, v, off);
+        hash_fold_struct_at(cx, ft, h, sv, 0);
+      } else {
+        size_t fv = cx_fresh(cx, ty_i64);
+        op(cx, "(local.set %zu (i64.load (i32.add (i32.wrap_i64 "
+               "(local.get %zu)) (i32.const %zu))))\n", fv, v, off);
+        hash_fold_lane(cx, h, fv, (int)(type_size(ft) * 8) / 8);
+      }
+      off += type_size(ft);
+    }
+    op(cx, "  ))\n");
+  }
+}
+
+static void hash_fold_type(FnCx *cx, Type *t, size_t h, size_t v) {
+  switch (t->kind) {
+  case TY_I8: case TY_U8: case TY_BOOL:
+    hash_fold_lane(cx, h, v, 1);
+    return;
+  case TY_I16: case TY_U16:
+    hash_fold_lane(cx, h, v, 2);
+    return;
+  case TY_I32: case TY_U32: case TY_USIZE: case TY_F32:
+    hash_fold_lane(cx, h, v, 4);
+    return;
+  case TY_PTR: case TY_WEAK:
+    hash_fold_lane(cx, h, v, 4); // the 32-bit address, little-endian
+    return;
+  case TY_I64: case TY_U64: case TY_F64:
+    hash_fold_lane(cx, h, v, 8);
+    return;
+  case TY_STRUCT:
+    hash_fold_struct_at(cx, t, h, v, 0);
+    return;
+  case TY_ENUM:
+    hash_fold_enum(cx, t, h, v);
+    return;
+  default:
+    return; // the checker already refused the rest
+  }
+}
 static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
   if (er == NO_REF)
     return;
@@ -2023,6 +2167,9 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
     return;
   }
 
+
+
+
   case NT_METHOD: {
     // weak.from(ptr): the weak constructor
     {
@@ -2054,6 +2201,55 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
            L(cx, fv));
         return;
       }
+    }
+    // the default Hash (§11): FNV-1a 64 over the == law's slots.
+    // op==7 rides the checker's mark; the receiver's type rides e->sem
+    if (e->op == 7) {
+      Type *rt = (Type *)e->sem2;
+      size_t rv = cx_fresh(cx, rt);
+      emit_expr(cx, e->a, rv);
+      op(cx, "(local.set %zu (i64.const %llu))\n", dst,
+         0xcbf29ce484222325ULL);
+      if (rt->kind == TY_STRING) {
+        size_t sa = cx_fresh(cx, ty_i64), sl = cx_fresh(cx, ty_i64);
+        op(cx, "(local.set %zu (i64.extend_i32_u (local.get %zu)))\n",
+           sa, rv);
+        op(cx, "(local.set %zu (i64.extend_i32_u (local.get %zu)))\n",
+           sl, rv + 1);
+        hash_fold_string(cx, dst, sa, sl);
+        return;
+      }
+      if (rt->kind == TY_PTR &&
+          (rt->base->kind == TY_STRUCT || rt->base->kind == TY_ENUM)) {
+        // pointers ride i32 locals: the folds address through the
+        // i64 lane — park the receiver's address up first
+        size_t va = cx_fresh(cx, ty_i64);
+        op(cx, "(local.set %zu (i64.extend_i32_u (local.get %zu)))\n",
+           va, rv);
+        if (rt->base->kind == TY_STRUCT)
+          hash_fold_struct_at(cx, rt->base, dst, va, 0);
+        else
+          hash_fold_enum(cx, rt->base, dst, va);
+        return;
+      }
+      // scalars fold on the i64 lane: wrap the receiver's own width
+      // to its bit pattern (i32 lanes extend unsigned, floats
+      // reinterpret; f32 rides its 4 bytes through the i32 lane)
+      size_t rv64 = cx_fresh(cx, ty_i64);
+      if (rt->kind == TY_F64)
+        op(cx, "(local.set %zu (i64.reinterpret_f64 (local.get %zu)))\n",
+           rv64, rv);
+      else if (rt->kind == TY_F32)
+        op(cx, "(local.set %zu (i64.extend_i32_u (i32.reinterpret_f32 "
+               "(local.get %zu))))\n", rv64, rv);
+      else if (rt->kind == TY_I64 || rt->kind == TY_U64 ||
+               rt->kind == TY_USIZE)
+        op(cx, "(local.set %zu (local.get %zu))\n", rv64, rv);
+      else
+        op(cx, "(local.set %zu (i64.extend_i32_u (local.get %zu)))\n",
+           rv64, rv);
+      hash_fold_type(cx, rt, dst, rv64);
+      return;
     }
     // op==2 marks a real method call, op==5 an associated-fn call
     // (sem2 = FnDef), op==6 a dyn dispatch (sem2 = TraitDef); otherwise

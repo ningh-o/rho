@@ -1,0 +1,8 @@
+// spec: type-system.md §15 — slices are on the never-list: no hash,
+// with or without an impl
+// expect: []i64 never hashes
+fn main() -> i32 {
+  let xs: []i64 = make([]i64, 2);
+  printf("{}\n", xs.hash());
+  return 0;
+}

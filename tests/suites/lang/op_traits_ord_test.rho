@@ -1,0 +1,37 @@
+// spec: type-system.md §15 — a < b calls lt; > is lt swapped, <= and >=
+// are the negations (one method, one meaning)
+// out: lt gt le ge
+// exit: 0
+struct V { n: i32 }
+impl Ord for V {
+  fn lt(self, other: *Self) -> bool {
+    return self.n < other.n;
+  }
+}
+fn main() -> i32 {
+  let a = new V { n: 1 };
+  let b = new V { n: 2 };
+  let c = new V { n: 2 };
+  if a < b {
+    printf("lt ");
+  }
+  if b > a {
+    printf("gt ");
+  }
+  if a <= b {
+    printf("le ");
+  }
+  if b >= c {
+    printf("ge\n");
+  }
+  if b < a {
+    printf("BUG ");
+  }
+  if b <= a {
+    printf("BUG ");
+  }
+  if a >= b {
+    printf("BUG\n");
+  }
+  return 0;
+}

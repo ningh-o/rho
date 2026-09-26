@@ -1,0 +1,12 @@
+// spec: type-system.md §15 — ordering on a user type without impl Ord
+// refuses: there is no lexicographic auto-derive
+// expect: ordering on Pt needs `impl Ord for Pt`
+struct Pt { x: i32, y: i32 }
+fn main() -> i32 {
+  let a = new Pt { x: 1, y: 2 };
+  let b = new Pt { x: 3, y: 4 };
+  if a < b {
+    return 1;
+  }
+  return 0;
+}
