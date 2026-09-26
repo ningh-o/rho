@@ -463,15 +463,13 @@ section — no placeholder stages. boot is the reference compiler.
       exported (the compiler source is full of lex.TK_* field reads),
       and the parser's struct-literal/declaration field tables grow
       on demand (a fixed cap was an out-of-bounds write the day a
-      struct rode eleven fields). The mirror now runs its whole
-      pipeline: it loads lex and parse (74 fns registered) and
-      refuses cleanly at parse.rho's own text with FOUR parse
-      fallbacks (token positions 5454, 19177, 21036, 21153 into
-      parse.rho's token stream — constructs the mirror's parser
-      lacks that parse.rho itself uses; boot parses the same text
-      clean). Next: instrument the mirror's fallback sites with
-      their token text (the /tmp/tP probe pattern), teach the parser
-      the missing forms, then wire leg 4 in.
+      struct rode eleven fields). The index-first field store
+      (base[i].f = e) parses and emits, and a loose file module owns
+      its parent directory. The mirror now runs its whole pipeline:
+      it loads lex, parse (75 fns), and check clean, then crashes
+      parsing emit.rho's own text (verbatim strings ruled out — the
+      next fixed table or parser edge lives somewhere in those 9400
+      lines; bisect by construct class next).
 - [ ] **T3.2 Pure-source trust root**: every gate run rebuilds the seed
       from boot's C source on the spot. The pinned `seed.wasm` stays in
       the repo **as a canary**: rebuild, compare byte-for-byte (D1 makes
