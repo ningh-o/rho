@@ -1009,6 +1009,25 @@ section — no placeholder stages. boot is the reference compiler.
       diagnostics context upgrade (anchor notes, candidate naming)
       so the server surfaces the checker's real face, not the bare
       one-liners.
+- [ ] **T3.17** Fuzz and sanitizer legs (ruled needed 2026-09-27;
+      three complementary probes and the discipline that glues them).
+      robust/ stays the deterministic leg: hand-written, readable
+      hostility under wall-clock caps. The archive's tools/fuzz
+      returns as the discovery leg: a grammar-aware, deterministically
+      seeded mutator, run time-boxed so every run is reproducible by
+      seed number. An ASAN+UBSAN build of boot becomes a gate leg
+      over robust/, the corpus, and a bounded fuzz batch — the
+      mechanical detector: the >16-parameter stack smash and the
+      comptime MIN/-1 UB would both have been caught by it instead of
+      by walking. The glue is the archive's repro discipline: every
+      fuzz- or sanitizer-found crash is minimized, pinned under
+      tools/repro/ named by its seed, and fixed — the file outlives
+      the bug as a permanent regression. Findings feed the counting
+      floors: a crash count is a floor exactly like the validation
+      census. Land early rather than late — T3.10's lesson is that
+      the mirror calibrates against boot's broken faces, so every
+      boot bug found before the mirror adapts to it saves a whole
+      re-adaptation wave.
 
 ## Phase 4 — kernel boundary and the std library
 
