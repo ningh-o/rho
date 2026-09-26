@@ -1,0 +1,100 @@
+// json_deep_test.rho — nesting depth rides the wasm stack: deep-but-
+// legal containers parse and write; the run stays on the default stack
+// (spec: TODO T4.5 + design §14 + spec.md §3 + RFC 8259 §2/§4).
+// out: deep true
+// out: wide true
+// out: order {"z":1.0,"m":2.0,"a":3.0}
+// out: dup {"a":1.0,"a":2.0}
+// spec: TODO T4.5 + design §14 + spec.md §3
+use std.json;
+
+fn nest(n: i32) -> string {
+  let mut s: string = "[";
+  let mut i: i32 = 0;
+  while i < n {
+    s = s + "[";
+    i = i + 1;
+  }
+  i = 0;
+  while i < n {
+    s = s + "]";
+    i = i + 1;
+  }
+  return s + "]";
+}
+
+fn ok_text(r: Result[Json, JErr]) -> bool {
+  let b = match r {
+    Result.Ok(_) => true,
+    _ => false,
+  };
+  return b;
+}
+
+fn deep_roundtrip(n: i32) -> bool {
+  let r = json.parse(nest(n));
+  let wrote: Result[string, JErr] = match r {
+    Result.Ok(v) => json.to_string_compact(v),
+    Result.Err(e) => Result.Err(e),
+  };
+  let again: Result[Json, JErr] = match wrote {
+    Result.Ok(s) => json.parse(s),
+    Result.Err(e) => Result.Err(e),
+  };
+  return ok_text(again);
+}
+
+fn main() -> i32 {
+  // 600 levels of arrays: parse, write, reparse — all clean
+  let ok: bool = deep_roundtrip(600);
+  printf("deep {}\n", ok);
+  // a wide object exercises the growable member array
+  let mut text: string = "{";
+  let mut i: i32 = 0;
+  while i < 100 {
+    if i > 0 {
+      text = text + ",";
+    }
+    text = text + "\"k" + i.to_str() + "\":" + i.to_str();
+    i = i + 1;
+  }
+  text = text + "}";
+  let r = json.parse(text);
+  let wrote: Result[string, JErr] = match r {
+    Result.Ok(v) => json.to_string_compact(v),
+    Result.Err(e) => Result.Err(e),
+  };
+  let wide_ok: bool = match wrote {
+    Result.Ok(s) => len(s) > 800,
+    _ => false,
+  };
+  printf("wide {}\n", wide_ok);
+  // key order and duplicates ride document order
+  let r1 = json.parse("{\"z\":1,\"m\":2,\"a\":3}");
+  let s1 = match r1 {
+    Result.Ok(v) => {
+      let t = json.to_string_compact(v);
+      let s = match t {
+        Result.Ok(s) => s,
+        Result.Err(e) => "WERR " + e.msg,
+      };
+      s
+    }
+    Result.Err(e) => "ERR " + e.msg,
+  };
+  printf("order {}\n", s1);
+  let r2 = json.parse("{\"a\":1,\"a\":2}");
+  let s2 = match r2 {
+    Result.Ok(v) => {
+      let t = json.to_string_compact(v);
+      let s = match t {
+        Result.Ok(s) => s,
+        Result.Err(e) => "WERR " + e.msg,
+      };
+      s
+    }
+    Result.Err(e) => "ERR " + e.msg,
+  };
+  printf("dup {}\n", s2);
+  return 0;
+}

@@ -1,0 +1,32 @@
+// json_stack_test.rho — the depth ceiling is the language's defined
+// stack law: runaway nesting ends in the documented panic, not a raw
+// trap (spec: TODO T4.5 + design §14 + spec.md §3).
+// exit: 101
+// err: panic: stack overflow
+// spec: TODO T4.5 + design §14 + spec.md §3
+use std.json;
+
+fn nest(n: i32) -> string {
+  let mut s: string = "[";
+  let mut i: i32 = 0;
+  while i < n {
+    s = s + "[";
+    i = i + 1;
+  }
+  i = 0;
+  while i < n {
+    s = s + "]";
+    i = i + 1;
+  }
+  return s + "]";
+}
+
+fn main() -> i32 {
+  let r = json.parse(nest(200000));
+  let ok: bool = match r {
+    Result.Ok(_) => true,
+    Result.Err(_) => false,
+  };
+  printf("{}\n", ok);
+  return 0;
+}

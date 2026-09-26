@@ -1,0 +1,1025 @@
+// lib.rho — the std.json package (RFC 8259): value model, reader,
+// writer, and the facade in one module (module-system.md §4/§7).
+//
+// Public surface: Json / Member / JErr, parse, to_string_compact,
+// to_string_indented. Consumers: `use std.json;` then
+// json.parse / json.Json / json.to_string_compact …
+//
+// Key order is DOCUMENT ORDER: parse preserves the order the text
+// names members in; the writer emits that order (design §5 —
+// deterministic, documented iteration order). Duplicate keys are kept
+// in order (RFC 8259 §4: names SHOULD be unique; a parser may not
+// assume it).
+//
+// Layout law (pinned by the roundtrip suite):
+//   compact   {"k":v,"k2":[1,2]}   no whitespace, ':' bare
+//   indented  two spaces per level: "{\n  \"k\": v\n}" — ": " after
+//             keys; empty containers ride as "{}" / "[]"; no trailing
+//             commas.
+//
+// Numbers: the reader rounds correctly to the nearest f64 (ties to
+// even — num.from_decimal, Clinger fast path plus an exact
+// big-decimal slow path), the writer prints the kernel's exact-decimal
+// 17-significant-digit text, so parse(write(x)) == x for every finite
+// double. Non-finite numbers have no JSON form — the writer refuses
+// through Result (design §4, the only error channel); its errors carry
+// position 0 (no input text behind them).
+
+use num;
+
+pub struct JErr {
+  msg: string,
+  line: i32,
+  col: i32,
+}
+
+pub struct Member {
+  key: string,
+  val: Json,
+}
+
+pub enum Json {
+  Null,
+  Bool(bool),
+  Num(f64),
+  Str(string),
+  Arr([]Json),
+  Obj([]Member),
+}
+
+// Construction helpers: variant constructors of a package-exported
+// enum are unreachable through a facade binding (the checker resolves
+// `json.Num(..)` against facade fns and `json.Json.Num(..)` against
+// values), so the public build API goes through these.
+pub fn nul() -> Json {
+  return Json.Null;
+}
+
+pub fn boolean(b: bool) -> Json {
+  return Json.Bool(b);
+}
+
+pub fn number(x: f64) -> Json {
+  return Json.Num(x);
+}
+
+pub fn str(s: string) -> Json {
+  return Json.Str(s);
+}
+
+pub fn arr(xs: []Json) -> Json {
+  return Json.Arr(xs);
+}
+
+pub fn obj(ms: []Member) -> Json {
+  return Json.Obj(ms);
+}
+
+// incremental object builder (free fns: associated calls do not cross
+// a facade binding either); push order is the write order
+pub fn obj_new() -> *ObjB {
+  return ObjB.begin2();
+}
+
+pub fn obj_push(mut b: *ObjB, k: string, v: Json) {
+  b.push(k, v);
+  return;
+}
+
+pub fn obj_take(b: *ObjB) -> Json {
+  return Json.Obj(b.done());
+}
+
+
+// ----------------------------------------------------- the reader
+
+// every byte as a one-byte string: the escape decoder joins these to
+// synthesize UTF-8 that never appeared in the input (a 256-byte const
+// text; slicing copies one byte into a fresh immutable block)
+const BYTE_TAB: string = "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f\x20\x21\x22\x23\x24\x25\x26\x27\x28\x29\x2a\x2b\x2c\x2d\x2e\x2f\x30\x31\x32\x33\x34\x35\x36\x37\x38\x39\x3a\x3b\x3c\x3d\x3e\x3f\x40\x41\x42\x43\x44\x45\x46\x47\x48\x49\x4a\x4b\x4c\x4d\x4e\x4f\x50\x51\x52\x53\x54\x55\x56\x57\x58\x59\x5a\x5b\x5c\x5d\x5e\x5f\x60\x61\x62\x63\x64\x65\x66\x67\x68\x69\x6a\x6b\x6c\x6d\x6e\x6f\x70\x71\x72\x73\x74\x75\x76\x77\x78\x79\x7a\x7b\x7c\x7d\x7e\x7f\x80\x81\x82\x83\x84\x85\x86\x87\x88\x89\x8a\x8b\x8c\x8d\x8e\x8f\x90\x91\x92\x93\x94\x95\x96\x97\x98\x99\x9a\x9b\x9c\x9d\x9e\x9f\xa0\xa1\xa2\xa3\xa4\xa5\xa6\xa7\xa8\xa9\xaa\xab\xac\xad\xae\xaf\xb0\xb1\xb2\xb3\xb4\xb5\xb6\xb7\xb8\xb9\xba\xbb\xbc\xbd\xbe\xbf\xc0\xc1\xc2\xc3\xc4\xc5\xc6\xc7\xc8\xc9\xca\xcb\xcc\xcd\xce\xcf\xd0\xd1\xd2\xd3\xd4\xd5\xd6\xd7\xd8\xd9\xda\xdb\xdc\xdd\xde\xdf\xe0\xe1\xe2\xe3\xe4\xe5\xe6\xe7\xe8\xe9\xea\xeb\xec\xed\xee\xef\xf0\xf1\xf2\xf3\xf4\xf5\xf6\xf7\xf8\xf9\xfa\xfb\xfc\xfd\xfe\xff";
+
+fn byte_str(b: u8) -> string {
+  let i: usize = b as usize; // widen before +1: u8 arithmetic wraps
+  return BYTE_TAB[i..i + 1];
+}
+
+// UTF-8 encoding of one scalar value (well-formed by construction —
+// callers join surrogates before encoding)
+fn utf8_encode(cp: i32) -> string {
+  if cp < 128 {
+    return byte_str(cp as u8);
+  }
+  if cp < 2048 {
+    return byte_str((192 + (cp / 64)) as u8)
+      + byte_str((128 + (cp % 64)) as u8);
+  }
+  if cp < 65536 {
+    return byte_str((224 + (cp / 4096)) as u8)
+      + byte_str((128 + ((cp / 64) % 64)) as u8)
+      + byte_str((128 + (cp % 64)) as u8);
+  }
+  return byte_str((240 + (cp / 262144)) as u8)
+    + byte_str((128 + ((cp / 4096) % 64)) as u8)
+    + byte_str((128 + ((cp / 64) % 64)) as u8)
+    + byte_str((128 + (cp % 64)) as u8);
+}
+
+// ------------------------------------------------------- the cursor
+
+struct Cur {
+  s: string,
+  i: usize,
+  line: i32,
+  col: i32,
+}
+
+fn Cur.open(text: string) -> *Cur {
+  return new Cur { s: text, i: 0, line: 1, col: 1 };
+}
+
+// the byte under the cursor, or −1 past the end — EOF and a native
+// NUL byte must not be confusable (a 0x00 inside the input is a real
+// byte: inside a string it is an unescaped control character, not the
+// end of the text)
+fn Cur.peek(self: *Cur) -> i32 {
+  if self.i < len(self.s) {
+    return self.s[self.i] as i32;
+  }
+  return 0 - 1;
+}
+
+// look ahead k bytes past the cursor. Past the end (and for a native
+// NUL byte) this reads 0; every caller only tests membership against
+// non-NUL bytes, where "cannot match" is the right answer for both.
+fn Cur.at(self: *Cur, k: usize) -> u8 {
+  if k < len(self.s) {
+    return self.s[k];
+  }
+  return 0;
+}
+
+fn Cur.bump(mut self: *Cur) {
+  if self.i < len(self.s) {
+    if self.s[self.i] == 10 {
+      self.line = self.line + 1;
+      self.col = 1;
+    } else {
+      self.col = self.col + 1;
+    }
+    self.i = self.i + 1;
+  }
+  return;
+}
+
+fn Cur.skip_ws(mut self: *Cur) {
+  while self.i < len(self.s) {
+    let b: u8 = self.s[self.i];
+    if b == 32 || b == 9 || b == 10 || b == 13 {
+      self.bump();
+    } else {
+      return;
+    }
+  }
+  return;
+}
+
+// ---------------------------------------------------- string decode
+
+// the four hex digits after \u
+fn parse_hex4(mut c: *Cur) -> Result[i32, JErr] {
+  let mut v: i32 = 0;
+  let mut k: usize = 0;
+  while k < 4 {
+    let b: i32 = c.peek();
+    let mut d: i32 = 0 - 1;
+    if b >= 48 && b <= 57 {
+      d = b - 48;
+    } else if b >= 97 && b <= 102 {
+      d = b - 87;
+    } else if b >= 65 && b <= 70 {
+      d = b - 55;
+    }
+    if d < 0 {
+      return Result.Err(new JErr {
+        msg: "invalid \\u escape: hex digit expected",
+        line: c.line,
+        col: c.col,
+      });
+    }
+    v = v * 16 + d;
+    c.bump();
+    k = k + 1;
+  }
+  return Result.Ok(v);
+}
+
+// one \u escape (possibly a surrogate pair) → its UTF-8 text
+fn parse_unicode_escape(mut c: *Cur) -> Result[string, JErr] {
+  let hi: i32 = parse_hex4(mut c)?;
+  if hi >= 56320 && hi <= 57343 {
+    return Result.Err(new JErr {
+      msg: "lone low surrogate in \\u escape",
+      line: c.line,
+      col: c.col,
+    });
+  }
+  if hi >= 55296 && hi <= 56319 {
+    // high surrogate: must pair with \uDC00..\uDFFF
+    if c.peek() != 92 || c.at(c.i + 1) != 117 {
+      return Result.Err(new JErr {
+        msg: "lone high surrogate in \\u escape",
+        line: c.line,
+        col: c.col,
+      });
+    }
+    c.bump();
+    c.bump();
+    let lo: i32 = parse_hex4(mut c)?;
+    if lo < 56320 || lo > 57343 {
+      return Result.Err(new JErr {
+        msg: "invalid surrogate pair: low surrogate expected",
+        line: c.line,
+        col: c.col,
+      });
+    }
+    let cp: i32 = 65536 + ((hi - 55296) * 1024) + (lo - 56320);
+    return Result.Ok(utf8_encode(cp));
+  }
+  return Result.Ok(utf8_encode(hi));
+}
+
+fn parse_string_body(mut c: *Cur) -> Result[string, JErr] {
+  // caller consumed the opening quote
+  let mut out: string = "";
+  loop {
+    let b: i32 = c.peek();
+    if b < 0 {
+      // EOF — a native NUL byte reads as 0 and refuses below, as the
+      // unescaped control character it is
+      return Result.Err(new JErr {
+        msg: "unterminated string",
+        line: c.line,
+        col: c.col,
+      });
+    }
+    if b == 34 {
+      c.bump();
+      return Result.Ok(out);
+    }
+    if b == 92 {
+      c.bump();
+      let e: i32 = c.peek();
+      if e == 34 || e == 92 || e == 47 {
+        out = out + byte_str(e as u8);
+        c.bump();
+      } else if e == 98 {
+        out = out + byte_str(8);
+        c.bump();
+      } else if e == 102 {
+        out = out + byte_str(12);
+        c.bump();
+      } else if e == 110 {
+        out = out + byte_str(10);
+        c.bump();
+      } else if e == 114 {
+        out = out + byte_str(13);
+        c.bump();
+      } else if e == 116 {
+        out = out + byte_str(9);
+        c.bump();
+      } else if e == 117 {
+        c.bump();
+        let t: string = parse_unicode_escape(mut c)?;
+        out = out + t;
+      } else {
+        return Result.Err(new JErr {
+          msg: "invalid escape character",
+          line: c.line,
+          col: c.col,
+        });
+      }
+      continue;
+    }
+    if b < 32 {
+      return Result.Err(new JErr {
+        msg: "unescaped control character in string",
+        line: c.line,
+        col: c.col,
+      });
+    }
+    if b < 128 {
+      out = out + byte_str(b as u8);
+      c.bump();
+      continue;
+    }
+    // UTF-8: copy the sequence verbatim, checking the canonical shape
+    // (RFC 8259 §8.1: the text is UTF-8; RFC 3629's well-formed table
+    // makes overlong forms, surrogate encodings and code points above
+    // U+10FFFF invalid — each lead byte pins the range of its first
+    // continuation byte)
+    let start: usize = c.i;
+    let mut n: usize = 0;
+    let mut lo: u8 = 128;
+    let mut hi: u8 = 191;
+    if b >= 194 && b <= 223 {
+      n = 2;
+    } else if b == 224 {
+      n = 3;
+      lo = 160; // E0 80..9F would be a 3-byte overlong
+    } else if b <= 239 {
+      n = 3;
+      if b == 237 {
+        hi = 159; // ED A0..BF encodes a surrogate
+      }
+    } else if b == 240 {
+      n = 4;
+      lo = 144; // F0 80..8F would be a 4-byte overlong
+    } else if b <= 243 {
+      n = 4;
+    } else if b == 244 {
+      n = 4;
+      hi = 143; // F4 90..BF is above U+10FFFF
+    } else {
+      return Result.Err(new JErr {
+        msg: "invalid UTF-8 lead byte",
+        line: c.line,
+        col: c.col,
+      });
+    }
+    // the canonical violation a first continuation byte can commit
+    // under this lead byte (later tails are plain 80..BF)
+    let mut lead_msg: string = "invalid UTF-8 continuation byte";
+    if b == 224 || b == 240 {
+      lead_msg = "overlong UTF-8 sequence";
+    } else if b == 237 {
+      lead_msg = "UTF-8 encoded surrogate";
+    } else if b == 244 {
+      lead_msg = "UTF-8 code point above U+10FFFF";
+    }
+    let mut k: usize = 0;
+    // n is the sequence's TOTAL length: the continuations are the
+    // n-1 bytes after the lead (c.i still sits ON the lead — the old
+    // loop read the lead itself as continuation 0, and one slot past
+    // the sequence's end as its last)
+    while k < n - 1 {
+      let cb: u8 = c.at(c.i + 1 + k);
+      let mut lb: u8 = 128;
+      let mut hb: u8 = 191;
+      if k == 0 {
+        lb = lo;
+        hb = hi;
+      }
+      if cb < lb || cb > hb {
+        let mut msg: string = "invalid UTF-8 continuation byte";
+        if k == 0 {
+          msg = lead_msg;
+        }
+        return Result.Err(new JErr {
+          msg: msg,
+          line: c.line,
+          col: c.col,
+        });
+      }
+      k = k + 1;
+    }
+    let mut j: usize = 0;
+    while j < n {
+      c.bump();
+      j = j + 1;
+    }
+    out = out + (c.s[start..c.i]);
+  }
+}
+
+// ---------------------------------------------------- number scan
+
+// strict RFC 8259 §6 grammar: minus? (0 | [1-9][0-9]*) ('.' [0-9]+)?
+// ([eE] [+-]? [0-9]+)? — leading zeros, bare dots and bare exponents
+// are errors. digits rides the ≤19 significant digits ("0" for a zero
+// value), e10 = exponent − fraction length, sticky = a dropped
+// nonzero digit past the kept 19.
+fn parse_number(mut c: *Cur) -> Result[Json, JErr] {
+  let neg: bool = c.peek() == 45;
+  if neg {
+    c.bump();
+  }
+  let mut digits: string = "";
+  let mut sticky: bool = false;
+  // digits past the kept 19 shift the value one power of ten each —
+  // the exponent must follow them (nonzero ones also pin the sticky)
+  let mut dropped: i32 = 0;
+  let b: i32 = c.peek();
+  if b == 48 {
+    c.bump();
+    digits = "0";
+    let nb: i32 = c.peek();
+    if nb >= 48 && nb <= 57 {
+      return Result.Err(new JErr {
+        msg: "leading zero in number",
+        line: c.line,
+        col: c.col,
+      });
+    }
+  } else if b >= 49 && b <= 57 {
+    while c.peek() >= 48 && c.peek() <= 57 {
+      if len(digits) < 19 {
+        digits = digits + byte_str(c.peek() as u8);
+      } else {
+        dropped = dropped + 1;
+        if c.peek() != 48 {
+          sticky = true;
+        }
+      }
+      c.bump();
+    }
+  } else {
+    return Result.Err(new JErr {
+      msg: "number: digit expected",
+      line: c.line,
+      col: c.col,
+    });
+  }
+  let mut frac: i32 = 0;
+  if c.peek() == 46 {
+    c.bump();
+    let fb: i32 = c.peek();
+    if fb < 48 || fb > 57 {
+      return Result.Err(new JErr {
+        msg: "number: fraction digit expected",
+        line: c.line,
+        col: c.col,
+      });
+    }
+    while c.peek() >= 48 && c.peek() <= 57 {
+      let d: i32 = c.peek();
+      let still_zero: bool = digits == "0" && d == 48;
+      if !still_zero {
+        if digits == "0" {
+          digits = ""; // first significant digit of a zero int part
+        }
+        if len(digits) < 19 {
+          digits = digits + byte_str(d as u8);
+        } else {
+          dropped = dropped + 1;
+          if d != 48 {
+            sticky = true;
+          }
+        }
+      }
+      frac = frac + 1;
+      c.bump();
+    }
+  }
+  let mut exp: i32 = 0;
+  let eb: i32 = c.peek();
+  if eb == 101 || eb == 69 {
+    c.bump();
+    let mut esign: i32 = 1;
+    let sb: i32 = c.peek();
+    if sb == 43 {
+      c.bump();
+    } else if sb == 45 {
+      esign = 0 - 1;
+      c.bump();
+    }
+    let fb2: i32 = c.peek();
+    if fb2 < 48 || fb2 > 57 {
+      return Result.Err(new JErr {
+        msg: "number: exponent digit expected",
+        line: c.line,
+        col: c.col,
+      });
+    }
+    while c.peek() >= 48 && c.peek() <= 57 {
+      if exp < 100000 {
+        exp = exp * 10 + (c.peek() - 48);
+      }
+      c.bump();
+    }
+    exp = exp * esign;
+  }
+  if digits == "0" {
+    // zero keeps only its sign (−0 is meaningful in JSON)
+    return Result.Ok(Json.Num(num.from_decimal(neg, "0", 0, false)));
+  }
+  return Result.Ok(Json.Num(num.from_decimal(neg, digits, exp - frac + dropped, sticky)));
+}
+
+// --------------------------------------------------- the containers
+
+// growable []Json — doubles the backing store, copies element-wise
+struct ArrB {
+  items: []Json,
+  n: usize,
+}
+
+fn ArrB.begin() -> *ArrB {
+  let xs: []Json = make([]Json, 4);
+  return new ArrB { items: xs, n: 0 };
+}
+
+fn ArrB.push(mut self: *ArrB, v: Json) {
+  if self.n == len(self.items) {
+    let cap: usize = self.n * 2;
+    let mut bigger: []Json = make([]Json, cap);
+    let mut j: usize = 0;
+    while j < self.n {
+      bigger[j] = self.items[j];
+      j = j + 1;
+    }
+    self.items = bigger;
+  }
+  self.items[self.n] = v;
+  self.n = self.n + 1;
+  return;
+}
+
+fn ArrB.done(self: *ArrB) -> []Json {
+  return self.items[0..self.n];
+}
+
+// growable []Member
+pub struct ObjB {
+  items: []Member,
+  n: usize,
+}
+
+pub fn ObjB.begin2() -> *ObjB {
+  let ms: []Member = make([]Member, 4);
+  return new ObjB { items: ms, n: 0 };
+}
+
+pub fn ObjB.push(mut self: *ObjB, k: string, v: Json) {
+  if self.n == len(self.items) {
+    let cap: usize = self.n * 2;
+    let mut bigger: []Member = make([]Member, cap);
+    let mut j: usize = 0;
+    while j < self.n {
+      bigger[j].key = self.items[j].key;
+      bigger[j].val = self.items[j].val;
+      j = j + 1;
+    }
+    self.items = bigger;
+  }
+  self.items[self.n].key = k;
+  self.items[self.n].val = v;
+  self.n = self.n + 1;
+  return;
+}
+
+pub fn ObjB.done(self: *ObjB) -> []Member {
+  return self.items[0..self.n];
+}
+
+fn parse_array(mut c: *Cur) -> Result[Json, JErr] {
+  // caller consumed '['
+  let mut b: *ArrB = ArrB.begin();
+  c.skip_ws();
+  if c.peek() == 93 {
+    c.bump();
+    return Result.Ok(Json.Arr(b.done()));
+  }
+  loop {
+    c.skip_ws();
+    let v: Json = parse_value(mut c)?;
+    b.push(v);
+    c.skip_ws();
+    let sep: i32 = c.peek();
+    if sep == 44 {
+      c.bump();
+      continue;
+    }
+    if sep == 93 {
+      c.bump();
+      return Result.Ok(Json.Arr(b.done()));
+    }
+    return Result.Err(new JErr {
+      msg: "array: ',' or ']' expected",
+      line: c.line,
+      col: c.col,
+    });
+  }
+}
+
+fn parse_object(mut c: *Cur) -> Result[Json, JErr] {
+  // caller consumed '{'
+  let mut o: *ObjB = ObjB.begin2();
+  c.skip_ws();
+  if c.peek() == 125 {
+    c.bump();
+    return Result.Ok(Json.Obj(o.done()));
+  }
+  loop {
+    c.skip_ws();
+    if c.peek() != 34 {
+      return Result.Err(new JErr {
+        msg: "object: key string expected",
+        line: c.line,
+        col: c.col,
+      });
+    }
+    c.bump();
+    let k: string = parse_string_body(mut c)?;
+    c.skip_ws();
+    if c.peek() != 58 {
+      return Result.Err(new JErr {
+        msg: "object: ':' expected",
+        line: c.line,
+        col: c.col,
+      });
+    }
+    c.bump();
+    c.skip_ws();
+    let v: Json = parse_value(mut c)?;
+    o.push(k, v);
+    c.skip_ws();
+    let sep: i32 = c.peek();
+    if sep == 44 {
+      c.bump();
+      continue;
+    }
+    if sep == 125 {
+      c.bump();
+      return Result.Ok(Json.Obj(o.done()));
+    }
+    return Result.Err(new JErr {
+      msg: "object: ',' or '}' expected",
+      line: c.line,
+      col: c.col,
+    });
+  }
+}
+
+fn parse_value(mut c: *Cur) -> Result[Json, JErr] {
+  c.skip_ws();
+  let b: i32 = c.peek();
+  if b == 123 {
+    c.bump();
+    return parse_object(mut c);
+  }
+  if b == 91 {
+    c.bump();
+    return parse_array(mut c);
+  }
+  if b == 34 {
+    c.bump();
+    let s: string = parse_string_body(mut c)?;
+    return Result.Ok(Json.Str(s));
+  }
+  if b == 45 || (b >= 48 && b <= 57) {
+    return parse_number(mut c);
+  }
+  if b == 116 {
+    return parse_lit(mut c, "true", Json.Bool(true));
+  }
+  if b == 102 {
+    return parse_lit(mut c, "false", Json.Bool(false));
+  }
+  if b == 110 {
+    return parse_lit(mut c, "null", Json.Null);
+  }
+  return Result.Err(new JErr {
+    msg: "value expected",
+    line: c.line,
+    col: c.col,
+  });
+}
+
+// a bare literal (true / false / null): exact match or error
+fn parse_lit(mut c: *Cur, lit: string, v: Json) -> Result[Json, JErr] {
+  let mut k: usize = 0;
+  while k < len(lit) {
+    if c.peek() != (lit[k] as i32) {
+      return Result.Err(new JErr {
+        msg: "invalid literal: expected '" + lit + "'",
+        line: c.line,
+        col: c.col,
+      });
+    }
+    c.bump();
+    k = k + 1;
+  }
+  return Result.Ok(v);
+}
+
+// ------------------------------------------------------------ entry
+
+// one JSON text: ws value ws EOF (RFC 8259 §2)
+pub fn parse(text: string) -> Result[Json, JErr] {
+  let mut c: *Cur = Cur.open(text);
+  let v: Json = parse_value(mut c)?;
+  c.skip_ws();
+  if c.i < len(c.s) {
+    return Result.Err(new JErr {
+      msg: "trailing characters after JSON value",
+      line: c.line,
+      col: c.col,
+    });
+  }
+  return Result.Ok(v);
+}
+
+// ----------------------------------------------------- the writer
+
+// text form of one number; non-finite is an error, finite rides the
+// kernel's exact-decimal printer (17 significant digits — the text
+// round-trips bit-exactly through num.from_decimal)
+fn num_text(x: f64) -> Result[string, JErr] {
+  if x != x {
+    return Result.Err(new JErr {
+      msg: "non-finite number (NaN) cannot be serialized",
+      line: 0,
+      col: 0,
+    });
+  }
+  let d: f64 = x - x;
+  if d != 0.0 {
+    return Result.Err(new JErr {
+      msg: "non-finite number (Infinity) cannot be serialized",
+      line: 0,
+      col: 0,
+    });
+  }
+  return Result.Ok(x.to_str());
+}
+
+const HEX: string = "0123456789abcdef";
+
+fn hex_digit(b: u8) -> string {
+  return HEX[b as usize..(b + 1) as usize];
+}
+
+fn quote(s: string) -> string {
+  let mut out: string = "\"";
+  let mut i: usize = 0;
+  while i < len(s) {
+    let b: u8 = s[i];
+    if b == 34 {
+      out = out + "\\\"";
+    } else if b == 92 {
+      out = out + "\\\\";
+    } else if b == 8 {
+      out = out + "\\b";
+    } else if b == 9 {
+      out = out + "\\t";
+    } else if b == 10 {
+      out = out + "\\n";
+    } else if b == 12 {
+      out = out + "\\f";
+    } else if b == 13 {
+      out = out + "\\r";
+    } else if b < 32 {
+      // other controls ride \u00XX
+      out = out + "\\u00";
+      out = out + (hex_digit(b / 16));
+      out = out + (hex_digit(b % 16));
+    } else {
+      out = out + (s[i..i + 1]);
+    }
+    i = i + 1;
+  }
+  return out + "\"";
+}
+
+// ind × n (the unit comes in — two spaces for the indented form)
+fn pad(ind: string, n: i32) -> string {
+  let mut out: string = "";
+  let mut i: i32 = 0;
+  while i < n {
+    out = out + ind;
+    i = i + 1;
+  }
+  return out;
+}
+
+fn ser(j: Json, ind: string, depth: i32) -> Result[string, JErr] {
+  return match j {
+    Json.Null => Result.Ok("null"),
+    Json.Bool(b) => {
+      if b {
+        Result.Ok("true")
+      } else {
+        Result.Ok("false")
+      }
+    }
+    Json.Num(x) => num_text(x),
+    Json.Str(s) => Result.Ok(quote(s)),
+    Json.Arr(xs) => {
+      if len(xs) == 0 {
+        return Result.Ok("[]");
+      }
+      let mut out: string = "[";
+      let mut sep: string = ",";
+      let mut close: string = "]";
+      if ind != "" {
+        out = "[\n";
+        sep = ",\n";
+        close = "\n" + (pad(ind, depth)) + "]";
+      }
+      let mut i: usize = 0;
+      while i < len(xs) {
+        if i > 0 {
+          out = out + sep;
+        }
+        if ind != "" {
+          out = out + (pad(ind, depth + 1));
+        }
+        let t: string = ser(xs[i], ind, depth + 1)?;
+        out = out + t;
+        i = i + 1;
+      }
+      Result.Ok(out + close)
+    }
+    Json.Obj(ms) => {
+      if len(ms) == 0 {
+        return Result.Ok("{}");
+      }
+      let mut kvsep: string = ": ";
+      if ind == "" {
+        kvsep = ":";
+      }
+      let mut out: string = "{";
+      let mut sep: string = ",";
+      let mut close: string = "}";
+      if ind != "" {
+        out = "{\n";
+        sep = ",\n";
+        close = "\n" + (pad(ind, depth)) + "}";
+      }
+      let mut i: usize = 0;
+      while i < len(ms) {
+        if i > 0 {
+          out = out + sep;
+        }
+        if ind != "" {
+          out = out + (pad(ind, depth + 1));
+        }
+        let t: string = ser(ms[i].val, ind, depth + 1)?;
+        out = out + (quote(ms[i].key)) + kvsep + t;
+        i = i + 1;
+      }
+      Result.Ok(out + close)
+    }
+  };
+}
+
+// any Json value on one line, no whitespace
+pub fn to_string_compact(j: Json) -> Result[string, JErr] {
+  return ser(j, "", 0);
+}
+
+// two-space indentation, one member/element per line
+pub fn to_string_indented(j: Json) -> Result[string, JErr] {
+  return ser(j, "  ", 0);
+}
+
+// ------------------------------------------------------- test blocks
+
+test "utf8 encode covers the four lengths" {
+  assert_eq(utf8_encode(65), "A");
+  assert_eq(utf8_encode(233), "\xc3\xa9");
+  assert_eq(utf8_encode(0x4E2D), "\u{4E2D}");
+  assert_eq(utf8_encode(128512), "\u{1F600}");
+}
+
+test "byte_str rides the 256-entry table" {
+  assert_eq(len(BYTE_TAB), 256);
+  assert_eq(byte_str(0), "\x00");
+  assert_eq(byte_str(255), "\xff");
+}
+
+test "quote escapes the two-char set and controls" {
+  assert_eq(quote("a\"b\\c"), "\"a\\\"b\\\\c\"");
+  assert_eq(quote("\x01\x1f"), "\"\\u0001\\u001f\"");
+  assert_eq(quote("\x08\x0c\n\r\t"), "\"\\b\\f\\n\\r\\t\"");
+  assert_eq(quote("é"), "\"é\""); // non-ASCII rides verbatim (UTF-8)
+}
+
+test "pad repeats the indent unit" {
+  assert_eq(pad("  ", 0), "");
+  assert_eq(pad("  ", 3), "      ");
+}
+
+// the error message of a Result ("" when Ok)
+fn err_of(r: Result[string, JErr]) -> string {
+  let m = match r {
+    Result.Ok(_) => "no error",
+    Result.Err(e) => e.msg,
+  };
+  return m;
+}
+
+fn err_of_json(r: Result[Json, JErr]) -> string {
+  let m = match r {
+    Result.Ok(_) => "no error",
+    Result.Err(e) => e.msg,
+  };
+  return m;
+}
+
+test "num_text refuses non-finite numbers" {
+  let nan: f64 = 0.0 / 0.0;
+  let inf: f64 = 1.0 / 0.0;
+  assert_eq(err_of(num_text(nan)), "non-finite number (NaN) cannot be serialized");
+  assert_eq(err_of(num_text(inf)), "non-finite number (Infinity) cannot be serialized");
+  assert_eq(err_of(num_text(1.0)), "no error");
+}
+
+test "peek separates EOF from a native NUL" {
+  let mut c: *Cur = Cur.open("a\x00b");
+  assert_eq(c.peek(), 97);
+  c.bump();
+  assert_eq(c.peek(), 0); // a real NUL byte reads as 0
+  c.bump();
+  assert_eq(c.peek(), 98);
+  c.bump();
+  assert_eq(c.peek(), 0 - 1); // only the end of the text reads as −1
+}
+
+test "UTF-8 canonical forms are enforced (RFC 8259 §8.1 + RFC 3629)" {
+  // canonical 2/3/4-byte shapes ride
+  assert_eq(err_of_json(parse("\"¢ 中 😀\"")), "no error");
+  // C0 was never a lead byte (this also refuses 2-byte overlongs)
+  assert_eq(err_of_json(parse("\"\xc0\x8f\"")), "invalid UTF-8 lead byte");
+  // 3-byte overlong: E0 must be followed by A0..BF
+  assert_eq(err_of_json(parse("\"\xe0\x80\xa1\"")), "overlong UTF-8 sequence");
+  // surrogate space: ED must be followed by 80..9F
+  assert_eq(err_of_json(parse("\"\xed\xa0\x80\"")), "UTF-8 encoded surrogate");
+  // above U+10FFFF: F4 must be followed by 80..8F
+  assert_eq(
+    err_of_json(parse("\"\xf4\x90\x80\x80\"")),
+    "UTF-8 code point above U+10FFFF",
+  );
+  // 4-byte overlong: F0 must be followed by 90..BF
+  assert_eq(err_of_json(parse("\"\xf0\x80\x80\x80\"")), "overlong UTF-8 sequence");
+  // a bad tail under a permissive lead keeps the generic message
+  assert_eq(err_of_json(parse("\"\xe1\x40\"")), "invalid UTF-8 continuation byte");
+  // a sequence truncated by the end of the text refuses (at() reads 0)
+  assert_eq(err_of_json(parse("\"\xf0\x9f\x98\"")), "invalid UTF-8 continuation byte");
+}
+
+test "arrays grow past the initial capacity" {
+  let mut b: *ArrB = ArrB.begin();
+  let mut i: i32 = 0;
+  while i < 20 {
+    b.push(Json.Num(i as f64));
+    i = i + 1;
+  }
+  assert_eq(len(b.done()), 20);
+  match b.done()[17] {
+    Json.Num(x) => assert_eq(x, 17.0),
+    _ => assert(false, "element 17 must be Num(17)"),
+  }
+}
+
+test "objects grow and keep document order" {
+  let mut o: *ObjB = ObjB.begin2();
+  o.push("z", Json.Num(1.0));
+  o.push("a", Json.Num(2.0));
+  o.push("m", Json.Str("x"));
+  let ms: []Member = o.done();
+  assert_eq(len(ms), 3);
+  assert_eq(ms[0].key, "z");
+  assert_eq(ms[1].key, "a");
+  assert_eq(ms[2].key, "m");
+}
+
+test "roundtrip: parse then write reproduces the exact text" {
+  let text: string = "{\"k\":[1,2.5,true,null,\"x\"],\"m\":{}}";
+  let r: Result[Json, JErr] = parse(text);
+  match r {
+    Result.Ok(v) => {
+      let w: Result[string, JErr] = to_string_compact(v);
+      match w {
+        Result.Ok(s) => assert_eq(s, "{\"k\":[1.0,2.5,true,null,\"x\"],\"m\":{}}"),
+        Result.Err(e) => assert_eq(e.msg, "no error expected"),
+      }
+    }
+    Result.Err(e) => assert_eq(e.msg, "no error expected"),
+  }
+}
+
+test "writer refuses non-finite through the tree" {
+  let nan: f64 = 0.0 / 0.0;
+  let j: Json = Json.Arr([Json.Num(1.0), Json.Num(nan)]);
+  let w: Result[string, JErr] = to_string_compact(j);
+  let bad: bool = match w {
+    Result.Ok(_) => false,
+    Result.Err(_) => true,
+  };
+  assert(bad, "the writer must refuse a tree holding NaN");
+}
+
+test "duplicate keys are kept in order" {
+  let r: Result[Json, JErr] = parse("{\"a\":1,\"a\":2}");
+  match r {
+    Result.Ok(v) => {
+      let w: Result[string, JErr] = to_string_compact(v);
+      match w {
+        Result.Ok(s) => assert_eq(s, "{\"a\":1.0,\"a\":2.0}"),
+        Result.Err(e) => assert_eq(e.msg, "no error expected"),
+      }
+    }
+    Result.Err(e) => assert_eq(e.msg, "no error expected"),
+  }
+}

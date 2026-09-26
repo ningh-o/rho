@@ -1,0 +1,91 @@
+// json_numbers_test.rho — number semantics: f64 boundaries, big
+// integers through f64 precision, correctly-rounded roundtrips, and
+// the writer's refusal of non-finite values (spec: TODO T4.5 + design
+// §14 + RFC 8259 §6 + spec.md §4).
+// out: 1e+308
+// out: -1e+308
+// out: -0.0
+// out: 9007199254740992.0
+// out: 0.10000000000000001
+// out: true
+// out: true
+// out: true
+// out: 4.9406564584124654e-324
+// out: true
+// out: ERR non-finite number (Infinity) cannot be serialized
+// out: ERR non-finite number (NaN) cannot be serialized
+// spec: TODO T4.5 + design §14 + RFC 8259 §6
+use std.json;
+
+fn num(text: string) -> string {
+  let r = json.parse(text);
+  let s = match r {
+    Result.Ok(v) => {
+      let t = json.to_string_compact(v);
+      let s = match t {
+        Result.Ok(s) => s,
+        Result.Err(e) => "ERR " + e.msg,
+      };
+      s
+    }
+    Result.Err(e) => "ERR " + e.msg,
+  };
+  return s;
+}
+
+fn main() -> i32 {
+  printf("{}\n", num("1e308"));
+  printf("{}\n", num("-1e308"));
+  printf("{}\n", num("-0"));
+  printf("{}\n", num("9007199254740993"));
+  printf("{}\n", num("0.1"));
+  // bit-exact roundtrip through the 17-digit exact-decimal text
+  let x: f64 = 0.1;
+  let r = json.parse("0.1");
+  let same: bool = match r {
+    Result.Ok(Num(v)) => v == x,
+    _ => false,
+  };
+  printf("{}\n", same);
+  // 123456789012345678901234567890 keeps f64 precision (30 digits)
+  let big = json.parse("123456789012345678901234567890");
+  let bigok: bool = match big {
+    Result.Ok(Num(v)) => v == 1.2345678901234568e29,
+    _ => false,
+  };
+  printf("{}\n", bigok);
+  // −0 is a distinct value even though −0 == 0
+  let nz = json.parse("-0");
+  let nzok: bool = match nz {
+    Result.Ok(Num(v)) => (v == 0) && ((1.0 / v) < 0),
+    _ => false,
+  };
+  printf("{}\n", nzok);
+  // subnormal underflow is honest
+  printf("{}\n", num("4.9406564584124654e-324"));
+  // the (tie, tie+g/4) grain window: a fraction of a grain above the
+  // 2251799813685248.5·g tie, so the answer rounds UP to
+  // 2251799813685249·g — measured against CPython float() (first-wave
+  // differential). The two-step rounding this replaces landed on the
+  // tie and went to even: 2251799813685248·g, one grain low.
+  let win = json.parse("11125369292536010e-324");
+  let winok: bool = match win {
+    // 2251799813685249 GRAINS = 2251799813685249 * 2^-1074 — the
+    // tie is binary, not decimal: the e-324 spelling below compared
+    // a decimal against a grain count and could never hold
+    Result.Ok(Num(v)) => v == 1.112536929253601e-308,
+    _ => false,
+  };
+  printf("{}\n", winok);
+  // overflow parses to ±inf per IEEE, and the writer refuses it
+  printf("{}\n", num("1e400"));
+  // NaN has no JSON spelling at all: building one and writing refuses
+  let nan: f64 = 0.0 / 0.0;
+  let j = json.number(nan);
+  let w = json.to_string_compact(j);
+  printf("{}\n", match w {
+    Result.Ok(_) => "wrote?",
+    Result.Err(e) => "ERR " + e.msg,
+  });
+  return 0;
+}

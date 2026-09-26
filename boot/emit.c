@@ -97,6 +97,28 @@ static WTy scalar_wty(Type *t) {
   }
 }
 
+// memory load/store mnemonics per lane — the compound-assignment
+// paths must take the lane's own arm (folding W_F32/W_F64 onto the
+// i32 arm loads an f64 local from an i32.load and wat2wasm refuses
+// the module with no diagnostic)
+static const char *load_op(WTy w) {
+  switch (w) {
+  case W_I64: return "i64.load";
+  case W_F32: return "f32.load";
+  case W_F64: return "f64.load";
+  default: return "i32.load";
+  }
+}
+
+static const char *store_op(WTy w) {
+  switch (w) {
+  case W_I64: return "i64.store";
+  case W_F32: return "f32.store";
+  case W_F64: return "f64.store";
+  default: return "i32.store";
+  }
+}
+
 __attribute__((unused)) static bool ty_narrow32(Type *t) {
   return t->kind == TY_I8 || t->kind == TY_U8 || t->kind == TY_I16 ||
          t->kind == TY_U16 || t->kind == TY_I32 || t->kind == TY_U32;
@@ -211,7 +233,13 @@ static WTy local_wty_rec(Type *t, size_t j, size_t *base) {
   switch (t->kind) {
   case TY_STRUCT:
     for (size_t i = 0; i < t->sdef->nfields; i++) {
-      WTy w = local_wty_rec(inst_ty(t, t->sdef->fields[i].ty), j, base);
+      Type *ft = inst_ty(t, t->sdef->fields[i].ty);
+      size_t n = shape_nlocals(ft);
+      if (*base + n <= j) {
+        *base += n; // skip whole fields — one slot each is not enough
+        continue;
+      }
+      WTy w = local_wty_rec(ft, j, base);
       if (*base > j) return w;
     }
     return W_I32;
@@ -604,10 +632,24 @@ static void enum_payload_rc(FnCx *cx, Type *t, size_t vreg, bool do_retain) {
       Type *ft = inst_ty(t, var->fields[k].ty);
       size_t n = shape_nlocals(ft);
       if (type_is_managed(ft)) {
+        // the canonical slot law (enum_slot_wty) widens a payload
+        // position to i64 for every variant once any variant holds an
+        // 8-byte scalar there; construction and match binders move
+        // through slot_store/slot_load, and the walk must too — copy
+        // the field into its own representation (release/retain never
+        // mutate, so the copy is observation-free)
+        size_t tmp = cx_fresh(cx, ft);
+        for (size_t j = 0; j < n; j++) {
+          if (local_wty(t, slot + j - vreg) == W_I64 &&
+              local_wty(ft, j) != W_I64)
+            slot_load(cx, ft, j, tmp + j, slot + j);
+          else
+            op(cx, "(local.set %zu %s)\n", tmp + j, L(cx, slot + j));
+        }
         if (do_retain)
-          retain(cx, ft, slot);
+          retain(cx, ft, tmp);
         else
-          release(cx, ft, slot);
+          release(cx, ft, tmp);
       }
       slot += n;
     }
@@ -842,6 +884,72 @@ static size_t value_lvalue_base(FnCx *cx, Node *lv) {
     return b + field_slot_off(bt, (size_t)lv->op);
   }
   return MATCH_DISCARD;
+}
+
+// address of a MEMORY-BACKED lvalue: chains of fields and indices
+// rooted at a slice/string index (s[i].f, s[i][j], …). Rooted locals
+// are values (no memory behind them) and return false — those ride the
+// value-struct face. Emits the address computation (bounds checks
+// included); false = not memory-backed, nothing emitted.
+static bool lvalue_mem_addr(FnCx *cx, Node *lv, size_t *out) {
+  if (lv->kind == NT_INDEX) {
+    Type *bt = (Type *)node_get(lv->a)->sem;
+    if (!bt || bt->kind == TY_STRING || bt->kind != TY_SLICE)
+      return false;
+    size_t b = cx_fresh(cx, bt);
+    emit_expr(cx, lv->a, b);
+    size_t i = cx_fresh(cx, ty_usize);
+    emit_expr(cx, lv->b, i);
+    size_t msg = data_intern("index out of bounds", 19);
+    op(cx, "(if (i32.ge_u (local.get %zu) %s) (then\n", i, L(cx, b + 2));
+    op(cx, "  (call $rho_panic (i32.const %zu) (i32.const 19))))\n", msg);
+    Type *el = bt->base;
+    size_t esz = type_size(el);
+    size_t addr = cx_fresh(cx, ty_i32);
+    if (esz == 1)
+      op(cx, "(local.set %zu (i32.add %s (local.get %zu)))\n", addr,
+         L(cx, b + 1), i);
+    else
+      op(cx, "(local.set %zu (i32.add %s (i32.mul (local.get %zu) "
+             "(i32.const %zu))))\n", addr, L(cx, b + 1), i, esz);
+    *out = addr;
+    return true;
+  }
+  if (lv->kind == NT_FIELD_E) {
+    Node *base = node_get(lv->a);
+    Type *bt = (Type *)base->sem;
+    if (!bt)
+      return false;
+    if (bt->kind == TY_PTR) {
+      // pointer base: the pointer's value is the address (read-side
+      // faces already cover plain p.f; this covers p.f.g chains)
+      if (bt->base->kind != TY_STRUCT)
+        return false;
+      size_t p = cx_fresh(cx, bt);
+      emit_expr(cx, lv->a, p);
+      size_t addr = cx_fresh(cx, ty_i32);
+      op(cx, "(local.set %zu (i32.add (i32.load %s) (i32.const %zu)))\n",
+         addr, L(cx, p), field_offset(bt->base, (size_t)lv->op));
+      *out = addr;
+      return true;
+    }
+    size_t sub = 0;
+    if (!lvalue_mem_addr(cx, base, &sub))
+      return false;
+    // the base's memory holds the field's struct: a slice index holds
+    // the element, an inner field holds its own struct
+    Type *st = bt->kind == TY_SLICE  ? bt->base
+               : bt->kind == TY_STRUCT ? bt
+                                       : NULL;
+    if (!st || st->kind != TY_STRUCT)
+      return false;
+    size_t addr = cx_fresh(cx, ty_i32);
+    op(cx, "(local.set %zu (i32.add (local.get %zu) (i32.const %zu)))\n",
+       addr, sub, field_offset(st, (size_t)lv->op));
+    *out = addr;
+    return true;
+  }
+  return false;
 }
 
 // numeric const from a folded value stored in a node's type-checked
@@ -2409,7 +2517,27 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
         Type *ft = variant_field_ty(var, t, k);
         size_t n = shape_nlocals(ft);
         size_t tmp = cx_fresh(cx, ft);
-        emit_expr(cx, aw->a, tmp);
+        Type *it = (Type *)node_get(aw->a)->sem;
+        if (ft->kind == TY_STRUCT && it && it->kind == TY_PTR) {
+          // a boxed initializer for a value-struct payload
+          // (`Result.Err(new E{..})`): the box rides one pointer slot;
+          // the payload slots own field-wise copies of the box's
+          // canonical layout (the box itself was fresh — the bump
+          // kernel keeps it, the header rc never re-fires)
+          size_t ptmp = cx_fresh(cx, it);
+          emit_expr(cx, aw->a, ptmp);
+          for (size_t j = 0; j < n; j++) {
+            WTy w = local_wty(ft, j);
+            const char *ld = w == W_I64   ? "i64.load"
+                             : w == W_F32 ? "f32.load"
+                             : w == W_F64 ? "f64.load"
+                                          : "i32.load";
+            op(cx, "(local.set %zu (%s (i32.add %s (i32.const %zu))))\n",
+               tmp + j, ld, L(cx, ptmp), shape_slot_off(ft, j));
+          }
+        } else {
+          emit_expr(cx, aw->a, tmp);
+        }
         for (size_t j = 0; j < n; j++) {
           if (local_wty(t, abs) == W_I64 && local_wty(ft, j) != W_I64)
             slot_store(cx, ft, j, slot + j, tmp + j);
@@ -2903,6 +3031,33 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       // fresh must carry the DYN type or the fat {vtable, obj} pair
       // never forms and the vtable slot stores garbage
       Type *face = st->base->kind == TY_DYN ? st->base : elt;
+      // a boxed initializer for a value-struct element (`new T{..}`
+      // inside a []T literal): the box rides one pointer slot; the
+      // element run owns field-wise copies of the payload — the same
+      // staging NT_NEW applies to inline value-struct fields (the box
+      // itself was fresh; the bump kernel keeps it, its rc never fires)
+      if (st->base->kind == TY_STRUCT && face && face->kind == TY_PTR) {
+        size_t pv = cx_fresh(cx, face);
+        emit_expr(cx, reflist_at(e->list, i2), pv);
+        Type *ftv = st->base;
+        size_t nl = shape_nlocals(ftv);
+        for (size_t k = 0; k < nl; k++) {
+          WTy w = local_wty(ftv, k);
+          const char *ld = w == W_I64   ? "i64.load"
+                           : w == W_F32 ? "f32.load"
+                           : w == W_F64 ? "f64.load"
+                                        : "i32.load";
+          const char *str_op = w == W_I64   ? "i64.store"
+                               : w == W_F32 ? "f32.store"
+                               : w == W_F64 ? "f64.store"
+                                            : "i32.store";
+          op(cx, "(%s (i32.add %s (i32.const %zu)) (%s (i32.add %s "
+                 "(i32.const %zu))))\n",
+             str_op, L(cx, dst), i2 * esz + shape_slot_off(ftv, k), ld,
+             L(cx, pv), shape_slot_off(ftv, k));
+        }
+        continue;
+      }
       size_t v = cx_fresh(cx, face);
       emit_expr(cx, reflist_at(e->list, i2), v);
       size_t nl = shape_nlocals(face);
@@ -3130,10 +3285,18 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       op(cx, "(unreachable))\n");
     }
     op(cx, ")\n");
-    // value = payload slots
-    size_t n = shape_nlocals(ot);
-    for (size_t i = 1; i < n; i++)
-      op(cx, "(local.set %zu %s)\n", dst + i - 1, L(cx, v + i));
+    // value = the present variant's payload slots, exactly the
+    // unwrapped value's own shape; canonical-lane aware (an f64/sibling
+    // widening rides the payload in i64 lanes — reinterpret on the way
+    // out, mirroring bind_pattern's slot_load)
+    Type *vt = (Type *)node_get(er)->sem;
+    size_t n = vt ? shape_nlocals(vt) : 0;
+    for (size_t k = 0; k < n; k++) {
+      if (local_wty(ot, 1 + k) == W_I64 && local_wty(vt, k) != W_I64)
+        slot_load(cx, vt, k, dst + k, v + 1 + k);
+      else
+        op(cx, "(local.set %zu %s)\n", dst + k, L(cx, v + 1 + k));
+    }
     return;
   }
 
@@ -3979,12 +4142,12 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
         size_t p = cx_fresh(cx, bt);
         emit_expr(cx, lv->a, p);
         if (s->op != OP_NONE) {
-          // compound: load old, op, store
+          // compound: load old, op, store — each lane takes its own
+          // load/store arm (f32/f64 never fold onto the i32 arm)
           size_t oldv = cx_fresh(cx, ft);
           size_t nv = cx_fresh(cx, ft);
-          const char *ld = scalar_wty(ft) == W_I64 ? "i64.load" : "i32.load";
-          const char *strop = scalar_wty(ft) == W_I64 ? "i64.store"
-                                                       : "i32.store";
+          const char *ld = load_op(scalar_wty(ft));
+          const char *strop = store_op(scalar_wty(ft));
           op(cx, "(local.set %zu (%s (i32.add (local.get %zu) "
                  "(i32.const %zu))))\n", oldv, ld, p, off);
           if (emit_compound_op(cx, ft, s->op, nv, oldv, rhs)) {
@@ -4007,6 +4170,70 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
         return;
       }
       if (bt->kind == TY_STRUCT) {
+        // memory-backed base (through a slice index): the field has a
+        // real address — store there (the value-struct face below only
+        // covers rooted variables; a dropped store would be silent)
+        size_t addr = 0;
+        if (lvalue_mem_addr(cx, lv, &addr)) {
+          Type *ft = inst_ty(bt, bt->sdef->fields[lv->op].ty);
+          size_t rhs = cx_fresh(cx, lt);
+          emit_expr(cx, s->b, rhs);
+          if (s->op != OP_NONE) {
+            // compound: load every lane of the old field value, op,
+            // store the result back. The op reads the loaded old
+            // bytes, so the old refs release only after it (a string
+            // += must not free what it is still reading). Each lane
+            // takes its own load/store arm — folding f32/f64 onto the
+            // i32 arm emits an ill-typed module.
+            size_t n = shape_nlocals(ft);
+            size_t oldv = cx_fresh(cx, ft);
+            size_t nv = cx_fresh(cx, ft);
+            for (size_t k2 = 0; k2 < n; k2++) {
+              WTy w = local_wty(ft, k2);
+              op(cx, "(local.set %zu (%s (i32.add (local.get %zu) "
+                     "(i32.const %zu))))\n", oldv + k2, load_op(w), addr,
+                 shape_slot_off(ft, k2));
+            }
+            if (emit_compound_op(cx, ft, s->op, nv, oldv, rhs)) {
+              release(cx, ft, oldv); // the overwrite kills the old refs
+              for (size_t k2 = 0; k2 < n; k2++) {
+                WTy w = local_wty(ft, k2);
+                op(cx, "(%s (i32.add (local.get %zu) (i32.const %zu)) "
+                       "%s)\n", store_op(w), addr, shape_slot_off(ft, k2),
+                   L(cx, nv + k2));
+              }
+              return;
+            }
+          }
+          // the block owns the old field value's refs: load and
+          // release them before the store overwrites
+          size_t n = shape_nlocals(ft);
+          size_t oldv = cx_fresh(cx, ft);
+          for (size_t k = 0; k < n; k++) {
+            WTy w = local_wty(ft, k);
+            const char *ld = w == W_I64   ? "i64.load"
+                             : w == W_F32 ? "f32.load"
+                             : w == W_F64 ? "f64.load"
+                                          : "i32.load";
+            op(cx, "(local.set %zu (%s (i32.add (local.get %zu) "
+                   "(i32.const %zu))))\n", oldv + k, ld, addr,
+               shape_slot_off(ft, k));
+          }
+          release(cx, ft, oldv);
+          for (size_t k = 0; k < n; k++) {
+            WTy w = local_wty(ft, k);
+            const char *strop = w == W_I64   ? "i64.store"
+                                : w == W_F32 ? "f32.store"
+                                : w == W_F64 ? "f64.store"
+                                             : "i32.store";
+            op(cx, "(%s (i32.add (local.get %zu) (i32.const %zu)) "
+                   "%s)\n", strop, addr, shape_slot_off(ft, k),
+               L(cx, rhs + k));
+          }
+          if (node_get(s->b)->kind == NT_PATH && cx_var(cx, node_get(s->b)->name))
+            retain(cx, ft, rhs); // copy-in owns a new ref
+          return;
+        }
         // value-struct face: the base rides a flat field run, so the
         // store lands in the rooted variable's own slots — a value has
         // no memory behind it
@@ -4066,13 +4293,12 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
            L(cx, b + (bt->kind == TY_SLICE ? 1 : 0)), i, esz);
       size_t nl = shape_nlocals(el);
       if (s->op != OP_NONE && nl == 1) {
-        // compound: load old, op, store (scalar elements only — the
-        // check side rejects compound on aggregates)
+        // compound: load old, op, store (scalar elements only) — the
+        // one lane takes its own load/store arm
         size_t oldv = cx_fresh(cx, el);
         size_t nv = cx_fresh(cx, el);
-        const char *ld = scalar_wty(el) == W_I64 ? "i64.load" : "i32.load";
-        const char *strop = scalar_wty(el) == W_I64 ? "i64.store"
-                                                    : "i32.store";
+        const char *ld = load_op(scalar_wty(el));
+        const char *strop = store_op(scalar_wty(el));
         op(cx, "(local.set %zu (%s (local.get %zu)))\n", oldv, ld, addr);
         if (emit_compound_op(cx, el, s->op, nv, oldv, rhs)) {
           op(cx, "(%s (local.get %zu) (local.get %zu))\n", strop, addr,

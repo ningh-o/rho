@@ -1,0 +1,75 @@
+// json_escapes_test.rho — the \\uXXXX table, surrogate pairs, short
+// escapes, and the refusal paths (spec: TODO T4.5 + design §14 + RFC
+// 8259 §7/§8).
+// out: "Aé中😀"
+// out: true
+// out: true
+// out: "\" \\ / \b \f \n \r \t"
+// out: true
+// out: true
+// out: true
+// out: ERR lone high surrogate in \u escape
+// out: ERR lone low surrogate in \u escape
+// out: ERR invalid surrogate pair: low surrogate expected
+// out: ERR invalid escape character
+// out: ERR unescaped control character in string
+// spec: TODO T4.5 + design §14 + RFC 8259 §7/§8
+use std.json;
+
+fn rt(text: string) -> string {
+  let r = json.parse(text);
+  let s = match r {
+    Result.Ok(v) => {
+      let t = json.to_string_compact(v);
+      let s = match t {
+        Result.Ok(s) => s,
+        Result.Err(e) => "ERR " + e.msg,
+      };
+      s
+    }
+    Result.Err(e) => "ERR " + e.msg,
+  };
+  return s;
+}
+
+// true when the roundtrip text is not an error line
+fn not_err(s: string) -> bool {
+  if len(s) >= 3 {
+    return !(s[0] == 69 && s[1] == 82 && s[2] == 82);
+  }
+  return true;
+}
+
+fn roundtrips(text: string) -> bool {
+  let once: string = rt(text);
+  let twice: string = rt(once);
+  return once == twice && not_err(once);
+}
+
+fn main() -> i32 {
+  // the \\u table: ASCII, two-byte, three-byte, astral via a pair
+  printf("{}\n", rt("\"\\u0041\\u00e9\\u4E2D\\uD83D\\uDE00\""));
+  // the decoded text is the same bytes as the \\u{...} literal escape
+  let r = json.parse("\"\\u4E2D\"");
+  let ok: bool = match r {
+    Result.Ok(Str(s)) => s == "\u{4E2D}",
+    _ => false,
+  };
+  printf("{}\n", ok);
+  // a raw UTF-8 astral character rides through untouched
+  let ok2: bool = rt("\"😀\"") == "\"😀\"";
+  printf("{}\n", ok2);
+  // the two-char escape set
+  printf("{}\n", rt("\"\\\" \\\\ \\/ \\b \\f \\n \\r \\t\""));
+  // strings survive the roundtrip bit-exactly
+  printf("{}\n", roundtrips("\"\\u0001\\u001f\\u0080\""));
+  printf("{}\n", roundtrips("\"\\uDBFF\\uDFFF\""));
+  printf("{}\n", roundtrips("\"tab\\there\""));
+  // refusals
+  printf("{}\n", rt("\"\\ud800x\""));
+  printf("{}\n", rt("\"\\udead\""));
+  printf("{}\n", rt("\"\\ud800\\u0041\""));
+  printf("{}\n", rt("\"\\q\""));
+  printf("{}\n", rt("\"a\x01b\""));
+  return 0;
+}

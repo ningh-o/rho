@@ -1,0 +1,647 @@
+// num.rho — correctly-rounded decimal → f64 conversion for JSON
+// numbers (RFC 8259 §6: numbers carry f64 semantics).
+//
+// The scanner hands over the significant digits as a ≤19-digit string
+// plus a decimal exponent and a sticky flag; this module returns the
+// nearest f64 (ties to even), so parse(serialize(x)) == x holds for
+// every finite double. Two paths:
+//
+//   fast  — ≤15 significant digits and |E| ≤ 22: the product
+//           M × 10^E is computed with one IEEE operation against an
+//           exactly representable power of ten — correctly rounded by
+//           construction (Clinger's fast path).
+//   slow  — everything else: exact big-integer arithmetic
+//           (base-2^32 limbs) on M × 5^E × 2^E, generating quotient
+//           bits plus a sticky bit, and rounding half-to-even exactly
+//           ONCE — at the final grid: the 53-bit normal grid, or, for
+//           subnormal results, the 2^-1074 grain itself. The sticky
+//           (remainder plus digits the scanner dropped) is consumed at
+//           that one rounding; nothing is ever rounded twice.
+
+// ------------------------------------------------------ exact powers
+
+// 10^e for e in 0..=22 — every one exactly representable in f64
+fn pow10_exact(e: i32) -> f64 {
+  return match e {
+    0 => 1.0,
+    1 => 10.0,
+    2 => 100.0,
+    3 => 1000.0,
+    4 => 10000.0,
+    5 => 100000.0,
+    6 => 1000000.0,
+    7 => 10000000.0,
+    8 => 100000000.0,
+    9 => 1000000000.0,
+    10 => 10000000000.0,
+    11 => 100000000000.0,
+    12 => 1000000000000.0,
+    13 => 10000000000000.0,
+    14 => 100000000000000.0,
+    15 => 1000000000000000.0,
+    16 => 10000000000000000.0,
+    17 => 100000000000000000.0,
+    18 => 1000000000000000000.0,
+    19 => 10000000000000000000.0,
+    20 => 1e20,
+    21 => 1e21,
+    _ => 1e22,
+  };
+}
+
+// 2^p built by repeated multiplication — a power of two has a one-bit
+// significand, so every intermediate stays exact (|p| ≤ 1074)
+fn pow2(p: i32) -> f64 {
+  let mut r: f64 = 1.0;
+  if p >= 0 {
+    let mut i: i32 = 0;
+    while i < p {
+      r = r * 2.0;
+      i = i + 1;
+    }
+    return r;
+  }
+  let mut i: i32 = 0;
+  while i > p {
+    r = r / 2.0;
+    i = i - 1;
+  }
+  return r;
+}
+
+// 2^k as an exact u64 (k in 0..=54)
+fn pow2_small_u64(k: i32) -> u64 {
+  let mut v: u64 = 1;
+  let mut i: i32 = 0;
+  while i < k {
+    v = v * 2;
+    i = i + 1;
+  }
+  return v;
+}
+
+// ---------------------------------------------------------- bigints
+
+// little-endian base-2^32 limbs; values here never exceed ~930 bits
+// (5^400), so a fixed 48-limb capacity is ample
+pub struct Big {
+  w: []u32,
+  n: i32, // used limbs, ≥ 1
+}
+
+fn Big.build(v: u64) -> *Big {
+  let words: []u32 = make([]u32, 48);
+  let mut b: *Big = new Big { w: words, n: 1 };
+  b.w[0] = (v % 4294967296) as u32;
+  b.w[1] = (v / 4294967296) as u32;
+  b.n = 1;
+  if b.w[1] != 0 {
+    b.n = 2;
+  }
+  return b;
+}
+
+fn Big.trim(mut self: *Big) {
+  while self.n > 1 && self.w[(self.n - 1) as usize] == 0 {
+    self.n = self.n - 1;
+  }
+  return;
+}
+
+fn Big.mul_small(mut self: *Big, m: u32) {
+  let mut carry: u64 = 0;
+  let mut i: i32 = 0;
+  while i < self.n {
+    let cur: u64 = (self.w[i as usize] as u64) * (m as u64) + carry;
+    self.w[i as usize] = (cur % 4294967296) as u32;
+    carry = cur / 4294967296;
+    i = i + 1;
+  }
+  while carry > 0 {
+    self.w[self.n as usize] = (carry % 4294967296) as u32;
+    carry = carry / 4294967296;
+    self.n = self.n + 1;
+  }
+  return;
+}
+
+// self ×= 5, k times (pow5 drives the exact slow path)
+fn Big.pow5(mut self: *Big, k: i32) {
+  let mut i: i32 = 0;
+  while i < k {
+    self.mul_small(5);
+    i = i + 1;
+  }
+  return;
+}
+
+fn Big.shl1(mut self: *Big) {
+  let mut carry: u32 = 0;
+  let mut i: i32 = 0;
+  while i < self.n {
+    let cur: u32 = self.w[i as usize];
+    self.w[i as usize] = (cur << 1) | carry;
+    carry = cur >> 31;
+    i = i + 1;
+  }
+  if carry != 0 {
+    self.w[self.n as usize] = carry;
+    self.n = self.n + 1;
+  }
+  return;
+}
+
+// self ×= 2^k (limb shift, then single-bit shifts)
+fn Big.shl(mut self: *Big, k: i32) {
+  if k <= 0 {
+    return;
+  }
+  let lw: i32 = k / 32;
+  if lw > 0 {
+    let mut i: i32 = self.n - 1;
+    while i >= 0 {
+      if i + lw < 48 {
+        self.w[(i + lw) as usize] = self.w[i as usize];
+      }
+      i = i - 1;
+    }
+    let mut j: i32 = 0;
+    while j < lw {
+      self.w[j as usize] = 0;
+      j = j + 1;
+    }
+    self.n = self.n + lw;
+    if self.n > 48 {
+      self.n = 48;
+    }
+  }
+  let mut r: i32 = k % 32;
+  while r > 0 {
+    self.shl1();
+    r = r - 1;
+  }
+  return;
+}
+
+fn Big.bits(self: *Big) -> i32 {
+  let mut top: u32 = self.w[(self.n - 1) as usize];
+  let mut k: i32 = 0 - 1; // position of the highest set bit of the top limb
+  while top > 0 {
+    k = k + 1;
+    top = top >> 1;
+  }
+  return (self.n - 1) * 32 + k + 1;
+}
+
+fn Big.cmp(self: *Big, other: *Big) -> i32 {
+  if self.n != other.n {
+    if self.n < other.n {
+      return 0 - 1;
+    }
+    return 1;
+  }
+  let mut i: i32 = self.n - 1;
+  while i >= 0 {
+    let a: u32 = self.w[i as usize];
+    let b: u32 = other.w[i as usize];
+    if a != b {
+      if a < b {
+        return 0 - 1;
+      }
+      return 1;
+    }
+    i = i - 1;
+  }
+  return 0;
+}
+
+// self -= other (self >= other, caller-checked)
+fn Big.sub(mut self: *Big, other: *Big) {
+  let mut borrow: u64 = 0;
+  let mut i: i32 = 0;
+  while i < self.n {
+    let cur: u64 = self.w[i as usize] as u64;
+    let mut take: u64 = borrow;
+    if i < other.n {
+      take = take + (other.w[i as usize] as u64);
+    }
+    if cur >= take {
+      self.w[i as usize] = (cur - take) as u32;
+      borrow = 0;
+    } else {
+      self.w[i as usize] = ((cur + 4294967296) - take) as u32;
+      borrow = 1;
+    }
+    i = i + 1;
+  }
+  self.trim();
+  return;
+}
+
+fn Big.to_u64(self: *Big) -> u64 {
+  let mut v: u64 = 0;
+  let mut i: i32 = self.n - 1;
+  while i >= 0 {
+    v = v * 4294967296 + (self.w[i as usize] as u64);
+    i = i - 1;
+  }
+  return v;
+}
+
+fn Big.is_zero(self: *Big) -> bool {
+  let mut i: i32 = 0;
+  while i < self.n {
+    if self.w[i as usize] != 0 {
+      return false;
+    }
+    i = i + 1;
+  }
+  return true;
+}
+
+// self := other (limbwise copy)
+fn Big.copy_from(mut self: *Big, other: *Big) {
+  let mut i: i32 = 0;
+  while i < other.n {
+    self.w[i as usize] = other.w[i as usize];
+    i = i + 1;
+  }
+  self.n = other.n;
+  return;
+}
+
+// any bit below position `drop` set?
+fn Big.low_nonzero(self: *Big, drop: i32) -> bool {
+  let limb: i32 = drop / 32;
+  let rb: i32 = drop % 32;
+  let mut i: i32 = 0;
+  while i < limb && i < self.n {
+    if self.w[i as usize] != 0 {
+      return true;
+    }
+    i = i + 1;
+  }
+  if rb > 0 && limb < self.n {
+    let mask: u32 = (pow2_small_u64(rb) as u32) - 1;
+    if (self.w[limb as usize] & mask) != 0 {
+      return true;
+    }
+  }
+  return false;
+}
+
+// the top `keep` bits of self (keep ≤ 54) — cut `bits - keep` low
+// bits; up to three limbs feed the window
+fn Big.top(self: *Big, keep: i32) -> u64 {
+  let drop: i32 = self.bits() - keep;
+  let i0: usize = (drop / 32) as usize;
+  let rb: i32 = drop % 32;
+  let mut v: u64 = (self.w[i0] as u64) >> (rb as u64);
+  let have: i32 = 32 - rb;
+  if have < keep && (i0 as i32) + 1 < self.n {
+    v = v | ((self.w[i0 + 1] as u64) << (have as u64));
+    let have2: i32 = have + 32;
+    if have2 < keep && (i0 as i32) + 2 < self.n {
+      v = v | ((self.w[i0 + 2] as u64) << (have2 as u64));
+    }
+  }
+  return v & (pow2_small_u64(keep) - 1);
+}
+
+// ------------------------------------------------------- assembling
+
+struct Rounded {
+  q: u64,
+  p: i32,
+}
+
+// round a 54-bit top to 53 bits (half-to-even with sticky); a carry
+// renormalizes and bumps p by one
+fn round54(top: u64, sticky: bool, p: i32) -> *Rounded {
+  let mut q: u64 = top >> 1;
+  let guard: u64 = top & 1;
+  if guard == 1 {
+    if sticky || (q & 1) == 1 {
+      q = q + 1;
+    }
+  }
+  let mut pp: i32 = p;
+  if q >= 9007199254740992 {
+    q = q >> 1;
+    pp = pp + 1;
+  }
+  return new Rounded { q: q, p: pp };
+}
+
+// round a 55-bit division quotient to 53 bits (two dropped bits)
+fn round55(q55: u64, sticky: bool, p: i32) -> *Rounded {
+  let mut q: u64 = q55 >> 2;
+  let guard: u64 = (q55 >> 1) & 1;
+  let rnd: u64 = q55 & 1;
+  if guard == 1 {
+    if rnd == 1 || sticky || (q & 1) == 1 {
+      q = q + 1;
+    }
+  }
+  let mut pp: i32 = p;
+  if q >= 9007199254740992 {
+    q = q >> 1;
+    pp = pp + 1;
+  }
+  return new Rounded { q: q, p: pp };
+}
+
+// value = (neg ? −1 : 1) × q × 2^(p−52), q ∈ [2^52, 2^53) — the final
+// rounding already applied and only the normal range reaches here
+// (subnormal results assemble on the 2^-1074 grain in from_decimal,
+// inside the same single rounding). Build the f64 with exact
+// operations only: q·2^e has ≤ 53 significant bits and e ≥ −1074, so
+// IEEE returns the product exactly.
+fn assemble(neg: bool, q: u64, p: i32) -> f64 {
+  let v: f64 = (q as f64) * pow2(p - 52);
+  if neg {
+    return (0.0 - 1.0) * v; // −1×0 keeps the −0 that IEEE asks for
+  }
+  return v;
+}
+
+// ------------------------------------------------------- the entry
+
+// nearest f64 to (neg ? −1 : 1) × digits × 10^e10, ties to even.
+// digits: "0" for zero, else 1..=19 significant decimal digits with no
+// leading zeros. sticky: any further nonzero digits the scanner
+// dropped past the 19 kept.
+pub fn from_decimal(neg: bool, digits: string, e10: i32, sticky: bool) -> f64 {
+  if digits == "0" {
+    if neg {
+      return (0.0 - 1.0) * 0.0; // −0 keeps its sign
+    }
+    return 0.0;
+  }
+  let mut m: u64 = 0;
+  let mut i: usize = 0;
+  while i < len(digits) {
+    m = m * 10 + ((digits[i] - 48) as u64);
+    i = i + 1;
+  }
+  let nd: i32 = len(digits) as i32;
+  if nd <= 15 && e10 >= -22 && e10 <= 22 {
+    // Clinger fast path: M exact, 10^E exact, one IEEE operation
+    let mf: f64 = m as f64;
+    let mut v: f64 = 0.0;
+    if e10 >= 0 {
+      v = mf * pow10_exact(e10);
+    } else {
+      v = mf / pow10_exact(0 - e10);
+    }
+    if neg {
+      return 0.0 - v;
+    }
+    return v;
+  }
+  if e10 >= 0 {
+    // value = M × 5^E × 2^E — the numerator is exact
+    if e10 > 400 {
+      // ≥ 10^401 > 2^1024 for any M ≥ 1
+      let inf: f64 = 1.0 / 0.0;
+      if neg {
+        return 0.0 - inf;
+      }
+      return inf;
+    }
+    let mut n: *Big = Big.build(m);
+    n.pow5(e10);
+    let total: i32 = n.bits() + e10;
+    if total > 1024 {
+      let inf: f64 = 1.0 / 0.0;
+      if neg {
+        return 0.0 - inf;
+      }
+      return inf;
+    }
+    if total <= 53 {
+      // exact small integer
+      let v: f64 = (n.to_u64() as f64) * pow2(e10);
+      if neg {
+        return 0.0 - v;
+      }
+      return v;
+    }
+    let bn: i32 = n.bits();
+    let mut top: u64 = 0;
+    let mut stick2: bool = sticky;
+    if bn >= 54 {
+      let drop: i32 = bn - 54;
+      top = n.top(54);
+      if n.low_nonzero(drop) {
+        stick2 = true;
+      }
+    } else {
+      top = (n.to_u64() << ((54 - bn) as u64)) & (pow2_small_u64(54) - 1);
+    }
+    let r: *Rounded = round54(top, stick2, total - 1);
+    return assemble(neg, r.q, r.p);
+  }
+  // e10 < 0: value = M / (5^-E × 2^-E)
+  let d5: i32 = 0 - e10;
+  if d5 > 400 {
+    // ≤ 10^19 × 10^-401 < 2^-1267 < 2^-1075 — rounds to zero
+    if neg {
+      return (0.0 - 1.0) * 0.0;
+    }
+    return 0.0;
+  }
+  let mut d: *Big = Big.build(1);
+  d.pow5(d5);
+  let mut r: *Big = Big.build(m);
+  let mut k: i32 = 0;
+  // bring R ≥ D, then R ∈ [D × 2^54, D × 2^55)
+  while r.cmp(d) == 0 - 1 {
+    r.shl1();
+    k = k + 1;
+  }
+  let mut hi: *Big = Big.build(0);
+  hi.copy_from(d);
+  hi.shl(54);
+  while r.cmp(hi) == 0 - 1 {
+    r.shl1();
+    k = k + 1;
+  }
+  // value = R / (D × 2^(k+d5)) and g = 2^−1074, so in grain units
+  // value/g = R / (D × 2^d2) with d2 = k + d5 − 1074 = −1020 − p —
+  // the leading position of R/D is p = 54 − d5 − k
+  let p: i32 = 54 - d5 - k;
+  if p < 0 - 1022 {
+    // subnormal: ONE rounding, directly on the 2^−1074 grain — the
+    // old path (round to 53 bits, then re-round to the grain in
+    // assemble) rounded twice and mis-rounded the last grain of
+    // decimals landing in (tie − 2^−d2·g, tie + 2^−d2·g) windows.
+    // Here n = round_half_even(R / (D × 2^d2)): the division yields
+    // n's exact bits plus one guard bit below the grain; the sticky
+    // (division remainder + the digits the scanner dropped) is
+    // consumed at this final rounding.
+    let d2: i32 = 0 - 1020 - p;
+    let mut n: u64 = 0;
+    let mut t: *Big = Big.build(0);
+    let mut b: i32 = 54 - d2; // top bit of n (negative → n = 0)
+    while b >= 0 {
+      t.copy_from(d);
+      t.shl(b + d2);
+      if r.cmp(t) >= 0 {
+        r.sub(t);
+        n = n | pow2_small_u64(b);
+      }
+      b = b - 1;
+    }
+    // guard = the first bit below the grain; whatever is left after
+    // it (remainder or dropped digits) is the sticky
+    t.copy_from(d);
+    t.shl(d2);
+    r.shl1();
+    let guard: bool = r.cmp(t) >= 0;
+    if guard {
+      r.sub(t);
+    }
+    if guard && (sticky || !r.is_zero() || (n & 1) == 1) {
+      n = n + 1;
+    }
+    // n × 2^−1074 with n ≤ 2^52 is exactly representable — a carry
+    // into n = 2^52 lands on the min normal, which the same formula
+    // builds exactly
+    let v: f64 = (n as f64) * pow2(0 - 1074);
+    if neg {
+      return (0.0 - 1.0) * v; // −1×0 keeps the −0 that IEEE asks for
+    }
+    return v;
+  }
+  // normal range: bit-by-bit division: Q = R / D ∈ [2^54, 2^55); R
+  // keeps the remainder (its nonzero-ness is the low sticky). The
+  // 53-bit rounding here is the FINAL rounding — the value lands on
+  // the normal grid, where q × 2^(p−52) assembles exactly.
+  let mut q55: u64 = 0;
+  let mut t: *Big = Big.build(0);
+  let mut b: i32 = 54;
+  while b >= 0 {
+    t.copy_from(d);
+    t.shl(b);
+    if r.cmp(t) >= 0 {
+      r.sub(t);
+      q55 = q55 | pow2_small_u64(b);
+    }
+    b = b - 1;
+  }
+  let stick2: bool = sticky || !r.is_zero();
+  let rr: *Rounded = round55(q55, stick2, p);
+  return assemble(neg, rr.q, rr.p);
+}
+
+// ------------------------------------------------------- test blocks
+
+test "exact powers of ten" {
+  assert_eq(pow10_exact(0), 1.0);
+  assert_eq(pow10_exact(22), 1e22);
+  assert_eq(pow2(10), 1024.0);
+  assert_eq(pow2(-1074), 5e-324);
+}
+
+test "big limbs: construction, bits, compare" {
+  let a: *Big = Big.build(4294967296); // 2^32
+  assert_eq(a.n, 2);
+  assert_eq(a.bits(), 33);
+  let one: *Big = Big.build(1);
+  assert_eq(a.cmp(one), 1);
+  assert_eq(one.cmp(one), 0);
+  assert_eq(one.low_nonzero(0), false);
+  assert_eq(one.low_nonzero(1), true); // value 1 has a bit below position 1
+  let four: *Big = Big.build(4);
+  assert_eq(four.low_nonzero(2), false); // 0b100 has nothing below bit 2
+  assert_eq(four.low_nonzero(1), false); // bit 0 of 4 is zero
+  assert_eq(four.low_nonzero(3), true); // bit 2 sits below position 3
+}
+
+test "big shifts and subtraction" {
+  let mut a: *Big = Big.build(3);
+  a.shl(34);
+  assert_eq(a.bits(), 36);
+  let mut b: *Big = Big.build(1);
+  b.shl(34);
+  assert_eq(a.cmp(b), 1);
+  a.sub(b);
+  assert_eq(a.to_u64(), 34359738368); // 3×2^34 − 2^34 = 2^35
+}
+
+test "big.top takes the high window" {
+  // 2^40 + 0x3FF: top 12 bits of a 41-bit value are 10..01 (binary)
+  let a: *Big = Big.build(1099511627775); // 2^40 − 1
+  assert_eq(a.bits(), 40);
+  assert_eq(a.top(40), 1099511627775);
+  assert_eq(a.top(8), 255);
+}
+
+test "from_decimal matches the exact-decimal printer" {
+  // the roundtrip law: from_decimal(digits of to_str(x)) == x
+  assert_eq(from_decimal(false, "1", 308, false).to_str(), 1e308.to_str());
+  assert_eq(from_decimal(false, "1", 0, false), 1.0);
+  assert_eq(from_decimal(true, "5", -1, false), 0.0 - 0.5);
+  assert_eq(from_decimal(false, "5", -1, false), 0.5);
+  assert_eq(from_decimal(false, "1", 21, false).to_str(), "1e+21");
+  assert_eq(from_decimal(false, "25", -1, false), 2.5);
+}
+
+test "from_decimal rounds 17-digit texts back to the same double" {
+  // 0.1's exact 17-digit text must read back as the very same double
+  let x: f64 = 0.1;
+  assert_eq(x.to_str(), "0.10000000000000001");
+  let y: f64 = from_decimal(false, "10000000000000001", -17, false);
+  assert(y == x, "the 17-digit text of 0.1 reads back as the same double");
+  // 19 significant digits with a dropped nonzero tail (sticky)
+  let z: f64 = from_decimal(false, "1000000000000000005", -19, true);
+  assert(z == x, "the 19-digit text of 0.1 reads back as the same double");
+}
+
+test "from_decimal zero keeps its sign" {
+  assert_eq(from_decimal(false, "0", 0, false).to_str(), "0.0");
+  assert_eq(from_decimal(true, "0", 0, false).to_str(), "-0.0");
+}
+
+test "from_decimal overflow and underflow ride IEEE rules" {
+  let inf: f64 = 1.0 / 0.0;
+  let ninf: f64 = 0.0 - inf;
+  assert_eq(from_decimal(false, "1", 309, false).to_str(), inf.to_str());
+  assert_eq(from_decimal(true, "1", 309, false).to_str(), ninf.to_str());
+  assert_eq(from_decimal(false, "1", -400, false), 0.0);
+  assert_eq(from_decimal(true, "1", -400, false).to_str(), "-0.0");
+  // smallest subnormal: 4.9406564584124654e-324 reads back exactly
+  assert_eq(from_decimal(false, "49406564584124654", -340, false).to_str(), 5e-324.to_str());
+  assert_eq(from_decimal(false, "5", -324, false).to_str(), pow2(-1074).to_str());
+}
+
+test "subnormal rounds ONCE on the grain: the (tie, tie+g/4) window" {
+  // 11125369292536010e-324 lies a fraction of a grain above the
+  // half-grain tie 2251799813685248.5·g, so the nearest double is
+  // 2251799813685249·g (bit pattern 0x0008000000000001) — measured
+  // against CPython float() in the first-wave differential. The old
+  // two-step path (round to 53 bits, then re-round to the grain in
+  // assemble) landed on the tie and rounded to even —
+  // 0x0008000000000000 — one grain low. The pin compares against the
+  // exact construction n·g, so it fixes the u64 bit pattern. The
+  // sticky variant rides the same pin: the first-wave probe bounds
+  // the value within a quarter grain of the tie, so any dropped-digit
+  // tail (≤ +0.2024·g per added unit in the 18th place) still lands
+  // below the next tie at 2251799813685249.5·g.
+  let want: f64 = (2251799813685249 as f64) * pow2(-1074);
+  assert_eq(from_decimal(false, "11125369292536010", -324, false), want);
+  assert_eq(from_decimal(false, "11125369292536010", -324, true), want);
+}
+
+test "subnormal grain neighbors on the same single-rounding path" {
+  // hand-checked positions (value/g = 2^751/5^323 ≈ 2.024 and
+  // 2^752/5^322 ≈ 20.24 — both far from any half-grain tie):
+  // 1e-323 → 2·g, 1e-322 → 20·g
+  assert_eq(from_decimal(false, "1", -323, false), pow2(-1073));
+  assert_eq(from_decimal(false, "1", -322, false), (20 as f64) * pow2(-1074));
+  // the scanner's sticky rides the subnormal decision but must not
+  // overshoot: 5.0000000000000000001e-324 sits at value/g ≈ 1.01203,
+  // a whole grain above 1·g and half a grain below the 1.5 tie
+  assert_eq(from_decimal(false, "50000000000000000001", -344, true), pow2(-1074));
+}

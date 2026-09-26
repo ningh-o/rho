@@ -1,0 +1,68 @@
+// json_roundtrip_test.rho — the roundtrip gold standard: parse → write
+// reproduces the pinned text byte-for-byte in both layouts, and
+// write∘parse∘write is a fixpoint.
+// spec: TODO T4.5 + design §14 + RFC 8259
+// out: {"n":null,"t":true,"f":false,"i":42.0,"r":2.5,"s":"hi","a":[],"o":{}}
+// out: {
+// out:   "n": null,
+// out:   "a": [
+// out:     1.0,
+// out:     {
+// out:       "b": [
+// out:         2.0
+// out:       ]
+// out:     }
+// out:   ]
+// out: }
+// out: true
+// out: {"b":1.0,"a":2.0,"c":3.0}
+// out: {"a":1.0,"a":2.0}
+//
+use std.json;
+
+fn rt(text: string) -> string {
+  let r = json.parse(text);
+  let s = match r {
+    Result.Ok(v) => {
+      let t = json.to_string_compact(v);
+      let s = match t {
+        Result.Ok(s) => s,
+        Result.Err(e) => "WERR " + e.msg,
+      };
+      s
+    }
+    Result.Err(e) => "ERR " + e.msg,
+  };
+  return s;
+}
+
+fn rt_in(text: string) -> string {
+  let r = json.parse(text);
+  let s = match r {
+    Result.Ok(v) => {
+      let t = json.to_string_indented(v);
+      let s = match t {
+        Result.Ok(s) => s,
+        Result.Err(e) => "WERR " + e.msg,
+      };
+      s
+    }
+    Result.Err(e) => "ERR " + e.msg,
+  };
+  return s;
+}
+
+fn main() -> i32 {
+  // compact golden: the exact bytes the writer must produce
+  printf("{}\n", rt("{\"n\":null,\"t\":true,\"f\":false,\"i\":42,\"r\":2.5,\"s\":\"hi\",\"a\":[],\"o\":{}}"));
+  // indented golden: two-space indent, ": " after keys, empties stay {}
+  printf("{}\n", rt_in("{\"n\":null,\"a\":[1,{\"b\":[2]}]}"));
+  // fixpoint: reparsing the writer's text reproduces it exactly
+  let once: string = rt("{\"k\":[1,2.5,true,null,\"x\"],\"m\":{}}");
+  printf("{}\n", (rt(once) == once));
+  // document order survives the roundtrip
+  printf("{}\n", rt("{\"b\":1,\"a\":2,\"c\":3}"));
+  // duplicates are kept, in order (RFC 8259 §4: names SHOULD be unique)
+  printf("{}\n", rt("{\"a\":1,\"a\":2}"));
+  return 0;
+}

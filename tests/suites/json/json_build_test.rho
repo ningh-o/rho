@@ -1,0 +1,38 @@
+// json_build_test.rho — programmatic construction through the facade:
+// the helpers build trees, slice literals of boxed members stage
+// field-wise, and the writer refuses a NaN member (spec: TODO T4.5 +
+// design §14).
+// out: {"a":[1.5,null],"t":true}
+// out: true
+// out: true
+// spec: TODO T4.5 + design §14
+use std.json;
+
+fn main() -> i32 {
+  // objects build through the incremental builder: push order is
+  // the document order the writer emits
+  let mut b = json.obj_new();
+  json.obj_push(mut b, "a", json.arr([json.number(1.5), json.nul()]));
+  json.obj_push(mut b, "t", json.boolean(true));
+  let tree = json.obj_take(b);
+  let w = json.to_string_compact(tree);
+  printf("{}\n", match w {
+    Result.Ok(s) => s,
+    Result.Err(e) => "ERR " + e.msg,
+  });
+  // str values escape on the way out
+  let s = json.str("tab\there");
+  let w2 = json.to_string_compact(s);
+  printf("{}\n", match w2 {
+    Result.Ok(s) => s == "\"tab\\there\"",
+    Result.Err(_) => false,
+  });
+  // a NaN member refuses through the whole tree
+  let bad = json.arr([json.number(1.0), json.number(0.0 / 0.0)]);
+  let w3 = json.to_string_compact(bad);
+  printf("{}\n", match w3 {
+    Result.Ok(_) => false,
+    Result.Err(_) => true,
+  });
+  return 0;
+}
