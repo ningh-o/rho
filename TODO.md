@@ -622,6 +622,16 @@ section — no placeholder stages. boot is the reference compiler.
       from the anchors, and a rule whose test does not exist is a rule
       not implemented. Multi-file cases (packages, facades) are
       directories with a `main.rho` entry carrying the same headers.
+      FIELD-INIT EXACTNESS (2026-09-27, found while building
+      self-chain repros): a field initializer never compared its
+      value's type against the field's — `val: new S{...}` into a
+      `?*S` field parked the raw pointer and a match over the field
+      read the box header as a tag (neither arm ran; let/param/
+      element stores all refused the same shape — the field init was
+      the one silent hole). The face is now exact like a let's
+      annotation, with the value-struct boxed copy law (T
+      f: *new U{...}) the one legal widening; two check fixtures pin
+      the refusal and the explicit-Some behavior.
       VALUE-STRUCT FACE (closed 2026-09-26 by probe + fix): the
       grammar-audit round found nested value-struct construction
       failing to emit — the FIELDINIT staging stuffed the

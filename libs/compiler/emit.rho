@@ -793,6 +793,63 @@ fn emit_arg(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
   if e.tag == parse.EX_ARR {
     return emit_array(mut pool, e, mut env, mut prog, mut nl);
   }
+  if e.tag == parse.EX_MAKE {
+    // a fresh make rides its pair straight into the param's slots —
+    // count in $t, zeroed alloc sized by the element width (string
+    // and dyn elements ride 16-byte pairs, a struct its slot block),
+    // the shared None box fills a ?T element; the bare node used to
+    // fall through emit_expr into the BIN template and render as a
+    // lone (i64.add) — make's op is 0, the add opcode
+    let mut cnt0: *Expr = parse.lit(0);
+    if len(e.args) > 0 {
+      cnt0 = e.args[0];
+    }
+    let optelem: bool = len(e.name) >= 1 &&
+        (e.name[0] == 63 || e.name[0] == 79);
+    let stelem: i64 = st_index(mut prog, e.name);
+    let mut esz: i64 = 1;
+    if stelem >= 0 {
+      esz = st_nslots(mut prog, stelem);
+    } else {
+      if e.name == "string" || is_dyn_type(e.name) {
+        esz = 2;
+      }
+    }
+    let aslot: i64 = nl.v;
+    nl.v = nl.v + 1;
+    let mut out: string = emit_expr(mut pool, cnt0, mut env, mut prog,
+                                    mut nl);
+    out = out + "    (local.set $t)\n";
+    if esz != 1 {
+      out = out + "    (i64.extend_i32_u (call $w_alloc " +
+          "(i32.wrap_i64 (i64.mul (local.get $t) (i64.const " +
+          esz.to_str() + ")))))\n";
+    } else {
+      out = out + "    (i64.extend_i32_u (call $w_alloc " +
+          "(i32.wrap_i64 (local.get $t))))\n";
+    }
+    out = out + "    (local.set " + aslot.to_str() + ")\n";
+    if optelem {
+      let fi: i64 = nl.v;
+      nl.v = nl.v + 1;
+      out = out + "    (i64.const 0)\n";
+      out = out + "    (local.set " + fi.to_str() + ")\n";
+      out = out + "    (loop $ma" + fi.to_str() + "\n";
+      out = out + "    (if (i64.lt_u (local.get " + fi.to_str() +
+          ") (local.get $t))\n";
+      out = out + "      (then (i64.store (i32.add (i32.wrap_i64 " +
+          "(local.get " + aslot.to_str() + "))\n";
+      out = out + "                     (i32.mul (i32.wrap_i64 " +
+          "(local.get " + fi.to_str() + ")) (i32.const 8)))\n";
+      out = out + "                     (global.get $w_none_box))\n";
+      out = out + "            (local.set " + fi.to_str() +
+          " (i64.add (local.get " + fi.to_str() + ") (i64.const 1)))\n";
+      out = out + "            (br $ma" + fi.to_str() + "))))\n";
+    }
+    out = out + "    (local.get " + aslot.to_str() + ")\n";
+    out = out + "    (local.get $t)\n";
+    return out;
+  }
   if e.tag == parse.EX_VAR && env_kind_of(env, e.name) < 0 &&
       env_look(env, e.name) < 0 && !name_is_const(prog, e.name) &&
       len(static_global(prog, e.name)) == 0 &&
@@ -3365,6 +3422,18 @@ fn optpt_of_scrutinee(sc: *Expr, mut env: *Env, mut prog: *Prog) -> string {
     }
     return "";
   }
+  if sc.tag == parse.EX_CALL {
+    // a call scrutinee: the declared return's payload text drives the
+    // binder's lane (?string binds its pair, ?*T the pointer lane)
+    let rt: string = call_fn_rtype(prog, sc, env);
+    if rt == "?string" {
+      return "string";
+    }
+    if len(rt) >= 2 && rt[0] == 63 && rt[1] == 42 {
+      return rt[2..len(rt)];
+    }
+    return "";
+  }
   return "";
 }
 
@@ -3443,20 +3512,19 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
       return "    (local.get " + env_str_len_slot(env, a0.name).to_str() +
              ")\n";
     }
-    // len(f(...)): a call returning a pair pushes (addr, len) —
-    // park the pair, read the length back
+    // len(f(...)): a call returning a pair parks (addr, len) — read
+    // the length back. The pair must come from build_string_pair:
+    // emit_expr collapses a pair-returning call onto its address lane
+    // (the sret branch below), which stranded this template's second
+    // pop on an empty stack.
     if a0.tag == parse.EX_CALL {
       let rt5: string = call_fn_rtype(prog, a0, env);
       if rtype_is_pair(rt5) && !is_fn_type(rt5) {
-        let la: i64 = nl.v;
-        let ll: i64 = nl.v + 1;
-        nl.v = nl.v + 2;
-        let mut out5: string = emit_expr(mut pool, a0, mut env,
-                                         mut prog, mut nl);
-        out5 = out5 + "    (local.set " + ll.to_str() + ")\n" +
-               "    (local.set " + la.to_str() + ")\n" +
-               "    (local.get " + ll.to_str() + ")\n";
-        return out5;
+        let sp5 = build_string_pair(a0, mut pool, mut env, mut prog,
+                                    mut nl);
+        if sp5.ok {
+          return sp5.text + "    (local.get " + sp5.l.to_str() + ")\n";
+        }
       }
     }
     // len(xs[i]): an element of a slice-of-slices rides the pair at
@@ -5748,7 +5816,11 @@ fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
       nl.v = nl.v + 2;
       return sp0;
     }
-    if kind == 1 {
+    if kind == 1 || kind == 2 {
+      // a runtime pair binding — string (kind 1) or slice (kind 2):
+      // the addr/len ride consecutive local slots read in place (a
+      // plain `return xs` / `f(xs)` over a slice binding parked one
+      // slot and fell into the single-value return template)
       let ba: i64 = env_str_look(env, e.name);
       let addr_slot: i64 = (0 - ba) - 1;
       let sp = new SPair { ok: true, text:
@@ -9611,8 +9683,12 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
       match st.val {
         Option.Some(e) => {
           let skind: i64 = env_kind_of(env, st.name);
-          if skind == 1 {
-            // a runtime-string rebind writes the existing pair slots
+          if skind == 1 || skind == 2 {
+            // a runtime-pair rebind (string kind 1, slice kind 2)
+            // writes the existing pair slots in place — readers after
+            // the rebind see the new value (a slice rebind that fell
+            // to the scalar lane pushed the address alone and left it
+            // stranded on the branch stack)
             let sp = build_string_pair(e, mut pool, mut env, mut prog,mut 
                                        nl);
             if sp.ok {
@@ -9629,6 +9705,7 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
               body = body + ")\n";
             } else {
               body = body + emit_expr(mut pool, e, mut env, mut prog, mut nl);
+              body = body + "    drop\n";
             }
           } else {
           if skind == 3 &&
