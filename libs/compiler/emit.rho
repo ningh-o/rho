@@ -3365,6 +3365,44 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
       },
       Option.None => {},
     }
+    // a slice operand: the pair's length slot rides the binding
+    // (kind 2) — len(toks), len(args), the self-compile's own bread
+    // and butter; the old fall-through called an undefined $u_len
+    if a0.tag == parse.EX_VAR && env_kind_of(env, a0.name) == 2 {
+      return "    (local.get " + env_str_len_slot(env, a0.name).to_str() +
+             ")\n";
+    }
+    // len(p.field): a slice-typed struct field rides the pair
+    // (addr, len) at consecutive slots — the len load is the read
+    if a0.tag == parse.EX_FIELD && a0.lhs != Option.None {
+      let mut base: *Expr = parse.lit(0);
+      match a0.lhs {
+        Option.Some(b4) => {
+          base = b4;
+        },
+        Option.None => {},
+      }
+      let bt4: string = field_base_type(base, env, mut prog);
+      if len(bt4) > 0 {
+        let si4: i64 = st_index(mut prog, bt4);
+        let fi4: i64 = st_field_index(prog, si4, a0.name);
+        if fi4 >= 0 {
+          let fty4: string = prog.structs[si4 as usize].types[fi4 as usize];
+          if len(fty4) >= 2 && fty4[0] == 91 && fty4[1] == 93 {
+            let foff4: i64 = st_field_off(mut prog, si4, fi4);
+            let bslot4: i64 = nl.v;
+            nl.v = nl.v + 1;
+            let mut out4: string = emit_expr(mut pool, base, mut env,
+                                             mut prog, mut nl);
+            out4 = out4 + "    (local.set " + bslot4.to_str() + ")\n" +
+                   "    (i64.load (i32.add (i32.wrap_i64 (local.get " +
+                   bslot4.to_str() + ")) (i32.const " +
+                   ((foff4 + 1) * 8).to_str() + ")))\n";
+            return out4;
+          }
+        }
+      }
+    }
     // len(base[a..b]): the view's length without building it — both
     // ends bounds-check against the base's length (the same panics
     // the view would raise), then the difference
