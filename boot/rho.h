@@ -99,7 +99,7 @@ typedef enum {
   K_MUT, K_NEW, K_NULL, K_PUB, K_RETURN, K_STATIC, K_STRUCT, K_TEST,
   K_TRAIT, K_TRUE, K_USE, K_WHILE,
   K_I8, K_I16, K_I32, K_I64, K_U8, K_U16, K_U32, K_U64, K_USIZE,
-  K_F32, K_F64, K_BOOL, K_STRING,
+  K_F32, K_F64, K_BOOL, K_STRING, K_SELF,
 } TokKind;
 
 const char *tok_spell(TokKind k);

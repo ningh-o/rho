@@ -325,6 +325,34 @@ static TraitDef *find_trait(Module *m, const char *name) {
 // trait satisfaction = name + signature match (§3.5), computed from
 // the method tables (native methods, the caller's own module, the use
 // closure — the same visibility as a method call)
+// §15: a trait sig's Self is the type being checked — it unifies
+// with whatever the satisfying method carries at that position, and
+// the unification looks through the type constructors (*Self vs *Pt)
+static bool self_unifies(Type *trait_side, Type *impl_side) {
+  if (!trait_side || !impl_side)
+    return false;
+  if (trait_side->kind == TY_PARAM &&
+      strcmp(trait_side->pname, "Self") == 0)
+    return true;
+  switch (trait_side->kind) {
+  case TY_PTR:
+  case TY_SLICE:
+  case TY_WEAK:
+    return self_unifies(trait_side->base, impl_side->base);
+  default:
+    break;
+  }
+  if (trait_side->kind == impl_side->kind) {
+    if (trait_side->args && impl_side->args &&
+        trait_side->nargs == impl_side->nargs) {
+      for (size_t i = 0; i < trait_side->nargs; i++)
+        if (self_unifies(trait_side->args[i], impl_side->args[i]))
+          return true;
+    }
+  }
+  return false;
+}
+
 static bool trait_satisfied(FnCtx *c, Type *t, TraitDef *td) {
   for (size_t i = 0; i < td->nsigs; i++) {
     const char *signame = NULL;
@@ -352,10 +380,10 @@ static bool trait_satisfied(FnCtx *c, Type *t, TraitDef *td) {
             ok = false;
           continue;
         }
-        if (!pa || !type_eq(pa, pb))
+        if (!pa || !(type_eq(pa, pb) || self_unifies(pb, pa)))
           ok = false;
       }
-      if (ok && !type_eq(a->ret, b->ret))
+      if (ok && !type_eq(a->ret, b->ret) && !self_unifies(b->ret, a->ret))
         ok = false;
       if (ok)
         hit = true;

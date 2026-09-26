@@ -420,6 +420,7 @@ static const struct { TokKind k; const char *s; } k_tok_names[] = {
     {K_U64, "'u64'"},          {K_USIZE, "'usize'"},
     {K_F32, "'f32'"},          {K_F64, "'f64'"},
     {K_BOOL, "'bool'"},        {K_STRING, "'string'"},
+    {K_SELF, "'Self'"},
 };
 
 const char *tok_spell(TokKind k) {

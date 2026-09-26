@@ -173,6 +173,20 @@ static NodeRef parse_type_inner(Parser *p) {
     node_get(r)->name = intern(t->text.p, t->text.n);
     return r;
   }
+  case K_SELF: {
+    // §15: Self names the trait's satisfying type (a trait decl) or
+    // the impl's target (an impl) — resolved by the checker per
+    // context; nowhere else
+    Token *t = eat(p);
+    NodeRef r = nnew(p, NT_APP);
+    Node *n = node_get(r);
+    n->file = t->file;
+    n->line = t->line;
+    n->col = t->col;
+    n->name = intern("Self", 4);
+    n->list = NULL;
+    return r;
+  }
   default:
     if (kind(p) >= K_I8 && kind(p) <= K_STRING)
       return parse_builtin(p);

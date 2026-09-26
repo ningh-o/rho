@@ -1172,6 +1172,43 @@ static Type *resolve_type(Module *m, NodeRef tr, GScope *g) {
 
 // ============================================================ collection
 
+// replace every Self leaf (NT_APP named Self, no type args) in a
+// type tree with a fresh clone of the impl's target type node
+static void rewrite_self(NodeRef *slot, NodeRef target) {
+  NodeRef r = *slot;
+  if (r == NO_REF)
+    return;
+  Node *n = node_get(r);
+  switch (n->kind) {
+  case NT_APP:
+    if (n->list == NULL && strcmp(n->name, "Self") == 0) {
+      extern NodeRef clone_node_tree(NodeRef r);
+      *slot = clone_node_tree(target);
+      return;
+    }
+    for (size_t i = 0; n->list && i < reflist_len(n->list); i++) {
+      NodeRef *arg = &n->list->items[i];
+      rewrite_self(arg, target);
+    }
+    return;
+  case NT_PTR:
+  case NT_OPT:
+  case NT_SLICE:
+    rewrite_self(&n->a, target);
+    return;
+  case NT_FNTYPE:
+    for (size_t i = 0; n->list && i < reflist_len(n->list); i++) {
+      NodeRef *arg = &n->list->items[i];
+      rewrite_self(arg, target);
+    }
+    if (n->a != NO_REF)
+      rewrite_self(&n->a, target);
+    return;
+  default:
+    return;
+  }
+}
+
 static void collect_module(Program *p, Module *m) {
   (void)p;
   m->syms = arena_alloc(g_arena, sizeof(SymTab), 8);
@@ -1325,6 +1362,12 @@ static void collect_module(Program *p, Module *m) {
       Sym *s = symtab_get(m->syms, d->name);
       TraitDef *td = s->u.tdef;
       GScope g = {0};
+      // §15: inside the trait's signatures Self names the type that
+      // will satisfy it — a type parameter in its own right
+      static const char *self_names[1];
+      self_names[0] = "Self";
+      GScope gs = {.names = self_names, .n = 1, .up = NULL};
+      g = gs;
       td->nsigs = reflist_len(d->list);
       td->sigs =
           arena_alloc(g_arena, (td->nsigs ? td->nsigs : 1) * sizeof(FnSig), 8);
@@ -1424,6 +1467,17 @@ static void collect_fns(Program *p, Module *m) {
           continue;
         f->op = 1; // a method decl from here on
         f->name2 = tn;
+        // §15: Self in an impl member's signature IS the target —
+        // rewrite the type nodes to the impl's target before the sig
+        // resolves (the trait's own sigs keep Self as a parameter and
+        // unify at satisfaction time)
+        for (size_t q = 0; q < reflist_len(f->list); q++) {
+          Node *pp = node_get(reflist_at(f->list, q));
+          if (pp->a != NO_REF)
+            rewrite_self(&pp->a, d->b);
+        }
+        if (f->c != NO_REF)
+          rewrite_self(&f->c, d->b);
         collect_one_fn(p, m, fr);
       }
       continue;

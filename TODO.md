@@ -764,7 +764,18 @@ section — no placeholder stages. boot is the reference compiler.
       0 pending — no expected-fail ledger left in the suites.
 - [ ] **T3.12** The operator traits — Eq, Ord, Hash (opened
       2026-09-26; design §11 amended, docs landed in the same wave).
-      The full law is design §11 + type-system.md §15; the two parked
+      ENTRY POINTS SURVEYED (2026-09-27, pre-work): boot's keyword
+      table is boot/lex.c k_keywords + the TokKind enum in rho.h
+      (add K_SELF AFTER K_STRING — the K_I8..K_STRING builtin range
+      check in parse_type_inner must stay intact); parse_type_inner's
+      default arm (boot/parse.c ~line 1280) takes T_IDENT to a named
+      type — a `case K_SELF:` there yields the "Self" name; the
+      impl-registration pass is boot/check.c:1415 (impl members
+      become methods via f->name2 = target name) — the Self
+      substitution belongs where an impl member's signature types
+      resolve, aliasing "Self" to the impl's target (and to the
+      trait's placeholder inside trait sigs); trait decl parsing is
+      boot/parse.c:1477. The full law is design §11 + type-system.md §15; the two parked
       rulings also ruled here: a float literal that rounds to ±inf or
       (from a nonzero literal) to zero is out of range — a compile
       error, never a silent inf (type-system.md §1's fit law, now
@@ -1051,6 +1062,20 @@ operator overloading with one shape, no magic:
   only; there is no lexicographic auto-derive. `a < b` calls `lt`; the
   other three derive: `a <= b` = `!(b < a)`, `a > b` = `b < a`,
   `a >= b` = `!(a < b)`. One method, one meaning.
+  **Self LANDED (2026-09-27, step 1 of the construction order)**:
+  boot lexes `Self` (K_SELF after K_STRING — the builtin range check
+  in parse_type_inner stays intact), parse_type_inner yields the
+  named type, trait sigs resolve Self as a type parameter of their
+  own scope, impl members REWRITE Self to the impl's target before
+  their signatures resolve (check.c's impl collection), and
+  trait_satisfied unifies Self structurally (through * / slice /
+  args — `*Self` vs `*Pt`). Self anywhere else is an unknown type.
+  Two lang fixtures pin both directions; the suites and the corpus
+  differential hold. REMAINING: the prelude Eq/Ord/Hash traits
+  themselves, the six operators resolving through them (`==` on
+  user types refuses without `impl Eq`, direct emission for
+  builtins, the never-list), the Hash default (FNV-1a over the §11
+  slot law), and the mirror side.
 - `trait Hash { fn hash(self) -> u64 }` — the default folds the same
   values the `==` law compares, FNV-1a 64-bit over the slots in
   declaration order (string = content bytes; `*T` = the 32-bit

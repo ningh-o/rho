@@ -1,0 +1,9 @@
+// spec: type-system §15 — Self outside trait/impl contexts is an
+// unknown type
+// expect: unknown type 'Self'
+fn bad(p: Self) -> i32 {
+  return 0;
+}
+fn main() -> i32 {
+  return bad(1);
+}

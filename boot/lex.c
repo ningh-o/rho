@@ -25,7 +25,7 @@ static const struct { const char *spell; TokKind kind; } k_keywords[] = {
     {"new", K_NEW},       {"null", K_NULL},     {"pub", K_PUB},
     {"return", K_RETURN}, {"static", K_STATIC}, {"struct", K_STRUCT},
     {"test", K_TEST},     {"trait", K_TRAIT},   {"true", K_TRUE},
-    {"use", K_USE},
+    {"use", K_USE},       {"Self", K_SELF},
     {"while", K_WHILE},
     {"i8", K_I8},         {"i16", K_I16},       {"i32", K_I32},
     {"i64", K_I64},       {"u8", K_U8},         {"u16", K_U16},

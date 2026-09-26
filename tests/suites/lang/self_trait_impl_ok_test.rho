@@ -1,0 +1,22 @@
+// spec: type-system §15 — Self names the satisfying type inside a
+// trait declaration and the impl's target inside an impl; nowhere else
+// out: equal
+trait Eq {
+  fn eq(self, other: *Self) -> bool,
+}
+struct Pt { x: i32, y: i32 }
+impl Eq for Pt {
+  fn eq(self, other: *Self) -> bool {
+    return self.x == other.x && self.y == other.y;
+  }
+}
+fn main() -> i32 {
+  let a = new Pt { x: 1, y: 2 };
+  let b = new Pt { x: 1, y: 2 };
+  if a.eq(b) {
+    printf("equal\n");
+  } else {
+    printf("differ\n");
+  }
+  return 0;
+}
