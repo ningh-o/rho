@@ -247,8 +247,16 @@ static void lex_number(Lexer *lx) {
   const char *start = lx->src + lx->pos;
   size_t n0 = lx->pos;
 
-  // hex / bin
+  // hex / bin — the grammar spells the prefixes lowercase (0x, 0b);
+  // the capital spellings refuse (syntax.md §2)
   if (peek(lx) == '0' && (peek2(lx) == 'x' || peek2(lx) == 'X')) {
+    if (peek2(lx) == 'X') {
+      diag_at(DIAG_ERROR, lx->path, line, col,
+              "hex literals spell the prefix lowercase (0x)");
+      while (isxdigit((unsigned char)peek(lx)) || peek(lx) == '_')
+        advance(lx);
+      return;
+    }
     advance(lx);
     advance(lx);
     size_t digits = 0;
@@ -281,7 +289,7 @@ static void lex_number(Lexer *lx) {
     t->i = v;
     return;
   }
-  if (peek(lx) == '0' && (peek2(lx) == 'b' || peek2(lx) == 'B')) {
+  if (peek(lx) == '0' && peek2(lx) == 'b') {
     advance(lx);
     advance(lx);
     size_t digits = 0;

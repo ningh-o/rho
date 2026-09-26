@@ -1,8 +1,8 @@
-// pending: gap/stray-semicolon
 // expect: gap_stray_top_semi_test.rho:8:
 // spec: syntax.md §4 — a module is a sequence of declarations; the empty declaration is not in the grammar, yet boot accepts stray ';' between decls.
 // The pin names this file at the marked line: any
 // diagnostic reported there satisfies the refusal,
 // whatever its future wording.
 //
+// (promoted 2026-09-27: the stray semicolon now refuses)
 ;

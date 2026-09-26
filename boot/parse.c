@@ -755,7 +755,14 @@ static NodeRef parse_postfix(Parser *p) {
           }
           if (!accept(p, T_COMMA))
             break;
-          if (is(p, T_RBRACE) || is(p, T_RBRACK) || is(p, T_RPAREN))
+          if (is(p, T_RPAREN)) {
+            // syntax: the trailing-comma grants cover declarations,
+            // not call arguments — f(1,) refuses
+            diag_at(DIAG_ERROR, p->m->path, cur(p)->line, cur(p)->col,
+                    "call arguments carry no trailing comma");
+            break;
+          }
+          if (is(p, T_RBRACE) || is(p, T_RBRACK))
             break;
         }
       }
@@ -793,7 +800,12 @@ static NodeRef parse_postfix(Parser *p) {
             }
             if (!accept(p, T_COMMA))
               break;
-            if (is(p, T_RBRACE) || is(p, T_RBRACK) || is(p, T_RPAREN))
+            if (is(p, T_RPAREN)) {
+              diag_at(DIAG_ERROR, p->m->path, cur(p)->line, cur(p)->col,
+                      "call arguments carry no trailing comma");
+              break;
+            }
+            if (is(p, T_RBRACE) || is(p, T_RBRACK))
               break;
           }
         }
@@ -1706,8 +1718,8 @@ Module *module_parse_src(const char *path, const char *src) {
 
   Parser p = {m, 0, 0, 0};
   while (!is(&p, T_EOF)) {
-    if (accept(&p, T_SEMI))
-      continue; // stray semicolons between decls
+    // syntax §4: a module is declarations only — the empty
+    // declaration is not in the grammar, a stray ';' refuses
     NodeRef d = parse_decl(&p);
     stamp_end(&p, d);
     if (node_get(d)->kind != NT_EXPRSTMT || node_get(d)->list)
