@@ -606,6 +606,45 @@ static void truncate_after(FnCx *cx, Type *t, size_t v) {
 
 // signedness-aware division with the panic catalog (MIN/-1 = MIN, /0 %0
 // panic per spec §4)
+// the compound-assignment op over two scalar slot runs: res =
+// oldv opk rhs (width-masked, truncated); false when the op has no
+// scalar form. Shared by the local, field, and index store paths.
+static void emit_div(FnCx *cx, int opkind, Type *t, size_t out,
+                     size_t a, size_t b);
+
+static bool emit_compound_op(FnCx *cx, Type *t, int opk, size_t res,
+                             size_t oldv, size_t rhs) {
+  const char *w = scalar_wty(t) == W_I64 ? "i64" : "i32";
+  bool uns = t->kind >= TY_U8;
+  const char *instr = NULL;
+  switch (opk) {
+  case OP_ADD: instr = "add"; break;
+  case OP_SUB: instr = "sub"; break;
+  case OP_MUL: instr = "mul"; break;
+  case OP_BAND: instr = "and"; break;
+  case OP_BOR: instr = "or"; break;
+  case OP_BXOR: instr = "xor"; break;
+  default: break;
+  }
+  if (instr) {
+    op(cx, "(local.set %zu (%s.%s (local.get %zu) (local.get %zu)))\n",
+       res, w, instr, oldv, rhs);
+  } else if (opk == OP_DIV || opk == OP_MOD) {
+    emit_div(cx, opk, t, res, oldv, rhs);
+  } else if (opk == OP_SHL || opk == OP_SHR) {
+    // shifts mask by the storage width (spec §4)
+    int bits = scalar_wty(t) == W_I64 ? 64 : 32;
+    op(cx, "(local.set %zu (%s.%s (local.get %zu) (%s.and "
+           "(local.get %zu) (%s.const %d))))\n",
+       res, w, opk == OP_SHL ? "shl" : (uns ? "shr_u" : "shr_s"), oldv,
+       w, rhs, w, bits - 1);
+  } else {
+    return false;
+  }
+  truncate_after(cx, t, res);
+  return true;
+}
+
 __attribute__((unused)) static void emit_div(FnCx *cx, int opkind, Type *t, size_t out, size_t a,
                      size_t b) {
   if (type_is_float(t)) {
@@ -3326,26 +3365,12 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
           // compound: load old, op, store
           size_t oldv = cx_fresh(cx, ft);
           size_t nv = cx_fresh(cx, ft);
-          const char *w = scalar_wty(ft) == W_I64 ? "i64" : "i32";
-          const char *instr = NULL;
-          switch (s->op) {
-          case OP_ADD: instr = "add"; break;
-          case OP_SUB: instr = "sub"; break;
-          case OP_MUL: instr = "mul"; break;
-          case OP_BAND: instr = "and"; break;
-          case OP_BOR: instr = "or"; break;
-          case OP_BXOR: instr = "xor"; break;
-          default: break;
-          }
           const char *ld = scalar_wty(ft) == W_I64 ? "i64.load" : "i32.load";
           const char *strop = scalar_wty(ft) == W_I64 ? "i64.store"
                                                        : "i32.store";
           op(cx, "(local.set %zu (%s (i32.add (local.get %zu) "
                  "(i32.const %zu))))\n", oldv, ld, p, off);
-          if (instr) {
-            op(cx, "(local.set %zu (%s.%s (local.get %zu) "
-                   "(local.get %zu)))\n", nv, w, instr, oldv, rhs);
-            truncate_after(cx, ft, nv);
+          if (emit_compound_op(cx, ft, s->op, nv, oldv, rhs)) {
             op(cx, "(%s (i32.add (local.get %zu) (i32.const %zu)) "
                    "(local.get %zu))\n", strop, p, off, nv);
             return;
@@ -3391,6 +3416,21 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
                "(i32.const %zu))))\n", addr,
            L(cx, b + (bt->kind == TY_SLICE ? 1 : 0)), i, esz);
       size_t nl = shape_nlocals(el);
+      if (s->op != OP_NONE && nl == 1) {
+        // compound: load old, op, store (scalar elements only — the
+        // check side rejects compound on aggregates)
+        size_t oldv = cx_fresh(cx, el);
+        size_t nv = cx_fresh(cx, el);
+        const char *ld = scalar_wty(el) == W_I64 ? "i64.load" : "i32.load";
+        const char *strop = scalar_wty(el) == W_I64 ? "i64.store"
+                                                    : "i32.store";
+        op(cx, "(local.set %zu (%s (local.get %zu)))\n", oldv, ld, addr);
+        if (emit_compound_op(cx, el, s->op, nv, oldv, rhs)) {
+          op(cx, "(%s (local.get %zu) (local.get %zu))\n", strop, addr,
+             nv);
+          return;
+        }
+      }
       for (size_t k = 0; k < nl; k++) {
         WTy w = local_wty(el, k);
         const char *strop2 = w == W_I64   ? "i64.store"
@@ -3502,49 +3542,12 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
       if (s->op != OP_NONE) {
         // compound: op(old, rhs) into a fresh result
         size_t res = cx_fresh(cx, lt);
-        const char *w = scalar_wty(lt) == W_I64 ? "i64" : "i32";
-        const char *instr = NULL;
-        bool uns = lt->kind >= TY_U8;
-        switch (s->op) {
-        case OP_ADD: instr = "add"; break;
-        case OP_SUB: instr = "sub"; break;
-        case OP_MUL: instr = "mul"; break;
-        case OP_BAND: instr = "and"; break;
-        case OP_BOR: instr = "or"; break;
-        case OP_BXOR: instr = "xor"; break;
-        default: break;
-        }
-        if (instr) {
-          op(cx, "(local.set %zu (%s.%s (local.get %zu) (local.get %zu)))\n",
-             res, w, instr, v->vreg, rhs);
-          truncate_after(cx, lt, res);
+        if (emit_compound_op(cx, lt, s->op, res, v->vreg, rhs)) {
           size_t n = shape_nlocals(lt);
           for (size_t i = 0; i < n; i++)
             op(cx, "(local.set %zu %s)\n", v->vreg + i, L(cx, res + i));
           return;
         }
-        if (s->op == OP_DIV || s->op == OP_MOD) {
-          emit_div(cx, s->op, lt, res, v->vreg, rhs);
-          truncate_after(cx, lt, res);
-          size_t n = shape_nlocals(lt);
-          for (size_t i = 0; i < n; i++)
-            op(cx, "(local.set %zu %s)\n", v->vreg + i, L(cx, res + i));
-          return;
-        }
-        // shifts mask by the storage width (spec §4)
-        int bits = scalar_wty(lt) == W_I64 ? 64 : 32;
-        if (scalar_wty(lt) == W_I64)
-          op(cx, "(local.set %zu (i64.%s (local.get %zu) (i64.and "
-                 "(local.get %zu) (i64.const %d))))\n", res,
-             s->op == OP_SHL ? "shl" : (uns ? "shr_u" : "shr_s"), v->vreg,
-             rhs, bits - 1);
-        else
-          op(cx, "(local.set %zu (i32.%s (local.get %zu) (i32.and "
-                 "(local.get %zu) (i32.const %d))))\n", res,
-             s->op == OP_SHL ? "shl" : (uns ? "shr_u" : "shr_s"), v->vreg,
-             rhs, bits - 1);
-        truncate_after(cx, lt, res);
-        op(cx, "(local.set %zu (local.get %zu))\n", v->vreg, res);
         return;
       }
       size_t n = shape_nlocals(lt);

@@ -1,0 +1,18 @@
+// out: rx=14
+// exit: 0
+// spec: TODO.md §18
+// Compound assignment is a store: `r.x += 4` through a `mut` binding
+// loads, adds, and stores — accepted, and the result is observable.
+// (The refused half — the same store through a non-mut binding — is
+// pinned by pending_mut_compound_test and
+// mv_compound_view_refused.)
+struct P {
+  x: i32,
+  y: i32,
+}
+fn main() -> i32 {
+  let mut r = new P { x: 10, y: 20 };
+  r.x += 4;
+  printf("rx={}\n", r.x);
+  return 0;
+}

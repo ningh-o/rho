@@ -1,0 +1,28 @@
+// out: bumped=2
+// out: x=2
+// exit: 0
+// spec: TODO.md §18
+// Match pattern binders are non-mut bindings (TODO.md §18): a handle
+// bound by a match arm cannot be passed to a mut view parameter
+// directly — the rebind idiom applies. `let mut h = n;` governs the
+// copy by its own `mut`, so `f(mut h)` is accepted and the callee's
+// store is visible through the original handle.
+struct P {
+  x: i32,
+  y: i32,
+}
+fn bump(mut p: *P) -> i32 {
+  p.x = p.x + 1;
+  return p.x;
+}
+fn main() -> i32 {
+  let p = new P { x: 1, y: 2 };
+  let n: *P = match Option.Some(p) {
+    Option.Some(h) => h,
+    Option.None => p,
+  };
+  let mut h = n;
+  printf("bumped={}\n", bump(mut h));
+  printf("x={}\n", p.x);
+  return 0;
+}

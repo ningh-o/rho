@@ -1,0 +1,13 @@
+// expect: 's' is immutable
+// spec: TODO.md §18
+// Compound assignment through a slice element is a store like any
+// other: `s[0] += 5` on a binding declared without `mut` writes
+// through a read-only view and is refused at check time — the
+// compound form gates on the root binding exactly as a plain `=`
+// store does (pending_mut_compound pins the field-lvalue half).
+fn main() -> i32 {
+  let s: []i32 = [1, 2, 3];
+  s[0] += 5;
+  printf("s0={}\n", s[0]);
+  return 0;
+}

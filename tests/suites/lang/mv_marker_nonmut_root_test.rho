@@ -1,0 +1,14 @@
+// expect: needs a mut root binding
+// spec: TODO.md §18
+// A marked argument's own root binding must be `mut`: handing a
+// write-through view out of a read-only binding would let the callee
+// store through a view the caller itself cannot store through. The
+// escape hatch is the rebind idiom (`let mut b = a`), not the marker.
+fn push(mut xs: []i32, v: i32) {
+  xs[0] = v;
+}
+fn main() -> i32 {
+  let a: []i32 = [1, 2, 3];
+  push(mut a, 42);
+  return 0;
+}

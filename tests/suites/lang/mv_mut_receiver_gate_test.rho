@@ -1,0 +1,19 @@
+// expect: cannot call mut method
+// spec: TODO.md §18
+// Mut-receiver method calls gate on the root binding: `fn P.set(mut
+// self, ...)` called on a binding declared without `mut` is refused
+// at check time — the receiver would be a write-through view handed
+// out of a read-only binding.
+struct P {
+  x: i32,
+  y: i32,
+}
+fn P.set(mut self, v: i32) {
+  self.x = v;
+}
+fn main() -> i32 {
+  let p = new P { x: 1, y: 2 };
+  p.set(7);
+  printf("x={}\n", p.x);
+  return 0;
+}

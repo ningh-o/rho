@@ -1,0 +1,20 @@
+// expect: 'self' is immutable
+// spec: TODO.md §18
+// A non-mut receiver is a read-only view of the pointee: a dotted
+// method declaring bare `self` (the value form) cannot store through
+// it — a field store in its body is refused at check time exactly
+// like a store through any other non-mut binding. Writes require
+// `mut self`.
+struct P {
+  x: i32,
+  y: i32,
+}
+fn P.get(self) -> i32 {
+  self.x = 9;
+  return self.x;
+}
+fn main() -> i32 {
+  let p = new P { x: 1, y: 2 };
+  printf("{}\n", p.get());
+  return 0;
+}

@@ -1,0 +1,31 @@
+// expect: impl Peek for Counter: the type does not carry every trait method with a matching signature
+// expect: impl Bump for Counter: the type does not carry every trait method with a matching signature
+// spec: TODO.md §18
+// Trait satisfaction joins receiver mut-ness, in both directions: a
+// trait sig `fn peek(self)` is not satisfied by a `mut self` impl,
+// and a trait sig `fn bump(mut self)` is not satisfied by a `self`
+// impl — receiver mut-ness is part of the signature the impl must
+// carry, so each mismatched impl is refused at impl collection.
+struct Counter {
+  n: i64,
+}
+trait Peek {
+  fn peek(self) -> i64,
+}
+trait Bump {
+  fn bump(mut self) -> i64,
+}
+impl Peek for Counter {
+  fn peek(mut self) -> i64 {
+    self.n = self.n + 1;
+    return self.n;
+  }
+}
+impl Bump for Counter {
+  fn bump(self) -> i64 {
+    return self.n;
+  }
+}
+fn main() -> i32 {
+  return 0;
+}

@@ -1,0 +1,24 @@
+// out: 1
+// exit: 0
+// spec: TODO.md §18
+// The other half of the dual-`self` law: because sig_same joins
+// receiver mut-ness, the twins are distinct signatures and coexist
+// under one name — a non-mut binding matches only the value twin, so
+// the call resolves uniquely and reads without storing. (A call on a
+// `mut` binding matches both and is ambiguous —
+// mv_dual_self_ambiguity pins that half.)
+struct P {
+  x: i32,
+}
+fn P.f(self) -> i32 {
+  return self.x;
+}
+fn P.f(mut self) -> i32 {
+  self.x = 5;
+  return self.x;
+}
+fn main() -> i32 {
+  let p = new P { x: 1 };
+  printf("{}\n", p.f());
+  return 0;
+}
