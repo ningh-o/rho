@@ -1,0 +1,9 @@
+// expect: cannot infer generic parameter 'T' of f
+// spec: check — generics
+// an empty slice argument names no element type: T stays unbound
+fn f[T](xs: []T) -> i32 { return len(xs); }
+
+fn main() -> i32 {
+  let n = f([]);
+  return 0;
+}

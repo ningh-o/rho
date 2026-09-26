@@ -1,0 +1,8 @@
+// expect: expected a parameter, found
+// spec: syntax.md — declarations
+// a parameter list holds 'name: type' pairs; other tokens are refused
+fn f(1: i32) -> i32 { return 1; }
+
+fn main() -> i32 {
+  return 0;
+}

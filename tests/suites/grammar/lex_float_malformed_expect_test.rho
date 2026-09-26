@@ -1,0 +1,9 @@
+// expect: expected an expression, found '.'
+// spec: syntax.md §2.3
+// `.5` is not a float literal — a float needs digits before the dot
+// (and `1.` is `1` followed by a field access, which integers do not
+// have, also an error). Both malformed spellings are refused.
+fn main() -> i32 {
+  let v = .5;
+  return 0;
+}

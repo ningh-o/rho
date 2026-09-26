@@ -1,0 +1,25 @@
+// out: module binding: 11 / alias item: 11
+// out: brace use: 22 22
+// out: cross-module generic fn: 41 ring
+// out: cross-module type + native method: 8
+// exit: 0
+// spec: module-system.md §2, type-system.md §4, §6
+// `use` has one form with two bindings: a module (qualified access,
+// `helper.thing`) or a public ITEM (used unqualified, under its own
+// name or an `as` alias). The brace form is pure sugar expanding to
+// one plain use per item. Item imports carry generics (rep[T]) and
+// fns returning the module's types — whose NATIVE methods (declared
+// in the type's own module) travel with the type into any importer
+// (§6).
+use helper;
+use helper.thing as t;
+use helper.{num, num as n2};
+use helper.rep;
+use helper.make;
+fn main() -> i32 {
+  printf("module binding: {} / alias item: {}\n", helper.thing, t);
+  printf("brace use: {} {}\n", num, n2);
+  printf("cross-module generic fn: {} {}\n", rep(41), rep("ring"));
+  printf("cross-module type + native method: {}\n", make(4).twice());
+  return 0;
+}

@@ -1,0 +1,8 @@
+// expect: empty slice needs a consumer type
+// spec: check — slices
+// [] with no elements and no consuming annotation has no element
+// type to infer
+fn main() -> i32 {
+  let xs = [];
+  return 0;
+}

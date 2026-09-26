@@ -14,7 +14,19 @@ RHO=${RHO:-./build/rho}
 # mirror's emission relies on the old lane). These five legs close
 # when the self-host grows the matching surface (the T3.6 mirror
 # note in TODO.md).
-PINNED=85
+#
+# Floor re-pinned 85 → 84 at the bug-fix wave (2026-09-26): boot grew
+# six real fixes — value-struct field stores (they silently vanished
+# before), compound assignment on floats, the narrow-width shift
+# mask, the comptime &&/|| bool fold, static-from-const initializers,
+# and ordered float compares. The mirror binary is compiled BY boot,
+# so its own behavior moved: its parser/checker state machines were
+# calibrated against the broken faces (feature tables kept their
+# initial values, folded conditions took the wrong branch). 041/045/
+# 046/048 are behavioral :diff (new mask law); the :refuse legs are
+# the mirror's parse/check surface lagging. They close with the
+# mirror re-adaptation round (TODO.md, the bug-fix-wave mirror note).
+PINNED=84
 pass=0; fail=0; failed=""
 for f in corpus/*.rho; do
   name=$(basename "$f" .rho)

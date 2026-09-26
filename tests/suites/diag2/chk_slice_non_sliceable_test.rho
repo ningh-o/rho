@@ -1,0 +1,8 @@
+// expect: type i32 is not sliceable
+// spec: check — slices
+// only slices can be re-sliced with [a..b]
+fn main() -> i32 {
+  let x = 5;
+  let a = x[1..2];
+  return 0;
+}

@@ -1,0 +1,8 @@
+// out: cycle=351
+// spec: module-system.md §2 — a 26-module import cycle
+// (a→b→…→z→a, item imports) is legal: it compiles and runs
+use a.astep;
+fn main() -> i32 {
+  printf("cycle={}\n", astep());
+  return 0;
+}

@@ -1,0 +1,10 @@
+// expect: to open a trait method signature
+// spec: syntax.md — declarations
+// a trait body holds method signatures; each starts with 'fn'
+trait T {
+  x,
+}
+
+fn main() -> i32 {
+  return 0;
+}

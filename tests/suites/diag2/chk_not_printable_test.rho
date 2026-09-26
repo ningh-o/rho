@@ -1,0 +1,11 @@
+// expect: value of type *S is not printable (no to_str)
+// spec: check — printf family
+// printing a value requires Show satisfaction: a struct without
+// to_str has no printable form
+struct S { x: i32 }
+
+fn main() -> i32 {
+  let s = new S { x: 1 };
+  printf("{}\n", s);
+  return 0;
+}

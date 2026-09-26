@@ -1,0 +1,7 @@
+const hidden: i32 = 33;
+fn also_hidden() -> i32 {
+  return hidden + 1;
+}
+pub fn shown() -> i32 {
+  return also_hidden();
+}

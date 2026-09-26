@@ -1,0 +1,8 @@
+// expect: 'x' is already bound in this scope
+// spec: check — bindings
+// one scope binds a name once; inner shadowing needs a deeper scope
+fn main() -> i32 {
+  let x = 1;
+  let x = 2;
+  return 0;
+}

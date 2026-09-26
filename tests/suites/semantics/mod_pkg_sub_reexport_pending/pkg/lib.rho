@@ -1,0 +1,3 @@
+// the first of the four pub use forms: re-export the submodule
+// binding under the facade
+pub use sub;

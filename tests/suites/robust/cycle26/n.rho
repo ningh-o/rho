@@ -1,0 +1,2 @@
+use o.ostep;
+pub fn nstep() -> i32 { return 14 + ostep(); }

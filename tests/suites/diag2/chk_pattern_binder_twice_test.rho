@@ -1,0 +1,15 @@
+// expect: binder 'x' appears twice
+// spec: check — match
+// a pattern may bind each name once
+enum E { A(i32, i32), B }
+
+fn f(e: E) -> i32 {
+  match e {
+    E.A(x, x) => x,
+    E.B => 2,
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}

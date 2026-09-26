@@ -1,0 +1,9 @@
+// expect: cannot assign to const 'X'
+// spec: check — assignment
+// consts are comptime values; they are not assignable at runtime
+const X: i32 = 1;
+
+fn main() -> i32 {
+  X = 2;
+  return 0;
+}

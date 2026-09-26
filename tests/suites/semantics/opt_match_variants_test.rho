@@ -1,0 +1,38 @@
+// out: qualified: Some(7)
+// out: qualified: None
+// out: bare by scrutinee: hit 7
+// out: struct payload: red
+// exit: 0
+// spec: type-system.md §9, TODO.md §19
+// Option[T] is an ordinary generic enum: user code matches it with
+// qualified variants (Option.Some / Option.None) or bare ones
+// resolved by the scrutinee, `?T` is sugar for Option[T], and
+// payloads carry any type — structs included. There are no smart
+// casts: the payload is unwound by the match binding itself.
+struct Col {
+  name: string,
+}
+fn paint(c: ?Col) -> string {
+  return match c {
+    Option.Some(v) => v.name,
+    Option.None => "none",
+  };
+}
+fn main() -> i32 {
+  let a: ?i32 = Option.Some(7);
+  let n: ?i32 = Option.None;
+  match a {
+    Option.Some(v) => printf("qualified: Some({})\n", v),
+    Option.None => printf("qualified: None\n"),
+  }
+  match n {
+    Option.Some(v) => printf("qualified: Some({})\n", v),
+    Option.None => printf("qualified: None\n"),
+  }
+  match a {
+    Some(v) => printf("bare by scrutinee: hit {}\n", v),
+    None => printf("bare by scrutinee: miss\n"),
+  }
+  printf("struct payload: {}\n", paint(Option.Some(*new Col { name: "red" })));
+  return 0;
+}

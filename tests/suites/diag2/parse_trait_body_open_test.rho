@@ -1,0 +1,8 @@
+// expect: to open the trait body
+// spec: syntax.md — declarations
+// a trait declaration opens a brace body after its name
+trait T 5
+
+fn main() -> i32 {
+  return 0;
+}

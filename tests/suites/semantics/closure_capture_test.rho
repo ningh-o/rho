@@ -1,0 +1,38 @@
+// out: add5(10)=15
+// out: captured multiplier: 300
+// out: closure as argument: 9
+// out: capture is a copy: 2
+// exit: 0
+// spec: syntax.md §6.8
+// Closures are anonymous fn expressions: first-class values of `fn`
+// type, callable through a variable, passable as arguments, and
+// returnable. Captures are BY COPY — the closure freezes the captured
+// local's value at creation; capturing a `mut` local is a compile
+// error (shared mutable state must be a heap object).
+fn make_adder(k: i32) -> fn(i32) -> i32 {
+  return fn(n: i32) -> i32 {
+    return n + k;
+  };
+}
+fn apply(f: fn(i32) -> i32, v: i32) -> i32 {
+  return f(v);
+}
+fn main() -> i32 {
+  let add5: fn(i32) -> i32 = make_adder(5);
+  printf("add5(10)={}\n", add5(10));
+  let k: i32 = 100;
+  let scale = fn(n: i32) -> i32 {
+    return n * k;
+  };
+  printf("captured multiplier: {}\n", scale(3));
+  printf("closure as argument: {}\n", apply(fn(x: i32) -> i32 {
+    return x - 1;
+  }, 10));
+  let base: i32 = 1;
+  let g = fn(n: i32) -> i32 {
+    return n + base;
+  };
+  let r: i32 = g(1);
+  printf("capture is a copy: {}\n", r);
+  return 0;
+}

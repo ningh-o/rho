@@ -1,0 +1,24 @@
+// out: make zeroed: 0 0 len=4
+// out: sub-slice shares: 99 6
+// out: empty with consumer: len=0
+// out: index expr is usize lane: ok
+// exit: 0
+// spec: syntax.md §6.2, spec.md §1.3
+// `make([]T, n)` allocates n ZEROED elements (every byte reads 0
+// before a write — including reused allocator blocks). Slicing
+// s[a..b] yields a view sharing the buffer; a store through the
+// parent shows through the view. The empty literal `[]` needs a
+// consumer to type. len and index expressions ride the usize lane.
+fn main() -> i32 {
+  let mut buf: []i32 = make([]i32, 4);
+  printf("make zeroed: {} {} len={}\n", buf[0], buf[3], len(buf));
+  buf[1] = 5;
+  buf[2] = 6;
+  let view: []i32 = buf[1..3];
+  buf[1] = 99;
+  printf("sub-slice shares: {} {}\n", view[0], view[1]);
+  let e: []i32 = [];
+  printf("empty with consumer: len={}\n", len(e));
+  printf("index expr is usize lane: {}\n", if len(buf) == 4 { "ok" } else { "no" });
+  return 0;
+}

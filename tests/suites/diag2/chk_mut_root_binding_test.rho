@@ -1,0 +1,14 @@
+// expect: the marked argument needs a mut root binding
+// spec: TODO.md §18
+// a mut marker claims write-through: the argument's own root
+// binding must be declared 'mut'
+fn f(mut xs: []i32) -> i32 {
+  xs[0] = 1;
+  return xs[0];
+}
+
+fn main() -> i32 {
+  let a: []i32 = [1, 2];
+  let n = f(mut a);
+  return n;
+}

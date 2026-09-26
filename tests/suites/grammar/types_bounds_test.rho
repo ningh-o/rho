@@ -1,0 +1,45 @@
+// out: label=[13] stack=12
+// out: two_params=1 prim=13|13
+// exit: 0
+// spec: syntax.md §4.1, type-system.md §8
+// Generic bounds: `[T: Show]` verifies at each instantiation and
+// dispatches statically; `[T: Show, Count]` declares ONE parameter
+// with two bounds (a comma never returns to parameter position after
+// the colon); `[A, B: Count]` declares two parameters, the bounded
+// one last.
+trait Show {
+  fn to_str(self) -> string,
+}
+trait Count {
+  fn count(self) -> i32,
+}
+struct N { n: i32 }
+fn N.to_str(self: *N) -> string {
+  return format("{}", self.n);
+}
+fn N.count(self: *N) -> i32 {
+  return self.n;
+}
+fn label[T: Show](v: *T) -> string {
+  return format("[{}]", v.to_str());
+}
+fn stack[T: Show, Count](v: *T) -> i32 {
+  return v.count() + len(v.to_str()) as i32 - 3;
+}
+fn twice_str[T: Show, Count](v: *T) -> string {
+  return format("{}|{}", v.to_str(), v.to_str());
+}
+struct Only { k: i32 }
+fn Only.count(self: *Only) -> i32 {
+  return 1;
+}
+fn two_params[A, B: Count](a: A, b: *B) -> i32 {
+  return b.count() + a as i32;
+}
+fn main() -> i32 {
+  let n = new N { n: 13 };
+  printf("label={} stack={}\n", label(n), stack(n));
+  let o = new Only { k: 0 };
+  printf("two_params={} prim={}\n", two_params(0, o), twice_str(n));
+  return 0;
+}

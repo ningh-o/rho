@@ -1,0 +1,2 @@
+use g.gstep;
+pub fn fstep() -> i32 { return 6 + gstep(); }

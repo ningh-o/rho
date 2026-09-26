@@ -1,0 +1,7 @@
+// expect: \u needs '{'
+// spec: syntax.md — lexer
+// \u is written \u{hex...}; a bare \u followed by digits is refused
+fn main() -> i32 {
+  let s = "a\u12";
+  return 0;
+}

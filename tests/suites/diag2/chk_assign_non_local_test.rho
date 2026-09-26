@@ -1,0 +1,10 @@
+// expect: cannot assign to non-local 'f'
+// spec: check — assignment
+// a fn name is not a binding; it cannot appear as an assignment
+// target
+fn f() -> i32 { return 1; }
+
+fn main() -> i32 {
+  f = 1;
+  return 0;
+}

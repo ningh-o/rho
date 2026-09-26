@@ -1,0 +1,7 @@
+// expect: \u code point out of range
+// spec: syntax.md — lexer
+// code points above U+10FFFF do not exist
+fn main() -> i32 {
+  let s = "a\u{110000}";
+  return 0;
+}

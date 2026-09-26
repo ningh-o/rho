@@ -1,0 +1,9 @@
+// expect: unknown escape
+// spec: syntax.md §2.5
+// The escape set is exactly the eight listed escapes; \q is not among
+// them and is refused at compile time.
+fn main() -> i32 {
+  let s = "bad\qescape";
+  printf("{}\n", s);
+  return 0;
+}

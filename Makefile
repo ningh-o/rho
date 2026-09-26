@@ -26,6 +26,7 @@ test: selftest
 	./tests/run-diff.sh
 	./tests/run-corpus-diff.sh
 	./tests/run-corpus-repo.sh
+	./tests/run-robust.sh
 	./build/rho test tests/suites
 
 clean:

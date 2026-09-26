@@ -1,0 +1,2 @@
+use s.sstep;
+pub fn rstep() -> i32 { return 18 + sstep(); }

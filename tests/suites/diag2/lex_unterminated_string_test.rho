@@ -1,0 +1,8 @@
+// expect: unterminated string literal
+// spec: syntax.md — lexer
+// a string literal that hits the newline before its closing quote is
+// refused: strings are single-line unless triple-quoted
+fn main() -> i32 {
+  let s = "abc;
+  return 0;
+}

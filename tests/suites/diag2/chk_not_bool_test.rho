@@ -1,0 +1,7 @@
+// expect: ! takes bool, got i32
+// spec: check — operators
+// logical not is bool-only
+fn main() -> i32 {
+  let a = !5;
+  return 0;
+}

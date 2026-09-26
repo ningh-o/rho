@@ -1,0 +1,11 @@
+// expect: spread '...' is only valid as the last argument
+// spec: check — calls
+// a spread splices the remaining arguments; anything after it has no
+// position to land in
+fn f(xs: []i32, y: i32) -> i32 { return y; }
+
+fn main() -> i32 {
+  let xs = [1, 2, 3];
+  let a = f(xs..., 1);
+  return 0;
+}

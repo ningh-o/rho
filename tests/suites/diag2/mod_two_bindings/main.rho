@@ -1,0 +1,10 @@
+// expect: two import bindings of 'g'
+// spec: module-system.md §2
+// one alias binds once: importing two different items under the same
+// alias is refused
+use m.f as g;
+use n.f as g;
+
+fn main() -> i32 {
+  return 0;
+}

@@ -1,0 +1,9 @@
+// expect: if-expression requires else
+// spec: check — expressions
+// an if used as a value needs both arms: there is no unit default
+fn main() -> i32 {
+  let y = if true {
+    1
+  };
+  return 0;
+}

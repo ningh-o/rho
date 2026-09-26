@@ -1,0 +1,13 @@
+// out: ran
+// exit: 0
+// spec: syntax.md §4.3
+// `extern name: fn_type;` declares an external (wasi-import shaped)
+// function with unnamed parameter types. The declaration itself
+// compiles and the program runs; the seed compiler does not bind the
+// name for calls yet (pinned separately in the pending ledger).
+extern host_compute: fn(i32) -> i32;
+extern host_tick: fn();
+fn main() -> i32 {
+  printf("ran\n");
+  return 0;
+}

@@ -1,4 +1,9 @@
 // exit: 0
+// signed shifts are arithmetic (sign-filling); the count masks by
+// the LEFT OPERAND'S WIDTH (spec.md §4) — 1 << 33 on i32 shifts by
+// 1, and a sub-word width masks by its own width (1i8 << 8 is 1:
+// 8 & 7 = 0, then truncate keeps it)
+// exit: 0
 // signed shifts are arithmetic (sign-filling); the amount is masked to
 // the operand's register width — 5 bits below i32, 6 bits at i64 — so
 // 1 << 32 on i32 is 1 again, and sub-word widths shift in the 32-bit

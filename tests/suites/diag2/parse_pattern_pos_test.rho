@@ -1,0 +1,12 @@
+// expect: expected a pattern, found
+// spec: syntax.md — match
+// a match arm starts with a pattern; '=>' alone is not one
+fn f(v: i32) -> i32 {
+  match v {
+    => 0,
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}

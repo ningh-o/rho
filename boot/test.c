@@ -140,6 +140,10 @@ static void parse_headers(const char *path, Headers *h) {
 static void diags_reset(void) {
   vec_clear(&g_diags);
   g_had_error = false;
+  // the one-error gate is a per-compile latch, never a process one:
+  // a depth bomb in one case must not blind the next case's diags
+  extern void diag_gate_clear(void);
+  diag_gate_clear();
 }
 
 static char *capture_diags(void) {
@@ -257,9 +261,9 @@ static int run_program(const char *wat, size_t wat_len, char **out_s,
            "  if grep -q -e 'wasm trap' -e 'stack overflow' "
            "/tmp/rho-trap.$$.err 2>/dev/null; then "
            "    msg=$(sed -n 's/.*wasm trap: //p' /tmp/rho-trap.$$.err "
-           "| head -1); "
+           "| head -1 | sed 's/call stack exhausted/stack overflow/'); "
            "    [ -z \"$msg\" ] && msg='stack overflow'; "
-           "    echo \"panic: $msg\"; "
+           "    echo \"panic: $msg\" >&2; "
            "    rm -f /tmp/rho-trap.$$.err; exit 101; "
            "  fi; "
            "  cat /tmp/rho-trap.$$.err >&2 2>/dev/null; "

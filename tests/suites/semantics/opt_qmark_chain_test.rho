@@ -1,0 +1,33 @@
+// out: find 42 -> some=142
+// out: find 99 -> none
+// exit: 0
+// spec: type-system.md §12
+// `e?` on an Option propagates None out of the enclosing function
+// (which must return Option[U] — any U fits the propagated None) and
+// yields T on Some. The chain: a None anywhere short-circuits the
+// whole function; a Some flows on as a plain value.
+fn find(xs: []i32, want: i32) -> ?i32 {
+  let mut i: usize = 0;
+  while i < len(xs) {
+    if xs[i] == want {
+      return Option.Some(xs[i]);
+    }
+    i += 1;
+  }
+  return Option.None;
+}
+fn plus_hundred(xs: []i32, want: i32) -> ?i32 {
+  let v: i32 = find(xs, want)?;
+  return Option.Some(v + 100);
+}
+fn main() -> i32 {
+  match plus_hundred([1, 42, 3], 42) {
+    Option.Some(v) => printf("find 42 -> some={}\n", v),
+    Option.None => printf("find 42 -> none\n"),
+  }
+  match plus_hundred([1, 42, 3], 99) {
+    Option.Some(v) => printf("find 99 -> some={}\n", v),
+    Option.None => printf("find 99 -> none\n"),
+  }
+  return 0;
+}

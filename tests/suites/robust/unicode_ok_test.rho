@@ -1,0 +1,7 @@
+// out: 😀 中文 ok
+// spec: spec.md §5 — strings are UTF-8 byte slices: raw emoji and
+// CJK spellings and their \u{…} escapes print back identically
+fn main() -> i32 {
+  printf("\u{1F600} \u{4E2D}\u{6587} ok\n");
+  return 0;
+}

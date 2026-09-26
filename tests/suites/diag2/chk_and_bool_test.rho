@@ -1,0 +1,9 @@
+// expect: &&/|| take bool, got i32 and i32
+// spec: check — operators
+// logical operators are bool-only: integers are not truthy
+fn main() -> i32 {
+  let a = 1;
+  let b = 2;
+  let c = a && b;
+  return 0;
+}

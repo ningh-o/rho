@@ -1,0 +1,12 @@
+// expect: ? on Option needs the enclosing fn to return Option, it returns i32
+// spec: check — propagation
+// ? propagates into the caller: the enclosing fn must itself return
+// the same Option shape
+fn g() -> ?i32 {
+  return 1;
+}
+
+fn main() -> i32 {
+  let x = g()?;
+  return 0;
+}

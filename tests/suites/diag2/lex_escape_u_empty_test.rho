@@ -1,0 +1,7 @@
+// expect: needs at least one digit
+// spec: syntax.md — lexer
+// \u{} names no code point: at least one digit is required
+fn main() -> i32 {
+  let s = "a\u{}";
+  return 0;
+}

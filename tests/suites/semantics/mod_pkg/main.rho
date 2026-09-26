@@ -1,0 +1,22 @@
+// out: facade fn=12 renamed=12 const=10
+// out: pub use item + its own name: m
+// out: star flatten: rect area=8
+// out: facade own pub const joins the surface: 10
+// exit: 0
+// spec: module-system.md §4, §6
+// A package is a directory behind a lib.rho facade; the facade is the
+// whole public surface. Item re-exports: one item by name
+// (`units.base_unit`), one renamed (`units.double as twice` — the
+// original name rides too via the unrenamed form), and the star
+// flatten (`shapes.*`) which pulls every public item of the interior
+// module up. The facade's own pub const joins the surface; the
+// interior fn `interior` stays package-private (pinned refused in
+// mod_private_refused).
+use geom;
+fn main() -> i32 {
+  printf("facade fn={} renamed={} const={}\n", geom.double(6), geom.twice(6), geom.base);
+  printf("pub use item + its own name: {}\n", geom.base_unit);
+  printf("star flatten: {} area={}\n", geom.name(), geom.area(2, 4));
+  printf("facade own pub const joins the surface: {}\n", geom.base);
+  return 0;
+}

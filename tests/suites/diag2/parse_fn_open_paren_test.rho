@@ -1,0 +1,8 @@
+// expect: to open parameters
+// spec: syntax.md — declarations
+// a fn header needs '(' after its name
+fn f {}
+
+fn main() -> i32 {
+  return 0;
+}

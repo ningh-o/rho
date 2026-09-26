@@ -1,0 +1,16 @@
+// expect: pattern F.A does not belong to enum E
+// spec: check — match
+// a variant pattern must name the scrutinee's own enum
+enum E { A(i32), B }
+enum F { A(i32) }
+
+fn f(e: E) -> i32 {
+  match e {
+    F.A(x) => x,
+    E.B => 2,
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}

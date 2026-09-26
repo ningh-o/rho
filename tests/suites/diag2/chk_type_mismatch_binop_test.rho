@@ -1,0 +1,10 @@
+// expect: type mismatch: i32 vs string
+// spec: check — operators
+// a binary operator's two sides must agree before the operator law
+// even runs
+fn main() -> i32 {
+  let a = 1;
+  let b = "s";
+  let c = a + b;
+  return 0;
+}

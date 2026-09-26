@@ -1,0 +1,7 @@
+// expect: operator needs numbers, got string
+// spec: check — operators
+// '*' multiplies numbers; strings have no product (only '+' concatenates)
+fn main() -> i32 {
+  let a = "x" * "y";
+  return 0;
+}

@@ -1,0 +1,9 @@
+// expect: module mdir has no public fn 'nope'
+// spec: module-system.md §4
+// a qualified call must name a public fn of the facade
+use mdir;
+
+fn main() -> i32 {
+  mdir.nope();
+  return 0;
+}

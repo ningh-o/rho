@@ -1,0 +1,10 @@
+// expect: duplicate definition of 'P' in module
+// spec: check — symbols
+// a struct and an enum occupy the same namespace slot
+struct P { v: i32 }
+
+enum P { A }
+
+fn main() -> i32 {
+  return 0;
+}

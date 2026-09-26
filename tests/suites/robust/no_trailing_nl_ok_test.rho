@@ -1,0 +1,7 @@
+// out: ntn ok
+// spec: syntax.md §1 — a final line without the newline still
+// compiles and runs
+fn main() -> i32 {
+  printf("ntn ok\n");
+  return 0;
+}

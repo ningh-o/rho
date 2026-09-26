@@ -74,6 +74,17 @@ static const char *wty_s(WTy w) {
   }
 }
 
+// the declared width in bits — the shift-count mask law's denominator
+// (spec §4: counts mask by the left operand's width, not the lane)
+static int type_bits(Type *t) {
+  switch (t->kind) {
+  case TY_I8: case TY_U8: return 8;
+  case TY_I16: case TY_U16: return 16;
+  case TY_I64: case TY_U64: return 64;
+  default: return 32; // i32/u32/usize
+  }
+}
+
 static WTy scalar_wty(Type *t) {
   switch (t->kind) {
   case TY_I64: case TY_U64: return W_I64;
@@ -525,7 +536,7 @@ static const char *fn_wat_name(FnDef *f) {
   }
   clean[ci] = '\0';
   const char *name = clean;
-  for (size_t try = 1;; try++) {
+  for (size_t try = VLEN(em->fnnames);; try++) {
     bool taken = false;
     for (size_t i = 0; i < VLEN(em->fnnames); i++)
       if (strcmp(VAT(em->fnnames, FnNameEnt, i)->name, name) == 0) {
@@ -535,7 +546,9 @@ static const char *fn_wat_name(FnDef *f) {
     if (!taken)
       break;
     // the retry candidate folds too: a raw f->name can carry
-    // non-idchars ("test:a b.1"), which wat2wasm would reject
+    // non-idchars ("test:a b.1"), which wat2wasm would reject.
+    // Probing from the table size keeps duplicate-heavy inputs
+    // linear-ish (400 same-named fns once cost quartic time)
     char *cand = aprintf(g_arena, "%s.%zu", f->name, try);
     for (char *q = cand; *q; q++)
       if (!((*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') ||
@@ -662,6 +675,19 @@ static void emit_div(FnCx *cx, int opkind, Type *t, size_t out,
 
 static bool emit_compound_op(FnCx *cx, Type *t, int opk, size_t res,
                              size_t oldv, size_t rhs) {
+  if (type_is_float(t)) {
+    const char *fw = t->kind == TY_F32 ? "f32" : "f64";
+    const char *finstr = opk == OP_ADD   ? "add"
+                         : opk == OP_SUB ? "sub"
+                         : opk == OP_MUL ? "mul"
+                         : opk == OP_DIV ? "div"
+                                         : NULL;
+    if (!finstr)
+      return false;
+    op(cx, "(local.set %zu (%s.%s (local.get %zu) (local.get %zu)))\n",
+       res, fw, finstr, oldv, rhs);
+    return true;
+  }
   const char *w = scalar_wty(t) == W_I64 ? "i64" : "i32";
   bool uns = t->kind >= TY_U8;
   const char *instr = NULL;
@@ -680,8 +706,8 @@ static bool emit_compound_op(FnCx *cx, Type *t, int opk, size_t res,
   } else if (opk == OP_DIV || opk == OP_MOD) {
     emit_div(cx, opk, t, res, oldv, rhs);
   } else if (opk == OP_SHL || opk == OP_SHR) {
-    // shifts mask by the storage width (spec §4)
-    int bits = scalar_wty(t) == W_I64 ? 64 : 32;
+    // the count masks by the left operand's declared width (spec §4)
+    int bits = type_bits(t);
     op(cx, "(local.set %zu (%s.%s (local.get %zu) (%s.and "
            "(local.get %zu) (%s.const %d))))\n",
        res, w, opk == OP_SHL ? "shl" : (uns ? "shr_u" : "shr_s"), oldv,
@@ -774,6 +800,34 @@ static size_t field_offset(Type *st, size_t idx) {
   for (size_t i = 0; i < idx; i++)
     off += type_size(inst_ty(st, st->sdef->fields[i].ty));
   return off;
+}
+
+// the SLOT offset of field idx within a value struct's flat run
+static size_t field_slot_off(Type *st, size_t idx) {
+  size_t off = 0;
+  for (size_t i = 0; i < idx; i++)
+    off += shape_nlocals(inst_ty(st, st->sdef->fields[i].ty));
+  return off;
+}
+
+// the flat-run base slot of a value-struct lvalue chain (a.b.c):
+// the rooted variable's vreg plus the walked slot offsets — a value
+// has no memory behind it, so this is where a field store lands
+static size_t value_lvalue_base(FnCx *cx, Node *lv) {
+  if (lv->kind == NT_PATH) {
+    VarInfo *v = cx_var(cx, lv->name);
+    return v ? v->vreg : MATCH_DISCARD;
+  }
+  if (lv->kind == NT_FIELD_E) {
+    Type *bt = (Type *)node_get(lv->a)->sem;
+    if (!bt || bt->kind != TY_STRUCT)
+      return MATCH_DISCARD;
+    size_t b = value_lvalue_base(cx, node_get(lv->a));
+    if (b == MATCH_DISCARD)
+      return MATCH_DISCARD;
+    return b + field_slot_off(bt, (size_t)lv->op);
+  }
+  return MATCH_DISCARD;
 }
 
 // numeric const from a folded value stored in a node's type-checked
@@ -1762,8 +1816,10 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
     case OP_BOR: instr = "or"; break;
     case OP_BXOR: instr = "xor"; break;
     case OP_SHL: {
-      int bits = scalar_wty(lt) == W_I64 ? 64 : 32; // storage width
-      if (scalar_wty(lt) == W_I64)
+      // the count masks by the LEFT operand's declared width (spec §4),
+      // not the wasm lane: 1 << 9 on an i8 is 2
+      int bits = type_bits(lt); // storage width
+      if (bits == 64)
         op(cx, "(local.set %zu (i64.shl (local.get %zu) "
                "(i64.and (local.get %zu) (i64.const %d))))\n", dst, a, b,
            bits - 1);
@@ -1776,41 +1832,34 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       return;
     }
     case OP_SHR: {
-      int bits = scalar_wty(lt) == W_I64 ? 64 : 32;
-      const char *k = uns || lt->kind == TY_USIZE
-                          ? "shr_u"
-                          : (scalar_wty(lt) == W_I64 ? "shr_s" : "shr_u");
-      // signed narrow ints live zero-extended in i32: use i32 shifts
-      // with manual sign handling via extension
-      if (scalar_wty(lt) == W_I64)
+      int bits = type_bits(lt);
+      // signed narrow ints live zero-extended in i32: sign-extend to
+      // the declared width, then arithmetic-shift by the masked count
+      if (bits == 64)
         op(cx, "(local.set %zu (i64.%s (local.get %zu) "
                "(i64.and (local.get %zu) (i64.const %d))))\n", dst,
            uns ? "shr_u" : "shr_s", a, b, bits - 1);
-      else {
-        if (!uns && bits < 32) {
-          // sign-extend to the width first, then arithmetic shift
-          int sh = 32 - bits;
-          op(cx, "(local.set %zu (i32.shr_s (i32.shl (local.get %zu) "
-                 "(i32.const %d)) (i32.const %d)))\n", dst, a, sh, sh);
-          op(cx, "(local.set %zu (i32.shr_s (local.get %zu) "
-                 "(i32.and (local.get %zu) (i32.const %d))))\n", dst, dst,
-             b, bits - 1);
-        } else {
-          op(cx, "(local.set %zu (i32.%s (local.get %zu) "
-                 "(i32.and (local.get %zu) (i32.const %d))))\n", dst,
-             uns ? "shr_u" : "shr_s", a, b, bits - 1);
-        }
+      else if (!uns && bits < 32) {
+        int sh = 32 - bits;
+        op(cx, "(local.set %zu (i32.shr_s (i32.shl (local.get %zu) "
+               "(i32.const %d)) (i32.const %d)))\n", dst, a, sh, sh);
+        op(cx, "(local.set %zu (i32.shr_s (local.get %zu) "
+               "(i32.and (local.get %zu) (i32.const %d))))\n", dst, dst,
+           b, bits - 1);
+      } else {
+        op(cx, "(local.set %zu (i32.%s (local.get %zu) "
+               "(i32.and (local.get %zu) (i32.const %d))))\n", dst,
+           uns ? "shr_u" : "shr_s", a, b, bits - 1);
         truncate_after(cx, t, dst);
       }
-      (void)k;
       return;
     }
     case OP_EQ: instr = "eq"; cmp = true; break;
     case OP_NE: instr = "ne"; cmp = true; break;
-    case OP_LT: instr = uns ? "lt_u" : "lt_s"; cmp = true; break;
-    case OP_LE: instr = uns ? "le_u" : "le_s"; cmp = true; break;
-    case OP_GT: instr = uns ? "gt_u" : "gt_s"; cmp = true; break;
-    case OP_GE: instr = uns ? "ge_u" : "ge_s"; cmp = true; break;
+    case OP_LT: instr = isf ? "lt" : uns ? "lt_u" : "lt_s"; cmp = true; break;
+    case OP_LE: instr = isf ? "le" : uns ? "le_u" : "le_s"; cmp = true; break;
+    case OP_GT: instr = isf ? "gt" : uns ? "gt_u" : "gt_s"; cmp = true; break;
+    case OP_GE: instr = isf ? "ge" : uns ? "ge_u" : "ge_s"; cmp = true; break;
     default: return;
     }
     if (isf) {
@@ -2481,17 +2530,21 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
     for (size_t i2 = 0; i2 < n; i2++) {
       Node *el = node_get(reflist_at(e->list, i2));
       Type *elt = (Type *)el->sem;
-      size_t v = cx_fresh(cx, elt);
+      // a dyn slice literal coerces each element at its face: the
+      // fresh must carry the DYN type or the fat {vtable, obj} pair
+      // never forms and the vtable slot stores garbage
+      Type *face = st->base->kind == TY_DYN ? st->base : elt;
+      size_t v = cx_fresh(cx, face);
       emit_expr(cx, reflist_at(e->list, i2), v);
-      size_t nl = shape_nlocals(elt);
+      size_t nl = shape_nlocals(face);
       for (size_t k = 0; k < nl; k++) {
-        WTy w = local_wty(elt, k);
+        WTy w = local_wty(face, k);
         const char *strop = w == W_I64   ? "i64.store"
                             : w == W_F32 ? "f32.store"
                             : w == W_F64 ? "f64.store"
                                          : "i32.store";
         op(cx, "(%s (i32.add %s (i32.const %zu)) %s)\n", strop,
-           L(cx, dst), i2 * esz + shape_slot_off(elt, k),
+           L(cx, dst), i2 * esz + shape_slot_off(face, k),
            L(cx, v + k));
       }
     }
@@ -3489,7 +3542,39 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
         }
         return;
       }
-      return; // inline-value field stores arrive with copies (later)
+      if (bt->kind == TY_STRUCT) {
+        // value-struct face: the base rides a flat field run, so the
+        // store lands in the rooted variable's own slots — a value has
+        // no memory behind it
+        Type *st = bt;
+        int idx = lv->op;
+        size_t base = value_lvalue_base(cx, node_get(lv->a));
+        if (base == MATCH_DISCARD)
+          return; // bases without a root (through boxes) are not faces
+        Type *ft = inst_ty(st, st->sdef->fields[idx].ty);
+        size_t off = base + field_slot_off(st, (size_t)idx);
+        size_t rhs = cx_fresh(cx, lt);
+        emit_expr(cx, s->b, rhs);
+        if (s->op != OP_NONE) {
+          size_t nv = cx_fresh(cx, ft);
+          if (emit_compound_op(cx, ft, s->op, nv, off, rhs)) {
+            size_t fn2 = shape_nlocals(ft);
+            for (size_t k = 0; k < fn2; k++)
+              op(cx, "(local.set %zu %s)\n", off + k, L(cx, nv + k));
+          }
+          return; // aggregates reject compound at check
+        }
+        release(cx, ft, off); // the old field value's own refs
+        if (node_get(s->b)->kind == NT_PATH &&
+            cx_var(cx, node_get(s->b)->name))
+          retain(cx, ft, rhs); // copy-in owns a new ref
+        size_t n = shape_nlocals(ft);
+        for (size_t k = 0; k < n; k++)
+          op(cx, "(local.set %zu %s)\n", off + shape_slot_off(ft, k),
+             L(cx, rhs + k));
+        return;
+      }
+      return; // other field-store bases are not value faces
     }
     if (lv->kind == NT_INDEX) {
       // s[i] = v: bounds-checked store at ptr + i*esz

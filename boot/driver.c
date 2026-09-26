@@ -115,7 +115,7 @@ int cmd_run(int argc, char **argv) {
            "  if grep -q -e 'wasm trap' -e 'stack overflow' "
            "/tmp/rho-trap.$$.err 2>/dev/null; then "
            "    msg=$(sed -n 's/.*wasm trap: //p' /tmp/rho-trap.$$.err "
-           "| head -1); "
+           "| head -1 | sed 's/call stack exhausted/stack overflow/'); "
            "    [ -z \"$msg\" ] && msg='stack overflow'; "
            "    echo \"panic: $msg\" >&2; "
            "    rm -f /tmp/rho-trap.$$.err; exit 101; "

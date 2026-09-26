@@ -1,0 +1,9 @@
+// expect: struct S constructs with 'new'
+// spec: check — constructors
+// a struct name is a type, not a value: instances come from 'new'
+struct S { x: i32 }
+
+fn main() -> i32 {
+  let s = S;
+  return 0;
+}

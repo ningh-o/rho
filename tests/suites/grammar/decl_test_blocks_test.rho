@@ -1,0 +1,24 @@
+// out: main ran
+// exit: 0
+// spec: syntax.md §4.5
+// A top-level `test "name" { … }` declares one white-box test judged
+// by panic versus clean return. The name is a string literal and may
+// carry spaces, quotes, and backslashes; blocks see the module's
+// private items.
+test "two plus two" {
+  assert(2 + 2 == 4, "arithmetic broke");
+}
+test "name with \"quotes\" and \\ backslash" {
+  let msg = "quote\"inside";
+  assert(len(msg) == 12, "nope");
+}
+test "uses a private helper" {
+  assert(half(9) == 4, "half broke");
+}
+fn half(n: i32) -> i32 {
+  return n / 2;
+}
+fn main() -> i32 {
+  printf("main ran\n");
+  return 0;
+}

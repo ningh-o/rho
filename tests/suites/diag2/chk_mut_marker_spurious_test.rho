@@ -1,0 +1,13 @@
+// expect: argument 1 of f may not be marked 'mut' (the parameter is not a mut view)
+// spec: TODO.md §18
+// the marker pairs in both directions: a plain-view parameter
+// refuses the 'mut' marker — its callee has no write-through
+fn f(xs: []i32) -> i32 {
+  return xs[0];
+}
+
+fn main() -> i32 {
+  let mut a: []i32 = [1, 2];
+  let n = f(mut a);
+  return n;
+}

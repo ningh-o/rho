@@ -176,10 +176,13 @@ bool g_had_error;
 
 // one-error mode: a hostile input that trips a structural limit (a
 // depth bomb, say) would otherwise surface thousands of secondary
-// diagnostics from the same root cause
+// diagnostics from the same root cause. Per-compile, never per-
+// process: compile boundaries call diag_gate_clear.
 static bool g_diag_gate;
 
 void diag_gate_set(void) { g_diag_gate = true; }
+
+void diag_gate_clear(void) { g_diag_gate = false; }
 
 void diag_at(DiagKind kind, const char *file, int line, int col,
              const char *fmt, ...) {

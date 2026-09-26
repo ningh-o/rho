@@ -1,0 +1,9 @@
+// expect: expected a declaration, found
+// spec: syntax.md — declarations
+// only fn/struct/enum/trait/impl/const/static/use/test declarations
+// may appear at module top level
+5;
+
+fn main() -> i32 {
+  return 0;
+}

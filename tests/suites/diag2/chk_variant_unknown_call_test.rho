@@ -1,0 +1,9 @@
+// expect: enum E has no variant 'C'
+// spec: check — enums
+// a constructor call must name a declared variant
+enum E { A(i32), B }
+
+fn main() -> i32 {
+  let e = E.C(1);
+  return 0;
+}

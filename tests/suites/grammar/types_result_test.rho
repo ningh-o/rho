@@ -1,0 +1,45 @@
+// out: ok=41
+// out: err=div0
+// out: chained=3
+// out: passthru=none
+// exit: 0
+// spec: syntax.md §3, §6.9
+// Result[T, E] with qualified Ok/Err construction; `?` inside a
+// Result-returning function yields T and propagates Err. `==` never
+// compares Results, so behavior is pinned through match arms.
+fn checked_div(a: i32, b: i32) -> Result[i32, string] {
+  if b == 0 {
+    return Result.Err("div0");
+  }
+  return Result.Ok(a / b);
+}
+fn chain(a: i32, b: i32) -> Result[i32, string] {
+  let q = checked_div(a, b)?;
+  return Result.Ok(q * 10 + 1);
+}
+fn passthru(a: i32, b: i32) -> ?i32 {
+  let q = checked_div(a, b);
+  match q {
+    Result.Ok(v) => { return Option.Some(v); },
+    Result.Err(_) => { return Option.None; },
+  }
+}
+fn main() -> i32 {
+  match chain(8, 2) {
+    Result.Ok(v) => printf("ok={}\n", v),
+    Result.Err(e) => printf("ok err={}\n", e),
+  }
+  match chain(1, 0) {
+    Result.Ok(_) => printf("err ok\n"),
+    Result.Err(e) => printf("err={}\n", e),
+  }
+  match passthru(9, 3) {
+    Option.Some(v) => printf("chained={}\n", v),
+    Option.None => printf("chained=none\n"),
+  }
+  match passthru(9, 0) {
+    Option.Some(_) => printf("passthru=some\n"),
+    Option.None => printf("passthru=none\n"),
+  }
+  return 0;
+}

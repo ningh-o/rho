@@ -1,0 +1,19 @@
+// out: plain=2.5 exp=1500.0 negexp=0.25 und=1000.25 ecap=350.0
+// out: f32 consumer=1.5 int-fraction=4.0
+// exit: 0
+// spec: syntax.md §2.3
+// Float literals: digits '.' digits with an optional exponent
+// ([eE] [+-]? digits); underscores inside digit runs. With no consumer
+// a float defaults to f64; a literal adapts to an f32 consumer.
+fn main() -> i32 {
+  let plain = 2.5;
+  let exp = 1.5e3;
+  let negexp = 2.5E-1;
+  let und = 1_000.25;
+  let ecap: f64 = 3.5e2;
+  printf("plain={} exp={} negexp={} und={} ecap={}\n", plain, exp, negexp, und, ecap);
+  let f32c: f32 = 1.5;
+  let ifrac = 4e0;
+  printf("f32 consumer={} int-fraction={}\n", f32c, ifrac);
+  return 0;
+}

@@ -1,0 +1,19 @@
+// out: neg0==pos0=true inf==inf=true inf!=-inf=true
+// out: nan!=nan=true nan==nan=false nan==1.0=false
+// exit: 0
+// spec: type-system.md §10, spec.md §4
+// Floats compare by value under IEEE-754: -0.0 == 0.0 (the comparison
+// is numeric, not bit-wise), +inf == +inf while +inf != -inf, and NaN
+// is equal to NOTHING — including itself — so NaN != NaN is true.
+fn main() -> i32 {
+  let nz: f64 = -0.0;
+  let pz: f64 = 0.0;
+  let inf: f64 = (1.0 / 0.0);
+  let ninf: f64 = (-1.0 / 0.0);
+  printf("neg0==pos0={} inf==inf={} inf!=-inf={}\n",
+         (nz == pz), (inf == inf), (inf != ninf));
+  let nan: f64 = (0.0 / 0.0);
+  printf("nan!=nan={} nan==nan={} nan==1.0={}\n",
+         (nan != nan), (nan == nan), (nan == 1.0));
+  return 0;
+}

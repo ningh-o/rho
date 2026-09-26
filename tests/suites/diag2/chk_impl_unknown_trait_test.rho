@@ -1,0 +1,12 @@
+// expect: impl of unknown trait 'Nope'
+// spec: check — traits
+// an impl block must name a declared trait
+struct S { x: i32 }
+
+impl Nope for S {
+  fn to_str(self: *S) -> string { return "s"; }
+}
+
+fn main() -> i32 {
+  return 0;
+}

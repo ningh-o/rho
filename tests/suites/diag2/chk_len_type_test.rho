@@ -1,0 +1,7 @@
+// expect: len takes a string or slice, got i32
+// spec: check — builtins
+// len measures strings and slices; other types have no length
+fn main() -> i32 {
+  let n = len(1);
+  return 0;
+}

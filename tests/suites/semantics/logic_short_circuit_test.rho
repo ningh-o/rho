@@ -1,0 +1,40 @@
+// out: short-circuit && saved us
+// out: short-circuit || saved us
+// out: while with &&: i=3
+// out: guard var&&var: ok
+// out: and or not: true true true
+// exit: 0
+// spec: spec.md §4, syntax.md §6.1, type-system.md §13
+// `&&`/`||` take and return bool and SHORT-CIRCUIT: the right operand
+// is not evaluated when the left decides (the boom() call below never
+// runs). Conditions work in while, and in if when at least one
+// operand is a runtime value.
+fn boom() -> i32 {
+  panic("boom");
+  return 0;
+}
+fn main() -> i32 {
+  let t: bool = true;
+  let f: bool = false;
+  if f && (boom() > 0) {
+    printf("no\n");
+  } else {
+    printf("short-circuit && saved us\n");
+  }
+  if t || (boom() > 0) {
+    printf("short-circuit || saved us\n");
+  } else {
+    printf("no\n");
+  }
+  let mut i: i32 = 0;
+  while i < 3 && 1 == 1 {
+    i += 1;
+  }
+  printf("while with &&: i={}\n", i);
+  let a: i32 = 1;
+  if a < 2 && a < 3 {
+    printf("guard var&&var: ok\n");
+  }
+  printf("and or not: {} {} {}\n", (t && t), (t || f), !(t && f));
+  return 0;
+}

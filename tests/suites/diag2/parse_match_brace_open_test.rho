@@ -1,0 +1,10 @@
+// expect: to open match arms
+// spec: syntax.md — match
+// the match scrutinee is followed by a braced arm list
+fn f(v: i32) -> i32 {
+  match v 1
+}
+
+fn main() -> i32 {
+  return 0;
+}

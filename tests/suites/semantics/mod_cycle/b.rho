@@ -1,0 +1,7 @@
+use a;
+pub fn w() -> i32 {
+  return 2;
+}
+pub fn call_a() -> i32 {
+  return a.v() + 20;
+}

@@ -1,0 +1,29 @@
+// out: box int=7 str=hey
+// out: store through generic mut view: w
+// out: assoc fn set: 42
+// exit: 0
+// spec: type-system.md §8, syntax.md §4.2, TODO.md §18
+// Generic structs carry their parameter into their functions: the
+// dotted method form with the bare-generic receiver (`fn Box.get(self:
+// *Box) -> T`) sees T, an associated fn taking a `mut` view parameter
+// (`fn Box.set(mut p: *Box, nv: T)`) writes through it, and one body
+// instantiates at unrelated element types independently.
+struct Box[T] {
+  v: T,
+}
+fn Box.get(self: *Box) -> T {
+  return self.v;
+}
+fn Box.set(mut p: *Box, nv: T) {
+  p.v = nv;
+}
+fn main() -> i32 {
+  let bi: *Box[i32] = new Box[i32] { v: 7 };
+  let bs: *Box[string] = new Box[string] { v: "hey" };
+  printf("box int={} str={}\n", bi.get(), bs.get());
+  Box.set(mut bs, "w");
+  printf("store through generic mut view: {}\n", bs.get());
+  Box.set(mut bi, 42);
+  printf("assoc fn set: {}\n", bi.get());
+  return 0;
+}

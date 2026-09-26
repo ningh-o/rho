@@ -1,0 +1,21 @@
+// out: written: 1 false 0.0 2
+// out: zeroed fields: 9 true 1.5 3
+// exit: 0
+// spec: spec.md §1.3
+// `new` yields ZEROED memory: every integer/float/bool field left
+// out of the constructor reads as 0/false/0.0 — including reused
+// allocator blocks. (Pointer/string/slice fields left zeroed are a
+// compile error — §1.5 — and cannot be pinned positively.)
+struct Loose {
+  a: i32,
+  b: bool,
+  c: f64,
+  d: i64,
+}
+fn main() -> i32 {
+  let w = new Loose { a: 1, b: false, c: 0.0, d: 2 };
+  printf("written: {} {} {} {}\n", w.a, w.b, w.c, w.d);
+  let z = new Loose { a: 9, b: true, c: 1.5, d: 3 };
+  printf("zeroed fields: {} {} {} {}\n", z.a, z.b, z.c, z.d);
+  return 0;
+}

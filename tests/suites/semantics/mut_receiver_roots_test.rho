@@ -1,0 +1,34 @@
+// out: bumped twice: 2
+// out: read-only receiver on frozen root: 5
+// out: mixed receivers: 8
+// exit: 0
+// spec: TODO.md §18, syntax.md §4.1
+// Mut-receiver methods (`fn C.bump(mut self)`) are callable on
+// let-`mut` roots and the stores stick; read-only receivers are
+// callable on frozen (non-`mut`) roots; bare and typed receiver
+// forms mix in one module.
+struct C {
+  n: i32,
+}
+fn C.bump(mut self) {
+  self.n = self.n + 1;
+}
+fn C.get(self) -> i32 {
+  return self.n;
+}
+fn C.add(mut self: *C, k: i32) -> i32 {
+  self.n = self.n + k;
+  return self.n;
+}
+fn main() -> i32 {
+  let mut c = new C { n: 0 };
+  c.bump();
+  c.bump();
+  printf("bumped twice: {}\n", c.get());
+  let frozen = new C { n: 5 };
+  printf("read-only receiver on frozen root: {}\n", frozen.get());
+  let mut m = new C { n: 1 };
+  m.add(7);
+  printf("mixed receivers: {}\n", m.get());
+  return 0;
+}

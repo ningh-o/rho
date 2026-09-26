@@ -1,0 +1,15 @@
+// expect: variant P has no payload field 'y'
+// spec: check — match
+// a struct-form pattern binds by payload field name; 'y' is not one
+enum E { P { x: i32 }, B }
+
+fn f(e: E) -> i32 {
+  match e {
+    E.P { y: a } => a,
+    E.B => 2,
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -1,0 +1,7 @@
+// expect: expected a type, found
+// spec: syntax.md — types
+// a type annotation needs a type; an integer literal is not one
+fn main() -> i32 {
+  let x: 42 = 1;
+  return 0;
+}

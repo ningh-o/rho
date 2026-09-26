@@ -1,0 +1,9 @@
+// expect: compound assignment needs i32, got string
+// spec: check — assignment
+// a compound assignment reuses the binary operator on the stored
+// type; '*=' has no string form
+fn main() -> i32 {
+  let mut x: i32 = 1;
+  x *= "s";
+  return 0;
+}

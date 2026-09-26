@@ -1,0 +1,24 @@
+// out: inferred=4 pinned=900 f=2.5 s=rho b=true
+// out: casted=42
+// out: static=30 static2=4
+// exit: 0
+// spec: syntax.md §4.3, type-system.md §2
+// `const` is immutable and folded at compile time — inferred without
+// an annotation, pinned to any builtin type with one. `static mut` is
+// the only global state: module lifetime, mutable, initialized from
+// comptime-evaluable expressions (literals, consts, operators on them).
+const INFERRED = 4;
+const PINNED: i32 = 30 * 30;
+const RATE: f64 = 2.5;
+const TAG: string = "rho";
+const FLAG: bool = true;
+const FOLDED = (6 * 7) as i32;
+static mut BASE: i32 = 3;
+static mut COMPOSED: i32 = INFERRED + PINNED - 900;
+fn main() -> i32 {
+  printf("inferred={} pinned={} f={} s={} b={}\n", INFERRED, PINNED, RATE, TAG, FLAG);
+  printf("casted={}\n", FOLDED);
+  BASE = BASE * 10;
+  printf("static={} static2={}\n", BASE, COMPOSED);
+  return 0;
+}

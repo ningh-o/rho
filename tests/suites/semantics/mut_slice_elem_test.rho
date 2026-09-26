@@ -1,0 +1,23 @@
+// out: stored through view: 42
+// out: second slice sees it: 42 3
+// out: shallow view from frozen: 43
+// exit: 0
+// spec: TODO.md §18 (type-system.md §14)
+// Element stores through a `let mut` slice binding are writes into
+// the shared buffer: a second slice aliasing the same allocation
+// observes them (copying a slice copies the handle, not the buffer).
+// The view is SHALLOW: a handle copied out of a non-`mut` binding is
+// governed by its own binding's `mut` — `let mut w = frozen;`
+// rebinds the same buffer writable.
+fn main() -> i32 {
+  let mut xs: []i32 = [1, 2, 3];
+  xs[0] = 42;
+  printf("stored through view: {}\n", xs[0]);
+  let ys: []i32 = xs;
+  printf("second slice sees it: {} {}\n", ys[0], ys[2]);
+  let frozen: []i32 = [7, 8, 9];
+  let mut w = frozen;
+  w[0] += 36;
+  printf("shallow view from frozen: {}\n", w[0]);
+  return 0;
+}

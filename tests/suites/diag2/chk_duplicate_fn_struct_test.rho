@@ -1,0 +1,11 @@
+// expect: duplicate definition of 'f' in module
+// spec: check — symbols
+// a module's symbol table is keyed by name across kinds: a fn and a
+// struct cannot share one
+fn f() -> i32 { return 1; }
+
+struct f { x: i32 }
+
+fn main() -> i32 {
+  return 0;
+}

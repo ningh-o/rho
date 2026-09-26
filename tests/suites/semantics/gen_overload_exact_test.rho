@@ -1,0 +1,39 @@
+// out: f=i32 i64 g=ii i h=ptr int
+// exit: 0
+// spec: type-system.md §5
+// Overloading resolves by EXACT match — parameter types + count equal
+// to the call's argument types, exactly one match wins. A typed i32
+// binding resolves to the i32 arm, a typed i64 binding to the i64
+// arm; count distinguishes g's two arms; the pointer-vs-value
+// parameter types distinguish q's. (A BARE literal cannot disambiguate
+// f(i32)/f(i64): both signatures adapt the literal, which is the
+// ambiguity error the law names — pinned by lang/diag suites, not
+// here.)
+fn f(x: i32) -> string {
+  return "i32";
+}
+fn f(x: i64) -> string {
+  return "i64";
+}
+fn g(x: i32, y: i32) -> string {
+  return "ii";
+}
+fn g(x: i32) -> string {
+  return "i";
+}
+struct W {
+  v: i32,
+}
+fn qq(w: *W) -> string {
+  return "ptr";
+}
+fn qq(v: i32) -> string {
+  return "int";
+}
+fn main() -> i32 {
+  let a: i32 = 1;
+  let b: i64 = 2;
+  let w = new W { v: 1 };
+  printf("f={} {} g={} {} h={} {}\n", f(a), f(b), g(a, a), g(a), qq(w), qq(a));
+  return 0;
+}

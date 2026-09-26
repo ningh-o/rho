@@ -76,6 +76,7 @@ extern bool g_had_error;
 void diag_at(DiagKind kind, const char *file, int line, int col,
              const char *fmt, ...);
 void diag_gate_set(void); // one-error mode after a structural limit trips
+void diag_gate_clear(void); // compile boundary: the gate is not a latch
 void diags_print(FILE *out);
 size_t diags_count(void);
 

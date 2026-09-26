@@ -1,0 +1,8 @@
+// expect: to close parameters
+// spec: syntax.md — declarations
+// the parameter list closes with ')' before the body
+fn f(a: i32 { return a; }
+
+fn main() -> i32 {
+  return 0;
+}

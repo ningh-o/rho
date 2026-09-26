@@ -1,0 +1,10 @@
+// expect: field 's' (string) must be initialized
+// spec: check — constructors
+// managed fields (string, slice, pointer) hold no zero default: they
+// must be initialized explicitly
+struct S { s: string }
+
+fn main() -> i32 {
+  let p = new S {};
+  return 0;
+}

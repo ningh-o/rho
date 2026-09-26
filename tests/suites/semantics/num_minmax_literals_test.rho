@@ -1,0 +1,43 @@
+// out: i8 -128..127 i16 -32768..32767 i32 -2147483648..2147483647
+// out: i64 -9223372036854775808..9223372036854775807
+// out: u8 0..255 u16 0..65535 u32 0..4294967295
+// out: u64 0..18446744073709551615
+// out: const-pinned min=-128 maxu=255
+// exit: 0
+// spec: type-system.md §1, §2
+// Literals adapt to their consumer and must fit it: every width's
+// extreme literals are accepted exactly at the bounds (i64's MIN rides
+// the unary-minus form, the mathematical value fitting i64). The same
+// extremes pin a const's annotation (§2: the initializer must
+// comptime-fit the pinned builtin type).
+const MIN8: i8 = -128;
+const MAXU8: u8 = 255;
+
+fn main() -> i32 {
+  let a: i8 = -128;
+  let b: i8 = 127;
+  printf("i8 {}..{}", a, b);
+  let c: i16 = -32768;
+  let d: i16 = 32767;
+  printf(" i16 {}..{}", c, d);
+  let e: i32 = -2147483648;
+  let f: i32 = 2147483647;
+  printf(" i32 {}..{}\n", e, f);
+  let g: i64 = -9223372036854775808;
+  let h: i64 = 9223372036854775807;
+  printf("i64 {}..{}\n", g, h);
+  let i: u8 = 0;
+  let j: u8 = 255;
+  printf("u8 {}..{}", i, j);
+  let k: u16 = 0;
+  let l: u16 = 65535;
+  printf(" u16 {}..{}", k, l);
+  let m: u32 = 0;
+  let n: u32 = 4294967295;
+  printf(" u32 {}..{}\n", m, n);
+  let o: u64 = 0;
+  let p: u64 = 18446744073709551615;
+  printf("u64 {}..{}\n", o, p);
+  printf("const-pinned min={} maxu={}\n", MIN8, MAXU8);
+  return 0;
+}

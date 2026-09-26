@@ -1,0 +1,7 @@
+// expect: bitwise operators take integers, got string
+// spec: check — operators
+// & | ^ << >> are integer operations
+fn main() -> i32 {
+  let a = "x" & "y";
+  return 0;
+}

@@ -1,0 +1,24 @@
+// out: lt=true gt=false le=true ge=false
+// out: nan<nan=false nan>1.0=false nan<=1.0=false nan>=1.0=false
+// out: f32 2.5>2.0=true
+// exit: 0
+// spec: spec.md §4 — IEEE-754 comparisons; type-system.md §13
+// Ordered float comparisons are IEEE: 1.0 < 2.0 is true, NaN is
+// unordered (every ordered comparison against it is false). OBSERVED
+// TODAY (bug B-6): the emitter reuses the integer opcodes' `_u`
+// suffix for ordered float compares (`f64.lt_u`, `f64.gt_u`,
+// `f64.le_u`, `f64.ge_u` — boot/emit.c OP_LT..OP_GE), which are not
+// wasm instructions: any program containing them fails wat2wasm and
+// exits 1 with no diagnostic. The values below are the LAW; the case
+// promotes when the emitter emits f64.lt/le/gt/ge.
+fn main() -> i32 {
+  let a: f64 = 1.0;
+  let b: f64 = 2.0;
+  printf("lt={} gt={} le={} ge={}\n", (a < b), (a > b), (a <= b), (a >= b));
+  let nan: f64 = (0.0 / 0.0);
+  printf("nan<nan={} nan>1.0={} nan<=1.0={} nan>=1.0={}\n",
+         (nan < nan), (nan > 1.0), (nan <= 1.0), (nan >= 1.0));
+  let x: f32 = 2.5;
+  printf("f32 2.5>2.0={}\n", (x > 2.0));
+  return 0;
+}

@@ -1,0 +1,7 @@
+// expect: if arms disagree: i32 vs string
+// spec: check — expressions
+// both arms of an if-expression must produce the same type
+fn main() -> i32 {
+  let x = if true { 1 } else { "s" };
+  return 0;
+}

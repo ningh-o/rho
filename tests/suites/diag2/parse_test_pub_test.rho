@@ -1,0 +1,10 @@
+// expect: a test block cannot be 'pub'
+// spec: syntax.md — test blocks
+// test blocks are harness-private: 'pub test' does not exist
+pub test "t" {
+  assert(true);
+}
+
+fn main() -> i32 {
+  return 0;
+}

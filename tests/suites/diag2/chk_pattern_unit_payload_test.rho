@@ -1,0 +1,15 @@
+// expect: variant E.B takes 0 payload field(s)
+// spec: check — match
+// a unit variant pattern carries no payload list
+enum E { A(i32), B }
+
+fn f(e: E) -> i32 {
+  match e {
+    E.B(x) => 1,
+    E.A(a) => a,
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}

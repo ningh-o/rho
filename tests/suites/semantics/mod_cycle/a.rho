@@ -1,0 +1,15 @@
+use b;
+pub fn v() -> i32 {
+  return 1;
+}
+pub fn call_b() -> i32 {
+  return b.w() + 10;
+}
+pub fn root_plus_one() -> i32 {
+  return ROOT_LIMIT + 1;
+}
+static mut hits: i32 = 0;
+pub fn bump() -> i32 {
+  hits += 1;
+  return hits;
+}

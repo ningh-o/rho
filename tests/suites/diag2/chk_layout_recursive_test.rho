@@ -1,0 +1,8 @@
+// expect: type 'S' nests too deeply while checking layout
+// spec: module-system.md §5 — layout law
+// a by-value self-cycle (struct S { s: S }) has no finite layout
+struct S { s: S }
+
+fn main() -> i32 {
+  return 0;
+}

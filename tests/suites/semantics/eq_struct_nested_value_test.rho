@@ -1,0 +1,29 @@
+// out: line eq=true ne=false
+// out: one field off: eq=false ne=true
+// out: bool/usize: eq=true ne=false
+// exit: 0
+// spec: type-system.md §10
+// Structs compare element-wise, recursively: nested value structs are
+// == only when every leaf matches, and != is exactly the negation.
+// bool and usize compare by value like any scalar.
+struct Pt {
+  x: i32,
+  y: i32,
+}
+struct Line {
+  a: Pt,
+  b: Pt,
+}
+fn main() -> i32 {
+  let a: Line = *new Line { a: *new Pt { x: 1, y: 2 }, b: *new Pt { x: 3, y: 4 } };
+  let b: Line = *new Line { a: *new Pt { x: 1, y: 2 }, b: *new Pt { x: 3, y: 4 } };
+  let c: Line = *new Line { a: *new Pt { x: 1, y: 2 }, b: *new Pt { x: 3, y: 5 } };
+  printf("line eq={} ne={}\n", (a == b), (a != b));
+  printf("one field off: eq={} ne={}\n", (a == c), (a != c));
+  let t: bool = true;
+  let f: bool = true;
+  let u: usize = 7;
+  let v: usize = 7;
+  printf("bool/usize: eq={} ne={}\n", ((t == f) && (u == v)), ((t != f) || (u != v)));
+  return 0;
+}

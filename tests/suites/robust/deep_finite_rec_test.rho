@@ -1,0 +1,13 @@
+// out: sum=10000
+// spec: spec.md §3 — 10000 frames of finite non-tail recursion
+// fit the runtime stack: returns normally, no overflow
+fn down(n: i32) -> i32 {
+  if n == 0 {
+    return 0;
+  }
+  return (down(n - 1)) + 1;
+}
+fn main() -> i32 {
+  printf("sum={}\n", down(10000));
+  return 0;
+}

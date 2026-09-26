@@ -1,0 +1,50 @@
+// out: break hits=5 i=1
+// out: continue restarts labeled: sum=9
+// out: labeled loop break: first=3
+// exit: 0
+// spec: syntax.md §5
+// Labels (Go form): `break L;` leaves the labeled loop from any
+// nesting depth, `continue L;` restarts the labeled body from any
+// depth. Both work on while and loop. Break without a label leaves
+// only the innermost loop.
+fn main() -> i32 {
+  let mut hits: i32 = 0;
+  let mut i: i32 = 0;
+  outer: while i < 10 {
+    i += 1;
+    let mut j: i32 = 0;
+    while j < 10 {
+      j += 1;
+      if i * j >= 6 {
+        break outer;
+      }
+      hits += 1;
+    }
+  }
+  printf("break hits={} i={}\n", hits, i);
+  let mut sum: i32 = 0;
+  let mut k: i32 = 0;
+  skip: while k < 6 {
+    k += 1;
+    if k % 2 == 0 {
+      continue skip;
+    }
+    sum += k;
+  }
+  printf("continue restarts labeled: sum={}\n", sum);
+  let mut first: i32 = 0;
+  found: loop {
+    let mut m: i32 = 1;
+    while m < 10 {
+      if m * m > 4 {
+        first = m;
+        break found;
+      }
+      m += 1;
+    }
+    first = -1;
+    break;
+  }
+  printf("labeled loop break: first={}\n", first);
+  return 0;
+}

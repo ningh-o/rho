@@ -1,0 +1,8 @@
+// expect: 'std' is reserved
+// spec: module-system.md §2
+// the 'std' package name is reserved for the standard library
+use std;
+
+fn main() -> i32 {
+  return 0;
+}

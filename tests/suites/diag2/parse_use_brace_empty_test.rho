@@ -1,0 +1,9 @@
+// expect: the brace form needs at least one item
+// spec: module-system.md §2
+// the braced use form imports a list of items; an empty list names
+// nothing
+use m {};
+
+fn main() -> i32 {
+  return 0;
+}

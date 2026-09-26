@@ -1,0 +1,8 @@
+// expect: unexpected character '@'
+// spec: syntax.md — lexer
+// '@' has no token in the language: the lexer refuses it where it
+// stands and skips past it
+fn main() -> i32 {
+  let x = 1 @ 2;
+  return 0;
+}

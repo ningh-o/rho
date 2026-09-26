@@ -1,0 +1,10 @@
+// expect: struct S has no field 'z'
+// spec: check — field access
+// a read through a struct must name one of its declared fields
+struct S { x: i32 }
+
+fn main() -> i32 {
+  let s = new S { x: 1 };
+  let a = s.z;
+  return 0;
+}

@@ -1,0 +1,10 @@
+// expect: named arguments need a struct-form variant
+// spec: check — enums
+// named construction is reserved for struct-form variants; tuple
+// variants bind positionally
+enum E { A(i32) }
+
+fn main() -> i32 {
+  let e = E.A(v: 1);
+  return 0;
+}

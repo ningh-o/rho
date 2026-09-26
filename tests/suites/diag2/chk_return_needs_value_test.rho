@@ -1,0 +1,10 @@
+// expect: return needs a value of type i32
+// spec: check — returns
+// a fn that declares i32 must return a value
+fn f() -> i32 {
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

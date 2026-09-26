@@ -1,0 +1,36 @@
+// out: after += 14 -> 30
+// out: after <<= 1 -> 60
+// out: index *= 3 -> 9
+// out: nested field/index: 8
+// out: usize lane: 2147483648
+// exit: 0
+// spec: TODO.md §18, syntax.md §5
+// Compound assignment is a store: through a `mut` root it loads,
+// operates, and stores — on fields, on slice elements, on a slice
+// element reached through a struct field, and on the usize index
+// lane (1 << 31 on usize keeps bit 31, no sign). Declared after
+// use: module declarations are order-free (module-system.md §1).
+struct Holder {
+  xs: []i32,
+}
+fn main() -> i32 {
+  let mut r = new C { n: 16 };
+  r.n += 14;
+  printf("after += 14 -> {}\n", r.n);
+  r.n <<= 1;
+  printf("after <<= 1 -> {}\n", r.n);
+  let mut xs: []i32 = [1, 3, 3];
+  let mut i: usize = 1;
+  xs[i] *= 3;
+  printf("index *= 3 -> {}\n", xs[1]);
+  let mut h = new Holder { xs: [1, 2, 4] };
+  h.xs[2] += 4;
+  printf("nested field/index: {}\n", h.xs[2]);
+  let mut u: usize = 1;
+  u <<= 31;
+  printf("usize lane: {}\n", u);
+  return 0;
+}
+struct C {
+  n: i32,
+}

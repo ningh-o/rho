@@ -1,0 +1,10 @@
+// expect: type 'A' nests too deeply while checking layout
+// expect: type 'B' nests too deeply while checking layout
+// spec: module-system.md §5 — layout law
+// the mutual form of the by-value cycle: A holds B, B holds A
+struct A { b: B }
+struct B { a: A }
+
+fn main() -> i32 {
+  return 0;
+}

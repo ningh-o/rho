@@ -1,0 +1,17 @@
+// expect: in an impl block
+// spec: syntax.md — impl blocks
+// an impl block is written 'impl Trait for Type { ... }' — the 'for'
+// keyword is required
+trait Show {
+  fn to_str(self) -> string,
+}
+
+struct S { x: i32 }
+
+impl Show S {
+  fn to_str(self: *S) -> string { return "s"; }
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -1,0 +1,7 @@
+// expect: cannot negate string
+// spec: check — operators
+// unary minus is a numeric operation
+fn main() -> i32 {
+  let a = -"s";
+  return 0;
+}

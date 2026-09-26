@@ -1,0 +1,20 @@
+use helpers;
+pub struct N {
+  k: i32,
+}
+pub fn add(a: i32, b: i32) -> i32 {
+  return a + b;
+}
+// an impl in a module that declares neither the type nor the trait
+impl Doubler for N {
+  fn dbl(self: *N) -> i32 {
+    return self.k * 2;
+  }
+}
+fn N.collatz(self: *N, d: i32) -> i32 {
+  return self.k * 2 + d;
+}
+pub fn doubled() -> i32 {
+  let n = new N { k: 4 };
+  return n.dbl();
+}

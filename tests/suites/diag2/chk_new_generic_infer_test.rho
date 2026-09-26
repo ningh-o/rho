@@ -1,0 +1,10 @@
+// expect: cannot infer the generic arguments of S here
+// spec: check — generics
+// a generic struct constructor must spell its type arguments when
+// no field value binds them
+struct S[T] { v: T }
+
+fn main() -> i32 {
+  let s = new S { v: 1 };
+  return 0;
+}

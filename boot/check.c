@@ -476,9 +476,9 @@ static bool use_collides(Module *m, Node *u, const char *alias) {
   }
   if (there) {
     diag_at(DIAG_ERROR, m->path, u->line, u->col,
-            "the import '%s' collides with an existing '%s' in this "
+            "the import '%s' collides with an existing name in this "
             "module",
-            alias, alias);
+            alias);
     return true;
   }
   for (size_t k = 0; k < VLEN(m->uses); k++) {
@@ -996,6 +996,20 @@ static bool gscope_has_all(GScope *g, const char **names, size_t n) {
 
 static Type *resolve_type(Module *m, NodeRef tr, GScope *g);
 
+static const char *sym_kind_word(SymKind k) {
+  switch (k) {
+  case SYM_FN: return "function";
+  case SYM_STRUCT: return "struct";
+  case SYM_ENUM: return "enum";
+  case SYM_TRAIT: return "trait";
+  case SYM_CONST: return "const";
+  case SYM_STATIC: return "static";
+  case SYM_EXTERN: return "extern";
+  case SYM_MODULE: return "module";
+  }
+  return "value";
+}
+
 static Type *resolve_named(Program *p, Module *m, const char *name,
                            Type **args, size_t nargs, NodeRef tr, GScope *g) {
   Node *t = node_get(tr);
@@ -1057,7 +1071,7 @@ static Type *resolve_named(Program *p, Module *m, const char *name,
     return type_enum(ed, args, nargs);
   }
   diag_at(DIAG_ERROR, m->path, t->line, t->col,
-          "'%s' is not a type (has kind %d)", name, (int)sym->kind);
+          "'%s' is not a type (it names a %s)", name, sym_kind_word(sym->kind));
   return ty_i32;
 }
 
@@ -1486,6 +1500,7 @@ static void collect_one_fn(Program *p, Module *m, NodeRef dr) {
     memset(cd, 0, sizeof(ConstDef));
     cd->name = d->name;
     cd->init = d->b;
+    cd->decl = dr;
     cd->mod = m;
     s->u.konst = cd;
     cd->ty = resolve_type(m, d->a, NULL);

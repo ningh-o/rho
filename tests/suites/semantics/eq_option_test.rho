@@ -1,0 +1,25 @@
+// out: Some twin: eq=true ne=false
+// out: None vs Some: eq=false ne=true
+// out: None == None: eq=true
+// out: payload by identity: eq=false
+// exit: 0
+// spec: type-system.md §10
+// `Option[T]` compares constructor first, then payload: two Some
+// twins with equal payloads are ==, None never equals Some, two
+// Nones are ==, and an Option of pointers compares its pointer
+// payload by IDENTITY — two distinct allocations behind Some are !=.
+struct P {
+  x: i32,
+}
+fn main() -> i32 {
+  let a: ?i32 = Option.Some(3);
+  let b: ?i32 = Option.Some(3);
+  let n: ?i32 = Option.None;
+  printf("Some twin: eq={} ne={}\n", (a == b), (a != b));
+  printf("None vs Some: eq={} ne={}\n", (a == n), (a != n));
+  printf("None == None: eq={}\n", (n == Option.None));
+  let p1: ?*P = Option.Some(new P { x: 1 });
+  let p2: ?*P = Option.Some(new P { x: 1 });
+  printf("payload by identity: eq={}\n", (p1 == p2));
+  return 0;
+}

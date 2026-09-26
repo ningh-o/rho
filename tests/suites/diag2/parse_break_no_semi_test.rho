@@ -1,0 +1,9 @@
+// expect: after break
+// spec: syntax.md — loops
+// a break statement ends with a semicolon
+fn main() -> i32 {
+  while true {
+    break
+  }
+  return 0;
+}

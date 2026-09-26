@@ -1,0 +1,9 @@
+// expect: enum E is a type, not a value (use E.Variant)
+// spec: check — enums
+// an enum name names the type; a value needs a variant
+enum E { A }
+
+fn main() -> i32 {
+  let e = E;
+  return 0;
+}

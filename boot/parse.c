@@ -8,7 +8,8 @@
 typedef struct Parser {
   Module *m;
   size_t pos;
-  int depth; // guarded-recursion depth (PARSE_DEPTH_CAP)
+  int depth;  // guarded-recursion depth (PARSE_DEPTH_CAP)
+  int chain;  // operator nodes in the current expression (PARSE_CHAIN_CAP)
 } Parser;
 
 static Token *cur(Parser *p) {
@@ -66,6 +67,7 @@ static Token *expect(Parser *p, TokKind k, const char *what) {
 // depth; past the cap the parse reports one error, swallows the rest
 // of the file, and unwinds — the diag gate keeps the unwind silent
 #define PARSE_DEPTH_CAP 4000
+#define PARSE_CHAIN_CAP 8000
 static NodeRef nnew(Parser *p, NodeKind k);
 static NodeRef parse_type_inner(Parser *p);
 static NodeRef parse_pattern_inner(Parser *p);
@@ -894,12 +896,25 @@ static NodeRef parse_binary(Parser *p, int min_prec) {
     node_get(r)->b =
         prec + 1 <= PREC_MUL ? parse_binary(p, prec + 1) : parse_unary(p);
     lhs = r;
+    if (++p->chain > PARSE_CHAIN_CAP) {
+      diag_at(DIAG_ERROR, p->m->path, cur(p)->line, cur(p)->col,
+              "an expression is too long (over %d operator levels)",
+              PARSE_CHAIN_CAP);
+      diag_gate_set();
+      while (!is(p, T_EOF))
+        eat(p);
+      return lhs;
+    }
   }
 }
 
 static NodeRef parse_expr(Parser *p) {
   if (p->depth >= PARSE_DEPTH_CAP)
     return parse_depth_hole(p, "an expression");
+  // the chain cap bounds AST depth the recursion guards cannot see:
+  // a left-associative chain parses iteratively but checks/emits
+  // recursively, so 14k flat terms once smashed the C stack
+  p->chain = 0;
   p->depth++;
   NodeRef r = parse_binary(p, PREC_OR);
   p->depth--;
@@ -1640,7 +1655,7 @@ Module *module_parse_src(const char *path, const char *src) {
   m->decls = reflist();
   vec_init(&m->uses, sizeof(UseBind));
 
-  Parser p = {m, 0, 0};
+  Parser p = {m, 0, 0, 0};
   while (!is(&p, T_EOF)) {
     if (accept(&p, T_SEMI))
       continue; // stray semicolons between decls

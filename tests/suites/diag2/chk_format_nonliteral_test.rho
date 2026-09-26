@@ -1,0 +1,9 @@
+// expect: printf takes a literal format string first
+// spec: check — printf family
+// the format string must be a literal so its holes are counted at
+// check time
+fn main() -> i32 {
+  let f = "{}\n";
+  printf(f, 1);
+  return 0;
+}

@@ -1,0 +1,13 @@
+// expect: no method 'nothing' for type *S
+// spec: check — methods
+// a method call must resolve to a native method or one visible
+// through the use closure
+struct S { x: i32 }
+
+fn S.get(self) -> i32 { return self.x; }
+
+fn main() -> i32 {
+  let s = new S { x: 1 };
+  let a = s.nothing();
+  return 0;
+}

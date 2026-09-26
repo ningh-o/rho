@@ -1,0 +1,32 @@
+// out: inferred=4 pinned=900 folded=42
+// out: comptime match arm: forty-two
+// out: dead branch pruned: live
+// out: string+float consts: rho 2.5
+// exit: 0
+// spec: type-system.md §2, spec.md §6
+// `const N = 4;` infers (integer literal with no other consumer ->
+// i32); an annotation pins any builtin type and the initializer must
+// comptime-fit. Initializers are comptime-evaluable: literals, other
+// consts, builtin operators, `as` casts. Conditions over comptime
+// values fold at compile time — only the live branch is checked and
+// emitted. (A compound folded condition `c && c` is pinned separately:
+// it mis-folds today, see logic_fold_condition_pending.)
+const INFERRED = 4;
+const PINNED: i32 = 30 * 30;
+const FORTY_TWO = (6 * 7) as i32;
+const RATE: f64 = 2.5;
+const TAG: string = "rho";
+fn main() -> i32 {
+  printf("inferred={} pinned={} folded={}\n", INFERRED, PINNED, FORTY_TWO);
+  match FORTY_TWO {
+    42 => printf("comptime match arm: forty-two\n"),
+    _ => printf("comptime match arm: other\n"),
+  }
+  if PINNED == 900 {
+    printf("dead branch pruned: live\n");
+  } else {
+    printf("dead branch pruned: never\n");
+  }
+  printf("string+float consts: {} {}\n", TAG, RATE);
+  return 0;
+}

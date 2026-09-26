@@ -1,0 +1,18 @@
+// out: before panic
+// exit: 101
+// err: panic: kaboom
+// spec: spec.md §2
+// defer runs on every scope exit path EXCEPT panic — there is no
+// unwinding to run it through. The defer registered in risky() never
+// fires: the stdout has no "defer ran" line, the process prints one
+// panic line to stderr and exits 101.
+fn risky() -> i32 {
+  defer printf("defer ran\n");
+  printf("before panic\n");
+  panic("kaboom");
+  return 0;
+}
+fn main() -> i32 {
+  printf("r={}\n", risky());
+  return 0;
+}

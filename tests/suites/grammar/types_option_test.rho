@@ -1,0 +1,45 @@
+// out: some=13
+// out: none_tag=true
+// out: propagated=6
+// out: short=none
+// exit: 0
+// spec: syntax.md §3, §6.9
+// `?T` parses as Option[T] before checking sees it — both spellings
+// name the same type. Constructors are qualified in expressions
+// (Option.Some / Option.None) and bare in patterns. `e?` yields T and
+// propagates None out of an Option-returning function.
+fn twice_present(x: i32) -> ?i32 {
+  let v = Option.Some(x)?;
+  return Option.Some(v * 2);
+}
+fn maybe(flag: bool) -> ?i32 {
+  if flag {
+    return Option.Some(9);
+  }
+  return Option.None;
+}
+fn short(flag: bool) -> ?i32 {
+  let v = maybe(flag)?;
+  return Option.Some(v + 1);
+}
+fn main() -> i32 {
+  let a: ?i32 = Option.Some(13);
+  let b: Option[i32] = Option.None;
+  match a {
+    Option.Some(v) => printf("some={}\n", v),
+    Option.None => printf("some=none\n"),
+  }
+  match b {
+    Option.Some(_) => printf("none_tag=false\n"),
+    Option.None => printf("none_tag=true\n"),
+  }
+  match twice_present(3) {
+    Option.Some(v) => printf("propagated={}\n", v),
+    Option.None => printf("propagated=none\n"),
+  }
+  match short(false) {
+    Option.Some(_) => printf("short=some\n"),
+    Option.None => printf("short=none\n"),
+  }
+  return 0;
+}

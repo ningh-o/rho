@@ -1,0 +1,38 @@
+// out: slice filled 7 7 7
+// out: ptr viewed=99
+// out: call site sees stores: a0=42 px=7
+// exit: 0
+// spec: TODO.md §18 (type-system.md §14)
+// The call-site `mut` marker pairs with a `mut` view parameter in
+// both directions: the callee's stores through a `mut` []T or `mut` *T
+// view are observable at the call site, and the argument's own
+// binding must be `mut` (you can only grant what you have).
+// Permission, never layout: the values are copied views.
+fn fill(mut xs: []i32, v: i32) {
+  let mut i: usize = 0;
+  while i < len(xs) {
+    xs[i] = v;
+    i += 1;
+  }
+}
+fn set_x(mut p: *P, v: i32) {
+  p.x = v;
+}
+struct P {
+  x: i32,
+}
+fn main() -> i32 {
+  let mut a: []i32 = [1, 2, 3];
+  fill(mut a, 7);
+  printf("slice filled {} {} {}\n", a[0], a[1], a[2]);
+  let mut h = new P { x: 1 };
+  set_x(mut h, 99);
+  printf("ptr viewed={}\n", h.x);
+  let mut buf: []i32 = make([]i32, 1);
+  buf[0] = 0;
+  let mut obj = new P { x: 0 };
+  fill(mut buf, 42);
+  set_x(mut obj, 7);
+  printf("call site sees stores: a0={} px={}\n", buf[0], obj.x);
+  return 0;
+}

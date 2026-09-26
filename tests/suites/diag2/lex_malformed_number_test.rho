@@ -1,0 +1,8 @@
+// expect: malformed number literal
+// spec: syntax.md — lexer
+// a decimal literal cannot have identifier characters glued to its
+// tail
+fn main() -> i32 {
+  let x = 123abc;
+  return 0;
+}

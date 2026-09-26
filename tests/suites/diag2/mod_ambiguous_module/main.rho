@@ -1,0 +1,9 @@
+// expect: ambiguous module: both
+// spec: module-system.md §3
+// a package directory and a sibling file module cannot both provide
+// 'geom': exactly one real body may exist
+use geom;
+
+fn main() -> i32 {
+  return geom.f();
+}

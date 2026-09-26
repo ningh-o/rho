@@ -1,0 +1,8 @@
+// expect: make takes a slice type and a length
+// spec: check — builtins
+// make's first argument is an element type in brackets; a plain
+// value does not name a slice
+fn main() -> i32 {
+  let xs = make(3, 4);
+  return 0;
+}

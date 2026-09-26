@@ -1,0 +1,8 @@
+// expect: to close the struct body
+// spec: syntax.md — declarations
+// the struct field list must be closed with '}' before the next
+// declaration starts
+struct S { x: i32
+fn main() -> i32 {
+  return 0;
+}

@@ -1,0 +1,21 @@
+// out: lit=3 20 make=0 mlen=3 elen=0
+// out: ranges=20 10 30 40 grid=9 str=108
+// exit: 0
+// spec: syntax.md §3, §6.2
+// Slices: `[]T` slice literals (consumer-typed elements), the empty
+// `[]` with a consumer, `make([]T, n)` zeroed allocation, indexing with
+// a usize (or a literal adapted to usize), two-sided and open-ended
+// slicing `s[a..b]`, `s[..n]`, `s[n..]` — on slices and on strings.
+fn main() -> i32 {
+  let xs: []i64 = [10, 20, 30];
+  let mut m = make([]i32, 3);
+  let e: []i32 = [];
+  printf("lit={} {} make={} mlen={} elen={}\n", len(xs), xs[1], m[0], len(m), len(e));
+  m[0] = 7;
+  m[2] = m[0] + 1;
+  let ys: []i32 = [10, 20, 30, 40];
+  let grid: [][]i32 = [[1, 2], [8, 9]];
+  let s = "hello";
+  printf("ranges={} {} {} {} grid={} str={}\n", ys[1..2][0], ys[..2][0], ys[2..][0], ys[3..4][0], grid[1][1], s[2]);
+  return 0;
+}

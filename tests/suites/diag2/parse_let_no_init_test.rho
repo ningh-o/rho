@@ -1,0 +1,7 @@
+// expect: initializer required
+// spec: syntax.md — statements
+// a let binding must be initialized where it is declared
+fn main() -> i32 {
+  let x;
+  return 0;
+}

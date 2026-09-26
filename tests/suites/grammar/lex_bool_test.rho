@@ -1,0 +1,18 @@
+// out: values=true false
+// out: not=false true
+// out: arms=t
+// exit: 0
+// spec: syntax.md §2.4
+// `true` and `false` are bool literals; they always have their own type
+// (bool literals never adapt to another consumer) and work as match
+// literal patterns.
+fn main() -> i32 {
+  printf("values={} {}\n", true, false);
+  printf("not={} {}\n", !true, !false);
+  let pick = match true {
+    true => "t",
+    false => "f",
+  };
+  printf("arms={}\n", pick);
+  return 0;
+}

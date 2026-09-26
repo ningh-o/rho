@@ -1,0 +1,13 @@
+// expect: not a conversion
+// spec: type-system.md §3
+// There is no integer → enum reverse conversion: `as` converts
+// between numbers or reads an enum tag (enum → i32) — never the other
+// way. Tags are write-once at the variant declaration.
+enum E { A, B }
+
+fn main() -> i32 {
+  let n: i32 = 1;
+  let e: E = (n as E);
+  printf("{}\n", (e as i32));
+  return 0;
+}

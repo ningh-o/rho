@@ -1,0 +1,9 @@
+// expect: unknown module 'nope_mod'
+// spec: module-system.md §2
+// a use path must name a module that exists in the graph: no file
+// nope_mod.rho (or nope_mod/ package) sits beside this one
+use nope_mod;
+
+fn main() -> i32 {
+  return 0;
+}

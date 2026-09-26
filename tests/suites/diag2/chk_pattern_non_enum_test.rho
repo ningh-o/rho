@@ -1,0 +1,14 @@
+// expect: variant pattern on non-enum Q
+// spec: check — match
+// variant patterns need an enum scrutinee; a struct has none
+struct Q { v: i32 }
+
+fn f(q: Q) -> i32 {
+  match q {
+    E.A(x) => 1,
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -1,0 +1,12 @@
+// exit: 101
+// err: panic: allocation too large
+// spec: spec.md §1.2, §3 — every violation is a defined panic
+// Asking `make` for an absurd element count is a DEFINED panic, not a
+// crash: one stderr line `panic: allocation too large`, exit 101,
+// byte-deterministic. The safe subset never traps with a raw wasm
+// error.
+fn main() -> i32 {
+  let huge: []i32 = make([]i32, 2000000000);
+  printf("unreached len={}\n", len(huge));
+  return 0;
+}

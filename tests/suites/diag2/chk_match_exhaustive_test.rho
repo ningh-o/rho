@@ -1,0 +1,14 @@
+// expect: match on E is not exhaustive: missing E.B
+// spec: check — match
+// a match expression must cover every variant of the scrutinee
+enum E { A(i32), B }
+
+fn f(e: E) -> i32 {
+  match e {
+    E.A(a) => a,
+  }
+}
+
+fn main() -> i32 {
+  return f(E.A(1));
+}

@@ -1,0 +1,26 @@
+// out: i8 1<<9=2 1<<8=1 1<<7=-128
+// out: u8 1<<9=2 1<<8=1
+// out: i16 1<<17=2 1<<16=1 1<<15=-32768
+// out: u16 1<<17=2 1<<16=1
+// out: i8 -1<<9=-2 -1>>1=-1
+// exit: 0
+// spec: spec.md §4 — shifts mask the shift count by the LEFT operand's width
+// The masking law at sub-32 widths: on i8 a shift count of 9 masks to
+// 1, so 1 << 9 = 2 and (-1) << 9 = -2. OBSERVED TODAY (bug B-1): the
+// count masks at 32 (wasm's shift width) regardless of the operand
+// width, so i8 1<<9 evaluates 512 truncated to i8 = 0 and i8 -1<<9
+// evaluates 0 — the printed values below are the LAW, not today's
+// behavior. When B-1 lands this case promotes.
+fn main() -> i32 {
+  let a: i8 = 1;
+  printf("i8 1<<9={} 1<<8={} 1<<7={}\n", (a << 9), (a << 8), (a << 7));
+  let b: u8 = 1;
+  printf("u8 1<<9={} 1<<8={}\n", (b << 9), (b << 8));
+  let c: i16 = 1;
+  printf("i16 1<<17={} 1<<16={} 1<<15={}\n", (c << 17), (c << 16), (c << 15));
+  let d: u16 = 1;
+  printf("u16 1<<17={} 1<<16={}\n", (d << 17), (d << 16));
+  let e: i8 = -1;
+  printf("i8 -1<<9={} -1>>1={}\n", (e << 9), (e >> 1));
+  return 0;
+}

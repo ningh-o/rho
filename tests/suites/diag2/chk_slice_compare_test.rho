@@ -1,0 +1,7 @@
+// expect: slices never compare (write a loop)
+// spec: check — operators
+// the == comparability law: slices have no structural equality
+fn main() -> i32 {
+  let a = [1, 2] == [3, 4];
+  return 0;
+}

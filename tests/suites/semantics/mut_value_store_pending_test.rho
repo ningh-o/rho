@@ -1,0 +1,28 @@
+// out: direct store sticks: 42
+// out: rebind-idiom store returns: 42
+// exit: 0
+// spec: TODO.md §18 — stores through a `mut` binding of a VALUE
+// (inline) struct are writes into that binding's storage
+// Field stores through a `let mut` binding holding a value struct
+// must stick: `let mut a: C = *new C { n: 7 }; a.n = 42;` reads 42
+// afterward, and the §18 rebind idiom `let mut p = c; p.n = 42;`
+// (mutate the parameter's copy) returns 42. OBSERVED TODAY (bug B-2):
+// both stores silently vanish — a.n still reads 7 and the function
+// returns the original 7 — so the values below are the LAW and the
+// case promotes when value-struct field stores land.
+struct C {
+  n: i32,
+}
+fn mutate_copy(c: C) -> i32 {
+  let mut p = c;
+  p.n = 42;
+  return p.n;
+}
+fn main() -> i32 {
+  let mut a: C = *new C { n: 7 };
+  a.n = 42;
+  printf("direct store sticks: {}\n", a.n);
+  let v: C = *new C { n: 7 };
+  printf("rebind-idiom store returns: {}\n", mutate_copy(v));
+  return 0;
+}

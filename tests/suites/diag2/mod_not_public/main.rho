@@ -1,0 +1,9 @@
+// expect: is not public
+// spec: module-system.md §2
+// only 'pub' items travel across modules; a private fn cannot be
+// imported even when its name is known
+use m.helper;
+
+fn main() -> i32 {
+  return 0;
+}

@@ -1,0 +1,7 @@
+// expect: len takes exactly one value
+// spec: check — builtins
+// len is unary
+fn main() -> i32 {
+  let n = len(1, 2);
+  return 0;
+}

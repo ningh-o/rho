@@ -1,0 +1,9 @@
+// expect: after 'static' (all statics are mut)
+// spec: syntax.md — statics
+// every static is a mutable module-lifetime binding; the 'mut'
+// keyword after 'static' is mandatory
+static X: i32 = 1;
+
+fn main() -> i32 {
+  return 0;
+}

@@ -1,0 +1,6 @@
+// expect: type 'A' nests too deeply
+// spec: type-system.md §11 — the cycle hidden behind a generic
+// (Box[A] inside A) does not dodge the layout law: refused
+struct Box[T] { v: T }
+struct A { b: Box[A] }
+fn main() -> i32 { return 0; }

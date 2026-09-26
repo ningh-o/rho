@@ -1,0 +1,8 @@
+// expect: as the function name
+// spec: syntax.md — declarations
+// a fn name must be an identifier
+fn 5() -> i32 { return 5; }
+
+fn main() -> i32 {
+  return 0;
+}

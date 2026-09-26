@@ -1,0 +1,43 @@
+// out: pair=3 x val=77 inner=19
+// out: wrap=5 empty=none id=7
+// exit: 0
+// spec: syntax.md §3, §4.1, §4.2
+// Generic declarations use square brackets: struct Box[T], two-param
+// Pair[A, B], enum Wrap[T]; `new` may pass explicit generics; methods
+// of a generic type are written `fn Box.get(self) -> T` with the
+// parameter in scope; a generic fn instantiates per call.
+struct Pair[A, B] {
+  a: A,
+  b: B,
+}
+struct Box[T] {
+  v: T,
+}
+fn Box.get(self) -> T {
+  return self.v;
+}
+enum Wrap[T] {
+  Val(T),
+  Empty,
+}
+fn id[T](x: T) -> T {
+  return x;
+}
+fn main() -> i32 {
+  let p = new Pair[i32, string] { a: 3, b: "x" };
+  let b = new Box[i32] { v: 77 };
+  let deep = new Box[Box[i32]] { v: new Box[i32] { v: 19 } };
+  printf("pair={} {} val={} inner={}\n", p.a, p.b, b.get(), deep.v.v);
+  let w = Wrap.Val(5);
+  match w {
+    Wrap.Val(v) => printf("wrap={} empty=", v),
+    Wrap.Empty => printf("wrap=none empty="),
+  }
+  let e: Wrap[i32] = Wrap.Empty;
+  match e {
+    Wrap.Val(_) => printf("some\n"),
+    Wrap.Empty => printf("none\n"),
+  }
+  printf("id={}\n", id(7));
+  return 0;
+}

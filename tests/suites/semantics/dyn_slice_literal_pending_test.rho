@@ -1,0 +1,27 @@
+// out: n=13
+// exit: 0
+// spec: type-system.md §9, spec.md §1.2 (zero UB, defined panics only)
+// A slice LITERAL of dyn values — `[new Sq { s: 2 }, new Sq { s: 3 }]`
+// typed []dyn Area — is spec-legal: element coercion happens at the
+// literal's element type (an expected-type site). OBSERVED TODAY (bug
+// B-5): the literal traps at runtime with a raw wasm table access
+// (`panic: undefined element: out of bounds table access`, exit 101)
+// — not a catalog panic; make([]dyn Area, n) + element stores work,
+// only the literal path is broken. The output below is the LAW; the
+// case promotes when dyn slice literals are emitted correctly.
+trait Area {
+  fn area(self) -> i32,
+}
+struct Sq {
+  s: i32,
+}
+impl Area for Sq {
+  fn area(self) -> i32 {
+    return self.s * self.s;
+  }
+}
+fn main() -> i32 {
+  let shapes: []dyn Area = [new Sq { s: 2 }, new Sq { s: 3 }];
+  printf("n={}\n", shapes[0].area() + shapes[1].area());
+  return 0;
+}

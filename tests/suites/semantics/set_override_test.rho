@@ -1,0 +1,21 @@
+// out: LIMIT=40 mode=work
+// set: LIMIT=40
+// set: MODE=2
+// exit: 0
+// spec: spec.md §6
+// Root consts are BUILD PARAMETERS: `--set name=value` overrides any
+// root const whose type has a text form (integers, floats, bool,
+// string), range-checked against the const's type. The headers pin
+// the OVERRIDDEN build — the same source under `rho run` prints
+// LIMIT=7 mode=idle (the declared defaults). Comptime conditions over
+// the parameter fold to the live branch only.
+const LIMIT: i64 = 7;
+const MODE: i32 = 1;
+fn main() -> i32 {
+  let mut msg: string = "idle";
+  if MODE == 2 {
+    msg = "work";
+  }
+  printf("LIMIT={} mode={}\n", LIMIT, msg);
+  return 0;
+}

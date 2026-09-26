@@ -1,0 +1,9 @@
+// expect: 'K' is not callable
+// spec: check — calls
+// a const names a value, not a function: calling one is refused
+const K: i32 = 5;
+
+fn main() -> i32 {
+  let x = K();
+  return 0;
+}

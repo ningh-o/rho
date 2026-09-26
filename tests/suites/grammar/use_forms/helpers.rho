@@ -1,0 +1,9 @@
+pub fn hello() -> i32 {
+  return 11;
+}
+pub fn bye() -> i32 {
+  return 22;
+}
+pub fn num() -> i32 {
+  return 77;
+}

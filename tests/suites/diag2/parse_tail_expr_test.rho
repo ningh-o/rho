@@ -1,0 +1,10 @@
+// expect: after the tail expression
+// spec: syntax.md — blocks
+// a block's tail expression is followed only by '}'; a second
+// statement after it needs its own semicolon first
+fn main() -> i32 {
+  if true {
+    1 2
+  }
+  return 0;
+}

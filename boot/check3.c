@@ -138,6 +138,25 @@ static CVal fold_binop(int op, CVal a, CVal b) {
   }
   if (a.kind == CV_STR || b.kind == CV_STR)
     return g_bad;
+  // boolean domain: the truth lives in .b — the numeric path below
+  // reads .u, which is zero for bools and would fold every logical
+  // combination to false
+  if (a.kind == CV_BOOL || b.kind == CV_BOOL) {
+    if (a.kind != CV_BOOL || b.kind != CV_BOOL)
+      return g_bad;
+    CVal r;
+    memset(&r, 0, sizeof r);
+    r.ty = ty_bool;
+    r.kind = CV_BOOL;
+    switch (op) {
+    case OP_AND: r.b = a.b && b.b; break;
+    case OP_OR: r.b = a.b || b.b; break;
+    case OP_EQ: r.b = a.b == b.b; break;
+    case OP_NE: r.b = a.b != b.b; break;
+    default: return g_bad;
+    }
+    return r;
+  }
   bool isf = a.kind == CV_FLOAT || b.kind == CV_FLOAT;
   Type *rt = isf ? (a.ty->kind == TY_F64 || b.ty->kind == TY_F64 ? ty_f64
                                                                   : ty_f32)
@@ -245,22 +264,10 @@ static CVal fold_binop(int op, CVal a, CVal b) {
     r.b = bv;
     return r;
   }
-  case OP_AND: {
-    CVal r;
-    memset(&r, 0, sizeof r);
-    r.ty = ty_bool;
-    r.kind = CV_BOOL;
-    r.b = x && y;
-    return r;
-  }
-  case OP_OR: {
-    CVal r;
-    memset(&r, 0, sizeof r);
-    r.ty = ty_bool;
-    r.kind = CV_BOOL;
-    r.b = x || y;
-    return r;
-  }
+  case OP_AND:
+  case OP_OR:
+    // logical combination of non-bool operands is refused at check
+    return g_bad;
   default:
     return g_bad;
   }
@@ -376,31 +383,18 @@ static void resolve_module_consts(Module *m, bool report) {
   bool progress = true;
   size_t resolved = 0, total = 0;
   for (Sym *s = m->syms->order_head; s; s = s->order_next)
-    if (s->kind == SYM_CONST)
+    if (s->kind == SYM_CONST || s->kind == SYM_STATIC)
       total++;
-  // static mut initializers are folded too (acyclic constants, §6):
-  // _start seeds the slot from the cval; unfolded = starts zeroed
-  for (Sym *s = m->syms->order_head; s; s = s->order_next) {
-    if (s->kind != SYM_STATIC || s->u.konst->cval)
-      continue;
-    ConstDef *cd = s->u.konst;
-    FoldEnv root = {g_entry_mod && g_entry_mod != m
-                        ? g_entry_mod->syms
-                        : NULL, NULL};
-    FoldEnv env = {m->syms, &root};
-    CVal v = fold_expr(&env, cd->init);
-    if (!cv_ok(v))
-      continue;
-    CVal *slot = arena_alloc(g_arena, sizeof(CVal), 8);
-    *slot = v;
-    cd->cval = slot;
-    if (!cd->ty)
-      cd->ty = v.ty;
-  }
+  // statics fold in the SAME fixpoint as consts (§6: acyclic
+  // constants): a static initialized from a const needs the const's
+  // value, so a pre-pass before the fixpoint would drop it. _start
+  // seeds the slot from the cval; unfolded = starts zeroed
   while (progress && resolved < total) {
     progress = false;
     for (Sym *s = m->syms->order_head; s; s = s->order_next) {
-      if (s->kind != SYM_CONST || s->u.konst->cval)
+      if (s->kind != SYM_CONST && s->kind != SYM_STATIC)
+        continue;
+      if (s->u.konst->cval)
         continue;
       ConstDef *cd = s->u.konst;
       FoldEnv root = {g_entry_mod && g_entry_mod != m

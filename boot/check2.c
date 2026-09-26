@@ -1792,8 +1792,15 @@ static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
       case TY_BOOL: case TY_F32: case TY_F64: case TY_STRING:
       case TY_I8: case TY_I16: case TY_I32: case TY_I64:
       case TY_U8: case TY_U16: case TY_U32: case TY_U64: case TY_USIZE:
-      case TY_PTR: case TY_WEAK: case TY_STRUCT: case TY_ENUM:
+      case TY_PTR: case TY_WEAK: case TY_STRUCT:
         break; // weak compares identity, like pointers (§10)
+      case TY_ENUM:
+        // Result is the one enum the == law refuses (§10): match on
+        // the tag instead — two Err payloads of different types would
+        // otherwise compare slotwise against their canonical shape
+        if (lt->edef->is_result)
+          err_at(c, e, "Result values never compare (match on the tag)");
+        break;
       case TY_SLICE:
         err_at(c, e, "slices never compare (write a loop)");
         break;
@@ -2566,9 +2573,14 @@ static void check_stmt(FnCtx *c, NodeRef sr) {
                    "(inner shadowing needs a deeper scope)",
              s->name);
     }
-    // root build params may never be shadowed
-    if (g_entry_mod && symtab_get(g_entry_mod->syms, s->name)) {
-      err_at(c, s, "'%s' shadows a root build parameter", s->name);
+    // root build params may never be shadowed — inside the ENTRY
+    // module only, and only by an actual build parameter (a root
+    // const): any other module's local may freely reuse the name,
+    // and fns/structs are not build parameters at all
+    if (g_entry_mod && c->mod == g_entry_mod) {
+      Sym *rs = symtab_get(g_entry_mod->syms, s->name);
+      if (rs && rs->kind == SYM_CONST && rs->u.konst->is_root)
+        err_at(c, s, "'%s' shadows a root build parameter", s->name);
     }
     Type *ann = NULL;
     if (s->a != NO_REF)
@@ -2660,7 +2672,7 @@ static void check_stmt(FnCtx *c, NodeRef sr) {
   case NT_RETURN: {
     if (s->a == NO_REF) {
       if (c->ret && c->ret->kind != TY_UNIT)
-        err_at(c, s, "return needs a %s value", type_name(c->ret));
+        err_at(c, s, "return needs a value of type %s", type_name(c->ret));
       return;
     }
     Type *vt = check_expr(c, s->a, c->ret);

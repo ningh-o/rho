@@ -1,0 +1,22 @@
+// out: dec=1000000 hex=65535 bin=170 us=1000000
+// out: fit u8=255 u16=65535 u32=4294967295
+// out: cross hex==dec bin==dec true
+// exit: 0
+// spec: syntax.md §2.2
+// Integer literals: decimal, hex (0x), binary (0b); underscores separate
+// digits and carry no value. With no consumer the literal defaults to
+// i32; with a consumer it must fit it. (Octal is not in the law.)
+fn main() -> i32 {
+  let dec = 1_000_000;
+  let hex = 0xFF_FF;
+  let bin = 0b1010_1010;
+  let us: u64 = 1_000_000;
+  printf("dec={} hex={} bin={} us={}\n", dec, hex, bin, us);
+  let h8: u8 = 0xFF;
+  let h16: u16 = 0xFFFF;
+  let h32: u32 = 0xFFFF_FFFF;
+  printf("fit u8={} u16={} u32={}\n", h8, h16, h32);
+  let cross1 = 0b1010 + 0x0A;
+  printf("cross hex==dec bin==dec {}\n", cross1 == 20);
+  return 0;
+}

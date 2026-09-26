@@ -1,0 +1,7 @@
+// expect: integer literal too large
+// spec: syntax.md — lexer
+// a decimal literal above u64 range saturates with an error
+fn main() -> i32 {
+  let x = 99999999999999999999999;
+  return 0;
+}

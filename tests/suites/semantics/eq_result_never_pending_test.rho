@@ -1,0 +1,15 @@
+// expect: never compare
+// spec: type-system.md §10
+// `Result[T, E]` is NEVER comparable ("err-payloads never compare" —
+// the error channel must be consumed by match, not compared). OBSERVED
+// TODAY (bug B-3): Result == / != compile and compare like an enum,
+// so the refusal below is the LAW and this case stays pending until
+// the checker refuses Result operands. The expected diagnostic
+// substring is projected from the sibling refusals ("slices never
+// compare", "fn values never compare", "dyn values never compare").
+fn main() -> i32 {
+  let a: Result[i32, string] = Result.Ok(1);
+  let b: Result[i32, string] = Result.Ok(1);
+  printf("r={}\n", (a == b));
+  return 0;
+}

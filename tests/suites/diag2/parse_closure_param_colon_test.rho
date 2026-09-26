@@ -1,0 +1,7 @@
+// expect: after parameter name
+// spec: syntax.md — closures
+// closure parameters carry explicit types: 'name: type'
+fn main() -> i32 {
+  let f = fn(a) { return a; };
+  return 0;
+}

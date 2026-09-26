@@ -1,0 +1,9 @@
+// expect: ambiguous use of 'm.sub'
+// spec: module-system.md §2-3
+// the across-kinds ambiguity: 'm.sub' names both the package-inner
+// module m/sub and the public item 'sub' of m's facade
+use m.sub;
+
+fn main() -> i32 {
+  return 0;
+}
