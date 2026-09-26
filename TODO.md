@@ -602,6 +602,14 @@ section — no placeholder stages. boot is the reference compiler.
       (15): six orphan (i64.add)s in emit_arg's self-compile, five
       branch-tail surpluses (dyn_hole_dispatch's arm tails), two
       pair-return singles, a pair of one-offs.
+      THE FIFTH WAVE (same day, silent, pinned by the fieldmakeelem
+      leg): a make riding a NEW FIELD INIT allocated its COUNT in
+      bytes, not count-by-element-width — a []string field of 4 held
+      a 4-byte block and every element store wrote the neighboring
+      heap (element [1] survived by luck, [2] clobbered [1]'s
+      neighborhood). The field-init make now sizes by the element
+      (16-byte pairs, struct slot blocks) like every other make
+      site. The corpus differential stays 110/110.
 - [ ] **T3.2 Pure-source trust root**: every gate run rebuilds the seed
       from boot's C source on the spot. The pinned `seed.wasm` stays in
       the repo **as a canary**: rebuild, compare byte-for-byte (D1 makes

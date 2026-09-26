@@ -4560,15 +4560,35 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
           let tl: i64 = nl.v + 1;
           nl.v = nl.v + 2;
           if e.args[k].tag == parse.EX_MAKE {
-            // a fresh slice rides straight into the field's pair
+            // a fresh slice rides straight into the field's pair —
+            // sized by the ELEMENT's width (a string/dyn element
+            // rides its 16-byte pair, a struct its slot block; the
+            // old count-sized alloc put element [1] past the block
+            // and every store wrote the neighboring heap)
             let mut cnt0: *Expr = parse.lit(0);
             if len(e.args[k].args) > 0 {
               cnt0 = e.args[k].args[0];
             }
+            let mut mesz: i64 = 1;
+            let mst: i64 = st_index(mut prog, e.args[k].name);
+            if mst >= 0 {
+              mesz = st_nslots(mut prog, mst);
+            } else {
+              if e.args[k].name == "string" ||
+                  is_dyn_type(e.args[k].name) {
+                mesz = 2;
+              }
+            }
             out = out + emit_expr(mut pool, cnt0, mut env, mut prog, mut nl);
             out = out + "    (local.set $t)\n";
-            out = out + "    (i64.extend_i32_u (call $w_alloc ";
-            out = out + "(i32.wrap_i64 (local.get $t))))\n";
+            if mesz != 1 {
+              out = out + "    (i64.extend_i32_u (call $w_alloc ";
+              out = out + "(i32.wrap_i64 (i64.mul (local.get $t) ";
+              out = out + "(i64.const " + mesz.to_str() + ")))))\n";
+            } else {
+              out = out + "    (i64.extend_i32_u (call $w_alloc ";
+              out = out + "(i32.wrap_i64 (local.get $t))))\n";
+            }
             out = out + "    (local.get $t)\n";
           } else {
             out = out + push_string(mut pool, e.args[k], mut env, mut prog, mut nl);
