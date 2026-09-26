@@ -506,10 +506,14 @@ section — no placeholder stages. boot is the reference compiler.
       called \$u_len 292 times — len()'s fall-through was a call to
       a fn never defined (a latent gap no corpus program rides);
       kind-2 slice bindings and slice-typed struct fields now read
-      their pair slots directly (224 close). 68 remain over colder
-      shapes — match binders, indexed elements, call results — the
-      last emission slice before gate.sh leg 4 (child/grandchild
-      byte-identity + the probe) is the 0.1.0 heart beating.
+      their pair slots directly (224 close; pair-returning calls and
+      slice-of-slice elements join them). 68 remain, censused:
+      field reads over generic-instance bases (len(sd.tparams) —
+      field_base_type/st_index miss the instantiated name), match
+      binders (bound kind-less over slice payloads), and the tag-6
+      anonymous form — the last emission slice before gate.sh leg 4
+      (child/grandchild byte-identity + the probe) is the 0.1.0
+      heart beating.
 - [ ] **T3.2 Pure-source trust root**: every gate run rebuilds the seed
       from boot's C source on the spot. The pinned `seed.wasm` stays in
       the repo **as a canary**: rebuild, compare byte-for-byte (D1 makes
