@@ -973,7 +973,14 @@ static RefList *parse_params(Parser *p, bool *is_variadic) {
       }
       if (!accept(p, T_COMMA))
         break;
-      if (is(p, T_RBRACE) || is(p, T_RBRACK) || is(p, T_RPAREN))
+      if (is(p, T_RPAREN)) {
+        // the grammar has no ','? here (§4.1): struct fields and
+        // variant payloads take trailing commas, parameter lists do not
+        diag_at(DIAG_ERROR, p->m->path, cur(p)->line, cur(p)->col,
+                "no trailing ',' in parameter lists");
+        break;
+      }
+      if (is(p, T_RBRACE) || is(p, T_RBRACK))
         break;
     }
   }

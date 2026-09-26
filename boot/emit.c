@@ -4055,6 +4055,16 @@ static void emit_fndef(Em *em, FnDef *f) {
   }
   op(&cx, "(loop $tco\n");
   cx.depth++;
+  // a trailing expression is the body's value: turn it into the
+  // return (§5 blocks carry values — the fn body is one), so
+  // `fn f() -> i32 { 3 }` returns 3 instead of trapping
+  Node *body = node_get(f->body);
+  if (body->kind == NT_EXPRSTMT && body->op == 3 && reflist_len(body->list)) {
+    Node *last = node_get(reflist_at(body->list,
+                                     reflist_len(body->list) - 1));
+    if (last->kind == NT_EXPRSTMT && last->bval && last->a != NO_REF)
+      last->kind = NT_RETURN;
+  }
   emit_stmt(&cx, f->body);
   cx.depth--;
   op(&cx, ")\n");

@@ -290,6 +290,7 @@ static Type *check_match(FnCtx *c, NodeRef er, Type *expected);
 static void check_pattern(FnCtx *c, Node *p, Type *st);
 static Type *check_call(FnCtx *c, NodeRef er, Type *expected);
 static Type *check_method(FnCtx *c, NodeRef er, Type *expected);
+static Module *qualify_module(FnCtx *c, Node *e);
 static FnDef *instantiate_generic_seeded(FnCtx *c, FnDef *f, Node *call,
                                          Type *expected, Type **seed);
 static bool ty_has_param(Type *t);
@@ -877,6 +878,45 @@ static Type *instantiate_enum_ctor(FnCtx *c, EnumDef *ed, Type *expected,
   return type_enum(ed, tys, ng);
 }
 
+// resolve a module-qualified receiver CHAIN (mod.sub.inner) to its
+// module: each segment after the first must be a PUB module use
+// binding in the previous module (§6 — `pub use sub;` publishes the
+// submodule under the facade). NULL = not a module chain (no error
+// here — the caller falls through to the value path)
+static Module *qualify_module(FnCtx *c, Node *e) {
+  if (e->kind != NT_FIELD_E)
+    return NULL;
+  Node *recv = node_get(e->a);
+  Module *base = NULL;
+  if (recv->kind == NT_PATH) {
+    Look lk;
+    if (!lookup(c, recv->name, &lk) || lk.kind != LOOK_MODULE)
+      return NULL;
+    base = lk.module;
+  } else {
+    base = qualify_module(c, recv);
+    if (!base)
+      return NULL;
+  }
+  Sym *s = base->syms ? symtab_get(base->syms, e->name) : NULL;
+  if (s && s->pub && s->kind == SYM_MODULE)
+    return s->u.module;
+  for (size_t i = 0; i < VLEN(base->uses); i++) {
+    UseBind *ub = VAT(base->uses, UseBind, i);
+    if (strcmp(ub->alias, e->name) == 0) {
+      // the binding speaks through its decl: pub rides the form bits
+      // (USE_PUB_MOD..USE_PUB_STAR), not bval
+      if (ub->decl != NO_REF) {
+        int form = node_get(ub->decl)->op & 7;
+        if (form >= USE_PUB_MOD && form <= USE_PUB_STAR)
+          return ub->target;
+      }
+      return NULL;
+    }
+  }
+  return NULL;
+}
+
 static Type *check_call(FnCtx *c, NodeRef er, Type *expected) {
   Node *call = node_get(er);
   RefList *args = call->list;
@@ -1255,27 +1295,37 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
       err_at(c, m, "enum %s has no variant '%s'", recv->name, m->name);
       return ty_unit;
     }
-    // module-qualified call: mod.fn(args)
-    if (lookup(c, recv->name, &lk) && lk.kind == LOOK_MODULE) {
-      Sym *s = lk.module->syms ? symtab_get(lk.module->syms, m->name) : NULL;
-      if (s && s->kind == SYM_FN && s->pub) {
-        FnDef *f = resolve_overload(c, s->u.fns, er, false, m->name);
-        if (!f)
-          return ty_unit;
-        pair_arg_markers(c, m->list, f->sig, 0, f->name);
-        for (size_t i = 0; i < reflist_len(m->list); i++) {
-          Node *aw = node_get(reflist_at(m->list, i));
-          if (aw->kind == NT_POSARG)
-            check_expr(c, aw->a,
-                       i < f->sig->nparams ? f->sig->params[i].ty : NULL);
-        }
-        node_get(er)->op = 5; // a plain call on the module's namespace
-        node_get(er)->sem2 = f;
-        return f->sig->ret;
+  }
+
+  // module-qualified call: mod.fn(args) — also through a re-exported
+  // submodule (§6 `pub use sub;`): mod.sub.fn(args)
+  Module *qm = NULL;
+  if (recv0->kind == NT_PATH) {
+    Look lk;
+    if (lookup(c, recv0->name, &lk) && lk.kind == LOOK_MODULE)
+      qm = lk.module;
+  } else {
+    qm = qualify_module(c, recv0);
+  }
+  if (qm) {
+    Sym *s = qm->syms ? symtab_get(qm->syms, m->name) : NULL;
+    if (s && s->kind == SYM_FN && s->pub) {
+      FnDef *f = resolve_overload(c, s->u.fns, er, false, m->name);
+      if (!f)
+        return ty_unit;
+      pair_arg_markers(c, m->list, f->sig, 0, f->name);
+      for (size_t i = 0; i < reflist_len(m->list); i++) {
+        Node *aw = node_get(reflist_at(m->list, i));
+        if (aw->kind == NT_POSARG)
+          check_expr(c, aw->a,
+                     i < f->sig->nparams ? f->sig->params[i].ty : NULL);
       }
-      err_at(c, m, "module %s has no public fn '%s'", recv->name, m->name);
-      return ty_unit;
+      node_get(er)->op = 5; // a plain call on the module's namespace
+      node_get(er)->sem2 = f;
+      return f->sig->ret;
     }
+    err_at(c, m, "module %s has no public fn '%s'", qm->name, m->name);
+    return ty_unit;
   }
 
   // real method call on a value
@@ -1525,6 +1575,45 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
   return chosen->sig->ret;
 }
 
+// §6.8: closures capture locals by copy. A `mut` local of VALUE type
+// may not be captured (the copy would diverge from the original on
+// any rebind — the hazard the law targets). A `mut` local of HANDLE
+// type (*T, []T, string, dyn) captures fine: the copy IS the shared
+// view, and the shared mutable state lives in the heap object — the
+// escape hatch §6.8's own rationale names. The closure's own params
+// and pattern binders live at scopes at or past entry_scope, so only
+// genuine outer captures are seen; nested closures enforce their own
+// captures in their own case.
+static bool closure_captures_mut(FnCtx *c, NodeRef er, int entry_scope) {
+  if (er == NO_REF)
+    return false;
+  Node *e = node_get(er);
+  if (e->kind == NT_CLOSURE)
+    return false;
+  if (e->kind == NT_PATH) {
+    Look lk;
+    if (lookup(c, e->name, &lk) && lk.kind == LOOK_LOCAL &&
+        lk.local->mut && lk.local->scope <= entry_scope &&
+        lk.local->ty && !type_is_managed(lk.local->ty)) {
+      err_at(c, e, "a closure may not capture the mut local '%s' "
+                   "(a value copy would diverge; share a heap object "
+                   "through a pointer instead)", e->name);
+      return true;
+    }
+    return false;
+  }
+  if (closure_captures_mut(c, e->a, entry_scope) ||
+      closure_captures_mut(c, e->b, entry_scope) ||
+      closure_captures_mut(c, e->c, entry_scope) ||
+      closure_captures_mut(c, e->d, entry_scope))
+    return true;
+  if (e->list)
+    for (size_t i = 0; i < reflist_len(e->list); i++)
+      if (closure_captures_mut(c, reflist_at(e->list, i), entry_scope))
+        return true;
+  return false;
+}
+
 static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
   if (er == NO_REF)
     return ty_unit;
@@ -1623,8 +1712,25 @@ static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
         if (lk.kind == LOOK_MODULE && lk.module->syms) {
           Sym *s = symtab_get(lk.module->syms, e->name);
           if (!s || !s->pub) {
-            err_at(c, e, "module %s has no public '%s'", recv->name,
-                   e->name);
+            // a re-exported submodule (`pub use sub;`, §6) resolves
+            // only on qualified call paths — as a value it is refused
+            bool pub_mod = false;
+            for (size_t i = 0; i < VLEN(lk.module->uses); i++) {
+              UseBind *ub = VAT(lk.module->uses, UseBind, i);
+              if (strcmp(ub->alias, e->name) == 0) {
+                pub_mod = ub->decl != NO_REF &&
+                          (node_get(ub->decl)->op & 7) >= USE_PUB_MOD &&
+                          (node_get(ub->decl)->op & 7) <= USE_PUB_STAR;
+                break;
+              }
+            }
+            if (pub_mod)
+              err_at(c, e, "'%s' is a module, not a value (call "
+                           "qualified: %s.%s.fn(…))",
+                     e->name, recv->name, e->name);
+            else
+              err_at(c, e, "module %s has no public '%s'", recv->name,
+                     e->name);
             return ty_unit;
           }
           if (s->kind == SYM_CONST) {
@@ -1990,6 +2096,7 @@ static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
     }
     sig->ret = e->b != NO_REF ? check_type_in_ctx(c, e->b, &dummy) : ty_unit;
     // body: a nested scope with the closure's params
+    int entry_scope = c->scope;
     ctx_push_scope(c);
     for (size_t i = 0; i < sig->nparams; i++) {
       Node *pp = node_get(reflist_at(e->list, i));
@@ -2002,6 +2109,9 @@ static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
     c->ret = sig->ret;
     check_block(c, e->c);
     c->ret = saved_ret;
+    // §6.8: the capture law — run before the body's binders pop, so
+    // the walk only ever sees genuine outer bindings
+    closure_captures_mut(c, e->c, entry_scope);
     ctx_pop_scope(c);
     return type_fn(sig);
   }
@@ -2801,6 +2911,19 @@ static void check_fn_body(Program *p, FnDef *f) {
   }
   collect_labels(&ctx, f->body);
   check_block(&ctx, f->body);
+  // a trailing expression is the body's value (§5 blocks carry
+  // values — the fn body is one): its type must match the return
+  Node *b = node_get(f->body);
+  if (b->kind == NT_EXPRSTMT && b->op == 3 && reflist_len(b->list)) {
+    Node *last = node_get(reflist_at(b->list, reflist_len(b->list) - 1));
+    if (last->kind == NT_EXPRSTMT && last->bval && last->a != NO_REF) {
+      Type *tt = (Type *)node_get(last->a)->sem;
+      if (tt && !type_eq(tt, f->sig->ret))
+        err_at(&ctx, last, "the body's tail expression is %s, the fn "
+                           "returns %s",
+               type_name(tt), type_name(f->sig->ret));
+    }
+  }
 }
 
 bool check_bodies(Program *p) {

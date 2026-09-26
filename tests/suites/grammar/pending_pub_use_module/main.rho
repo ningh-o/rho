@@ -1,5 +1,4 @@
-// pending: A-7
-// out: direct=1 renamed=2 flattened=3 sub=9
+// out: direct=1 renamed=2 flattened=3 sub=1
 // exit: 0
 // spec: syntax.md §4.4, module-system.md §6
 // The four `pub use` forms: one item, one item renamed, flatten — and
