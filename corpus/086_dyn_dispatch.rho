@@ -33,7 +33,7 @@ fn Ct.to_str(self: *Ct) -> string {
   return format("ct({})", self.n);
 }
 
-fn Ct.bump(self: *Ct) {
+fn Ct.bump(mut self: *Ct) {
   self.n += 1;
 }
 
@@ -58,7 +58,7 @@ fn main() -> i32 {
   printf(" then {}\n", d4);
   // identity, behaviorally: bumping through the concrete pointer shows
   // through every dyn view of the same object
-  let c = new Ct { n: 5 };
+  let mut c = new Ct { n: 5 };
   let v1: dyn Show = c;
   let v2: dyn Show = c;
   c.bump();

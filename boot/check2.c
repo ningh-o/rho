@@ -346,8 +346,11 @@ static bool trait_satisfied(FnCtx *c, Type *t, TraitDef *td) {
       for (size_t q = 0; q < na && ok; q++) {
         Type *pa = a->params[q].ty;
         Type *pb = b->params[q].ty;
-        if (!pb) // the trait's bare self slot matches any receiver
+        if (!pb) { // the trait's bare self slot: mut-ness still joins
+          if (q == 0 && a->params[q].is_mut != b->params[q].is_mut)
+            ok = false;
           continue;
+        }
         if (!pa || !type_eq(pa, pb))
           ok = false;
       }
@@ -369,6 +372,12 @@ static void check_assign_target_base(FnCtx *c, NodeRef base);
 // returns match quality: 0 no, 1 yes
 static bool sig_matches_q(FnCtx *c, FnSig *sig, NodeRef call_r,
                           bool has_recv);
+// when set, overload probes ignore the §18 mut pairing (used for the
+// precise-diagnosis pass once a call matched nothing)
+static bool g_probe_mut_blind = false;
+void pair_arg_markers(FnCtx *c, RefList *args, FnSig *sig, size_t first,
+                      const char *what);
+static bool root_binding_mut(FnCtx *c, NodeRef er);
 
 static bool sig_matches(FnCtx *c, FnSig *sig, NodeRef call_r,
                         bool has_recv) {
@@ -406,6 +415,12 @@ static bool sig_matches_q(FnCtx *c, FnSig *sig, NodeRef call_r,
     Node *a = node_get(reflist_at(args, i + first));
     if (a->kind != NT_POSARG)
       return false; // named args only valid on constructors
+    // §18: the mut marker participates in overload selection —
+    // a marker selects the mut-view parameter, its absence the plain
+    if (!g_probe_mut_blind &&
+        (a->op == 2) != (i + first < nparams &&
+                         sig->params[i + first].is_mut))
+      return false;
     // a trailing spread passes the whole slice: it matches the FULL
     // variadic param type, not the element type (spec §12)
     if (a->bval && variadic && i == napplied - 1)
@@ -454,6 +469,35 @@ static FnDef *resolve_overload(FnCtx *c, FnDef *chain, NodeRef call_r,
     return match;
   Node *call = node_get(call_r);
   if (nmatch == 0) {
+    // mut-blind retry: when exactly one candidate matches with the
+    // §18 pairing ignored, the miss IS a marker problem — say which
+    g_probe_mut_blind = true;
+    FnDef *blind = NULL;
+    int nblind = 0;
+    for (FnDef *f = chain; f; f = f->next_overload) {
+      if (!f->ngparams && sig_matches(c, f->sig, call_r, has_recv)) {
+        blind = f;
+        nblind++;
+      }
+    }
+    if (!nblind)
+      for (FnDef *f = chain; f; f = f->next_overload) {
+        if (f->ngparams && sig_matches(c, f->sig, call_r, has_recv)) {
+          blind = f;
+          nblind++;
+        }
+      }
+    g_probe_mut_blind = false;
+    if (nblind == 1 && blind) {
+      // a real program error (the call matches exactly one candidate
+      // once mut-ness is ignored) — diagnose it even inside a probe
+      bool saved_q = g_probe_quiet;
+      g_probe_quiet = false;
+      pair_arg_markers(c, node_get(call_r)->list, blind->sig,
+                       has_recv ? 1 : 0, what);
+      g_probe_quiet = saved_q;
+      return NULL;
+    }
     err_at(c, call, "no overload of %s matches the arguments", what);
   } else {
     err_at(c, call,
@@ -558,6 +602,10 @@ bool sig_same(FnSig *a, FnSig *b) {
     if (!type_eq(a->params[i].ty, b->params[i].ty))
       return false;
     if (a->params[i].variadic != b->params[i].variadic)
+      return false;
+    // mut-ness joins the signature (§18): self/mut self twins are
+    // distinct signatures — and ambiguous when both match one call
+    if (a->params[i].is_mut != b->params[i].is_mut)
       return false;
   }
   return type_eq(a->ret, b->ret);
@@ -857,6 +905,7 @@ static Type *check_call(FnCtx *c, NodeRef er, Type *expected) {
       if (reflist_len(args) != nfixed)
         err_at(c, call, "call takes %zu argument(s), got %zu", nfixed,
                reflist_len(args));
+      pair_arg_markers(c, args, sig, 0, "the fn value");
       for (size_t i = 0; i < reflist_len(args); i++) {
         Node *aw = node_get(reflist_at(args, i));
         if (aw->kind != NT_POSARG) {
@@ -951,6 +1000,8 @@ static Type *check_call(FnCtx *c, NodeRef er, Type *expected) {
         return ty_unit;
       node_get(er)->sem2 = inst;
       f = inst;
+      // §18 pairing against the instantiated signature
+      pair_arg_markers(c, call->list, f->sig, 0, f->name);
       // re-check the args against the substituted signature
       for (size_t i = 0; i < reflist_len(call->list); i++) {
         Node *aw = node_get(reflist_at(call->list, i));
@@ -970,6 +1021,8 @@ static Type *check_call(FnCtx *c, NodeRef er, Type *expected) {
       return f->sig->ret;
     }
     node_get(er)->sem2 = f; // the chosen overload rides with the call
+    // §18 pairing: markers ↔ mut-view params, both directions
+    pair_arg_markers(c, args, f->sig, 0, f->name);
     // check args against the chosen signature (proper, with consumers)
     for (size_t i = 0; i < reflist_len(args); i++) {
       Node *aw = node_get(reflist_at(args, i));
@@ -1209,6 +1262,7 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
         FnDef *f = resolve_overload(c, s->u.fns, er, false, m->name);
         if (!f)
           return ty_unit;
+        pair_arg_markers(c, m->list, f->sig, 0, f->name);
         for (size_t i = 0; i < reflist_len(m->list); i++) {
           Node *aw = node_get(reflist_at(m->list, i));
           if (aw->kind == NT_POSARG)
@@ -1255,6 +1309,7 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
                m->name, td->name, nparams - 1, nargv);
         return ty_unit;
       }
+      pair_arg_markers(c, m->list, sig, 1, m->name);
       for (size_t j = 0; j < nargv; j++) {
         Node *aw = node_get(reflist_at(m->list, j));
         if (aw->kind != NT_POSARG) {
@@ -1313,11 +1368,25 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
     } else if (ok && f->nimplicit) {
       ok = false; // generic method needs an instantiated receiver
     }
+    // §18: a mut-self method needs a mut root binding; the pairing of
+    // markers with mut-view params participates in selection
+    if (ok && !g_probe_mut_blind && f->sig->params[0].is_mut &&
+        !root_binding_mut(c, m->a))
+      ok = false;
     for (size_t j = 0; ok && j < nargv; j++) {
       Node *aw = node_get(reflist_at(m->list, j));
       if (aw->kind != NT_POSARG) {
         ok = false;
         break;
+      }
+      if (!g_probe_mut_blind) {
+        bool pmut = (j + 1) < nfixed
+                        ? f->sig->params[j + 1].is_mut
+                        : variadic && f->sig->params[nfixed].is_mut;
+        if ((aw->op == 2) != pmut) {
+          ok = false;
+          break;
+        }
       }
       Type *pt = j < nfixed ? f->sig->params[j + 1].ty
                             : f->sig->params[nfixed].ty;
@@ -1340,10 +1409,59 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
   }
   g_probe_quiet = saved_quiet;
   if (nmatch != 1) {
-    if (nmatch == 0)
+    if (nmatch == 0) {
+      // mut-blind retry: when exactly one candidate matches with the
+      // §18 constraints ignored, the miss IS a permission problem —
+      // diagnose it precisely (receiver gate + marker pairing)
+      g_probe_mut_blind = true;
+      int nblind = 0;
+      FnDef *blind = NULL;
+      for (size_t i = 0; i < ncand; i++) {
+        FnDef *f = cands[i];
+        size_t nparams = f->sig->nparams;
+        size_t nargv = reflist_len(m->list);
+        bool variadic = nparams > 0 &&
+                        f->sig->params[nparams - 1].variadic;
+        size_t nfixed = variadic ? nparams - 1 : nparams;
+        bool ok = variadic ? nargv + 1 >= nfixed : nargv + 1 == nfixed;
+        for (size_t j = 0; ok && j < nargv; j++) {
+          Node *aw = node_get(reflist_at(m->list, j));
+          if (aw->kind != NT_POSARG) {
+            ok = false;
+            break;
+          }
+          Type *pt = j < nfixed ? f->sig->params[j + 1].ty
+                                : f->sig->params[nfixed].ty;
+          Node *arg = node_get(aw->a);
+          if (arg->kind == NT_INT || arg->kind == NT_FLOAT) {
+            if (!literal_adapts_to(c, arg, pt))
+              ok = false;
+          } else {
+            Type *at = check_expr(c, aw->a, pt);
+            if (!type_eq(at, pt))
+              ok = false;
+          }
+        }
+        if (ok) {
+          nblind++;
+          blind = f;
+        }
+      }
+      g_probe_mut_blind = false;
+      if (nblind == 1 && blind) {
+        bool saved_q = g_probe_quiet;
+        g_probe_quiet = false;
+        if (blind->sig->params[0].is_mut && !root_binding_mut(c, m->a))
+          err_at(c, m, "cannot call mut method '%s' on an immutable "
+                       "binding (declare with let mut)",
+                 m->name);
+        pair_arg_markers(c, m->list, blind->sig, 1, m->name);
+        g_probe_quiet = saved_q;
+        return ty_unit;
+      }
       err_at(c, m, "no overload of method '%s' matches the arguments",
              m->name);
-    else
+    } else
       err_at(c, m, "ambiguous method call '%s' (%d exact matches)",
              m->name, nmatch);
     return ty_unit;
@@ -1365,6 +1483,12 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
       return ty_unit;
     node_get(er)->sem2 = inst;
     node_get(er)->op = 2;
+    // §18: receiver gate + marker pairing against the instance sig
+    if (inst->sig->params[0].is_mut && !root_binding_mut(c, m->a))
+      err_at(c, m, "cannot call mut method '%s' on an immutable "
+                   "binding (declare with let mut)",
+             m->name);
+    pair_arg_markers(c, m->list, inst->sig, 1, m->name);
     for (size_t j = 0; j < reflist_len(m->list); j++) {
       Node *aw = node_get(reflist_at(m->list, j));
       if (aw->kind != NT_POSARG)
@@ -1380,6 +1504,13 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
   }
   node_get(er)->sem2 = chosen; // the chosen method (emit reads it)
   node_get(er)->op = 2;        // marks: real method call
+  // §18: a mut-self method needs a mut root binding; the explicit
+  // args pair their markers with the callee's mut-view params
+  if (chosen->sig->params[0].is_mut && !root_binding_mut(c, m->a))
+    err_at(c, m, "cannot call mut method '%s' on an immutable binding "
+                 "(declare with let mut)",
+           m->name);
+  pair_arg_markers(c, m->list, chosen->sig, 1, m->name);
   for (size_t j = 0; j < reflist_len(m->list); j++) {
     Node *aw = node_get(reflist_at(m->list, j));
     if (aw->kind != NT_POSARG)
@@ -1854,9 +1985,10 @@ static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
     // body: a nested scope with the closure's params
     ctx_push_scope(c);
     for (size_t i = 0; i < sig->nparams; i++) {
+      Node *pp = node_get(reflist_at(e->list, i));
       Local *l = ctx_decl_local(c, sig->params[i].name);
       l->ty = sig->params[i].ty;
-      l->mut = false;
+      l->mut = pp->bval; // §18: the declared mut is kept, not forced
     }
     // temporarily retarget the return context for return statements
     Type *saved_ret = c->ret;
@@ -2314,38 +2446,112 @@ static void check_assign_target(FnCtx *c, Node *lv) {
   }
   case NT_FIELD_E: {
     Type *bt = check_expr(c, lv->a, NULL);
-    if (bt->kind == TY_PTR)
-      return; // the pointee is mutable through a pointer
-    if (bt->kind != TY_STRUCT) {
+    if (bt->kind != TY_STRUCT && bt->kind != TY_PTR) {
       err_at(c, lv, "cannot assign through %s", type_name(bt));
       return;
     }
+    // §18: the store lands through the root binding — field or
+    // pointee, the view must be mut (a pointer is a handle too)
     check_assign_target_base(c, lv->a);
     return;
   }
   case NT_INDEX:
     // element stores through a slice mutate the view, not the binding
+    // itself — but the view is governed by its root binding's mut
     check_expr(c, lv->a, NULL);
     check_expr(c, lv->b, ty_usize);
+    check_assign_target_base(c, lv->a);
     return;
   default:
     err_at(c, lv, "invalid assignment target");
   }
 }
 
-// mutability for a path of field/index: the base must be a mutable
-// binding or reached through a pointer (pointers grant mutability)
+// mutability for a path of field/index stores: walk to the root — a
+// mut binding or a dereference grants the store; a non-mut binding
+// refuses (§18: the view is shallow, never tracked transitively)
 static void check_assign_target_base(FnCtx *c, NodeRef base) {
   Node *b = node_get(base);
+  if (b->kind == NT_FIELD_E || b->kind == NT_INDEX) {
+    check_assign_target_base(c, b->a);
+    return;
+  }
+  if (b->kind == NT_UNARY && b->op == OP_DEREF)
+    return; // through a pointer deref the pointee is writable
   if (b->kind == NT_PATH) {
     Look lk;
     if (lookup(c, b->name, &lk) && lk.kind == LOOK_LOCAL && !lk.local->mut)
-      err_at(c, b, "'%s' is immutable", b->name);
+      err_at(c, b, "'%s' is immutable (declare with let mut)", b->name);
     return;
   }
-  // through a pointer the pointee is mutable; nothing more to check
-  if (b->kind == NT_UNARY && b->op == OP_DEREF)
-    return;
+  // method-call results and other temporaries: their own (implicit)
+  // binding governs, which is mut
+}
+
+// the mut-ness of the root binding an expression's view hangs from —
+// used for mut-method receivers and `mut` argument markers (§18).
+// True for temporaries and deref roots (their own binding governs)
+static bool root_binding_mut(FnCtx *c, NodeRef er) {
+  Node *e = node_get(er);
+  switch (e->kind) {
+  case NT_PATH: {
+    Look lk;
+    if (!lookup(c, e->name, &lk))
+      return true; // unknown names report elsewhere
+    if (lk.kind == LOOK_LOCAL)
+      return lk.local->mut;
+    return true; // statics are module-lifetime mutable; consts/type
+                 // names never reach here as views
+  }
+  case NT_FIELD_E:
+  case NT_INDEX:
+    return root_binding_mut(c, e->a);
+  case NT_UNARY:
+    if (e->op == OP_DEREF)
+      return true;
+    return root_binding_mut(c, e->a);
+  default:
+    return true; // temporaries: their own binding governs
+  }
+}
+
+// §18: pair call-site `mut` markers with the callee's mut-view
+// parameters in both directions; a marker also requires the
+// argument's own root binding to be mut. `first` is the param index
+// the list's first entry pairs with (1 for method calls, whose
+// receiver occupies param slot 0 but never the arg list). Views are
+// pointers and slices; mut on a value parameter is refused at
+// declaration.
+void pair_arg_markers(FnCtx *c, RefList *args, FnSig *sig, size_t first,
+                      const char *what) {
+  size_t nargv = reflist_len(args);
+  size_t nparams = sig->nparams;
+  bool variadic = nparams > 0 && sig->params[nparams - 1].variadic;
+  size_t nfixed = variadic ? nparams - 1 : nparams;
+  for (size_t j = 0; j < nargv; j++) {
+    size_t pi = j + first; // the param this argument pairs with
+    Node *aw = node_get(reflist_at(args, j));
+    if (aw->kind != NT_POSARG)
+      continue; // named args are constructor-only, rejected elsewhere
+    bool marked = aw->op == 2; // §18 marker (make type-arg rides 1)
+    bool pmut = pi < nfixed ? sig->params[pi].is_mut
+                            : variadic && sig->params[nfixed].is_mut;
+    if (marked && !pmut) {
+      err_at(c, aw, "argument %zu of %s may not be marked 'mut' "
+                    "(the parameter is not a mut view)",
+             j + 1, what);
+      continue;
+    }
+    if (!marked && pmut) {
+      err_at(c, aw, "argument %zu of %s must be marked 'mut' (the "
+                    "parameter is a mut view)",
+             j + 1, what);
+      continue;
+    }
+    if (marked && pmut && !root_binding_mut(c, aw->a))
+      err_at(c, aw, "the marked argument needs a mut root binding "
+                    "(declare the binding with let mut)");
+  }
 }
 
 static void check_stmt(FnCtx *c, NodeRef sr) {
@@ -2544,7 +2750,7 @@ static void check_fn_body(Program *p, FnDef *f) {
   for (size_t i = 0; i < f->sig->nparams; i++) {
     Local *l = ctx_decl_local(&ctx, f->sig->params[i].name);
     l->ty = f->sig->params[i].ty ? f->sig->params[i].ty : ty_unit;
-    l->mut = false;
+    l->mut = f->sig->params[i].is_mut; // §18: declared mut is kept
     l->decl = f->sig->params[i].decl;
   }
   collect_labels(&ctx, f->body);
@@ -2728,6 +2934,7 @@ static FnDef *instantiate_generic_seeded(FnCtx *c, FnDef *f, Node *call,
     inst->sig->params[i].decl = f->sig->params[i].decl;
     inst->sig->params[i].ty = tsubst(f->sig->params[i].ty, &tb);
     inst->sig->params[i].variadic = f->sig->params[i].variadic;
+    inst->sig->params[i].is_mut = f->sig->params[i].is_mut;
   }
   inst->sig->ret = tsubst(f->sig->ret, &tb);
   inst->ibinds = binds;

@@ -20,7 +20,7 @@ fn make_held() -> Item {
   return Item.Held(new Node { v: 11 });
 }
 
-fn held_bump(n: *Node) -> i32 {
+fn held_bump(mut n: *Node) -> i32 {
   n.v = 110;
   return n.v;
 }
@@ -37,7 +37,10 @@ fn main() -> i32 {
   let it: Item = make_held();
   let it2: Item = it;
   let sum: i32 = match it2 {
-    Item.Held(n) => held_bump(n),
+    Item.Held(n) => {
+      let mut h: *Node = n;
+      held_bump(mut h)
+    },
     Item.Count(k) => k,
     Item.Nothing => 0,
   };

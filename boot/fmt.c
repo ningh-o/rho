@@ -238,6 +238,8 @@ static void fmt_args(F *f, RefList *args) {
         fp(f, "[]");
         fmt_type(f, NG(NG(a->a)->a));
       } else {
+        if (a->op == 2)
+          fp(f, "mut "); // the §18 argument marker
         fmt_expr(f, NG(a->a));
       }
       if (a->bval)

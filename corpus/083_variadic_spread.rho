@@ -35,7 +35,7 @@ fn pair_sum(ps: *Pair[i32, i64]...) -> i64 {
 }
 
 fn main() -> i32 {
-  let xs: []i64 = make([]i64, 4);
+  let mut xs: []i64 = make([]i64, 4);
   xs[0] = 3;
   xs[1] = 9;
   xs[2] = 2;
@@ -52,7 +52,7 @@ fn main() -> i32 {
   // the same slice spread twice stays independent
   printf("twice={}\n", total(xs...) + total(xs...));
   // pointer-element spread
-  let ps: []*Pair[i32, i64] = make([]*Pair[i32, i64], 2);
+  let mut ps: []*Pair[i32, i64] = make([]*Pair[i32, i64], 2);
   ps[0] = new Pair[i32, i64] { a: 1, b: 2 };
   ps[1] = new Pair[i32, i64] { a: 30, b: 40 };
   printf("pairs={}\n", pair_sum(ps...));

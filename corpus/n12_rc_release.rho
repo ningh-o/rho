@@ -16,7 +16,7 @@ struct Cyc {
 }
 
 fn make_cycle() -> *Cyc {
-  let a: *Cyc = new Cyc { id: 7, other: Option.None };
+  let mut a: *Cyc = new Cyc { id: 7, other: Option.None };
   let b: *Cyc = new Cyc { id: 8, other: Option.Some(a) };
   a.other = Option.Some(b);
   return a;

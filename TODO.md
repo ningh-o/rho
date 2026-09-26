@@ -425,7 +425,7 @@ section — no placeholder stages. boot is the reference compiler.
       seeded (lang/modsys/eq/params/strops/multiline/opt/diag, green
       tier + the §18/§19/T3.7 pending ledger); the full §11 map keeps
       growing per area until the map is complete.
-- [ ] **T3.6** The mut view law (§18) + the usize lane. Boot surface
+- [x] **T3.6** The mut view law (§18) + the usize lane. Boot surface
       map: parse grows the `mut` argument prefix in call argument
       lists (params already carry the flag); check_fn_body keeps the
       parameter's declared mut instead of forcing false; dotted,
@@ -453,6 +453,30 @@ section — no placeholder stages. boot is the reference compiler.
       assign through a mut view; match — impl/trait receiver-mut
       mismatch, dual `mut self` overload ambiguity; fmt — the
       argument marker round-trips.
+      Landed: `mut` argument markers ride NT_POSARG op=2 (make's type
+      arg keeps op=1); ParamDef.is_mut flows from parse through trait
+      sigs, closures, and generic instances; check_fn_body keeps the
+      declared mut; field/index/compound stores gate on the root
+      binding (the pointer free-pass is gone — a pointer is a handle);
+      mut receivers gate the root binding; markers pair both
+      directions, with a mut-blind retry that diagnoses the exact
+      argument even under a quiet probe (err_at respects the probe,
+      so the diagnosis bypasses it — a real error, not selection);
+      sig_same joins mut-ness (self/mut self twins are distinct and
+      ambiguous together); trait satisfaction joins receiver mut;
+      value params refuse `mut`. Emitter and kernel: zero layout —
+      only the usize lane (i64 → i32, the wasm32 address width) with
+      its consumers unwrapped, plus a defined `allocation too large`
+      panic when make's byte size exceeds 1 GiB (was a silent wrap).
+      fmt renders the marker; suites 71/0/0 (the three pending_mut
+      legs promoted); corpus + libs + prelude adapted mechanically
+      (let mut, mut view params, markers, the `let mut p = p;` rebind
+      idiom for match binders). Mirror note: the self-host still
+      parses neither markers nor `mut self` (092/098 :refuse) and
+      computes usize at 64 bits (041/046/048 :diff, 005 :w2w) — those
+      five legs close when the mirror grows the matching surface; the
+      differential floor is re-pinned 91 → 85 with justification in
+      run-corpus-diff.sh.
 - [x] **T3.7** Module item imports (module-system.md §2/§4/§6,
       syntax.md §4.4): the final use-segment binds a public item
       unqualified (`use lex.a as b;`), the brace form expands one

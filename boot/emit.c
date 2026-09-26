@@ -76,7 +76,10 @@ static const char *wty_s(WTy w) {
 
 static WTy scalar_wty(Type *t) {
   switch (t->kind) {
-  case TY_I64: case TY_U64: case TY_USIZE: return W_I64;
+  case TY_I64: case TY_U64: return W_I64;
+  // usize lives in the address width (wasm32 → i32, syntax.md §3):
+  // len, indices, and alloc counts are 32-bit values
+  case TY_USIZE: return W_I32;
   case TY_F32: return W_F32;
   case TY_F64: return W_F64;
   default: return W_I32;
@@ -694,7 +697,7 @@ static void emit_const_to(FnCx *cx, Node *e, Type *t, size_t dst) {
     op(cx, "(local.set %zu (i32.const %d))\n", dst, e->kind == NT_BOOL
                        ? (e->bval ? 1 : 0) : 0);
     break;
-  case TY_I64: case TY_U64: case TY_USIZE: {
+  case TY_I64: case TY_U64: {
     uint64_t v = 0;
     if (e->kind == NT_INT) v = e->ival;
     else if (e->kind == NT_UNARY) {
@@ -706,6 +709,21 @@ static void emit_const_to(FnCx *cx, Node *e, Type *t, size_t dst) {
     } else if (e->kind == NT_FLOAT) v = (uint64_t)(int64_t)e->fval;
     op(cx, "(local.set %zu (i64.const %llu))\n", dst,
        (unsigned long long)v);
+    break;
+  }
+  case TY_USIZE: {
+    // the address width (wasm32): usize lives in the i32 lane
+    uint64_t v = 0;
+    if (e->kind == NT_INT) v = e->ival;
+    else if (e->kind == NT_UNARY) {
+      Node *op0 = node_get(e->a);
+      uint64_t base = op0->kind == NT_INT   ? op0->ival
+                      : op0->kind == NT_FLOAT ? (uint64_t)(int64_t)op0->fval
+                                              : 0;
+      v = (uint64_t)(0 - (int64_t)base);
+    } else if (e->kind == NT_FLOAT) v = (uint64_t)(int64_t)e->fval;
+    op(cx, "(local.set %zu (i32.const %llu))\n", dst,
+       (unsigned long long)(v & 0xFFFFFFFFull));
     break;
   }
   case TY_F32: {
@@ -1321,11 +1339,20 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       if (aw1 && aw1->kind == NT_POSARG)
         emit_expr(cx, aw1->a, n);
       else
-        op(cx, "(local.set %zu (i64.const 0))\n", n);
-      // byte size = n * esz (i64 math, wrap to i32 for alloc)
+        op(cx, "(local.set %zu (i32.const 0))\n", n);
+      // byte size = n * esz (64-bit product; oversized asks panic —
+      // a wrap here would allocate short and corrupt the heap)
       size_t bytes = cx_fresh(cx, ty_i64);
-      op(cx, "(local.set %zu (i64.mul (local.get %zu) (i64.const %zu)))\n",
+      op(cx, "(local.set %zu (i64.mul (i64.extend_i32_u (local.get %zu))"
+             " (i64.const %zu)))\n",
          bytes, n, esz);
+      {
+        size_t msg = data_intern("allocation too large", 20);
+        op(cx, "(if (i64.gt_u (local.get %zu) (i64.const 1073741824))"
+               " (then (call $rho_panic (i32.const %zu)"
+               " (i32.const 20))))\n",
+           bytes, msg);
+      }
       size_t b32 = cx_fresh(cx, ty_i32);
       op(cx, "(local.set %zu (i32.wrap_i64 (local.get %zu)))\n", b32,
          bytes);
@@ -1335,11 +1362,9 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       op(cx, "(local.set %zu (i32.add (local.get %zu) (i32.const 24)))\n",
          dst, blk);
       {
-        size_t n32 = cx_fresh(cx, ty_i32);
-        op(cx, "(local.set %zu (i32.wrap_i64 %s))\n", n32, L(cx, n));
-        // fat slice: {owner, data, len}
+        // fat slice: {owner, data, len} — the len field is i32
         op(cx, "(local.set %zu %s)\n", dst + 1, L(cx, dst));
-        op(cx, "(local.set %zu %s)\n", dst + 2, L(cx, n32));
+        op(cx, "(local.set %zu %s)\n", dst + 2, L(cx, n));
       }
       return;
     }
@@ -1371,11 +1396,9 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
         size_t v = cx_fresh(cx, at);
         emit_expr(cx, aw->a, v);
         if (at->kind == TY_SLICE) // len rides the third slot
-          op(cx, "(local.set %zu (i64.extend_i32_u %s))\n", dst,
-             L(cx, v + 2));
+          op(cx, "(local.set %zu %s)\n", dst, L(cx, v + 2));
         else if (at->kind == TY_STRING)
-          op(cx, "(local.set %zu (i64.extend_i32_u %s))\n", dst,
-             L(cx, v + 1));
+          op(cx, "(local.set %zu %s)\n", dst, L(cx, v + 1));
         else {
           op(cx, "(local.set %zu (i32.const 0))\n", dst);
         }
@@ -2186,27 +2209,25 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
     emit_expr(cx, e->a, b);
     size_t i = cx_fresh(cx, ty_usize);
     emit_expr(cx, e->b, i);
-    size_t i32v = cx_fresh(cx, ty_i32);
-    op(cx, "(local.set %zu (i32.wrap_i64 (local.get %zu)))\n", i32v, i);
     // bounds check: i >=u len → panic (spec §3); the len slot is +1
     // for strings and +2 for fat slices
     size_t msg = data_intern("index out of bounds", 19);
-    op(cx, "(if (i32.ge_u (local.get %zu) %s) (then\n", i32v,
+    op(cx, "(if (i32.ge_u (local.get %zu) %s) (then\n", i,
        L(cx, b + (bt->kind == TY_SLICE ? 2 : 1)));
     op(cx, "  (call $rho_panic (i32.const %zu) (i32.const 19))))\n", msg);
     if (bt->kind == TY_STRING) {
       op(cx, "(local.set %zu (i32.load8_u (i32.add %s (local.get %zu))))\n",
-         dst, L(cx, b), i32v);
+         dst, L(cx, b), i);
     } else {
       Type *el = bt->base;
       size_t esz = type_size(el);
       size_t addr = cx_fresh(cx, ty_i32);
       if (esz == 1)
         op(cx, "(local.set %zu (i32.add %s (local.get %zu)))\n", addr,
-           L(cx, b + 1), i32v); // fat slice: data rides the second slot
+           L(cx, b + 1), i); // fat slice: data rides the second slot
       else
         op(cx, "(local.set %zu (i32.add %s (i32.mul (local.get %zu) "
-               "(i32.const %zu))))\n", addr, L(cx, b + 1), i32v, esz);
+               "(i32.const %zu))))\n", addr, L(cx, b + 1), i, esz);
       size_t n = shape_nlocals(el);
       for (size_t k = 0; k < n; k++) {
         WTy w = local_wty(el, k);
@@ -2239,14 +2260,14 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
     if (e->b != NO_REF) {
       size_t t = cx_fresh(cx, ty_usize);
       emit_expr(cx, e->b, t);
-      op(cx, "(local.set %zu (i32.wrap_i64 (local.get %zu)))\n", lo, t);
+      op(cx, "(local.set %zu %s)\n", lo, L(cx, t));
     } else {
       op(cx, "(local.set %zu (i32.const 0))\n", lo);
     }
     if (e->c != NO_REF) {
       size_t t = cx_fresh(cx, ty_usize);
       emit_expr(cx, e->c, t);
-      op(cx, "(local.set %zu (i32.wrap_i64 (local.get %zu)))\n", hi, t);
+      op(cx, "(local.set %zu %s)\n", hi, L(cx, t));
     } else {
       op(cx, "(local.set %zu %s)\n", hi, L(cx, b + lenslot));
     }
@@ -3023,8 +3044,14 @@ static void emit_format_build(FnCx *cx, Node *call) {
         op(cx, "(call $fb_push %s %s)\n", L(cx, v), L(cx, v + 1));
       } else if (at->kind == TY_I64) {
         op(cx, "(call $fb_i64 %s)\n", L(cx, v));
-      } else if (at->kind == TY_U64 || at->kind == TY_USIZE) {
+      } else if (at->kind == TY_U64) {
         op(cx, "(call $fb_u64 %s)\n", L(cx, v));
+      } else if (at->kind == TY_USIZE) {
+        // address width: widen to the formatter's 64-bit face
+        size_t wide = cx_fresh(cx, ty_i64);
+        op(cx, "(local.set %zu (i64.extend_i32_u %s))\n", wide,
+           L(cx, v));
+        op(cx, "(call $fb_u64 %s)\n", L(cx, wide));
       } else if (at->kind == TY_BOOL) {
         size_t t1 = data_intern("true", 4);
         size_t t0 = data_intern("false", 5);
@@ -3344,12 +3371,8 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
       Type *bt = (Type *)node_get(lv->a)->sem;
       size_t b = cx_fresh(cx, bt);
       emit_expr(cx, lv->a, b);
-      size_t i = cx_fresh(cx, ty_i32);
-      {
-        size_t iw = cx_fresh(cx, ty_usize);
-        emit_expr(cx, lv->b, iw);
-        op(cx, "(local.set %zu (i32.wrap_i64 (local.get %zu)))\n", i, iw);
-      }
+      size_t i = cx_fresh(cx, ty_usize);
+      emit_expr(cx, lv->b, i);
       size_t msg = data_intern("index out of bounds", 19);
       op(cx, "(if (i32.ge_u (local.get %zu) %s) (then\n", i,
          L(cx, b + (bt->kind == TY_SLICE ? 2 : 1)));

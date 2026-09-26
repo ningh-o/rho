@@ -28,7 +28,7 @@ fn i32.hello(self) -> string {
 }
 
 fn main() -> i32 {
-  let c: *Counter = new Counter { n: 5 };
+  let mut c: *Counter = new Counter { n: 5 };
   printf("{} {} {}\n", c.bump(), c.add(3), c.n);
   printf("{}\n", 5.hello());
   return 0;

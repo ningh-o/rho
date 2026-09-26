@@ -86,7 +86,7 @@ fn canon_string(raw: string) -> string {
   let mut out: string = "\"";
   let mut i: usize = 0;
   while i < len(raw) {
-    let b: u8 = raw[i];
+    let mut b: u8 = raw[i];
     if b == 92 && i + 1 < len(raw) {
       let e: u8 = raw[i + 1];
       if e == 110 {
@@ -522,7 +522,7 @@ pub fn fmt_line(st: *Stmt, depth: usize) -> string {
         let inner_text: string = fmt_line(inner, 0);
         // the inner carries its own newline; swap its indent for the
         // defer prefix on the first line
-        let body: string = inner_text;
+        let mut body: string = inner_text;
         let mut k: usize = 0;
         while k < len(body) && body[k] == 32 {
           k = k + 1;

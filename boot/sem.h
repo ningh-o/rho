@@ -53,6 +53,7 @@ typedef struct ParamDef {
   const char *name;
   Type *ty;
   bool variadic;
+  bool is_mut; // declared `mut` — a mut view (permission, not layout)
   NodeRef decl;
 } ParamDef;
 

@@ -11,7 +11,7 @@ fn sum(xs: []i32) -> i32 {
 }
 
 fn main() -> i32 {
-  let xs: []i32 = make([]i32, 5);
+  let mut xs: []i32 = make([]i32, 5);
   let mut i: usize = 0;
   while i < len(xs) {
     xs[i] = i as i32 * 2 + 2;

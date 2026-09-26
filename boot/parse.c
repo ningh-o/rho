@@ -677,11 +677,13 @@ static NodeRef parse_postfix(Parser *p) {
             node_get(aw)->a = parse_expr(p);
             reflist_add(n->list, aw);
           } else {
+            bool want_mut = accept(p, K_MUT); // §18 argument marker
             NodeRef arg = parse_expr(p);
             bool spread = accept(p, T_ELLIPSIS);
             NodeRef aw = nnew(p, NT_POSARG);
             node_get(aw)->a = arg;
             node_get(aw)->bval = spread;
+            node_get(aw)->op = want_mut ? 2 : 0; // §18 marker: op 2 (make type-arg is 1) // marker rides op
             reflist_add(n->list, aw);
           }
           if (!accept(p, T_COMMA))
@@ -713,11 +715,13 @@ static NodeRef parse_postfix(Parser *p) {
               node_get(aw)->a = parse_expr(p);
               reflist_add(n->list, aw);
             } else {
+              bool want_mut = accept(p, K_MUT); // §18 argument marker
               NodeRef arg = parse_expr(p);
               bool spread = accept(p, T_ELLIPSIS);
               NodeRef aw = nnew(p, NT_POSARG);
               node_get(aw)->a = arg;
               node_get(aw)->bval = spread;
+              node_get(aw)->op = want_mut ? 2 : 0; // §18 marker: op 2 (make type-arg is 1)
               reflist_add(n->list, aw);
             }
             if (!accept(p, T_COMMA))

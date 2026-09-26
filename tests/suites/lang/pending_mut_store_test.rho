@@ -1,13 +1,9 @@
 // expect: mut
-// pending: T3.6
 // spec: TODO.md §18
-// PENDING the T3.6 mut-view law (TODO.md §18, ratified but not
-// implemented): a binding without `mut` is a read-only view, so a
-// field store through it (`p.x = 5`) and a slice-element store
-// through it (`s[0] = 9`) must fail check. Today both stores are
-// still accepted, so this case FAILS its own criteria (check passes)
-// — that failure is the pending marker, and the case goes green the
-// day T3.6 lands.
+// The mut view law (TODO.md §18, landed with T3.6): a binding
+// without `mut` is a read-only view — a field store through it
+// (`p.x = 5`) and a slice-element store through it (`s[0] = 9`)
+// are refused at check time; the law is permission, never layout.
 struct P {
   x: i32,
   y: i32,

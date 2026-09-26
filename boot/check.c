@@ -1310,6 +1310,7 @@ static void collect_module(Program *p, Module *m) {
           Node *pp = node_get(reflist_at(fn->list, k));
           sig->params[k].name = pp->name;
           sig->params[k].decl = reflist_at(fn->list, k);
+          sig->params[k].is_mut = pp->bval; // `mut self` in the trait sig
           if (pp->op == 1) {
             // bare self: the implementing method supplies the receiver
             sig->params[k].ty = NULL;
@@ -1656,12 +1657,24 @@ bool check_program(Program *p) {
           Node *pp = node_get(reflist_at(d->list, k));
           sig->params[k].name = pp->name;
           sig->params[k].decl = reflist_at(d->list, k);
+          sig->params[k].is_mut = pp->bval;
           sig->params[k].ty =
               pp->op == 1 ? NULL
                           : resolve_type(m, pp->a, &g);
           if (pp->op == 2 && sig->params[k].ty)
             sig->params[k].ty = type_slice(sig->params[k].ty); // []T
           sig->params[k].variadic = pp->op == 2;
+          // the mut view law (§18): `mut` marks a view parameter —
+          // pointers and slices; on a value it is refused
+          if (pp->bval && sig->params[k].ty &&
+              sig->params[k].ty->kind != TY_PTR &&
+              sig->params[k].ty->kind != TY_SLICE &&
+              pp->op != 1) // bare self: the receiver's mut is decided
+                           // by the receiver type, checked at the call
+            diag_at(DIAG_ERROR, m->path, pp->line, pp->col,
+                    "'mut' marks a view parameter (*T, []T); '%s' is a "
+                    "value",
+                    pp->name ? pp->name : "?");
         }
         sig->ret = d->c != NO_REF ? resolve_type(m, d->c, &g) : ty_unit;
         // a bare receiver (§18/T3.10): the type comes from the

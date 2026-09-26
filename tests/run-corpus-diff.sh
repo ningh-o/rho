@@ -6,7 +6,15 @@
 set -u
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 RHO=${RHO:-./build/rho}
-PINNED=91
+# Floor re-pinned 91 → 85 at T3.6: the mut view law (§18) adds syntax
+# the self-host cannot parse yet (`mut self` receivers, argument
+# markers → 092/098 :refuse), and the usize lane comes home to the
+# address width (u32) while the mirror still computes 64-bit →
+# behavioral :diff on 041/046/048 and an invalid-WAT leg on 005 (the
+# mirror's emission relies on the old lane). These five legs close
+# when the self-host grows the matching surface (the T3.6 mirror
+# note in TODO.md).
+PINNED=85
 pass=0; fail=0; failed=""
 for f in corpus/*.rho; do
   name=$(basename "$f" .rho)

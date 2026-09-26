@@ -24,7 +24,7 @@ fn main() -> i32 {
     return (x + base);
   };
   printf("add_base={}\n", add_base(5));
-  let c: *Cell = new Cell { v: 1 };
+  let mut c: *Cell = new Cell { v: 1 };
   let bump: fn(i32) -> i32 = fn(d: i32) -> i32 {
     c.v += d;
     return c.v;

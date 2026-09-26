@@ -54,7 +54,7 @@ fn main() -> i32 {
   printf("{} hint={}\n", b.describe(), b.size_hint());
   // heterogeneous collection of dyn values
   let bare = new Bare { n: 7 };
-  let items: []dyn Show = make([]dyn Show, 2);
+  let mut items: []dyn Show = make([]dyn Show, 2);
   items[0] = p;
   items[1] = bare;
   let mut i: usize = 0;

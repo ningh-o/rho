@@ -1,7 +1,7 @@
 // out: 11
 struct Box { v: i32 }
 fn main() -> i32 {
-  let b = new Box { v: 5 };
+  let mut b = new Box { v: 5 };
   b.v += 6;
   printf("{}\n", b.v);
   return 0;
