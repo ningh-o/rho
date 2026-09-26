@@ -571,8 +571,12 @@ section — no placeholder stages. boot is the reference compiler.
       param slots (makearg). A fifth fix rides along: a CALL
       scrutinee's Option-payload binder lanes (optpt_of_scrutinee
       resolves the declared return — match fold_string(...) now
-      binds its string payload as a pair). The corpus differential
-      stays 110/110 through the wave.
+      binds its string payload as a pair).  The corpus differential
+      stays 110/110 through the wave. PARITY NOTE (2026-09-27):
+      boot's checker refuses a slice SPREAD at a variadic call
+      (w("head", xs...)) while the mirror compiles and runs it —
+      the mirror is the more permissive side; whichever way the law
+      rules, the differential never rides it.
       THE THIRD CENSUS WAVE (2026-09-27, 57 → 15): three silent
       miscompiles and the big one, each pinned by a run-selfhost leg
       — (1) an Option FIELD scrutinee compared the box POINTER
