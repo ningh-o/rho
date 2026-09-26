@@ -118,4 +118,8 @@ Root-file `const`s (the entry module's) are visible in every module
 without `use` — prelude status (see `spec.md` §6 for the build-
 parameter law). Shadowing a root const (by a module-level const or a
 local) is an error. Beyond root consts, modules see only what they
-`use`.
+`use` — and that reach holds in const initializers too: a comptime
+initializer may read another module's consts through its bindings
+(qualified, item-imported, or facade re-exported); cycles and
+unresolvable initializers are the comptime law's compile error
+(`type-system.md` §2).

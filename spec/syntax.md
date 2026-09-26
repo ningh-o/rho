@@ -28,14 +28,17 @@ Keywords (reserved in every position they could collide):
 ```
 fn let mut const static extern struct enum trait impl for dyn test
 use pub as if else while loop match return defer break continue
-new null true false
+new null true false Self
 i8 i16 i32 i64 u8 u16 u32 u64 usize f32 f64 bool string
 ```
 
 `null` is reserved **and removed from the language**: it is a lexical
 keyword that never parses (pointers are non-null; absence is `?T`).
-Reserved-for-future words are not held back; the list above is final
-for 0.1.0.
+`Self` is reserved as a **type expression**: inside a trait
+declaration it names the type satisfying the trait; inside an impl
+block (and its methods) the impl's target type (`type-system.md`
+§15). Nowhere else. Reserved-for-future words are not held back; the
+list above is final for 0.1.0.
 
 ### 2.2 Integer literals
 
@@ -60,7 +63,10 @@ exponent  := [eE] [+-]? digits
 digits    := [0-9][0-9_]*
 ```
 
-With no consumer a float defaults to `f64`. `1.` and `.5` are not float
+With no consumer a float defaults to `f64` — and must be finite in
+`f64`. A float literal that rounds to ±inf, or to zero from a nonzero
+literal, is out of range for its consumer: a compile error, never a
+silent `inf` (`type-system.md` §1). `1.` and `.5` are not float
 literals (`1.` is `1` followed by `.`; field access on integers is not
 a thing, so this is a syntax error in practice).
 
@@ -99,7 +105,7 @@ triple-quoted string that never closes is a compile error.
 ## 3. Types
 
 ```
-type      := builtin | ptr | opt | slice | fn_type | app | dyn
+type      := builtin | ptr | opt | slice | fn_type | app | dyn | 'Self'
 builtin   := i8|i16|i32|i64|u8|u16|u32|u64|usize|f32|f64|bool|string
 ptr       := '*' type            (*T — non-null heap pointer)
 opt       := '?' type            (?T — sugar for Option[T])
@@ -113,7 +119,8 @@ dyn       := 'dyn' ident            (trait object; the ident names the trait)
 absence mechanism. `usize` is the unsigned word type — the address
 width of its target (u32 on wasm32, the 0.1.0 backend; each Phase-7
 backend pins its own) — and the type of `len` results and index
-expressions.
+expressions. `Self` parses as a type only inside trait declarations
+and impl blocks (§4.2); anywhere else it is an unknown type.
 
 ## 4. Declarations
 
@@ -185,9 +192,15 @@ impl      := 'impl' path 'for' type '{' fndecl* '}'
 
 - Trait signatures use the method form: `fn to_str(self) -> string` —
   the implementing function is `fn Pt.to_str(self: *Pt) -> string`.
+  Signatures may name `Self` where a type is expected
+  (`fn eq(self, other: Self) -> bool`); inside the impl that satisfies
+  the trait, `Self` is the target type. The prelude's operator traits
+  (`Eq`, `Ord`, `Hash`) are ordinary trait declarations of this shape
+  (`type-system.md` §15).
 - Multiple impl blocks per (trait, type) are allowed; impls may live in
   any module (the old ownership rule is gone; coherence is enforced at
-  call sites by exact-match-unique).
+  call sites by exact-match-unique). Inside an impl's methods, `Self`
+  may appear wherever a type is expected.
 
 ### 4.3 Constants, statics, externs
 
@@ -342,8 +355,13 @@ closure   := 'fn' '(' params ')' ['->' type] block
 ```
 
 Non-variadic functions and closures are first-class values of `fn`
-type. Closures capture immutable locals **by copy**; capturing a `mut`
-local is a compile error (shared mutable state is a heap object).
+type. Closures capture locals **by copy**. Capturing a `mut` local of
+**value type** is a compile error — two live paths to one mutable
+value could diverge after a rebind. Capturing a `mut` **handle**
+binding (`*T`, `[]T`, `string`, `dyn`) is legal: the copy is the
+shared view, and the heap object holds the state (`type-system.md`
+§14's law governs stores through it) — the escape hatch this rule's
+own rationale names: `new` a counter, pass `*T`.
 
 ### 6.9 `?`
 
@@ -372,7 +390,13 @@ arm_pat   := pattern ('|' pattern)*
   type: a variant name in an arm resolves against the enum being
   matched first (`Some(v)`, `Circle(r)`; prelude and user enums
   alike), with no scope fallback. Full paths stay legal and are
-  required for variants of any other enum.
+  required for variants of any other enum. The binder form must match
+  the declared payload form: braces bind struct-form payloads by
+  field name, parens bind positional payloads by index, and a unit
+  payload takes neither — a braced pattern on a tuple payload, or a
+  positional pattern on a struct-form payload, is a compile error
+  (ratified 2026-09-26; the arity law already refuses unit/other
+  mismatches).
 - Literal patterns: integers, floats, bools, strings.
 - Match arms: `arm_pat => expr` or `arm_pat => block`; alternatives
   of an or-pattern bind the identical name set, else a compile

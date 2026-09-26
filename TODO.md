@@ -567,9 +567,11 @@ section — no placeholder stages. boot is the reference compiler.
       consts_converge now re-folds post-BFS and the comptime law is
       hard (cyclic / non-comptime / annotation-mismatch consts error).
       Still open from the old ledger: the float-literal-beyond-range
-      → inf spec ruling. New strictness question parked for a ruling:
+      → inf spec ruling — ruled in T3.12 (out of range = compile
+      error, never silent inf). The strictness question parked here —
       positional binding of a struct-form variant (`V(x)` on
-      `V { x }`) is silently accepted — allow or refuse.
+      `V { x }`) — ruled in T3.12 as well: the pattern form must
+      match the payload form, both directions refuse.
 - [x] **T3.11** Grammar-campaign leftovers (opened and closed
       2026-09-26): the 68-fixture grammar suite (tests/suites/grammar)
       closed one crash (`Option.None?` segfault — ? now infers the
@@ -591,6 +593,26 @@ section — no placeholder stages. boot is the reference compiler.
       check, turned into the return at emit (`fn f() -> i32 { 3 }`
       returns 3). make test green end to end: 436 pass, 0 fail,
       0 pending — no expected-fail ledger left in the suites.
+- [ ] **T3.12** The operator traits — Eq, Ord, Hash (opened
+      2026-09-26; design §11 amended, docs landed in the same wave).
+      The full law is design §11 + type-system.md §15; the two parked
+      rulings also ruled here: a float literal that rounds to ±inf or
+      (from a nonzero literal) to zero is out of range — a compile
+      error, never a silent inf (type-system.md §1's fit law, now
+      enforced for floats); a variant pattern's binder form must match
+      the declared payload form — braced on a tuple payload and
+      positional on a struct payload both refuse (syntax.md §7).
+      Construction order: parse `Self` (keyword, type positions in
+      trait/impl contexts) → check resolves the six operators through
+      trait lookup with the choice pinned on the node (op=5 style) →
+      emit direct calls → bounds verified per instantiation → corpus +
+      fixture regression, differential floor untouched. Acceptance:
+      default slotwise `==` unchanged everywhere; `impl Eq` overrides;
+      `<` on user types refuses without `impl Ord`; the never-list
+      stays locked; `impl Hash` replaces the FNV default; `[T: Eq]`
+      dispatches statically; `dyn Eq` `.eq` dispatches virtually
+      (ordinary §9 dyn); cycle-through-user-eq ends in the documented
+      stack-overflow panic.
 - [x] **T3.9** Match arm ergonomics (§19): variant resolution by
       scrutinee (bare `Some`/`None`/`Ok`/`Err` and user-enum variants,
       full paths stay legal, no scope fallback), or-patterns with the
@@ -773,7 +795,9 @@ weight.
 10. `==` comparability law: pointers identity, strings content, enums
     tag-then-payload, aggregates element-wise; `fn`/`dyn`/err-payloads
     never compare; comparing cyclic data ends in a stack-overflow panic
-    (documented, not detected).
+    (documented, not detected). On user types the law resolves through
+    the **operator traits** (§11): the element-wise default holds until
+    an `impl Eq for T` replaces it.
 11. Everything is a value type; no moves, no borrows, no address-of.
 
 ### 4. Errors
@@ -847,13 +871,51 @@ left width; floats are IEEE-754 (`/0.0` = inf, `NaN != NaN`); precedence
 C-style, 11 levels + postfix, left-associative; `&&`/`||` short-circuit;
 assignment is a statement with no value.
 
+**Operator traits** (ratified 2026-09-26): `==`/`!=`/`<`/`<=`/`>`/`>=`
+on user types resolve through the prelude traits `Eq` and `Ord` —
+operator overloading with one shape, no magic:
+
+- `trait Eq { fn eq(self, other: Self) -> bool }` — user structs/enums
+  compare element-wise by default; an `impl Eq for T` **replaces** the
+  default (never merges).
+- `trait Ord { fn lt(self, other: Self) -> bool }` — explicit impl
+  only; there is no lexicographic auto-derive. `a < b` calls `lt`; the
+  other three derive: `a <= b` = `!(b < a)`, `a > b` = `b < a`,
+  `a >= b` = `!(a < b)`. One method, one meaning.
+- `trait Hash { fn hash(self) -> u64 }` — the default folds the same
+  values the `==` law compares, FNV-1a 64-bit over the slots in
+  declaration order (string = content bytes; `*T` = the 32-bit
+  address, little-endian; integers/floats = their little-endian bit
+  patterns; bool = one byte; enums = tag then payload slots). An
+  `impl Hash for T` replaces the default. Equal values hash equal —
+  the defaults are built to; an impl overriding Eq but not Hash (or
+  the reverse) is its author's to keep consistent.
+- Builtins never consult the traits (direct emission, as today). The
+  never-list — `fn` types, `dyn`, slices, `Result` — is **locked**:
+  never comparable, never hashable, and no impl can unlock them; the
+  `==` operator itself never applies to `dyn` (though a `dyn Eq` value
+  dispatches `.eq` like any trait method).
+- `Self` is a reserved word: inside a trait declaration it names the
+  type satisfying the trait; inside an impl (and its methods) the
+  impl's target type. Nowhere else.
+- Bounds (`[T: Eq]`) are the first wave, ordinary §8 bounds verified
+  per instantiation with static dispatch; virtual dispatch of the
+  trait methods through `dyn` is ordinary §9 dyn dispatch.
+- Coherence is §4/§5's law unchanged: impls in any module,
+  exact-match-unique — two satisfying `eq` methods for one
+  (trait, type) is the ordinary ambiguity error.
+
 ### 12. Closures and variadics
 
-Closures capture immutables by copy; **mut capture stays rejected**
-(shared mutable state is a heap object: `new` a counter, pass `*T`).
-Variadics: `rest: T...` last parameter, concrete element type, `[]T` in
-the body, spread `xs...` last argument, call materializes a fresh slice,
-variadic functions are not first-class values.
+Closures capture locals by copy; capturing a **`mut` local of value
+type** is rejected — two live paths to one mutable value could diverge
+after a rebind. Capturing a **`mut` handle** binding (`*T`, `[]T`,
+`string`, `dyn`) is legal: the copy is the shared view and the heap
+object holds the state (§14's law governs stores through it) — the
+escape hatch this rule's own rationale names (`new` a counter, pass
+`*T`). Variadics: `rest: T...` last parameter, concrete element type,
+`[]T` in the body, spread `xs...` last argument, call materializes a
+fresh slice, variadic functions are not first-class values.
 
 ### 13. Toolchain architecture
 

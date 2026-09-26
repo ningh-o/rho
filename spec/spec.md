@@ -91,7 +91,13 @@ path; the safe subset never traps with a raw wasm `unreachable`.
   MIN` (no trap), `/0` and `%0` panic. Shifts mask the shift count by
   the left operand's width (`1 << 33` on i32 shifts by 1).
 - Floats are IEEE-754: `/0.0` = ±inf, `NaN != NaN`, no trapping.
+  Float *literals* are held to the fit law — out of range is a compile
+  error, never a silent inf (`type-system.md` §1).
 - `&&`/`||` short-circuit; assignment is a statement (syntax.md §5).
+- Comparisons on user types resolve through the operator traits —
+  `Eq` for `==`/`!=` (slotwise default, impl overrides), `Ord` for the
+  ordered four (explicit impl only); the never-compare list is locked
+  (`type-system.md` §10/§15).
 
 ## 5. Strings
 
@@ -160,6 +166,8 @@ path; the safe subset never traps with a raw wasm `unreachable`.
 The prelude holds **exactly the mechanism-required kernel**:
 
 - `Option`/`Result` + `?` machinery,
+- the operator traits `Eq`/`Ord`/`Hash` (+ `Self`) — the anchors the
+  comparison and hash laws resolve through (`type-system.md` §15),
 - `to_str` family + variadic format sinks (printf/eprintf/format
   desugaring),
 - panic/assert + hooks,
@@ -207,6 +215,16 @@ syntax/type/module document.
 | T9 `?T` sugar, non-null | `tests/lang/opt_sugar.rho`, `tests/diag/null_use.rho` |
 | T10 `==` law | `tests/eq/*`, corpus 056–058 |
 | T12 `?` on both | corpus 077 (adapted), `tests/lang/qmark_mix.rho` (must fail) |
+| T15 Eq default + impl override | `tests/eq/trait_eq_override.rho` |
+| T15 Ord explicit-impl-only | `tests/eq/trait_ord.rho`, `tests/eq/ord_without_impl.rho` (must fail) |
+| T15 Hash default byte law + impl | `tests/eq/hash_default.rho`, `tests/eq/hash_impl.rho` |
+| T15 never-list locked | `tests/eq/never_locked.rho` (must fail: impl cannot unlock slices/dyn/Result) |
+| T15 `[T: Eq]` bounds + `dyn Eq` dispatch | `tests/eq/bound_eq.rho`, `tests/eq/dyn_eq.rho` |
+| T2 cross-module const fold | `tests/modsys/const_cross_module.rho` |
+| T2 comptime law hard (cycle/mismatch) | `tests/diag/const_cyclic.rho`, `tests/diag/const_mismatch.rho` (must fail) |
+| T1 float literal fit | `tests/lang/float_literal_fit.rho` (must fail) |
+| S7 pattern form law | `tests/diag/pattern_form_named_on_tuple.rho`, `tests/diag/pattern_form_positional_on_struct.rho` (must fail) |
+| S6.8 mut value-type capture refused, mut handle captured | `tests/diag/capture_mut_value.rho` (must fail), `tests/lang/capture_mut_handle.rho` |
 | §1.1 rc/weak header | corpus 090/091/099 (adapted) |
 | §1.3 zeroed allocations | corpus 102 (adapted), `tests/lang/make_zero.rho` |
 | §1.4 counting insertion | corpus 090/092/093 (adapted) |

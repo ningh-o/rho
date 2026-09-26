@@ -1,7 +1,9 @@
 # rho type system — the law
 
-The eleven rules of the ratified design, made concrete. Numbering
-follows the design section §3.
+The ratified design's type rules, made concrete. §1–§11 number the
+design §3's rules; §12–§15 make the mechanisms the design names
+elsewhere (`?`, operator typing, the mut view, the operator traits)
+law of their own.
 
 ## 1. Literals adapt to their consumer
 
@@ -20,7 +22,11 @@ its context demands. **Consumers** are, exhaustively:
 With no consumer: integers are `i32`, floats are `f64`, and the value
 must fit. `bool` and `string` literals always have their own type; they
 do not adapt. A literal that cannot fit its consumer is a compile
-error (never a silent wrap).
+error (never a silent wrap). For float literals, **fit** means finite
+and representable: a literal that rounds to ±inf, or that rounds to
+zero from a nonzero literal, is out of range for its consumer — a
+compile error, never a silent `inf` (ratified 2026-09-26; subnormal
+but nonzero values fit).
 
 ## 2. `const` infers; annotation pins a builtin
 
@@ -29,7 +35,15 @@ other consumer → `i32`). `const N: i64 = 4;` pins the type; the
 initializer must comptime-fit it. The annotation may be any builtin
 type only (not user types): a const is a folded value. Initializers
 must be comptime-evaluable: literals, other consts, builtin operators
-on comptime values, `as` casts of comptime values.
+on comptime values, `as` casts of comptime values. "Other consts"
+reaches across modules: a comptime initializer may read a const of
+another module through a use binding — the qualified `mod.K` form, an
+item import, or a facade re-export; the fold runs after the module
+graph binds. An initializer that cannot fold — a cycle, a non-comptime
+form, an unresolvable name, a value that does not fit the annotation —
+is a **compile error**, never a silent zero (ratified 2026-09-26).
+Statics fold in the same fixpoint as consts and are held to the same
+law.
 
 ## 3. `as` is the only conversion
 
@@ -131,21 +145,26 @@ comparable (§10) and not printable.
 ## 10. The `==` comparability law
 
 `==`/`!=` require both sides the same type, and that type must be
-comparable:
+comparable. Builtins compare directly — no trait lookup:
 
 | type            | compares by            |
 | --------------- | ---------------------- |
 | bool, integers, floats | value (`NaN != NaN`) |
 | string          | content (bytes)        |
 | `*T`            | identity (same object) |
-| enums           | tag, then payload element-wise |
-| structs         | element-wise           |
+| enums           | tag, then payload element-wise (the Eq default) |
+| structs         | element-wise (the Eq default) |
 | `Option[T]`     | constructor, then payload |
 
-Never comparable: `fn` types, `dyn`, slices `[]T`, `Result[T, E]`
-(err-payloads never compare). Comparing cyclic data (structs whose
-transitive fields reach a cycle) recurses and ends in a
-**stack-overflow panic** — documented, not detected.
+On user structs and enums the element-wise default holds until an
+`impl Eq for T` exists — then the trait's `eq` **replaces** the
+default entirely (the operator resolves through the operator traits,
+§15). Cyclic data (structs whose transitive fields reach a cycle,
+through user `eq` impls as much as through the defaults) recurses and
+ends in a **stack-overflow panic** — documented, not detected.
+
+Never comparable — **locked, no impl can unlock them**: `fn` types,
+`dyn`, slices `[]T`, `Result[T, E]` (err-payloads never compare).
 
 ## 11. Everything is a value type
 
@@ -174,6 +193,10 @@ type (integer or float); `!` is bool-not; `~` is integer bitwise-not —
 one operator, one meaning (`!` never meets an integer, `~` never meets
 a `bool`, neither converts).
 
+The comparison operators on user types resolve through the operator
+traits (§15): `==`/`!=` through `Eq` (slotwise default, impl
+overrides), `<`/`<=`/`>`/`>=` through `Ord` (explicit impl only).
+
 Integer semantics (wrap, `MIN / -1 = MIN`, `/0 %0` panic, shifts mask
 by the left width) and float semantics (IEEE-754, `/0.0` = inf) are
 specified in `spec.md` §4.
@@ -188,3 +211,61 @@ representation: copying, retain/release, and layout are §2's law
 unchanged. The view is shallow: a handle copied out of a non-`mut`
 binding is governed by its own binding's `mut` — the language never
 tracks read-only-ness transitively.
+
+## 15. The operator traits — Eq, Ord, Hash
+
+Operator overloading with one shape and no magic (design §11,
+ratified 2026-09-26). Three prelude traits anchor the comparison and
+hash laws:
+
+```
+trait Eq   { fn eq(self, other: Self) -> bool }
+trait Ord  { fn lt(self, other: Self) -> bool }
+trait Hash { fn hash(self) -> u64 }
+```
+
+**Self** is a reserved word. Inside a trait declaration it names the
+type satisfying the trait; inside an impl block (and its methods) it
+names the impl's target type. It is a type expression and is valid
+nowhere else — a `Self` outside trait/impl context is an unknown type.
+
+**Resolution.** Builtins never consult the traits: bool, integers,
+floats, `string`, and `*T` emit directly, exactly as before the
+traits existed. On user structs and enums:
+
+- `==`/`!=` resolve to the slotwise element-wise default until an
+  `impl Eq for T` exists; the impl's `eq` then replaces the default
+  entirely (never merges with it).
+- `<`/`<=`/`>`/`>=` exist on a user type **only** through
+  `impl Ord for T` — there is no lexicographic auto-derive and no
+  default ordering. `a < b` calls `lt`; the other three derive:
+  `a <= b` is `!(b < a)`, `a > b` is `b < a`, `a >= b` is `!(a < b)`.
+  One method, one meaning — `lt` is the only implementable ordering.
+- `hash(...)` (the default) and an explicit `impl Hash for T` follow
+  the same replace-don't-merge law. The default folds the same values
+  the `==` law compares: 64-bit FNV-1a (offset basis
+  `0xcbf29ce484222325`, prime `0x100000001b3`) over the slots in
+  declaration order — string = its content bytes; `*T` = the 32-bit
+  address, little-endian; integers and floats = their little-endian
+  bit patterns (`f32` 4 bytes, `f64` 8; a float hashes its bit
+  pattern, so `NaN != NaN` may still hash equal — equal implies
+  equal hash, never the converse); bool = one byte; enums = the tag
+  (`i32`, little-endian) then payload slots; `Option[T]` = constructor
+  then payload. Byte law pinned because hash values are behavior, and
+  behavior must match across compilers (spec.md §8).
+
+**The never-list is locked**: `fn` types, `dyn`, slices `[]T`, and
+`Result[T, E]` are never comparable and never hashable, and no impl
+can unlock them. The `==` operator itself never applies to `dyn` —
+though a `dyn Eq` value dispatches `.eq(...)` virtually, exactly like
+any trait method (§9); there is no separate `dyn` mechanism for
+operators.
+
+**Coherence and bounds** are the existing laws unchanged: impls live
+in any module (§4), satisfaction is exact-match-unique (§5 — two
+satisfying `eq` methods for one trait/type pair is the ordinary
+ambiguity error), and `[T: Eq]` / `[T: Ord]` / `[T: Hash]` are
+ordinary §8 bounds — verified per instantiation, dispatching
+statically to the satisfying method. The traits live in the prelude
+(kernel-anchored, spec.md §9) and are addressed by identity: a user
+trait named `Eq` in another module does not hijack the operators.
