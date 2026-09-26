@@ -502,10 +502,13 @@ section — no placeholder stages. boot is the reference compiler.
       With the 283 chains split (single-tail statements, indentation
       preserved) and the append law live, THE MIRROR COMPILES
       ITSELF: rc 0, 148,607 lines of child WAT in 0.43 s, FMT self
-      338 KB clean. The self-CHAIN's open gap: the child calls
-      \$u_len 292 times but never defines it — the prelude fn bodies
-      the mirror embeds for corpus programs go missing at
-      self-scale; close that and gate.sh leg 4 (child/grandchild
+      338 KB clean. The self-CHAIN's open gap narrows: the child
+      called \$u_len 292 times — len()'s fall-through was a call to
+      a fn never defined (a latent gap no corpus program rides);
+      kind-2 slice bindings and slice-typed struct fields now read
+      their pair slots directly (224 close). 68 remain over colder
+      shapes — match binders, indexed elements, call results — the
+      last emission slice before gate.sh leg 4 (child/grandchild
       byte-identity + the probe) is the 0.1.0 heart beating.
 - [ ] **T3.2 Pure-source trust root**: every gate run rebuilds the seed
       from boot's C source on the spot. The pinned `seed.wasm` stays in
