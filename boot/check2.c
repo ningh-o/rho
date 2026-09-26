@@ -25,6 +25,9 @@ typedef struct FnCtx {
   size_t ngparams;
   Type **gbinds; // generic instance: name → concrete bind (parallel to
                  // gparams; NULL for templates)
+  bool or_relax; // inside an or-pattern's non-first alternative:
+                 // re-binding the same name at the same type is the
+                 // §19 identical-binder law, not a duplicate
 } FnCtx;
 
 static void ctx_push_scope(FnCtx *c) { c->scope++; }
@@ -1984,11 +1987,91 @@ static Type *check_block_value(FnCtx *c, NodeRef br, Type *expected) {
   return tail_ty;
 }
 
+// §19: an arm's variant name resolves against the scrutinee's enum —
+// a bare name that names a variant IS the variant, with no scope
+// fallback (a nested inner match resolves by its own scrutinee).
+// Recurses through payload patterns against the payload field types.
+static void resolve_pattern(FnCtx *c, Node *p, Type *st) {
+  if (p->kind == NT_POR) {
+    for (size_t i = 0; i < reflist_len(p->list); i++)
+      resolve_pattern(c, node_get(reflist_at(p->list, i)), st);
+    return;
+  }
+  if (p->kind == NT_PBIND) {
+    if (st && st->kind == TY_ENUM)
+      for (size_t v = 0; v < st->edef->nvariants; v++)
+        if (strcmp(st->edef->variants[v].name, p->name) == 0) {
+          p->kind = NT_PVAR;
+          p->name = aprintf(g_arena, "%s.%s", st->edef->name, p->name);
+          p->op = VAR_UNIT;
+          p->list = reflist();
+          return;
+        }
+    return;
+  }
+  if (p->kind != NT_PVAR)
+    return;
+  if (!st || st->kind != TY_ENUM)
+    return; // check_pattern reports the mismatch
+  EnumVariant *var = NULL;
+  if (!strchr(p->name, '.')) {
+    for (size_t v = 0; v < st->edef->nvariants; v++)
+      if (strcmp(st->edef->variants[v].name, p->name) == 0)
+        var = &st->edef->variants[v];
+    if (!var)
+      return; // not a variant of this enum: a check error later
+    p->name = aprintf(g_arena, "%s.%s", st->edef->name, p->name);
+  } else {
+    const char *last = strchr(p->name, '.') + 1;
+    for (size_t v = 0; v < st->edef->nvariants; v++)
+      if (strcmp(st->edef->variants[v].name, last) == 0)
+        var = &st->edef->variants[v];
+    if (!var)
+      return;
+  }
+  TBind tb = {edef_gnames(st->edef), st->args,
+              st->args ? st->edef->ngparams : 0};
+  for (size_t i = 0; i < reflist_len(p->list); i++) {
+    Node *sub = node_get(reflist_at(p->list, i));
+    if (p->op == VAR_STRUCT) {
+      for (size_t k = 0; k < var->nfields; k++)
+        if (strcmp(var->fields[k].name, sub->name) == 0) {
+          resolve_pattern(c, node_get(sub->a),
+                          tsubst(var->fields[k].ty, &tb));
+          break;
+        }
+    } else if (i < var->nfields) {
+      resolve_pattern(c, sub, tsubst(var->fields[i].ty, &tb));
+    }
+  }
+}
+
+// the names an or-pattern alternative binds (for the identical-binder
+// law)
+static void pattern_binders(Node *p, Vec *names) {
+  if (p->kind == NT_PBIND) {
+    *VPUSH(*names, const char *) = p->name;
+  } else if (p->kind == NT_PVAR) {
+    for (size_t i = 0; i < reflist_len(p->list); i++) {
+      Node *sub = node_get(reflist_at(p->list, i));
+      if (p->op == VAR_STRUCT)
+        pattern_binders(node_get(sub->a), names);
+      else
+        pattern_binders(sub, names);
+    }
+  }
+}
+
 static Type *check_match(FnCtx *c, NodeRef er, Type *expected) {
   Node *m = node_get(er);
   Type *st = check_expr(c, m->a, NULL);
   Type *arm_ty = NULL;
   bool saw_wild = false;
+
+  // resolution runs before anything else: covering and pattern
+  // checking both see the resolved forms
+  for (size_t i = 0; i < reflist_len(m->list); i++)
+    resolve_pattern(c, node_get(node_get(reflist_at(m->list, i))->a), st);
 
   if (st->kind == TY_ENUM) {
     // exhaustive unless _ present: cover every variant
@@ -1998,19 +2081,31 @@ static Type *check_match(FnCtx *c, NodeRef er, Type *expected) {
     for (size_t i = 0; i < reflist_len(m->list); i++) {
       Node *arm = node_get(reflist_at(m->list, i));
       Node *pat = node_get(arm->a);
-      if (pat->kind == NT_PWILD)
-        saw_wild = true;
-      if (pat->kind == NT_PVAR) {
+      if (arm->c != NO_REF)
+        continue; // a guarded arm never counts toward exhaustiveness
+      // one alternative of an or-pattern at a time: an arm covers the
+      // union of its alternatives' variants
+      size_t nalts = 1;
+      Node **alts = &pat;
+      Node *por_alts[16];
+      if (pat->kind == NT_POR) {
+        nalts = reflist_len(pat->list);
+        for (size_t k = 0; k < nalts && k < 16; k++)
+          por_alts[k] = node_get(reflist_at(pat->list, k));
+        alts = por_alts;
+      }
+      for (size_t a = 0; a < nalts; a++) {
+        Node *pa = alts[a];
+        if (pa->kind == NT_PWILD)
+          saw_wild = true;
+        if (pa->kind != NT_PVAR)
+          continue;
+        const char *dot = strchr(pa->name, '.');
+        if (!dot)
+          continue;
         for (size_t v = 0; v < st->edef->nvariants; v++)
-          if (strcmp(st->edef->variants[v].name, pat->name +
-                         (strchr(pat->name, '.')
-                              ? (size_t)(strchr(pat->name, '.') - pat->name + 1)
-                              : 0)) == 0) {
-            // prefix check: pat->name is "Enum.Variant"
-            const char *dot = strchr(pat->name, '.');
-            if (dot && strcmp(dot + 1, st->edef->variants[v].name) == 0)
-              covered[v] = true;
-          }
+          if (strcmp(dot + 1, st->edef->variants[v].name) == 0)
+            covered[v] = true;
       }
     }
     if (!saw_wild)
@@ -2030,6 +2125,14 @@ static Type *check_match(FnCtx *c, NodeRef er, Type *expected) {
     // pattern binders scope the arm value
     ctx_push_scope(c);
     check_pattern(c, pat, st);
+    if (arm->c != NO_REF) {
+      // §19 guard: evaluated after the pattern matches, in scope of
+      // its bindings; a guarded arm never counts toward exhaustiveness
+      Type *gt = check_expr(c, arm->c, ty_bool);
+      if (!type_eq(gt, ty_bool))
+        err_at(c, node_get(arm->c), "guard must be bool, got %s",
+               type_name(gt));
+    }
     Type *vt;
     if (node_get(arm->b)->kind == NT_EXPRSTMT && node_get(arm->b)->op == 3)
       vt = check_block_value(c, arm->b, expected);
@@ -2050,11 +2153,51 @@ static void check_pattern(FnCtx *c, Node *p, Type *st) {
   switch (p->kind) {
   case NT_PWILD:
     return;
+  case NT_POR: {
+    // the identical-binder law: every alternative must bind the same
+    // set of names (§19). Alternative 0 checks fully and registers;
+    // the rest re-check under or_relax, re-binding at the same type.
+    VEC(const char *, names0);
+    pattern_binders(node_get(reflist_at(p->list, 0)), &names0);
+    for (size_t i = 1; i < reflist_len(p->list); i++) {
+      Node *alt = node_get(reflist_at(p->list, i));
+      VEC(const char *, namesi);
+      pattern_binders(alt, &namesi);
+      if (VLEN(namesi) != VLEN(names0))
+        err_at(c, alt, "or-pattern alternatives bind different names");
+      for (size_t a = 0; a < VLEN(namesi); a++) {
+        bool found = false;
+        for (size_t b = 0; b < VLEN(names0); b++)
+          if (strcmp(*VAT(namesi, const char *, a),
+                     *VAT(names0, const char *, b)) == 0)
+            found = true;
+        if (!found)
+          err_at(c, alt,
+                 "or-pattern alternatives bind different names");
+      }
+    }
+    for (size_t i = 0; i < reflist_len(p->list); i++) {
+      Node *alt = node_get(reflist_at(p->list, i));
+      c->or_relax = i > 0;
+      check_pattern(c, alt, st);
+      c->or_relax = false;
+    }
+    return;
+  }
   case NT_PBIND: {
     // duplicate binder check within this pattern is by scope: same name
-    // twice in one scope = error
+    // twice in one scope = error — except a sibling or-pattern
+    // alternative re-binding the same name at the same type (§19)
     if (ctx_find_local(c, p->name) &&
         ctx_find_local(c, p->name)->scope == c->scope) {
+      if (c->or_relax) {
+        Local *ex = ctx_find_local(c, p->name);
+        if (!type_eq(st, ex->ty))
+          err_at(c, p, "or-pattern binds '%s' at different types",
+                 p->name);
+        p->sem = st;
+        return;
+      }
       err_at(c, p, "binder '%s' appears twice", p->name);
       return;
     }

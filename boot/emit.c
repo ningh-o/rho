@@ -2561,6 +2561,50 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
   }
 }
 
+// literal payload tests for a top-level variant pattern: a pattern
+// that names a value (Circ(0), Box(_, "heavy")) must test the
+// payload slots, not just the tag. Returns the number of nested
+// (if ... (then opened — the caller closes them after the body.
+static size_t emit_payload_tests(FnCx *cx, Node *pat, Type *st,
+                                 EnumVariant *var, size_t base) {
+  size_t opens = 0;
+  size_t slot = 1; // payload slots start after the tag
+  for (size_t i = 0; i < reflist_len(pat->list); i++) {
+    Node *sub = node_get(reflist_at(pat->list, i));
+    Node *sp = sub;
+    if (pat->op == VAR_STRUCT && sub->kind == NT_FIELD)
+      sp = node_get(sub->a);
+    Type *ft = i < var->nfields ? inst_ty(st, var->fields[i].ty)
+                                : ty_unit;
+    size_t w = ft ? shape_nlocals(ft) : 1;
+    size_t at = base + slot;
+    if (sp->kind == NT_PLIT && sp->op == 0) { // integer
+      if (local_wty(st, slot) == W_I64)
+        op(cx, "(if (i64.eq (local.get %zu) (i64.const %lld)) (then\n",
+           at, (long long)sp->ival);
+      else
+        op(cx, "(if (i32.eq (local.get %zu) (i32.const %d)) (then\n",
+           at, (int32_t)(uint32_t)sp->ival);
+      opens++;
+    } else if (sp->kind == NT_PLIT && sp->op == 2) { // bool
+      op(cx, "(if (i32.eq (local.get %zu) (i32.const %d)) (then\n", at,
+         sp->bval ? 1 : 0);
+      opens++;
+    } else if (sp->kind == NT_PLIT && sp->op == 3 && w == 2) { // string
+      size_t di = data_intern(sp->sval.p, sp->sval.n);
+      op(cx, "(if (call $rho_streq (local.get %zu) (local.get %zu) "
+             "(i32.const %zu) (i32.const %zu)) (then\n", at, at + 1,
+         di, sp->sval.n);
+      opens++;
+    }
+    slot += w;
+  }
+  return opens;
+}
+
+static bool pa_kind_is_wild(Node *p) { return p->kind == NT_PWILD; }
+static bool pa_kind_is_bind(Node *p) { return p->kind == NT_PBIND; }
+
 // match: if-chain over arms by tag (br_table is optimizer backlog);
 // literal/string arms compare values
 static void emit_match(FnCx *cx, NodeRef er, size_t dst) {
@@ -2570,104 +2614,138 @@ static void emit_match(FnCx *cx, NodeRef er, size_t dst) {
   emit_expr(cx, m->a, v);
   bool is_enum = st->kind == TY_ENUM;
   (void)is_enum;
-  // a wildcard arm runs only when no guarded arm matched (arms are
-  // exclusive; the if-chain accumulates a matched flag)
-  size_t matched = NO_REF;
-  bool has_wild = false;
-  for (size_t i = 0; i < reflist_len(m->list); i++)
-    if (node_get(reflist_at(m->list, i))->a != NO_REF &&
-        node_get(node_get(reflist_at(m->list, i))->a)->kind == NT_PWILD)
-      has_wild = true;
-  if (has_wild) {
-    matched = cx_fresh(cx, ty_bool);
-    op(cx, "(local.set %zu (i32.const 0))\n", matched);
-  }
+  // arms are exclusive because every arm's test is gated on the
+  // matched flag: same-tag arms (guards, or-patterns, a binder arm)
+  // must never clobber an earlier arm's result
+  size_t matched = cx_fresh(cx, ty_bool);
+  op(cx, "(local.set %zu (i32.const 0))\n", matched);
   for (size_t i = 0; i < reflist_len(m->list); i++) {
     Node *arm = node_get(reflist_at(m->list, i));
-    Node *pat = node_get(arm->a);
-    bool wildcard = pat->kind == NT_PWILD;
-    if (!wildcard) {
-      if (pat->kind == NT_PVAR) {
-        EnumVariant *var = NULL;
+    bool guarded = arm->c != NO_REF;
+    // an or-pattern (§19) emits once per alternative; the body
+    // duplicates per alternative and at most one can match a given
+    // subject (variants are disjoint, literal alternatives distinct)
+    Node *alts[16];
+    size_t nalts = 1;
+    Node *solo = node_get(arm->a);
+    Node **altp = &solo;
+    if (solo->kind == NT_POR) {
+      nalts = reflist_len(solo->list);
+      if (nalts > 16)
+        nalts = 16;
+      for (size_t k = 0; k < nalts; k++)
+        alts[k] = node_get(reflist_at(solo->list, k));
+      altp = alts;
+    }
+    for (size_t a = 0; a < nalts; a++) {
+      Node *pat = altp[a];
+      // the arm's test, gated on the matched flag: the flag makes
+      // same-tag arms — guards, or-patterns — exclusive
+      bool opened = true;
+      EnumVariant *arm_var = NULL;
+      size_t payload_opens = 0;
+      if (pa_kind_is_wild(pat) || pa_kind_is_bind(pat)) {
+        // a wildcard or a top-level binder matches everything left
+        op(cx, "(if (i32.eqz %s) (then\n", L(cx, matched));
+      } else if (pat->kind == NT_PVAR) {
         for (size_t k = 0; k < st->edef->nvariants; k++)
           if (strcmp(st->edef->variants[k].name,
                      strchr(pat->name, '.') + 1) == 0)
-            var = &st->edef->variants[k];
-        if (has_wild)
-          op(cx, "(if (i32.and (i32.eq (local.get %zu) (i32.const %d)) "
-                 "(i32.eqz %s)) (then\n", v, var ? var->tag : -1,
-             L(cx, matched));
-        else
-          op(cx, "(if (i32.eq (local.get %zu) (i32.const %d)) (then\n",
-             v, var ? var->tag : -1);
+            arm_var = &st->edef->variants[k];
+        op(cx, "(if (i32.and (i32.eq (local.get %zu) (i32.const %d)) "
+               "(i32.eqz %s)) (then\n", v, arm_var ? arm_var->tag : -1,
+           L(cx, matched));
       } else if (pat->kind == NT_PLIT) {
         // literal arm: guard on the subject value
         if (pat->op == 0) { // integer: compare at the subject's width
           if (scalar_wty(st) == W_I64)
-            op(cx, "(if (i64.eq (local.get %zu) (i64.const %lld))"
-                   " (then\n", v, (long long)pat->ival);
+            op(cx, "(if (i32.and (i64.eq (local.get %zu) (i64.const %lld))"
+                   " (i32.eqz %s)) (then\n", v, (long long)pat->ival,
+               L(cx, matched));
           else
-            op(cx, "(if (i32.eq (local.get %zu) (i32.const %d)) (then\n",
-               v, (int32_t)(uint32_t)pat->ival);
+            op(cx, "(if (i32.and (i32.eq (local.get %zu) (i32.const %d)) "
+                   "(i32.eqz %s)) (then\n", v,
+               (int32_t)(uint32_t)pat->ival, L(cx, matched));
         } else if (pat->op == 2) { // bool
-          op(cx, "(if (i32.eq (local.get %zu) (i32.const %d)) (then\n",
-             v, pat->bval ? 1 : 0);
+          op(cx, "(if (i32.and (i32.eq (local.get %zu) (i32.const %d)) "
+                 "(i32.eqz %s)) (then\n", v, pat->bval ? 1 : 0,
+             L(cx, matched));
         } else if (pat->op == 3) { // string content
           size_t at = data_intern(pat->sval.p, pat->sval.n);
-          op(cx, "(if (call $rho_streq (local.get %zu) (local.get %zu) "
-                 "(i32.const %zu) (i32.const %zu)) (then\n", v, v + 1,
-             at, pat->sval.n);
+          op(cx, "(if (i32.and (call $rho_streq (local.get %zu) "
+                 "(local.get %zu) (i32.const %zu) (i32.const %zu)) "
+                 "(i32.eqz %s)) (then\n", v, v + 1, at, pat->sval.n,
+             L(cx, matched));
         } else {
           op(cx, ";; float literal arm (with the prelude to_str era)\n");
+          opened = false;
           continue;
         }
       } else {
+        opened = false;
         continue;
       }
-    }
-    if (!wildcard && has_wild)
-      op(cx, "(local.set %zu (i32.const 1))\n", matched);
-    if (wildcard && has_wild)
-      op(cx, "(if (i32.eqz %s) (then\n", L(cx, matched));
-    // bind pattern locals from the payload run
-    cx->scope++;
-    size_t slot = v + 1;
-    register_pattern_binders(cx, pat, st);
-    bind_pattern(cx, pat, st, &slot, v);
-    // arm value
-    if (dst != SIZE_MAX) {
-      Node *ab0 = node_get(arm->b);
-      emit_expr(cx, arm->b, dst);
-      // a copied-out managed value owns a new reference when it
-      // escapes the match (bare binder/path arms)
-      Type *vt0 = (Type *)ab0->sem;
-      if (vt0 && type_is_managed(vt0) &&
-          (ab0->kind == NT_PATH ||
-           (ab0->kind == NT_EXPRSTMT && ab0->op == 3 &&
-            reflist_len(ab0->list) &&
-            node_get(reflist_at(ab0->list, reflist_len(ab0->list) - 1))
-                    ->bval)))
-        retain(cx, vt0, dst);
-    } else {
-      Node *ab = node_get(arm->b);
-      if (ab->kind == NT_EXPRSTMT && ab->op == 3)
-        emit_stmt(cx, arm->b);
-      else {
-        Type *at = (Type *)ab->sem;
-        size_t tmp = cx_fresh(cx, at);
-        emit_expr(cx, arm->b, tmp);
-        release(cx, at, tmp);
+      // bind pattern locals: a variant pattern skips the tag slot; a
+      // top-level binder binds the whole subject
+      cx->scope++;
+      size_t slot = v + 1;
+      if (pa_kind_is_bind(pat))
+        slot = v;
+      register_pattern_binders(cx, pat, st);
+      bind_pattern(cx, pat, st, &slot, v);
+      // payload literal patterns pin values, not just the tag
+      if (pat->kind == NT_PVAR && arm_var)
+        payload_opens = emit_payload_tests(cx, pat, st, arm_var, v);
+      // §19 guard: evaluated after the pattern matches, in scope of
+      // its bindings; a failed guard leaves the matched flag alone so
+      // later arms still run
+      bool guard_open = false;
+      if (guarded) {
+        size_t gv = cx_fresh(cx, ty_bool);
+        emit_expr(cx, arm->c, gv);
+        op(cx, "(if (local.get %zu) (then\n", gv);
+        guard_open = true;
       }
+      // arm value
+      if (dst != SIZE_MAX) {
+        Node *ab0 = node_get(arm->b);
+        emit_expr(cx, arm->b, dst);
+        // a copied-out managed value owns a new reference when it
+        // escapes the match (bare binder/path arms)
+        Type *vt0 = (Type *)ab0->sem;
+        if (vt0 && type_is_managed(vt0) &&
+            (ab0->kind == NT_PATH ||
+             (ab0->kind == NT_EXPRSTMT && ab0->op == 3 &&
+              reflist_len(ab0->list) &&
+              node_get(reflist_at(ab0->list, reflist_len(ab0->list) - 1))
+                      ->bval)))
+          retain(cx, vt0, dst);
+      } else {
+        Node *ab = node_get(arm->b);
+        if (ab->kind == NT_EXPRSTMT && ab->op == 3)
+          emit_stmt(cx, arm->b);
+        else {
+          Type *at = (Type *)ab->sem;
+          size_t tmp = cx_fresh(cx, at);
+          emit_expr(cx, arm->b, tmp);
+          release(cx, at, tmp);
+        }
+      }
+      // the matched flag rides inside every opened test (payload
+      // literals and guards): an arm only latches when its body ran
+      op(cx, "(local.set %zu (i32.const 1))\n", matched);
+      for (size_t o = 0; o < payload_opens; o++)
+        op(cx, "))\n");
+      if (guard_open)
+        op(cx, "))\n");
+      cx->scope--;
+      // the binder ENTRIES stay until the block-end walk releases them
+      // (rc timing unchanged); cx_var skips entries whose scope has
+      // exited, so a stale binder can no longer shadow the outer
+      // binding after the arm
+      if (opened)
+        op(cx, "))\n");
     }
-    cx->scope--;
-    // the binder ENTRIES stay until the block-end walk releases them
-    // (rc timing unchanged); cx_var skips entries whose scope has
-    // exited, so a stale binder can no longer shadow the outer
-    // binding after the arm
-    if (!wildcard)
-      op(cx, "))\n");
-    else if (has_wild)
-      op(cx, "))\n");
   }
 }
 

@@ -92,6 +92,12 @@ void dump_pattern(FILE *out, Node *p) {
     break;
   }
   default:
+  case NT_POR: {
+    fprintf(out, "(or");
+    dump_list(out, p->list);
+    fputc(')', out);
+    return;
+  }
     fprintf(out, "(?pattern %s)", node_kind_name(p->kind));
   }
 }

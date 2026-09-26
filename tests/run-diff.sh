@@ -4,31 +4,32 @@
 # (stdout). The self-hosted surface is the run-selfhost subset; it
 # grows until the full corpus differential closes it.
 set -u
+T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 RHO=${RHO:-./build/rho}
 FAILED=0
 diff_one() { # name, src
   local name=$1 src=$2
-  printf '%s\n' "$src" > /tmp/diff-$name.rho
+  printf '%s\n' "$src" > $T/diff-$name.rho
   local bgot brc sgot src_rc
-  bgot=$("$RHO" run /tmp/diff-$name.rho 2>/dev/null)
+  bgot=$("$RHO" run $T/diff-$name.rho 2>/dev/null)
   brc=$?
-  if ! "$RHO" build libs/compiler/main.rho -o /tmp/diffc-$name.wasm \
-      --set "SRC=$src" >/tmp/diff-$name.build 2>&1; then
+  if ! "$RHO" build libs/compiler/main.rho -o $T/diffc-$name.wasm \
+      --set "SRC=$src" >$T/diff-$name.build 2>&1; then
     echo "FAIL diff/$name: boot could not build the compiler"
-    head -3 /tmp/diff-$name.build
+    head -3 $T/diff-$name.build
     FAILED=1
     return
   fi
-  wasmtime /tmp/diffc-$name.wasm >/tmp/diff-$name.wat 2>/dev/null
-  if ! wat2wasm /tmp/diff-$name.wat -o /tmp/diff-$name.self.wasm \
-      2>/tmp/diff-$name.w2w; then
+  wasmtime $T/diffc-$name.wasm >$T/diff-$name.wat 2>/dev/null
+  if ! wat2wasm $T/diff-$name.wat -o $T/diff-$name.self.wasm \
+      2>$T/diff-$name.w2w; then
     echo "FAIL diff/$name: the self-hosted output does not assemble"
-    head -3 /tmp/diff-$name.w2w
+    head -3 $T/diff-$name.w2w
     FAILED=1
     return
   fi
   sgot=$(perl -e 'alarm 10; exec @ARGV' -- wasmtime \
-    /tmp/diff-$name.self.wasm 2>/dev/null)
+    $T/diff-$name.self.wasm 2>/dev/null)
   src_rc=$?
   if [ "$brc" -eq "$src_rc" ] && [ "$bgot" = "$sgot" ]; then
     echo "  $name: boot==self rc=$brc [$bgot]"

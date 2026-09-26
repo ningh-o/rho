@@ -1,4 +1,3 @@
-// pending: T3.9
 // spec: TODO.md §19 — guards: pattern if cond, cond sees the pattern's bindings
 // spec: syntax.md §7 — guarded arms never close exhaustiveness, a fallback remains
 // out: small

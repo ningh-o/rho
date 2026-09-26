@@ -3,8 +3,9 @@
 # The archive tree is reference-only; corpus programs adapt into
 # corpus/ with T1.10. RHO_CORPUS may point elsewhere.
 set -u
+T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 RHO=${RHO:-./build/rho}
-CORPUS=${RHO_CORPUS:-/tmp/rho-archive/corpus}
+CORPUS=${RHO_CORPUS:-$T/rho-archive/corpus}
 pass=0; fail=0; skip=0
 for f in "$CORPUS"/*.rho; do
   name=$(basename "$f" .rho)

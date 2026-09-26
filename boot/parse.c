@@ -184,6 +184,48 @@ static NodeRef parse_type(Parser *p) {
 
 // ============================================================ patterns
 
+static NodeRef parse_pattern(Parser *p);
+
+// the ( ... ) tuple-payload or { ... } struct-payload part of a
+// variant pattern; n is an NT_PVAR with its name already set
+static void parse_variant_payload(Parser *p, Node *n) {
+  n->list = reflist();
+  if (accept(p, T_LPAREN)) {
+    n->op = VAR_TUPLE;
+    if (!is(p, T_RPAREN)) {
+      for (;;) {
+        reflist_add(n->list, parse_pattern(p));
+        if (!accept(p, T_COMMA))
+          break;
+      }
+    }
+    expect(p, T_RPAREN, "to close variant pattern");
+  } else if (accept(p, T_LBRACE)) {
+    n->op = VAR_STRUCT;
+    if (!is(p, T_RBRACE)) {
+      for (;;) {
+        NodeRef fld = nnew(p, NT_FIELD);
+        Node *fn = node_get(fld);
+        Token *fnm = expect(p, T_IDENT, "as field binder");
+        fn->name = intern(fnm->text.p, fnm->text.n);
+        if (accept(p, T_COLON))
+          fn->a = parse_pattern(p);
+        else {
+          NodeRef bind = nnew(p, NT_PBIND);
+          node_get(bind)->name = fn->name;
+          fn->a = bind;
+        }
+        reflist_add(n->list, fld);
+        if (!accept(p, T_COMMA))
+          break;
+      }
+    }
+    expect(p, T_RBRACE, "to close variant pattern");
+  } else {
+    n->op = VAR_UNIT;
+  }
+}
+
 static NodeRef parse_pattern(Parser *p) {
   switch (kind(p)) {
   case T_INT: {
@@ -256,41 +298,21 @@ static NodeRef parse_pattern(Parser *p) {
       n->line = second->line;
       n->col = second->col;
       n->name = joined;
+      parse_variant_payload(p, n);
+      return r;
+    }
+    // bare variant candidate: Some(v) / None — resolves against the
+    // match's scrutinee enum at check time (§19); a name that is not
+    // a variant stays a binder. Parens/brace demand the variant form.
+    if (is(p, T_LPAREN) || is(p, T_LBRACE)) {
+      NodeRef r = nnew(p, NT_PVAR);
+      Node *n = node_get(r);
+      n->file = first->file;
+      n->line = first->line;
+      n->col = first->col;
+      n->name = name;
       n->list = reflist();
-      if (accept(p, T_LPAREN)) {
-        n->op = VAR_TUPLE;
-        if (!is(p, T_RPAREN)) {
-          for (;;) {
-            reflist_add(n->list, parse_pattern(p));
-            if (!accept(p, T_COMMA))
-              break;
-          }
-        }
-        expect(p, T_RPAREN, "to close variant pattern");
-      } else if (accept(p, T_LBRACE)) {
-        n->op = VAR_STRUCT;
-        if (!is(p, T_RBRACE)) {
-          for (;;) {
-            NodeRef fld = nnew(p, NT_FIELD);
-            Node *fn = node_get(fld);
-            Token *fnm = expect(p, T_IDENT, "as field binder");
-            fn->name = intern(fnm->text.p, fnm->text.n);
-            if (accept(p, T_COLON))
-              fn->a = parse_pattern(p);
-            else {
-              NodeRef bind = nnew(p, NT_PBIND);
-              node_get(bind)->name = fn->name;
-              fn->a = bind;
-            }
-            reflist_add(n->list, fld);
-            if (!accept(p, T_COMMA))
-              break;
-          }
-        }
-        expect(p, T_RBRACE, "to close variant pattern");
-      } else {
-        n->op = VAR_UNIT;
-      }
+      parse_variant_payload(p, n);
       return r;
     }
     // plain binder
@@ -311,7 +333,19 @@ static NodeRef parse_pattern(Parser *p) {
 }
 
 // patterns: parse_pattern handles all forms including '_'
-#define parse_pattern_top(p) parse_pattern(p)
+static NodeRef parse_pattern_top(Parser *p);
+static NodeRef parse_pattern_top(Parser *p) {
+  NodeRef first = parse_pattern(p);
+  if (!is(p, T_PIPE))
+    return first;
+  NodeRef r = nnew(p, NT_POR);
+  Node *n = node_get(r);
+  n->list = reflist();
+  reflist_add(n->list, first);
+  while (accept(p, T_PIPE))
+    reflist_add(n->list, parse_pattern(p));
+  return r;
+}
 
 // ========================================================== expressions
 
@@ -538,6 +572,8 @@ static NodeRef parse_primary(Parser *p) {
       for (;;) {
         NodeRef arm = nnew(p, NT_ARM);
         node_get(arm)->a = parse_pattern_top(p);
+        if (accept(p, K_IF))
+          node_get(arm)->c = parse_expr(p); // §19 guard
         expect(p, T_FATARROW, "in match arm");
         if (is(p, T_LBRACE))
           node_get(arm)->b = parse_block(p);

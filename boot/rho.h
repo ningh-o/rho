@@ -145,7 +145,7 @@ typedef enum {
   NT_SLICE_LIT, NT_SLICE_E, NT_CLOSURE, NT_QMARK, NT_IF_EXPR,
   NT_MATCH_EXPR,
   // patterns
-  NT_PLIT, NT_PBIND, NT_PWILD, NT_PVAR,
+  NT_PLIT, NT_PBIND, NT_PWILD, NT_PVAR, NT_POR,
 } NodeKind;
 
 const char *node_kind_name(NodeKind k);

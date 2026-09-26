@@ -177,6 +177,10 @@ static void fmt_block(F *f, Node *b) {
 // block-bodied arms print inline; the trailing comma follows the arm
 static void fmt_arm(F *f, Node *arm) {
   fmt_pattern(f, NG(arm->a));
+  if (arm->c != NO_REF) {
+    fp(f, " if ");
+    fmt_expr(f, NG(arm->c));
+  }
   fp(f, " => ");
   Node *v = NG(arm->b);
   if (v->kind == NT_EXPRSTMT && v->op == 3)
@@ -412,6 +416,13 @@ static void fmt_pattern(F *f, Node *p) {
     return;
   case NT_PWILD:
     fp(f, "_");
+    return;
+  case NT_POR:
+    for (size_t i = 0; i < reflist_len(p->list); i++) {
+      if (i)
+        fp(f, " | ");
+      fmt_pattern(f, NG(reflist_at(p->list, i)));
+    }
     return;
   case NT_PVAR: {
     fp(f, "%s", p->name);

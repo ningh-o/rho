@@ -3,27 +3,28 @@
 # the compiler compiles the hello source (via the SRC build param),
 # wat2wasm assembles, wasmtime runs: hello, self.
 set -u
+T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 RHO=${RHO:-./build/rho}
 # sources ride the SRC build parameter (§7): compile-time consts
 run_one() { # name, src, expected-stdout[, expected-rc]
   local name=$1 src=$2 want=$3 wantrc=${4:-0}
-  "$RHO" build libs/compiler/main.rho -o /tmp/rhoc-$name.wasm --set "SRC=$src" \
-    >/tmp/rhoc-$name.log 2>&1
+  "$RHO" build libs/compiler/main.rho -o $T/rhoc-$name.wasm --set "SRC=$src" \
+    >$T/rhoc-$name.log 2>&1
   if [ $? -ne 0 ]; then
     echo "FAIL selfhost/$name: boot could not build the compiler"
-    head -3 /tmp/rhoc-$name.log
+    head -3 $T/rhoc-$name.log
     FAILED=1
     return
   fi
-  wasmtime /tmp/rhoc-$name.wasm >/tmp/hello-$name.wat 2>/dev/null
-  if ! wat2wasm /tmp/hello-$name.wat -o /tmp/hi-$name.wasm 2>/tmp/w2w-$name; then
+  wasmtime $T/rhoc-$name.wasm >$T/hello-$name.wat 2>/dev/null
+  if ! wat2wasm $T/hello-$name.wat -o $T/hi-$name.wasm 2>$T/w2w-$name; then
     echo "FAIL selfhost/$name: the self-hosted output does not assemble"
-    head -3 /tmp/w2w-$name
+    head -3 $T/w2w-$name
     FAILED=1
     return
   fi
   local got rc
-  got=$(perl -e 'alarm 10; exec @ARGV' -- wasmtime /tmp/hi-$name.wasm 2>/dev/null)
+  got=$(perl -e 'alarm 10; exec @ARGV' -- wasmtime $T/hi-$name.wasm 2>/dev/null)
   rc=$?
   if [ "$rc" -eq "$wantrc" ] && [ "$got" = "$want" ]; then
     echo "  $name: ok"
@@ -93,9 +94,9 @@ run_one closures 'fn neg1(x: i32) -> i32 { return 0 - x; } fn apply(f: fn(i32) -
 run_one primsel 'fn main() -> i32 { let k: i32 = 5; let s: string = "k=" + k.to_str(); printf("{}\n", s); let f: f64 = 2.5; let u: u64 = 18446744073709551615; printf("{} {} {} {}\n", f.to_str(), true.to_str(), (k > 1).to_str(), u.to_str()); return 0; }' $'k=5\n2.5 true true 18446744073709551615'
 run_one opt2 'struct Node { v: i64, } enum Item { Held(*Node), Count(i64), Nothing, } fn mk() -> Item { return Item.Held(new Node { v: 11 }); } fn bump(n: *Node) -> i64 { n.v = 110; return n.v; } fn main() -> i32 { let it: Item = mk(); let it2: Item = it; let s: i64 = match it2 { Item.Held(n) => bump(n), Item.Count(c) => c, Item.Nothing => 0, }; let t: i64 = match it { Item.Held(n) => n.v, _ => 0, }; printf("s={} t={} eq={}\n", s, t, it == it2); let mut xs: []?*Node = make([]?*Node, 2); match xs[0] { Option.Some(h) => printf("bad {}\n", h.v), Option.None => printf("none\n"), }; xs[1] = Option.Some(new Node { v: 5 }); match xs[1] { Option.Some(h) => printf("five={}\n", h.v), Option.None => printf("none\n"), }; return 0; }' $'s=110 t=110 eq=true\nnone\nfive=5'
 # the checker rejects unknown names with diagnostics and exit 1
-"$RHO" build libs/compiler/main.rho -o /tmp/rhoc-bad.wasm \
+"$RHO" build libs/compiler/main.rho -o $T/rhoc-bad.wasm \
   --set 'SRC=fn main() -> i32 { let x = mystery(1); return 0; }' >/dev/null 2>&1
-berr=$(wasmtime /tmp/rhoc-bad.wasm 2>&1 >/dev/null | head -1)
+berr=$(wasmtime $T/rhoc-bad.wasm 2>&1 >/dev/null | head -1)
 brc=$?
 if [ "$brc" -eq 0 ] && [ "$berr" = "check: unknown fn 'mystery'" ]; then
   echo "  badsrc: ok (diagnosed, refused)"

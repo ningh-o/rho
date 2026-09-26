@@ -469,7 +469,7 @@ section — no placeholder stages. boot is the reference compiler.
       Acceptance: dual-run byte-compare over the whole corpus, the
       wat→wasm→wat fixpoint leg (fmt's law, applied to assembly), and
       a readable decode diff for the T3.2 canary.
-- [ ] **T3.9** Match arm ergonomics (§19): variant resolution by
+- [x] **T3.9** Match arm ergonomics (§19): variant resolution by
       scrutinee (bare `Some`/`None`/`Ok`/`Err` and user-enum variants,
       full paths stay legal, no scope fallback), or-patterns with the
       identical-binder law, guards with the never-exhaustive rule.
@@ -479,7 +479,15 @@ section — no placeholder stages. boot is the reference compiler.
       mismatch rejection; guard selects conditionally, guard
       referencing bindings, guarded-only match demanding a fallback;
       fmt round-trips all three forms. Boot implements; the self-host
-      mirrors.
+      mirrors. Landed 2026-09-26: resolution rewrites bare
+      binder/variant names against the scrutinee's enum before
+      covering or checking (payload field types drive the recursion);
+      or-patterns emit once per alternative with the arm body gated by
+      the matched flag; payload literal patterns now pin values (the
+      tag alone used to decide, silently matching every payload); the
+      matched flag gates every arm unconditionally (same-tag arms
+      used to clobber each other); guards evaluate after the binders
+      and never close exhaustiveness.
 - [x] **T3.10** Bare receiver in impl methods (§18): `self` = `*T`
       read-only, `mut self` = writable — the type inferred from the
       implemented type; fully-typed receivers stay legal; signature

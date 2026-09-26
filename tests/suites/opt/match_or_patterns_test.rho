@@ -1,4 +1,3 @@
-// pending: T3.9
 // spec: TODO.md §19 — or-patterns: any alternative matches, identical binder sets
 // spec: syntax.md §7 — arm_pat := pattern ('|' pattern)*
 // out: 9

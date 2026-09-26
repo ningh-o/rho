@@ -1,4 +1,3 @@
-// pending: T3.9
 // spec: TODO.md §19 — variant resolution by scrutinee: no Option. prefix needed
 // spec: syntax.md §7 — a variant name in an arm resolves against the matched enum
 // out: some
