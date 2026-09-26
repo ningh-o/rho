@@ -1,0 +1,31 @@
+// exit: 101
+// err: panic: stack overflow
+// spec: type-system.md §15 — comparing cyclic data through a user
+// impl Eq ends in the documented stack-overflow panic (detected
+// never promised, §10): the impl dereferences and recurses
+struct N { v: i32, next: ?*N }
+impl Eq for N {
+  fn eq(self, other: *Self) -> bool {
+    let on: ?*N = other.next;
+    let sn: ?*N = self.next;
+    match sn {
+      Option.Some(s) => {
+        match on {
+          Option.Some(o) => {
+            return self.v == other.v && s == o;
+          },
+          Option.None => { return false; },
+        }
+      },
+      Option.None => { return self.v == other.v; },
+    }
+  }
+}
+fn main() -> i32 {
+  let mut a: *N = new N { v: 1, next: Option.None };
+  a.next = Option.Some(a);
+  if a == a {
+    printf("eq\n");
+  }
+  return 0;
+}
