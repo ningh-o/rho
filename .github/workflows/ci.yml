@@ -1,0 +1,41 @@
+# rho — the 0.1.0 gate's CI leg (T3.0). One workflow: clang builds
+# boot, make test runs it. wabt and wasmtime are pinned by version —
+# never floating. When T3.1's gate.sh lands it becomes the leg list;
+# the native ring's ephemeral-runner CI (T7.x) rides this same file
+# when it exists. Dormant until master pushes resume (push timing
+# stays the owner's call).
+name: ci
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  WABT_VERSION: 1.0.39
+  WASMTIME_VERSION: 40.0.0
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: clang
+        run: |
+          clang --version
+          make all
+      - name: pin wabt + wasmtime
+        run: |
+          cd /tmp
+          curl -sL \
+            "https://github.com/WebAssembly/wabt/releases/download/${WABT_VERSION}/wabt-${WABT_VERSION}-ubuntu.tar.gz" \
+            | tar xz
+          sudo cp wabt-${WABT_VERSION}/bin/wat2wasm wabt-${WABT_VERSION}/bin/wasm2wat /usr/local/bin/
+          curl -sL \
+            "https://github.com/bytecodealliance/wasmtime/releases/download/v${WASMTIME_VERSION}/wasmtime-v${WASMTIME_VERSION}-x86_64-linux.tar.xz" \
+            | tar xJ
+          sudo cp wasmtime-v${WASMTIME_VERSION}-x86_64-linux/wasmtime /usr/local/bin/
+          wat2wasm --version
+          wasmtime --version
+      - name: make test
+        run: make test
