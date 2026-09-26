@@ -467,10 +467,13 @@ section — no placeholder stages. boot is the reference compiler.
       (base[i].f = e) parses and emits, and a loose file module owns
       its parent directory. The mirror now runs its whole pipeline:
       it loads lex, parse (75 fns), and check clean, then crashes
-      parsing emit.rho's own text — verbatim strings and static muts
-      ruled out; the crash follows a shower of recovered statement
-      fallbacks, the last at a `return emit_expr(...)` concat form.
-      Bisect emit.rho by construct class from there.
+      parsing emit.rho's own text — verbatim strings, static muts,
+      comments, and the fixed call-arg caps all ruled out; the crash
+      follows a shower of recovered statement fallbacks. Next tool:
+      a top-level fn-span stubber (fn header lines to their col-0
+      closing brace — the first attempt miscounted spans; verify the
+      span count against `grep -c '^fn \|^pub fn '` before trusting
+      it) to bisect emit.rho's 60 fns half by half.
 - [ ] **T3.2 Pure-source trust root**: every gate run rebuilds the seed
       from boot's C source on the spot. The pinned `seed.wasm` stays in
       the repo **as a canary**: rebuild, compare byte-for-byte (D1 makes
