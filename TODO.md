@@ -440,7 +440,7 @@ section — no placeholder stages. boot is the reference compiler.
 
 ## Phase 3 — gates and the trust root
 
-- [ ] **T3.0** GitHub CI: one workflow on push + PR — clang builds
+- [x] **T3.0** GitHub CI: one workflow on push + PR — clang builds
       boot, `make test` runs as the leg (every script already
       time-capped); wabt and wasmtime pinned by version, never
       floating. When T3.1's gate.sh lands it becomes the leg list.
@@ -450,6 +450,23 @@ section — no placeholder stages. boot is the reference compiler.
 - [ ] **T3.1** gate.sh rebuilt: boot selftest; corpus differential
       (boot-built vs self-hosted-built, behavioral); diagnostic parity;
       the self chain (mirror → child → grandchild, graded behaviorally).
+      tools/gate.sh exists with every leg time-capped; legs 1-3, 5-6
+      (selftest, scripts, the 108/108 corpus differential, the seed
+      canary, diagnostic parity) pass. Leg 4 — the self chain — is
+      blocked on the mirror's first-ever run shaking out scale bugs,
+      five of them fixed in one session (2026-09-26): memory sized to
+      the data segments, the heap starting past the data top, the
+      immortal guard reading data_top instead of the moving heap, the
+      fmt scratch keeping its honest 4032-byte cap (a page-wide
+      scratch corrupted large outputs), rho_panic writing one iov per
+      piece (wasmtime 40 drops trailing iovs), and module consts
+      exported (the compiler source is full of lex.TK_* field reads).
+      Remaining: the mirror's own parse of a two-fn probe returns
+      fns=0 with perrs=0 while the same source through boot parses
+      (first token classifies as kind 1 instead of TK_KEYWORD) — a
+      boot miscompile of the self-host's lexer at mirror scale; find
+      it with the /tmp/tF driver (lex prints ntok/k0/eof, parse
+      prints fns/perrs) before wiring leg 4 in.
 - [ ] **T3.2 Pure-source trust root**: every gate run rebuilds the seed
       from boot's C source on the spot. The pinned `seed.wasm` stays in
       the repo **as a canary**: rebuild, compare byte-for-byte (D1 makes

@@ -1136,8 +1136,8 @@ fn parse_atom(c: *PCur) -> *Expr {
         eat_punct(c, 93);
         sname = sname + "[" + gargs + "]";
       }
-      let fnames: []string = make([]string, 8);
-      let fargs: []*Expr = make([]*Expr, 8);
+      let mut fnames: []string = make([]string, 8);
+      let mut fargs: []*Expr = make([]*Expr, 8);
       let mut nf: usize = 0;
       if eat_punct(c, 123) {
         while tk(c).kind != lex.TK_EOF {
@@ -1147,6 +1147,21 @@ fn parse_atom(c: *PCur) -> *Expr {
           }
           let ft = tk(c);
           if ft.kind == lex.TK_IDENT || ft.kind == lex.TK_KEYWORD {
+            if nf >= len(fnames) {
+              // a struct literal may name every field the struct
+              // declares — the tables grow on demand (a fixed cap is
+              // an out-of-bounds write in the mirror)
+              let bn: []string = make([]string, len(fnames) * 2);
+              let ba: []*Expr = make([]*Expr, len(fargs) * 2);
+              let mut gi2: usize = 0;
+              while gi2 < len(fnames) {
+                bn[gi2] = fnames[gi2];
+                ba[gi2] = fargs[gi2];
+                gi2 = gi2 + 1;
+              }
+              fnames = bn;
+              fargs = ba;
+            }
             fnames[nf] = ft.text;
             tkadv(c);
             eat_punct(c, 58); // :
@@ -2074,8 +2089,8 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
         }
         eat_punct(c, 93);
       }
-      let fnames: []string = make([]string, 16);
-      let ftypes: []string = make([]string, 16);
+      let mut fnames: []string = make([]string, 16);
+      let mut ftypes: []string = make([]string, 16);
       let mut nfl: usize = 0;
       if eat_punct(c, 123) {
         while tk(c).kind != lex.TK_EOF {
@@ -2085,6 +2100,20 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
           }
           let ft = tk(c);
           if ft.kind == lex.TK_IDENT || ft.kind == lex.TK_KEYWORD {
+            if nfl >= len(fnames) {
+              // a struct may declare any number of fields (the
+              // compiler's own Prog rides 28) — grow on demand
+              let bn2: []string = make([]string, len(fnames) * 2);
+              let bt2: []string = make([]string, len(ftypes) * 2);
+              let mut gj: usize = 0;
+              while gj < len(fnames) {
+                bn2[gj] = fnames[gj];
+                bt2[gj] = ftypes[gj];
+                gj = gj + 1;
+              }
+              fnames = bn2;
+              ftypes = bt2;
+            }
             fnames[nfl] = ft.text;
             tkadv(c);
             eat_punct(c, 58); // :
@@ -2784,8 +2813,10 @@ fn mods_load(prog: *Prog, mods: string, path: string,
     }
     mi = mi + 1;
   }
+  eprintf("ML {}\n", canon);
   let toks: []*Tok = lex.lex(text);
   let mp: *Prog = parse(toks, text);
+  eprintf("MLD {} perrs={} nf={}\n", canon, mp.perrs, len(mp.fns));
   if mp.perrs > 0 {
     prog.perrs = prog.perrs + mp.perrs;
     return "";
