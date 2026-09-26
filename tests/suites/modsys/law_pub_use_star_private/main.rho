@@ -1,0 +1,9 @@
+// spec: module-system.md §6
+// The star form flattens every PUBLIC item only: a private item of
+// the interior module does not ride the facade.
+use pkg;
+fn main() -> i32 {
+  printf("{}\n", pkg.hidden());
+  return 0;
+}
+// expect: no public fn 'hidden'

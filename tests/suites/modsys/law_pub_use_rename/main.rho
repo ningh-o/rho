@@ -1,0 +1,8 @@
+// spec: module-system.md §6
+// The renamed item form binds the item under the new name only.
+use pkg;
+fn main() -> i32 {
+  printf("{}\n", pkg.gadget());
+  return 0;
+}
+// out: 8

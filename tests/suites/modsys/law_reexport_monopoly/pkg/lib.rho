@@ -1,0 +1,5 @@
+// the facade privately uses the interior module; nothing re-exported
+use inner;
+pub fn via() -> i32 {
+  return inner.secret() + 41;
+}

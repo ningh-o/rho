@@ -1,0 +1,13 @@
+// spec: module-system.md §3
+// Exactly one real body, inside a package's own lookup scope: the
+// facade's `use units;` sees both a sibling file module and a
+// subpackage facade for one name. (The top-level file-vs-facade
+// collision is pinned by facade_ambiguity; this is the same rule one
+// level deeper.) Absent the second body this program is green.
+use geom;
+fn main() -> i32 {
+  printf("{}\n", geom.area());
+  return 0;
+}
+// expect: ambiguous module
+// expect: exactly one real body

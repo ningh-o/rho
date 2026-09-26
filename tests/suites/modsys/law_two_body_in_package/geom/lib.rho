@@ -1,0 +1,5 @@
+// the facade's own scope offers both bodies for 'units'
+use units;
+pub fn area() -> i32 {
+  return units.conv();
+}

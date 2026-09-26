@@ -1,0 +1,9 @@
+// spec: module-system.md §2
+// An item import may bind a generic fn: one binding, checked and
+// called at two type instantiations.
+use gen.id;
+fn main() -> i32 {
+  printf("{} {}\n", id(41), id("ring"));
+  return 0;
+}
+// out: 41 ring

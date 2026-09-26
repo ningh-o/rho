@@ -1,0 +1,4 @@
+// a plain file module: no lib.rho, web/ is not a package
+pub fn width() -> i32 {
+  return 9;
+}

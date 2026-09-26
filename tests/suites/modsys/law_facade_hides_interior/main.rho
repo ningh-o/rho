@@ -1,0 +1,10 @@
+// spec: module-system.md §4
+// Interior files are package-private at qualified access too: with
+// the facade imported, an interior name is still not public on the
+// package binding.
+use pkg;
+fn main() -> i32 {
+  printf("{}\n", pkg.inner.secret());
+  return 0;
+}
+// expect: no public 'inner'

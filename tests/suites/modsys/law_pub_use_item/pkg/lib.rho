@@ -1,0 +1,4 @@
+// the facade privately imports the interior module, then re-exports
+// one of its items
+use inner;
+pub use inner.tool;

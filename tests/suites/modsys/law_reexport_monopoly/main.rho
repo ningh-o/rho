@@ -1,0 +1,9 @@
+// spec: module-system.md §6
+// The re-export monopoly: a plain use in the facade is private, so an
+// interior file stays unreachable from outside even while the facade
+// itself uses it. Only pub use publishes anything outward.
+use pkg.inner;
+fn main() -> i32 {
+  return 0;
+}
+// expect: interior to package 'pkg'
