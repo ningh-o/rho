@@ -572,10 +572,28 @@ section — no placeholder stages. boot is the reference compiler.
       scrutinee's Option-payload binder lanes (optpt_of_scrutinee
       resolves the declared return — match fold_string(...) now
       binds its string payload as a pair). The corpus differential
-      stays 108/108 through the wave. Still open in the child (57):
-      an arm-scope slot-scramble family (walk_arm's `nb` argument
-      emits nothing while `all` seems to ride param slots), orphan
-      i64.adds, and branch-tail surpluses.
+      stays 110/110 through the wave.
+      THE THIRD CENSUS WAVE (2026-09-27, 57 → 15): three silent
+      miscompiles and the big one, each pinned by a run-selfhost leg
+      — (1) an Option FIELD scrutinee compared the box POINTER
+      against the tag constants (a fresh Some never matched 1 and the
+      match fell through every arm): expr_enum_type resolves a struct
+      field's declared type (?T is the Option box, a named field its
+      enum) (optfieldmatch); (2) indexing a struct-typed slice FIELD
+      read one 8-byte slot at stride 8 — the element's whole slot
+      block is the stride and the ADDRESS is the value, both frame
+      and heap paths (the var-base branch's law, missing on the field
+      base) (fslacelem); (3) expr_ptr_type through an indexed field
+      only accepted *T elements — a value-struct element left the
+      let unbound to a pointer and every field read off it died as
+      const 0 (rides with fslacelem); (4) THE BIG ONE: a slice-typed
+      field as an argument pushed its address half alone —
+      push_string's field gate and build_string_pair's field branch
+      now take slice fields beside strings (the pair layout is
+      identical) (slicefieldarg) — this one family was ~40 of the
+      57. Still open in the child (15): six orphan (i64.add)s in
+      emit_arg's self-compile, five branch-tail surpluses, two
+      pair-return singles, a pair of one-offs.
 - [ ] **T3.2 Pure-source trust root**: every gate run rebuilds the seed
       from boot's C source on the spot. The pinned `seed.wasm` stays in
       the repo **as a canary**: rebuild, compare byte-for-byte (D1 makes

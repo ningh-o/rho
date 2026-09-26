@@ -732,7 +732,8 @@ fn push_string(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
       let si: i64 = st_index(mut prog, bt);
       let fi: i64 = st_field_index(prog, si, e.name);
       if fi >= 0 &&
-          type_kind(prog.structs[si as usize].types[fi as usize]) == 1 {
+          (type_kind(prog.structs[si as usize].types[fi as usize]) == 1 ||
+           type_kind(prog.structs[si as usize].types[fi as usize]) == 2) {
         let off: i64 = st_field_off(mut prog, si, fi) * 8;
         if base.tag == parse.EX_VAR && len(env_val_of(env, base.name)) > 0 {
           let b0: i64 = env_val_base(env, base.name);
@@ -1864,6 +1865,26 @@ fn expr_enum_type(e: *Expr, env: *Env, mut prog: *Prog) -> string {
         (en_index(mut prog, b0.name) >= 0 || b0.name == "Option") {
       return b0.name;
     }
+    // a struct field's declared type names the enum the scrutinee
+    // rides: a ?T field is an Option box (the tag test used to read
+    // the box POINTER — a fresh Some compared against 1 failed and
+    // the match fell through every arm), a named field its enum
+    let bt0: string = field_base_type(b0, env, mut prog);
+    if len(bt0) > 0 {
+      let si0: i64 = st_index(mut prog, bt0);
+      let fi0: i64 = st_field_index(prog, si0, e.name);
+      if fi0 >= 0 {
+        let fty0: string =
+            prog.structs[si0 as usize].types[fi0 as usize];
+        if len(fty0) >= 1 && fty0[0] == 63 {
+          return "Option";
+        }
+        if en_index(mut prog, fty0) >= 0 || fty0 == "Option" ||
+            fty0 == "Result" {
+          return fty0;
+        }
+      }
+    }
     return "";
   }
   if e.tag == parse.EX_MATCH {
@@ -2078,13 +2099,18 @@ fn expr_ptr_type(e: *Expr, env: *Env, mut prog: *Prog) -> string {
     }
     // an indexed field (p.tbl[i]): the element text rides the
     // owner's declared field type — a pointer element's target is
-    // the struct the read yields
+    // the struct the read yields, a value-struct element is itself
+    // (the var-base branch's law; the let over p.enums[i] used to
+    // miss the pointer bind and every field read off it died)
     let et9: string = expr_slice_elemtext(base, env, mut prog);
     if len(et9) >= 1 && et9[0] == 42 {
       let tt9: string = type_ptr_target(et9);
       if st_index(mut prog, tt9) >= 0 {
         return tt9;
       }
+    }
+    if st_index(mut prog, et9) >= 0 {
+      return et9;
     }
     return "";
   }
@@ -3310,6 +3336,30 @@ fn fold_string(e: *Expr, env: *Env) -> ?string {
   return Option.None;
 }
 
+// a slice-typed field: the pair rides the field's two slots exactly
+// like a string field's (arguments and pair builds read both halves)
+fn field_is_slice(e: *Expr, env: *Env, mut prog: *Prog) -> bool {
+  if e.tag != parse.EX_FIELD {
+    return false;
+  }
+  let mut base: *Expr = parse.lit(0);
+  match e.lhs {
+    Option.Some(b) => {
+      base = b;
+    },
+    Option.None => {},
+  }
+  let bt: string = field_base_type(base, env, mut prog);
+  if len(bt) > 0 {
+    let si: i64 = st_index(mut prog, bt);
+    let fi: i64 = st_field_index(prog, si, e.name);
+    if fi >= 0 {
+      return type_kind(prog.structs[si as usize].types[fi as usize]) == 2;
+    }
+  }
+  return false;
+}
+
 fn is_stringy(e: *Expr, env: *Env, mut prog: *Prog) -> bool {
   if e.tag == parse.EX_STR {
     return true;
@@ -3815,11 +3865,14 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
             type_kind(prog.structs[si as usize].types[fi as usize]) == 2 {
           let off: i64 = st_field_off(mut prog, si, fi) * 8;
           // the element stride: a pair-shaped element (string, a
-          // nested slice, a dyn) rides its two slots at 16 bytes;
+          // nested slice, a dyn) rides its two slots at 16 bytes; a
+          // STRUCT element rides its whole slot block and the read
+          // yields the element's ADDRESS (the var-base branch's law);
           // scalars and pointers stay at 8
           let fet: string =
               prog.structs[si as usize].types[fi as usize];
           let mut stride: i64 = 8;
+          let mut selemb: i64 = 0 - 1;
           if len(fet) >= 2 && fet[0] == 91 && fet[1] == 93 {
             let felem: string = fet[2..len(fet)];
             if felem == "string" ||
@@ -3829,6 +3882,11 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
             if is_dyn_type(felem) {
               stride = 16;
             }
+            let fsi: i64 = st_index(mut prog, felem);
+            if fsi >= 0 {
+              selemb = fsi;
+              stride = st_nslots(mut prog, fsi) * 8;
+            }
           }
           let mut vb: *Expr = owner;
           if vb.tag == parse.EX_VAR &&
@@ -3836,6 +3894,14 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
             let b0: i64 = env_val_base(env, vb.name);
             out = out + oob_check(mut pool, "(local.get " +
                    (b0 + off / 8 + 1).to_str() + ")");
+            if selemb >= 0 {
+              out = out + "    (i64.add (local.get ";
+              out = out + (b0 + off / 8).to_str();
+              out = out + ") (i64.mul (local.get $t) (i64.const ";
+              out = out + stride.to_str();
+              out = out + ")))\n";
+              return out;
+            }
             out = out + "    (i64.load (i32.add (i32.wrap_i64 (local.get ";
             out = out + (b0 + off / 8).to_str();
             out = out + "))\n";
@@ -3855,7 +3921,17 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
                  "(local.get " + t0.to_str() + ")) (i32.const " +
                  (off + 8).to_str() + ")))");
           // the element rides INSIDE the pair's storage: load the
-          // stored address first, then index
+          // stored address first, then index — a struct element's
+          // ADDRESS is the value (its slot block reads above it)
+          if selemb >= 0 {
+            out = out + "    (i64.add (i64.load " +
+                   "(i32.add (i32.wrap_i64 " +
+                   "(local.get " + t0.to_str() + ")) (i32.const " +
+                   off.to_str() + ")))\n" +
+                   "                     (i64.mul (local.get $t) " +
+                   "(i64.const " + stride.to_str() + ")))\n";
+            return out;
+          }
           out = out + "    (i64.load (i32.add (i32.wrap_i64 (i64.load " +
                  "(i32.add (i32.wrap_i64 " +
                  "(local.get " + t0.to_str() + ")) (i32.const " +
@@ -5759,8 +5835,10 @@ fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
                      mut nl: *NextLocal) -> *SPair {
   let mut bad = new SPair { ok: false, text: "", a: 0, l: 0 };
   // a string FIELD through a pointer or value frame: the pair rides
-  // the field's slots
-  if e.tag == parse.EX_FIELD && is_stringy(e, env, mut prog) {
+  // the field's slots — a slice-typed field rides the same two slots
+  // (an argument over st.body used to push the address half alone)
+  if e.tag == parse.EX_FIELD &&
+      (is_stringy(e, env, mut prog) || field_is_slice(e, env, mut prog)) {
     let mut spf = new SPair { ok: false, text: "", a: 0, l: 0 };
     spf.text = push_string(mut pool, e, mut env, mut prog, mut nl);
     let fa: i64 = nl.v;
