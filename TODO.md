@@ -414,20 +414,25 @@ section — no placeholder stages. boot is the reference compiler.
       from the anchors, and a rule whose test does not exist is a rule
       not implemented. Multi-file cases (packages, facades) are
       directories with a `main.rho` entry carrying the same headers.
-      OPEN LEDGER (refined 2026-09-26 by probe): the value-struct
-      face is a modeling seam in the emitter. `new V{}` checks and
-      rides as `*V` (pointer identity == — eq_pointer_identity pins
-      this), so a TY_STRUCT-typed `==` operand only arises for nested
-      value-struct fields (`w1.inner == w2.inner`) — and that path
-      fails to emit at all: the FIELDINIT staging allocates the
-      field's flat slot run (i64 slot first for `V{i64, ...}`) while
-      the initializer's block pointer is i32 (pre-existing wat2wasm
-      type mismatch; the corpus never exercises nested value-struct
-      construction, which is why it survived). Unifying the face —
-      struct-typed expressions ride as block pointers everywhere
-      (lets, fieldinit staging, args, returns; rc through the block's
-      dropfn) — is its own task; the §10 element-wise struct `==`
-      lands with it.
+      VALUE-STRUCT FACE (closed 2026-09-26 by probe + fix): the
+      grammar-audit round found nested value-struct construction
+      failing to emit — the FIELDINIT staging stuffed the
+      initializer's box pointer into the field's flat slot run. The
+      landed model: a boxed initializer for an inline value-struct
+      field stages the pointer and the parent owns field-wise copies
+      of the payload; value-struct expressions ride flat field runs
+      (construction, reads, lets, value params all verified), and the
+      §10 element-wise struct `==` compares each slot in its own face
+      (floats by IEEE eq). `new V{}` itself stays `*V` — pointer
+      identity == for freshly boxed structs is eq_pointer_identity's
+      pinned law. Also closed in the same audit: `make([][]T, n)`
+      (the type-arg parse consumed the outer `[]`; the checker then
+      mistook the slice element for an already-sliced type), and the
+      test-block leg of `rho test` — a block name with a space
+      produced an illegal wat identifier (`$test:always true`) so
+      wat2wasm failed and every block test was misjudged as panicked;
+      fn_wat_name now folds non-idchars to `_`. Four new lang
+      fixtures pin all of it; suites 98/0/0.
       Two tiers: green files gate; a case for law already ratified
       but not yet implemented (§18 mut view, §19 match ergonomics,
       T3.7 item imports, the T3.6 usize lane) carries

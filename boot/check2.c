@@ -960,9 +960,9 @@ static Type *check_call(FnCtx *c, NodeRef er, Type *expected) {
         Node *targ = node_get(node_get(reflist_at(args, 0))->a);
         GScope g2 = {0};
         Type *el = resolve_type_pub(c->mod, targ->a, &g2);
-        Type *st = el && el->kind == TY_SLICE
-                       ? el
-                       : (el ? type_slice(el) : NULL);
+        // the parser consumed the outer `[]` prefix: el IS the element
+        // type, even when the element is itself a slice ([][]T)
+        Type *st = el ? type_slice(el) : NULL;
         if (st) {
           if (reflist_len(args) > 1) {
             Node *cnt = node_get(reflist_at(args, 1));

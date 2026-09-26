@@ -484,7 +484,21 @@ static const char *fn_wat_name(FnDef *f) {
   for (size_t i = 0; i < VLEN(em->fnnames); i++)
     if (VAT(em->fnnames, FnNameEnt, i)->f == f)
       return VAT(em->fnnames, FnNameEnt, i)->name;
-  const char *name = f->name;
+  // the wat identifier grammar admits no spaces: test blocks carry
+  // arbitrary names ("test:always true"), so every run byte outside
+  // the idchar set folds to '_'
+  size_t nl = strlen(f->name);
+  char *clean = arena_alloc(g_arena, nl + 1, 1);
+  size_t ci = 0;
+  for (const char *q = f->name; *q; q++) {
+    char c = *q;
+    bool idch = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                (c >= '0' && c <= '9') ||
+                strchr("!#$%&'*+./:<=>?@^_`|~-", c) != NULL;
+    clean[ci++] = idch ? c : '_';
+  }
+  clean[ci] = '\0';
+  const char *name = clean;
   for (size_t try = 1;; try++) {
     bool taken = false;
     for (size_t i = 0; i < VLEN(em->fnnames); i++)
@@ -1650,6 +1664,32 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       op(cx, "(local.set %zu %s)\n", dst, L(cx, res));
       return;
     }
+    if ((e->op == OP_EQ || e->op == OP_NE) && lt->kind == TY_STRUCT) {
+      // structs compare element-wise (§10): the values ride as flat
+      // field runs — each slot against its own face (floats by IEEE
+      // eq: NaN != NaN)
+      size_t res = cx_fresh(cx, ty_bool);
+      size_t n2 = shape_nlocals(lt);
+      for (size_t k = 0; k < n2; k++) {
+        WTy w2 = local_wty(lt, k);
+        const char *eqop = w2 == W_I64   ? "i64.eq"
+                           : w2 == W_F32 ? "f32.eq"
+                           : w2 == W_F64 ? "f64.eq"
+                                         : "i32.eq";
+        size_t eq = cx_fresh(cx, ty_bool);
+        op(cx, "(local.set %zu (%s %s %s))\n", eq, eqop, L(cx, a + k),
+           L(cx, b + k));
+        if (k == 0)
+          op(cx, "(local.set %zu %s)\n", res, L(cx, eq));
+        else
+          op(cx, "(local.set %zu (i32.and %s %s))\n", res, L(cx, res),
+             L(cx, eq));
+      }
+      if (e->op == OP_NE)
+        op(cx, "(local.set %zu (i32.eqz %s))\n", res, L(cx, res));
+      op(cx, "(local.set %zu %s)\n", dst, L(cx, res));
+      return;
+    }
     if ((e->op == OP_EQ || e->op == OP_NE) && lt->kind == TY_WEAK) {
       // weak identity is the TARGET's identity, not the box's (§10)
       size_t res = cx_fresh(cx, ty_bool);
@@ -2223,6 +2263,32 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       }
       size_t n = shape_nlocals(ft);
       if (found != NO_REF) {
+        Node *init = node_get(node_get(found)->a);
+        Type *it = (Type *)init->sem;
+        if (ft->kind == TY_STRUCT && it && it->kind == TY_PTR) {
+          // a boxed initializer for an inline value-struct field: the
+          // box rides one pointer slot; the parent owns field-wise
+          // copies of its payload (the box itself was fresh — the
+          // bump kernel keeps it, the header rc never re-fires)
+          size_t ptmp = cx_fresh(cx, it);
+          emit_expr(cx, node_get(found)->a, ptmp);
+          for (size_t k = 0; k < n; k++) {
+            WTy w = local_wty(ft, k);
+            const char *ld = w == W_I64   ? "i64.load"
+                             : w == W_F32 ? "f32.load"
+                             : w == W_F64 ? "f64.load"
+                                          : "i32.load";
+            const char *str_op = w == W_I64   ? "i64.store"
+                                 : w == W_F32 ? "f32.store"
+                                 : w == W_F64 ? "f64.store"
+                                              : "i32.store";
+            size_t fo = off + shape_slot_off(ft, k);
+            op(cx, "(%s (i32.add (local.get %zu) (i32.const %zu)) "
+                   "(%s (i32.add (local.get %zu) (i32.const %zu))))\n",
+               str_op, dst, fo, ld, ptmp, fo);
+          }
+          continue;
+        }
         size_t tmp = cx_fresh(cx, ft);
         emit_expr(cx, node_get(found)->a, tmp);
         for (size_t k = 0; k < n; k++) {

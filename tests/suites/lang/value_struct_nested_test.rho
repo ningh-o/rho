@@ -1,0 +1,25 @@
+// out: 5 1
+// out: true false false
+// spec: type-system.md §10 — nested value structs construct, read,
+// and compare element-wise
+// `new V{}` checks as *V, but a value-struct FIELD holds its payload
+// inline: the construction copies the box's fields into the parent
+// block, reads ride the flat field run, and == compares field-wise
+// (distinct allocations, equal values compare equal)
+struct V {
+  a: i64,
+  b: i32,
+}
+struct W {
+  inner: V,
+  tag: i32,
+}
+fn main() -> i32 {
+  let w1 = new W { inner: new V { a: 5, b: 1 }, tag: 0 };
+  let w2 = new W { inner: new V { a: 5, b: 1 }, tag: 0 };
+  let w3 = new W { inner: new V { a: 6, b: 1 }, tag: 0 };
+  printf("{} {}\n", w1.inner.a, w1.inner.b);
+  printf("{} {} {}\n", w1.inner == w2.inner, w1.inner == w3.inner,
+         w1.inner != w2.inner);
+  return 0;
+}

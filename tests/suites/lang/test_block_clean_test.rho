@@ -1,0 +1,13 @@
+// spec: syntax.md §4.5 — a test block judged by panic versus clean
+// return; the block name may carry any characters
+test "one plus one is two" {
+  assert(1 + 1 == 2, "math broke");
+}
+test "locals and compound assign" {
+  let mut n: i32 = 0;
+  n += 1;
+  assert(n == 1, "nope");
+}
+fn main() -> i32 {
+  return 0;
+}
