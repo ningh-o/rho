@@ -467,9 +467,10 @@ section — no placeholder stages. boot is the reference compiler.
       (base[i].f = e) parses and emits, and a loose file module owns
       its parent directory. The mirror now runs its whole pipeline:
       it loads lex, parse (75 fns), and check clean, then crashes
-      parsing emit.rho's own text (verbatim strings ruled out — the
-      next fixed table or parser edge lives somewhere in those 9400
-      lines; bisect by construct class next).
+      parsing emit.rho's own text — verbatim strings and static muts
+      ruled out; the crash follows a shower of recovered statement
+      fallbacks, the last at a `return emit_expr(...)` concat form.
+      Bisect emit.rho by construct class from there.
 - [ ] **T3.2 Pure-source trust root**: every gate run rebuilds the seed
       from boot's C source on the spot. The pinned `seed.wasm` stays in
       the repo **as a canary**: rebuild, compare byte-for-byte (D1 makes
