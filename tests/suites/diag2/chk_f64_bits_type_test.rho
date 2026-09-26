@@ -1,0 +1,8 @@
+// expect: intrinsics.f64_bits takes f64, got i32
+// spec: check — intrinsics
+// f64_bits reinterprets an f64's bits; an i32 binding is refused
+fn main() -> i32 {
+  let x: i32 = 1;
+  let y = intrinsics.f64_bits(x);
+  return 0;
+}

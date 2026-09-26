@@ -1,0 +1,9 @@
+// expect: module mdir has no public 'nope'
+// spec: module-system.md §4
+// qualified access names only the facade's public items
+use mdir;
+
+fn main() -> i32 {
+  let x = mdir.nope;
+  return 0;
+}

@@ -1,0 +1,7 @@
+// expect: % needs integers (floats are IEEE: no remainder op, §11)
+// spec: check — operators
+// floats have no remainder operator: % is integer-only by law
+fn main() -> i32 {
+  let a = 1.5 % 2.0;
+  return 0;
+}

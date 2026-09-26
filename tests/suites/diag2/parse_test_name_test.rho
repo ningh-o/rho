@@ -1,0 +1,10 @@
+// expect: expected a quoted test name after 'test'
+// spec: syntax.md — test blocks
+// a test block carries a quoted name; a bare token is refused
+test 5 {
+  assert(true);
+}
+
+fn main() -> i32 {
+  return 0;
+}

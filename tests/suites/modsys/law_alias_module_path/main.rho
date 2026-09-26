@@ -1,0 +1,9 @@
+// spec: module-system.md §2
+// `as` renames a module binding: a deep plain path binds under the
+// alias, access stays qualified through it.
+use very.long.module.path as m;
+fn main() -> i32 {
+  printf("{} {}\n", m.deep(), m.deeper());
+  return 0;
+}
+// out: 21 22

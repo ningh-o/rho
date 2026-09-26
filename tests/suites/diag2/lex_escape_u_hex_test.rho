@@ -1,0 +1,7 @@
+// expect: needs hex digits
+// spec: syntax.md — lexer
+// inside \u{...} every character must be a hex digit
+fn main() -> i32 {
+  let s = "a\u{zz}";
+  return 0;
+}

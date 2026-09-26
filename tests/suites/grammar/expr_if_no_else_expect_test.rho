@@ -1,0 +1,9 @@
+// expect: if-expression requires else
+// spec: syntax.md §6.2
+// `if` as an EXPRESSION requires `else` — the value must come from
+// somewhere. (An `if` statement without else is fine and needs no
+// value.)
+fn main() -> i32 {
+  let x = if true { 1 };
+  return 0;
+}

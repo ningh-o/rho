@@ -1,0 +1,14 @@
+// exit: 0
+// out: LIMIT=40
+// set: LIMIT=40
+// spec: spec.md §6 — --set overrides a root const whose type has a
+// text form, range-checked against the const's width
+// the i64 face: the headers pin the default build (LIMIT as
+// declared); the override lands through `--set LIMIT=<value>`, e.g.
+// `rho run set_int_test.rho --set LIMIT=-7` prints LIMIT=-7
+const LIMIT: i64 = 40;
+
+fn main() -> i32 {
+  printf("LIMIT={}\n", LIMIT);
+  return 0;
+}

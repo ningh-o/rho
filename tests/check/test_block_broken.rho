@@ -1,0 +1,10 @@
+// a broken test is a compile error even when main is clean (§17:
+// test blocks are checked in every mode)
+fn main() -> i32 {
+  return 0;
+}
+
+test "bad" {
+  let x: i32 = "s";
+}
+// expect: expected i32, found string

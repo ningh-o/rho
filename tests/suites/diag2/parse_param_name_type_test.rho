@@ -1,0 +1,8 @@
+// expect: expected 'name: type' in parameter list
+// spec: syntax.md — declarations
+// every parameter is written 'name: type' — a bare name has no type
+fn f(a) -> i32 { return a; }
+
+fn main() -> i32 {
+  return 0;
+}

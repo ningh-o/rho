@@ -1,0 +1,15 @@
+// out: tally=7
+// exit: 0
+// spec: TODO.md §18
+// Statics are module-lifetime mutable storage: a `static mut` is
+// written directly from main with no binding gate — the mut view law
+// governs bindings, and a static has no binding to gate. Plain store
+// and compound store both land, and the value survives across them.
+static mut TALLY: i32 = 0;
+fn main() -> i32 {
+  TALLY = 5;
+  TALLY += 2;
+  let t: i32 = TALLY;
+  printf("tally={}\n", t);
+  return 0;
+}

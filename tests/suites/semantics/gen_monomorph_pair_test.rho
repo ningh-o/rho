@@ -1,0 +1,36 @@
+// out: id one body many types: 41 ring
+// out: separate instantiations: 1-2 vs x-9
+// out: flip: 2 1
+// out: swap other instantiation: 9 x
+// exit: 0
+// spec: type-system.md §8, §11
+// Monomorphization: one generic body is compiled per type argument and
+// the instantiations keep SEPARATE behavior/state shapes —
+// Pair[i32, i64] and Pair[string, i32] are distinct types, a generic
+// fn over a generic instantiation (label) reads both, and the method
+// form `fn Pair.swap(self: *Pair)` uses the struct's own type
+// parameters to produce the flipped instantiation.
+struct Pair[A, B] {
+  a: A,
+  b: B,
+}
+fn Pair.swap(self: *Pair) -> *Pair[B, A] {
+  return new Pair[B, A] { a: self.b, b: self.a };
+}
+fn id[T](x: T) -> T {
+  return x;
+}
+fn label[A, B](p: *Pair[A, B], sep: string) -> string {
+  return p.a.to_str() + sep + p.b.to_str();
+}
+fn main() -> i32 {
+  printf("id one body many types: {} {}\n", id(41), id("ring"));
+  let p1: *Pair[i32, i64] = new Pair[i32, i64] { a: 1, b: 2 };
+  let p2: *Pair[string, i32] = new Pair[string, i32] { a: "x", b: 9 };
+  printf("separate instantiations: {} vs {}\n", label(p1, "-"), label(p2, "-"));
+  let fl: *Pair[i64, i32] = p1.swap();
+  printf("flip: {} {}\n", fl.a, fl.b);
+  let sw: *Pair[i32, string] = p2.swap();
+  printf("swap other instantiation: {} {}\n", sw.a, sw.b);
+  return 0;
+}

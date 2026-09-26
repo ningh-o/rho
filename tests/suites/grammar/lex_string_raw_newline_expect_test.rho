@@ -1,0 +1,10 @@
+// expect: unterminated string literal
+// spec: syntax.md §2.5
+// A raw newline inside a single-line string is a compile error — the
+// literal simply never terminates on its line. (Verbatim multi-line
+// text is the triple-quoted form's job.)
+fn main() -> i32 {
+  let s = "a
+b";
+  return 0;
+}

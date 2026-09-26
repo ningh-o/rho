@@ -1,0 +1,4 @@
+// the outer package's facade; the subpackage needs no mention here
+pub fn area() -> i32 {
+  return 1;
+}

@@ -44,7 +44,7 @@ fn main() -> i32 {
   if q.b != 1.0 {
     printf("ne32 ok\n");
   }
-  let ps: []Pair = make([]Pair, 3);
+  let mut ps: []Pair = make([]Pair, 3);
   ps[0] = *new Pair { a: 1.5, b: 2.5, tag: 1 };
   ps[1] = *new Pair { a: 0.25, b: 0.125, tag: 2 };
   ps[2] = q;

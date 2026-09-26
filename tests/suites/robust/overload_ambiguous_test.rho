@@ -1,0 +1,6 @@
+// expect: ambiguous call
+// spec: type-system.md §5 — duplicate names are overloads; a
+// call matching two exactly is a clean ambiguity diagnostic
+fn dup() -> i32 { return 1; }
+fn dup() -> i32 { return 2; }
+fn main() -> i32 { printf("{}\n", dup()); return 0; }

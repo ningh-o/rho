@@ -32,7 +32,7 @@ fn at(c: *Cur) -> u8 {
   return 0;
 }
 
-fn adv(c: *Cur) {
+fn adv(mut c: *Cur) {
   if c.pos < len(c.src) {
     c.pos = c.pos + 1;
   }
@@ -92,26 +92,26 @@ fn is_keyword(s: string) -> bool {
 
 // a triple-quoted span's end: the first subsequent """ closes it
 // (mid-line closers included); the newline count rides the cursor
-fn scan_verbatim_end(c: *Cur) -> usize {
+fn scan_verbatim_end(mut c: *Cur) -> usize {
   while c.pos + 2 < len(c.src) {
     if c.src[c.pos] == 34 && c.src[c.pos + 1] == 34 &&
        c.src[c.pos + 2] == 34 {
       let end: usize = c.pos;
-      adv(c);
-      adv(c);
-      adv(c);
+      adv(mut c);
+      adv(mut c);
+      adv(mut c);
       return end;
     }
     if c.src[c.pos] == 10 {
       c.line = c.line + 1;
     }
-    adv(c);
+    adv(mut c);
   }
   while c.pos < len(c.src) {
     if c.src[c.pos] == 10 {
       c.line = c.line + 1;
     }
-    adv(c);
+    adv(mut c);
   }
   return len(c.src);
 }
@@ -136,46 +136,46 @@ fn verbatim_text(s: string, start: usize, end: usize) -> string {
 }
 
 // a string literal's raw span, quotes stripped: src[a..b]
-fn scan_string_span(c: *Cur) -> usize {
-  adv(c); // the opening quote
+fn scan_string_span(mut c: *Cur) -> usize {
+  adv(mut c); // the opening quote
   let mut end: usize = c.pos;
   while c.pos < len(c.src) {
     let b: u8 = at(c);
     if b == 34 {
       end = c.pos;
-      adv(c);
+      adv(mut c);
       return end;
     }
     if b == 92 && c.pos + 1 < len(c.src) {
-      adv(c); // the escape char rides the span; the emitter decodes
+      adv(mut c); // the escape char rides the span; the emitter decodes
     } else if b == 10 {
       c.line = c.line + 1;
     }
-    adv(c);
+    adv(mut c);
   }
   return len(c.src);
 }
 
 pub fn lex(src: string) -> []*Tok {
   // every token eats at least one source byte: len(src) bounds the run
-  let toks: []*Tok = make([]*Tok, len(src) + 1);
+  let mut toks: []*Tok = make([]*Tok, len(src) + 1);
   let mut n: usize = 0;
-  let c = new Cur { src: src, pos: 0, line: 1 };
+  let mut c = new Cur { src: src, pos: 0, line: 1 };
   while c.pos < len(src) {
     let b: u8 = at(c);
     if b == 32 || b == 9 || b == 13 {
-      adv(c);
+      adv(mut c);
       continue;
     }
     if b == 10 {
       c.line = c.line + 1;
-      adv(c);
+      adv(mut c);
       continue;
     }
     // comments: // to end of line
     if b == 47 && c.pos + 1 < len(src) && src[c.pos + 1] == 47 {
       while c.pos < len(src) && at(c) != 10 {
-        adv(c);
+        adv(mut c);
       }
       continue;
     }
@@ -183,7 +183,7 @@ pub fn lex(src: string) -> []*Tok {
     if is_ident_start(b) {
       let start: usize = c.pos;
       while c.pos < len(src) && is_ident(at(c)) {
-        adv(c);
+        adv(mut c);
       }
       let word: string = src[start..c.pos];
       let k: i32 = if is_keyword(word) { TK_KEYWORD } else { TK_IDENT };
@@ -197,33 +197,33 @@ pub fn lex(src: string) -> []*Tok {
       // 0x hex and 0b bin literals (underscores carry no value)
       if b == 48 && c.pos + 1 < len(src) &&
           (src[c.pos + 1] == 120 || src[c.pos + 1] == 88) {
-        adv(c);
-        adv(c);
+        adv(mut c);
+        adv(mut c);
         while c.pos < len(src) &&
             (is_hexdig(at(c)) || at(c) == 95) {
           if at(c) != 95 {
             v = v * 16 + hexdig(at(c));
           }
-          adv(c);
+          adv(mut c);
         }
       } else {
         if b == 48 && c.pos + 1 < len(src) &&
             (src[c.pos + 1] == 98 || src[c.pos + 1] == 66) {
-          adv(c);
-          adv(c);
+          adv(mut c);
+          adv(mut c);
           while c.pos < len(src) &&
               (at(c) == 48 || at(c) == 49 || at(c) == 95) {
             if at(c) != 95 {
               v = v * 2 + (at(c) as i64 - 48);
             }
-            adv(c);
+            adv(mut c);
           }
         } else {
           while c.pos < len(src) && (is_digit(at(c)) || at(c) == 95) {
             if at(c) != 95 {
               v = v * 10 + (at(c) as i64 - 48);
             }
-            adv(c);
+            adv(mut c);
           }
         }
       }
@@ -235,9 +235,9 @@ pub fn lex(src: string) -> []*Tok {
         // only '.digit' opens a fraction — '1..' is a range, and a
         // member dot never follows an INT in this grammar
         isf = true;
-        adv(c);
+        adv(mut c);
         while c.pos < len(src) && (is_digit(at(c)) || at(c) == 95) {
-          adv(c);
+          adv(mut c);
         }
       }
       // an exponent may follow the fraction too (2.5e-9) — the raw
@@ -251,12 +251,12 @@ pub fn lex(src: string) -> []*Tok {
         let sign: bool = src[c.pos + 1] == 45 || src[c.pos + 1] == 43;
         if digbehind || !sign {
           isf = true;
-          adv(c);
+          adv(mut c);
           if sign {
-            adv(c);
+            adv(mut c);
           }
           while c.pos < len(src) && (is_digit(at(c)) || at(c) == 95) {
-            adv(c);
+            adv(mut c);
           }
         }
       }
@@ -276,11 +276,11 @@ pub fn lex(src: string) -> []*Tok {
       // decodes, content runs to the first subsequent """
       if c.pos + 2 < len(src) && src[c.pos + 1] == 34 &&
          src[c.pos + 2] == 34 {
-        adv(c);
-        adv(c);
-        adv(c);
+        adv(mut c);
+        adv(mut c);
+        adv(mut c);
         let vstart: usize = c.pos;
-        let vend: usize = scan_verbatim_end(c);
+        let vend: usize = scan_verbatim_end(mut c);
         toks[n] = new Tok { kind: TK_STR,
                             text: verbatim_text(src, vstart, vend),
                             ival: 0, line: line };
@@ -288,7 +288,7 @@ pub fn lex(src: string) -> []*Tok {
         continue;
       }
       let start: usize = c.pos + 1;
-      let end: usize = scan_string_span(c);
+      let end: usize = scan_string_span(mut c);
       toks[n] = new Tok { kind: TK_STR, text: src[start..end],
                           ival: 0, line: line };
       n = n + 1;
@@ -312,9 +312,9 @@ pub fn lex(src: string) -> []*Tok {
         two = true; // && || << >>
       }
     }
-    adv(c);
+    adv(mut c);
     if two {
-      adv(c);
+      adv(mut c);
     }
     toks[n] = new Tok { kind: TK_PUNCT, text: src[pstart..c.pos],
                         ival: 0, line: line };

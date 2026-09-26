@@ -1,0 +1,13 @@
+// out: direct=1 renamed=2 flattened=3
+// exit: 0
+// spec: syntax.md §4.4, module-system.md §6
+// `pub use` in a facade re-exports through the package name: one item
+// (`pub use inner.a;`), one item renamed (`pub use inner.b as bee;`),
+// and the flatten form (`pub use inner.*;`). The facade keeps the
+// re-export monopoly — interior items stay unreachable except
+// qualified through the facade.
+use boxy;
+fn main() -> i32 {
+  printf("direct={} renamed={} flattened={}\n", boxy.a(), boxy.bee(), boxy.c());
+  return 0;
+}

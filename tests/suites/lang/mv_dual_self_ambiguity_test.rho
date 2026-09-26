@@ -1,0 +1,22 @@
+// expect: ambiguous method call
+// spec: TODO.md §18
+// sig_same joins receiver mut-ness: `fn P.f(self)` and `fn P.f(mut
+// self)` are distinct signatures, so the twins may share a name —
+// but a call on a `mut` binding matches both exactly, and two exact
+// matches are ambiguous. (On a non-mut binding only the value twin
+// matches; mv_dual_self_twin_resolves pins that half.)
+struct P {
+  x: i32,
+}
+fn P.f(self) -> i32 {
+  return self.x;
+}
+fn P.f(mut self) -> i32 {
+  self.x = 5;
+  return self.x;
+}
+fn main() -> i32 {
+  let mut p = new P { x: 1 };
+  p.f();
+  return 0;
+}

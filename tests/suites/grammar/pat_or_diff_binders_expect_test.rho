@@ -1,0 +1,15 @@
+// expect: or-pattern alternatives bind different names
+// spec: syntax.md §7
+// Alternatives of an or-pattern must bind the identical name set —
+// `A(x) | B(y)` would leave the arm's body with a binder that depends
+// on which alternative matched, so it is refused.
+enum Two {
+  A(i32),
+  B(i32),
+}
+fn main() -> i32 {
+  match Two.A(1) {
+    A(x) | B(y) => printf("never\n"),
+  }
+  return 0;
+}

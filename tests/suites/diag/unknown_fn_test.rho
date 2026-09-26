@@ -1,0 +1,8 @@
+// expect: unknown name 'nope'
+// spec: syntax.md §6.2
+// every path in an expression must resolve to a visible declaration —
+// a call to an undeclared function is rejected at check time
+fn main() -> i32 {
+  nope(3);
+  return 0;
+}

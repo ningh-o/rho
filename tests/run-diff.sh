@@ -4,31 +4,32 @@
 # (stdout). The self-hosted surface is the run-selfhost subset; it
 # grows until the full corpus differential closes it.
 set -u
+T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 RHO=${RHO:-./build/rho}
 FAILED=0
 diff_one() { # name, src
   local name=$1 src=$2
-  printf '%s\n' "$src" > /tmp/diff-$name.rho
+  printf '%s\n' "$src" > $T/diff-$name.rho
   local bgot brc sgot src_rc
-  bgot=$("$RHO" run /tmp/diff-$name.rho 2>/dev/null)
+  bgot=$("$RHO" run $T/diff-$name.rho 2>/dev/null)
   brc=$?
-  if ! "$RHO" build libs/compiler/main.rho -o /tmp/diffc-$name.wasm \
-      --set "SRC=$src" >/tmp/diff-$name.build 2>&1; then
+  if ! "$RHO" build libs/compiler/main.rho -o $T/diffc-$name.wasm \
+      --set "SRC=$src" >$T/diff-$name.build 2>&1; then
     echo "FAIL diff/$name: boot could not build the compiler"
-    head -3 /tmp/diff-$name.build
+    head -3 $T/diff-$name.build
     FAILED=1
     return
   fi
-  wasmtime /tmp/diffc-$name.wasm >/tmp/diff-$name.wat 2>/dev/null
-  if ! wat2wasm /tmp/diff-$name.wat -o /tmp/diff-$name.self.wasm \
-      2>/tmp/diff-$name.w2w; then
+  wasmtime $T/diffc-$name.wasm >$T/diff-$name.wat 2>/dev/null
+  if ! wat2wasm $T/diff-$name.wat -o $T/diff-$name.self.wasm \
+      2>$T/diff-$name.w2w; then
     echo "FAIL diff/$name: the self-hosted output does not assemble"
-    head -3 /tmp/diff-$name.w2w
+    head -3 $T/diff-$name.w2w
     FAILED=1
     return
   fi
   sgot=$(perl -e 'alarm 10; exec @ARGV' -- wasmtime \
-    /tmp/diff-$name.self.wasm 2>/dev/null)
+    $T/diff-$name.self.wasm 2>/dev/null)
   src_rc=$?
   if [ "$brc" -eq "$src_rc" ] && [ "$bgot" = "$sgot" ]; then
     echo "  $name: boot==self rc=$brc [$bgot]"
@@ -55,7 +56,7 @@ diff_one cat 'fn main() -> i32 { let a: string = "con"; let b: string = "cat"; l
 diff_one tco 'fn down(n: i64) -> i64 { if n == 0 { return 7; } return down(n - 1); } fn sumto(n: i64, acc: i64) -> i64 { if n == 0 { return acc; } return sumto(n - 1, acc + n); } fn main() -> i32 { printf("down={} sum={}\n", down(2000000), sumto(1000000, 0)); return 0; }'
 diff_one defer 'static mut LOG: i64 = 0; fn work() -> i64 { defer LOG += 1; defer LOG += 10; LOG += 100; return 0; } fn two() -> i64 { defer LOG += 1000; if LOG >= 0 { defer LOG += 5; } return LOG; } fn main() -> i32 { let r = work(); printf("log={} r={}\n", LOG, r); let t = two(); printf("log={} t={}\n", LOG, t); return 0; }'
 diff_one statics 'const BASE: i64 = 10; const SCALED: i64 = BASE * 2 + 1; static mut HITS: i64 = 0; static mut MASK: i64 = 255; fn hit() -> i64 { HITS += 1; return HITS; } fn main() -> i32 { let a = hit(); let b = hit(); MASK &= 240; printf("a={} b={} s={} base={} mask={} lit={}\n", a, b, SCALED, BASE, MASK, BASE | 5); return 0; }'
-diff_one slices 'fn sum(xs: []i32) -> i32 { let mut total: i32 = 0; let mut i: usize = 0; while i < len(xs) { total += xs[i]; i += 1; } return total; } fn main() -> i32 { let xs: []i32 = make([]i32, 5); let mut i: usize = 0; while i < len(xs) { xs[i] = i as i32 * 2 + 2; i += 1; } let part: []i32 = xs[0..3]; printf("sum={} part={}\n", sum(xs), sum(part)); xs[0] = 100; printf("alias={}\n", part[0]); let tail: []i32 = xs[2..]; printf("tail={} tlen={}\n", sum(tail), len(tail)); let s: string = "hello"; printf("byte={} h={}\n", s[1], "hi"[0]); let head: string = s[0..3]; printf("head={} hl={}\n", head, len(head)); return 0; }'
+diff_one slices 'fn sum(xs: []i32) -> i32 { let mut total: i32 = 0; let mut i: usize = 0; while i < len(xs) { total += xs[i]; i += 1; } return total; } fn main() -> i32 { let mut xs: []i32 = make([]i32, 5); let mut i: usize = 0; while i < len(xs) { xs[i] = i as i32 * 2 + 2; i += 1; } let part: []i32 = xs[0..3]; printf("sum={} part={}\n", sum(xs), sum(part)); xs[0] = 100; printf("alias={}\n", part[0]); let tail: []i32 = xs[2..]; printf("tail={} tlen={}\n", sum(tail), len(tail)); let s: string = "hello"; printf("byte={} h={}\n", s[1], "hi"[0]); let head: string = s[0..3]; printf("head={} hl={}\n", head, len(head)); return 0; }'
 diff_one oob 'fn main() -> i32 { let xs: []i32 = make([]i32, 3); return xs[7]; }'
 diff_one bits 'fn main() -> i32 { let a: i64 = 12; let b: i64 = 10; printf("and={} or={} xor={}\n", a & b, a | b, a ^ b); let x: i64 = 1 << 4; printf("shl={} shr={}\n", x, x >> 2); let neg: i64 = 0 - 16; printf("sar={} not={} notnot={}\n", neg >> 2, ~a, ~~a); let mut m: i64 = 255; m &= 15; m |= 32; m ^= 4; printf("m={}\n", m); printf("mix={} eq={} neq={}\n", 1 | 2 & 3, (4 & 2) == 0, 5 ^ 0); let mut big: i64 = 1; big <<= 40; big >>= 2; printf("big={}\n", big); return 0; }'
 diff_one labels 'fn main() -> i32 { let mut total = 0; let mut i = 0; outer: while i < 10 { i = i + 1; let mut j = 0; while j < 3 { j = j + 1; if j == 2 { continue outer; } if i == 7 { break outer; } total = total + 1; } } let mut k = 0; let mut hits = 0; scan: loop { k = k + 1; if k % 3 == 0 { continue scan; } if k > 8 { break scan; } hits = hits + 1; } printf("total={} i={} k={} hits={}\n", total, i, k, hits); return 0; }'

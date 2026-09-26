@@ -1,0 +1,8 @@
+// expect: 'null' does not exist
+// spec: syntax.md §2.1
+// `null` is a reserved keyword that never parses: pointers are non-null
+// and absence is ?T — the word cannot appear as an expression.
+fn main() -> i32 {
+  let x = null;
+  return 0;
+}

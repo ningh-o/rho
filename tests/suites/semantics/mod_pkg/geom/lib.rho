@@ -1,0 +1,9 @@
+// the facade: geom's whole public surface
+pub use units.double;
+pub use units.double as twice;
+pub use units.base_unit;
+pub use shapes.*;
+pub const base: i32 = 10;
+fn interior() -> i32 {
+  return 99;
+}

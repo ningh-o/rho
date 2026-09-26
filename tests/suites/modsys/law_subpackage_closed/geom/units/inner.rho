@@ -1,0 +1,4 @@
+// interior to units/: reachable only from the package that owns it
+pub fn deep() -> i32 {
+  return 3;
+}

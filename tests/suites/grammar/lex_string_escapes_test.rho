@@ -1,0 +1,21 @@
+// out: len=7 bytes=97 9 98 92 99 34 100
+// out: zlen=7 hlen=2 h=[AB]
+// out: ulen=5 emoji_bytes=4 a_bytes=1
+// out: cr_len=2 cr0=13 cr1=10
+// exit: 0
+// spec: syntax.md §2.5
+// The single-line escape set is exactly \n \r \t \\ \0 \" \xHH \u{...}
+// — pinned through lengths and byte reads so the output line stays
+// printable. Any other escape is a compile error (pinned separately).
+fn main() -> i32 {
+  let s = "a\tb\\c\"d";
+  printf("len={} bytes={} {} {} {} {} {} {}\n", len(s), s[0], s[1], s[2], s[3], s[4], s[5], s[6]);
+  let z = "nul\0end";
+  let h = "\x41\x42";
+  printf("zlen={} hlen={} h=[{}]\n", len(z), len(h), h);
+  let u = "\u{1F600}\u{41}";
+  printf("ulen={} emoji_bytes={} a_bytes={}\n", len(u), len("\u{1F600}"), len("\u{41}"));
+  let cr = "\r\n";
+  printf("cr_len={} cr0={} cr1={}\n", len(cr), cr[0], cr[1]);
+  return 0;
+}

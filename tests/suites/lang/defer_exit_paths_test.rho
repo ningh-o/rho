@@ -1,0 +1,56 @@
+// out: call1
+// out:   work-1
+// out: r=10
+// out:   iter-1
+// out:   iter-2
+// out: i=2
+// out: total-mid=0
+// out: total=11
+// out: inner-block
+// out: block-b
+// out: block-a
+// out:   work-0
+// out: call2 r=20
+// out: main-end
+// exit: 0
+// spec: syntax.md §5
+// defer runs LIFO across defers, on every scope exit path: end of
+// function, early return from an if, break out of a loop body (and
+// each plain iteration end), exit of an inner block — including the
+// deferred-assignment form (`defer total += 1;`). break only unwinds
+// the scopes it leaves; execution then continues after the loop.
+fn work(n: i32) -> i32 {
+  defer printf("  work-{}\n", n);
+  if n == 1 {
+    return 10;
+  }
+  return 20;
+}
+fn main() -> i32 {
+  defer printf("main-end\n");
+  printf("call1\n");
+  printf("r={}\n", work(1));
+  let mut i: i32 = 0;
+  while i < 5 {
+    i += 1;
+    defer printf("  iter-{}\n", i);
+    if i == 2 {
+      break;
+    }
+  }
+  printf("i={}\n", i);
+  let mut total: i32 = 0;
+  {
+    defer total += 1;
+    defer total += 10;
+    printf("total-mid={}\n", total);
+  }
+  printf("total={}\n", total);
+  {
+    defer printf("block-a\n");
+    defer printf("block-b\n");
+    printf("inner-block\n");
+  }
+  printf("call2 r={}\n", work(0));
+  return 0;
+}

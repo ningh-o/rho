@@ -27,7 +27,7 @@ fn Pt.rank(self: *Pt) -> i32 {
   return self.x;
 }
 
-fn Pt.bump(self: *Pt) {
+fn Pt.bump(mut self: *Pt) {
   self.x += 1;
 }
 
@@ -48,7 +48,7 @@ fn Wd.rank(self: *Wd) -> i32 {
 }
 
 fn main() -> i32 {
-  let p = new Pt { x: 7 };
+  let mut p = new Pt { x: 7 };
   let w = new Wd { s: "abcd" };
   // two vtables from one object
   let ds: dyn Show = p;
@@ -67,7 +67,7 @@ fn main() -> i32 {
   let ds2: dyn Show = p;
   printf("bumped {} {} rank={}\n", ds, ds2, dd.rank());
   // both types behind one Show slice — two vtables, one loop
-  let items: []dyn Show = make([]dyn Show, 2);
+  let mut items: []dyn Show = make([]dyn Show, 2);
   items[0] = p;
   items[1] = w;
   let mut i: usize = 0;

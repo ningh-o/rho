@@ -1,0 +1,2 @@
+use a.astep;
+pub fn zstep() -> i32 { return 26; }

@@ -1,0 +1,18 @@
+// expect: method 'to_str' of Show takes 0 argument(s), got 1
+// spec: check — traits
+// a trait method call is arity-checked against the trait signature
+trait Show {
+  fn to_str(self) -> string,
+}
+
+struct S { x: i32 }
+
+impl Show for S {
+  fn to_str(self: *S) -> string { return "s"; }
+}
+
+fn main() -> i32 {
+  let d: dyn Show = new S { x: 1 };
+  let a = d.to_str(1);
+  return 0;
+}

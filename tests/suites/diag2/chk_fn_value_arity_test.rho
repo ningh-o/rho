@@ -1,0 +1,9 @@
+// expect: call takes 1 argument(s), got 2
+// spec: check — calls
+// a call through a fn value is arity-checked against the value's
+// signature
+fn main() -> i32 {
+  let g = fn(a: i32) -> i32 { return a; };
+  let x = g(1, 2);
+  return 0;
+}

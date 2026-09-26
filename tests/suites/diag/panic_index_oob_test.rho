@@ -1,0 +1,11 @@
+// out: len=3
+// exit: 101
+// err: panic: index out of bounds
+// spec: spec.md §3
+// reading past the end of a slice (s[i] with i >= len(s)) is a
+// defined panic, exit 101 — stdout written before the trap survives
+fn main() -> i32 {
+  let xs: []i32 = make([]i32, 3);
+  printf("len={}\n", len(xs));
+  return xs[7];
+}

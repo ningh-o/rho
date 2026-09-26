@@ -1,0 +1,33 @@
+// out: two=12 one=25
+// out: unit=done
+// out: bounds=5 6
+// exit: 0
+// spec: syntax.md §4.1
+// Function declarations: typed parameters, return types, void bodies,
+// and overloads — several functions may share one name in a module;
+// resolution is exact-match unique (arity 2 vs arity 1 here).
+fn area(w: i32, h: i32) -> i32 {
+  return w * h;
+}
+fn area(w: i32) -> i32 {
+  return w * w;
+}
+fn banner() {
+  printf("unit=done\n");
+  return;
+}
+fn clamp(v: i32, lo: i32, hi: i32) -> i32 {
+  if v < lo {
+    return lo;
+  }
+  if v > hi {
+    return hi;
+  }
+  return v;
+}
+fn main() -> i32 {
+  printf("two={} one={}\n", area(3, 4), area(5));
+  banner();
+  printf("bounds={} {}\n", clamp(4, 5, 9), clamp(6, 5, 9));
+  return 0;
+}

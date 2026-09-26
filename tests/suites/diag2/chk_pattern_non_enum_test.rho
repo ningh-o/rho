@@ -1,0 +1,15 @@
+// expect: does not name struct Q
+// spec: check — match
+// a variant-shaped pattern against a struct scrutinee is refused: the
+// path must name the struct (struct patterns bind by field name)
+struct Q { v: i32 }
+
+fn f(q: Q) -> i32 {
+  match q {
+    E.A(x) => 1,
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}

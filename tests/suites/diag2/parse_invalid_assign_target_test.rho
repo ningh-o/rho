@@ -1,0 +1,7 @@
+// expect: invalid assignment target
+// spec: syntax.md — assignment
+// only bindings, fields, indices and dereferences may be assigned to
+fn main() -> i32 {
+  1 + 2 = 3;
+  return 0;
+}

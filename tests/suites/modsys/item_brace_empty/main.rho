@@ -1,0 +1,6 @@
+// spec: syntax.md §4.4
+// expect: needs at least one item
+use math.{};
+fn main() -> i32 {
+  return 0;
+}

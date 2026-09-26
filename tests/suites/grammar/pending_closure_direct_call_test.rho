@@ -1,0 +1,17 @@
+// out: direct=8
+// out: paren=8
+// exit: 0
+// spec: syntax.md §6.8
+// A returned closure is a first-class fn value: calling it directly in
+// a postfix chain (`make_adder(5)(3)`, `(make_adder(5))(3)`) must run
+// the closure body. Today the direct form yields 0 (the closure body
+// never runs); binding the returned value first works (`made(3)`=8),
+// so the closure itself is fine — the immediate call is miscompiled.
+fn make_adder(n: i32) -> fn(i32) -> i32 {
+  return fn(x: i32) -> i32 { return x + n; };
+}
+fn main() -> i32 {
+  printf("direct={}\n", make_adder(5)(3));
+  printf("paren={}\n", (make_adder(5))(3));
+  return 0;
+}

@@ -1,0 +1,6 @@
+// out: crlf ok
+// spec: syntax.md §1 — CRLF line endings compile and run
+fn main() -> i32 {
+  printf("crlf ok\n");
+  return 0;
+}

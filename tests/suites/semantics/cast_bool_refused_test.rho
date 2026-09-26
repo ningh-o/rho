@@ -1,0 +1,11 @@
+// expect: bool
+// spec: type-system.md §3
+// `bool` does not participate in `as` in either direction — bool→int
+// and int→bool are both refused; there is no implicit integer/bool
+// punning anywhere in rho.
+fn main() -> i32 {
+  let t: bool = true;
+  let n: i32 = (t as i32);
+  printf("n={}\n", n);
+  return 0;
+}

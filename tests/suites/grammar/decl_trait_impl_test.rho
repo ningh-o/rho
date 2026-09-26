@@ -1,0 +1,59 @@
+// out: impl=(1, 2)
+// out: computed=bare7
+// out: two_traits=tagged 2 hint=9
+// exit: 0
+// spec: syntax.md §4.2, type-system.md §4
+// Traits declare method signatures (trailing comma allowed); `impl
+// Show for T` blocks and bare `fn T.to_str(self)` methods both
+// satisfy a trait — satisfaction is name + signature match, so one
+// type can pick up several traits and one trait can be provided by
+// impl block or bare method alike.
+trait Show {
+  fn to_str(self) -> string,
+}
+trait Described {
+  fn describe(self) -> string,
+  fn hint(self) -> i32,
+}
+struct Pt {
+  x: i32,
+  y: i32,
+}
+impl Show for Pt {
+  fn to_str(self: *Pt) -> string {
+    return format("({}, {})", self.x, self.y);
+  }
+}
+struct Bare {
+  n: i64,
+}
+fn Bare.to_str(self: *Bare) -> string {
+  return format("bare{}", self.n);
+}
+struct Tagged {
+  k: i32,
+}
+impl Show for Tagged {
+  fn to_str(self: *Tagged) -> string {
+    return format("t{}", self.k);
+  }
+}
+impl Described for Tagged {
+  fn describe(self: *Tagged) -> string {
+    return format("tagged {}", self.k);
+  }
+  fn hint(self: *Tagged) -> i32 {
+    return 9;
+  }
+}
+fn main() -> i32 {
+  let p = new Pt { x: 1, y: 2 };
+  let d: dyn Show = p;
+  printf("impl={}\n", d.to_str());
+  let b: dyn Show = new Bare { n: 7 };
+  printf("computed={}\n", b.to_str());
+  let t = new Tagged { k: 2 };
+  let td: dyn Described = t;
+  printf("two_traits={} hint={}\n", td.describe(), td.hint());
+  return 0;
+}

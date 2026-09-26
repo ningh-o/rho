@@ -1,0 +1,13 @@
+// out: direct=1 renamed=2 flattened=3 sub=1
+// exit: 0
+// spec: syntax.md §4.4, module-system.md §6
+// The four `pub use` forms: one item, one item renamed, flatten — and
+// `pub use sub;`, which binds the submodule itself under the facade.
+// Today the first three work but the submodule form compiles while
+// the binding is invisible through the facade ("module boxy has no
+// public 'inner'"), for file modules and subpackages alike.
+use boxy;
+fn main() -> i32 {
+  printf("direct={} renamed={} flattened={} sub={}\n", boxy.a(), boxy.bee(), boxy.c(), boxy.inner.a());
+  return 0;
+}

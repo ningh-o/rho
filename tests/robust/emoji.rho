@@ -1,0 +1,2 @@
+fn main() -> i32 { printf("😀 中文 ok\n"); // 🤖 in a line comment
+ return 0; }

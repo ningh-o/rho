@@ -18,7 +18,7 @@ fn Rect.area(self: *Rect) -> i32 {
 fn main() -> i32 {
   let r = Rect.square(3);
   printf("{}\n", r.area());
-  let u = Rect.unit();
+  let mut u = Rect.unit();
   u.w = 12;
   printf("{}\n", u.w);
   return 0;

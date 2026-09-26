@@ -1,0 +1,20 @@
+// out: len=6 b0=104 b1=195 (bytes, not code points)
+// out: sub=é len=2
+// out: pre=h post=llo (ASCII windows)
+// out: concat: A! len=2
+// exit: 0
+// spec: spec.md §5
+// Strings are immutable UTF-8 BYTE slices: len counts bytes (é is
+// two), s[i] yields the u8 at byte i (65='A', 195=0xC3 the first byte
+// of é), s[a..b] slices by byte offsets with either end open, and +
+// concatenates two strings byte-wise — never coercing numbers into
+// the concatenation.
+fn main() -> i32 {
+  let s: string = "héllo";
+  printf("len={} b0={} b1={} (bytes, not code points)\n", len(s), s[0], s[1]);
+  let sub: string = s[1..3];
+  printf("sub={} len={}\n", sub, len(sub));
+  printf("pre={} post={} (ASCII windows)\n", s[..1], s[3..]);
+  printf("concat: {} len={}\n", "A" + "!", len("A" + "!"));
+  return 0;
+}

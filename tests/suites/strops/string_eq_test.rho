@@ -1,0 +1,23 @@
+// exit: 0
+// spec: type-system.md §10 — string == compares content (bytes)
+// spec: spec.md §5 — + concatenates strings, never coerces
+// out: eq=true
+// out: ne=false
+// out: empty=true
+// out: prefix=false
+// out: case=false
+// out: cat=[cardtable] true
+fn main() -> i32 {
+  let a: string = "héllo";
+  let b: string = "h" + "\u{e9}" + "llo";
+  printf("eq={}\n", a == b);
+  printf("ne={}\n", a != b);
+  printf("empty={}\n", "" == "");
+  printf("prefix={}\n", "abc" == "ab");
+  printf("case={}\n", "rho" == "Rho");
+  let cat: string = "card" + "table";
+  printf("cat=[{}] {}\n", cat, cat == "cardtable");
+  assert(a == b, "concatenation equals the written literal");
+  assert(!("abc" == "abd"), "differing content compares false");
+  return 0;
+}

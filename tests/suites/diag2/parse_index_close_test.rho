@@ -1,0 +1,8 @@
+// expect: to close index
+// spec: syntax.md — indexing
+// an index expression closes with ']'
+fn main() -> i32 {
+  let xs = [1, 2, 3];
+  let a = xs[0;
+  return 0;
+}

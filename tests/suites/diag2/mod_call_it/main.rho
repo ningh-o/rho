@@ -1,0 +1,10 @@
+// expect: call it: mdir.add(…)
+// spec: module-system.md §4
+// a fn is not a first-class value across modules: qualify and call
+// it in one expression
+use mdir;
+
+fn main() -> i32 {
+  let f = mdir.add;
+  return 0;
+}

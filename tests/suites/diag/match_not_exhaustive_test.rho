@@ -1,0 +1,17 @@
+// expect: match on E is not exhaustive: missing E.B
+// spec: syntax.md §7
+// a match on an enum must cover every variant or carry `_` — one arm
+// of a two-variant enum is not exhaustive, and no `_` is present
+enum E {
+  A,
+  B,
+}
+
+fn f(e: E) -> i32 {
+  return match e {
+    E.A => 1,
+  };
+}
+fn main() -> i32 {
+  return 0;
+}

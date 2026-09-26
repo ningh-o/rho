@@ -39,7 +39,7 @@ fn eq(a: string, b: string) -> bool {
   }
   return true;
 }
-fn mput(m: *M, key: string, val: i64) {
+fn mput(mut m: *M, key: string, val: i64) {
   if m.n * 10 >= m.cap * 7 {
     let ncap: usize = if m.cap == 0 { 16 } else { m.cap * 2 };
     let slots: []?*Ent = make([]?*Ent, ncap);
@@ -51,7 +51,7 @@ fn mput(m: *M, key: string, val: i64) {
     let mut i: usize = 0;
     while i < oldn {
       match old[i] {
-        Option.Some(e) => { mput(m, e.key, e.val); },
+        Option.Some(e) => { mput(mut m, e.key, e.val); },
         Option.None => {},
       }
       i += 1;
@@ -67,7 +67,8 @@ fn mput(m: *M, key: string, val: i64) {
     match m.slots[i] {
       Option.Some(e) => {
         if eq(e.key, key) {
-          e.val = val;
+          let mut ee = e;
+          ee.val = val;
           return;
         }
       },
@@ -83,10 +84,10 @@ fn mput(m: *M, key: string, val: i64) {
   m.n += 1;
 }
 fn main() -> i32 {
-  let m: *M = new M { slots: make([]?*Ent, 0), cap: 0, n: 0 };
+  let mut m: *M = new M { slots: make([]?*Ent, 0), cap: 0, n: 0 };
   let mut k: i32 = 0;
   while k < 24 {
-    mput(m, "key-" + k.to_str(), k as i64);
+    mput(mut m, "key-" + k.to_str(), k as i64);
     k += 1;
   }
   printf("n={} cap={}\n", m.n as i64, m.cap as i64);

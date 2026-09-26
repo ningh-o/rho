@@ -1,0 +1,9 @@
+pub fn a() -> i32 {
+  return 1;
+}
+pub fn b() -> i32 {
+  return 2;
+}
+pub fn c() -> i32 {
+  return 3;
+}

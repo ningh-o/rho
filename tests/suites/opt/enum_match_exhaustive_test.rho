@@ -1,0 +1,39 @@
+// exit: 0
+// spec: syntax.md §7 — arms by full variant path; exhaustive unless _ is present
+// spec: type-system.md §10 — enums compare by tag, then payload element-wise
+// out: 39 add
+// out: -5 neg
+// out: 0 zero
+// every variant covered by full path, no _ arm: exhaustiveness is
+// closed by the arms themselves, tuple payloads bind by position
+enum Op {
+  Add(i32, i32),
+  Neg(i32),
+  Zero,
+}
+
+fn apply(o: Op) -> i32 {
+  return match o {
+    Op.Add(a, b) => a + b,
+    Op.Neg(v) => 0 - v,
+    Op.Zero => 0,
+  };
+}
+
+fn label(o: Op) -> string {
+  return match o {
+    Op.Add(_, _) => "add",
+    Op.Neg(_) => "neg",
+    Op.Zero => "zero",
+  };
+}
+
+fn main() -> i32 {
+  printf("{} {}\n", apply(Op.Add(30, 9)), label(Op.Add(1, 2)));
+  printf("{} {}\n", apply(Op.Neg(5)), label(Op.Neg(1)));
+  printf("{} {}\n", apply(Op.Zero), label(Op.Zero));
+  assert_eq(Op.Add(1, 2) == Op.Add(1, 2), true);
+  assert_eq(Op.Add(1, 2) == Op.Neg(3), false);
+  assert_eq(Op.Zero == Op.Zero, true);
+  return 0;
+}

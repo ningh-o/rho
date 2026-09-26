@@ -1,0 +1,31 @@
+// out: blocks=20 0
+// out: guard=50 1
+// out: ifexpr=5 6
+// exit: 0
+// spec: syntax.md §6.2, §7
+// `match` and `if` are expressions with same-type arms: an `if`
+// expression requires `else`, a match arm may be a block (its tail
+// value is the arm's value), and an arm guard (`if cond`) evaluates
+// after the pattern binds.
+fn pick(n: i32) -> i32 {
+  let r = match n {
+    1 => { let t = 10; t },
+    2 => { let t = 20; t },
+    _ => { 0 },
+  };
+  return r;
+}
+fn grade(n: i32) -> i32 {
+  return match n {
+    5 if n > 4 => 50,
+    _ => 1,
+  };
+}
+fn main() -> i32 {
+  printf("blocks={} {}\n", pick(2), pick(9));
+  printf("guard={} {}\n", grade(5), grade(1));
+  let a = if 1 < 2 { 5 } else { 6 };
+  let b = if 2 < 1 { 5 } else { 6 };
+  printf("ifexpr={} {}\n", a, b);
+  return 0;
+}

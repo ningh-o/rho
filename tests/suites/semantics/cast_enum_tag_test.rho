@@ -1,0 +1,18 @@
+// out: Red=0 Green=1 Blue=2 (declared order, i32)
+// out: tag through enum var: 1
+// out: tag survives reassignment of payload: 2
+// exit: 0
+// spec: type-system.md §3
+// `enum_value as i32` reads the tag: the variant's declared order,
+// counted from 0. Payloads never participate in the tag; there is no
+// reverse (integer → enum) conversion.
+enum Color { Red, Green, Blue }
+
+fn main() -> i32 {
+  printf("Red={} Green={} Blue={} (declared order, i32)\n",
+         (Color.Red as i32), (Color.Green as i32), (Color.Blue as i32));
+  let c: Color = Color.Green;
+  printf("tag through enum var: {}\n", (c as i32));
+  printf("tag survives reassignment of payload: {}\n", (Color.Blue as i32));
+  return 0;
+}

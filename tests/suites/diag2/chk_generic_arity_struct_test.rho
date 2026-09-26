@@ -1,0 +1,10 @@
+// expect: struct S takes 1 generic argument(s), got 0
+// spec: check — generics
+// a generic struct used without type arguments is a different type
+// shape than declared
+struct S[T] { v: T }
+
+fn main() -> i32 {
+  let s: S = new S[i32] { v: 1 };
+  return 0;
+}

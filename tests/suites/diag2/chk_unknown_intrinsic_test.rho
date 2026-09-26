@@ -1,0 +1,7 @@
+// expect: unknown intrinsic 'nope'
+// spec: check — intrinsics
+// the intrinsics namespace has a fixed member list
+fn main() -> i32 {
+  let x = intrinsics.nope(1);
+  return 0;
+}

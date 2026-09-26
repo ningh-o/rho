@@ -1,0 +1,9 @@
+// spec: module-system.md §6
+// The star form flattens: every public item of the interior module
+// rides the facade under its own name.
+use pkg;
+fn main() -> i32 {
+  printf("{} {}\n", pkg.tool(), pkg.anvil());
+  return 0;
+}
+// out: 3 4

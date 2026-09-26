@@ -1,0 +1,18 @@
+// out: concat vs literal: eq=true ne=false
+// out: different content: eq=false ne=true
+// out: sliced content: eq=true
+// exit: 0
+// spec: type-system.md §10, spec.md §5
+// Strings compare by CONTENT (bytes), not by allocation: a freshly
+// concatenated "ab"+"cd" equals the literal "abcd", different byte
+// content is !=, and a slice re-sharing the same bytes equals its
+// source window.
+fn main() -> i32 {
+  let cat: string = "ab" + "cd";
+  printf("concat vs literal: eq={} ne={}\n", (cat == "abcd"), (cat != "abcd"));
+  printf("different content: eq={} ne={}\n", (cat == "abce"), (cat != "abce"));
+  let src: string = "abcdef";
+  let window: string = src[2..6];
+  printf("sliced content: eq={}\n", (window == "cdef"));
+  return 0;
+}

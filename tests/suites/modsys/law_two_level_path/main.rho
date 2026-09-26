@@ -1,0 +1,10 @@
+// spec: module-system.md §2
+// A dotted path through a plain directory (no lib.rho) descends the
+// same way at every level; the final segment binds the file module,
+// so access stays qualified through that binding.
+use web.strs;
+fn main() -> i32 {
+  printf("{}\n", strs.width());
+  return 0;
+}
+// out: 9

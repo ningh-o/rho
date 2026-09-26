@@ -1,0 +1,8 @@
+// spec: module-system.md §2
+use math.Vec2;
+fn main() -> i32 {
+  let v = new Vec2 { x: 3, y: 4 };
+  printf("{}\n", v.x + v.y);
+  return 0;
+}
+// out: 7

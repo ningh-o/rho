@@ -23,13 +23,13 @@ fn make_bundle() -> *Bundle {
 
 fn main() -> i32 {
   let b: *Bundle = make_bundle();
-  let st: Bundle = (*b);
+  let mut st: Bundle = (*b);
   st.xs[1] = 60;
   st.node.v = 90;
   printf("shared: b.xs[1]={} b.node.v={}\n", b.xs[1], b.node.v);
   printf("copy reads: st.xs[1]={} st.node.v={}\n", st.xs[1], st.node.v);
   printf("identity: node_eq={} name_eq={}\n", (st.node == b.node), (st.name == b.name));
-  let xs2: []i32 = b.xs;
+  let mut xs2: []i32 = b.xs;
   let node2: *Node = b.node;
   xs2[2] = 70;
   printf("field copies: b.xs[2]={} same_node={}\n", b.xs[2], (node2 == b.node));

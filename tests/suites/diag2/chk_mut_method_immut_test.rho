@@ -1,0 +1,13 @@
+// expect: cannot call mut method 'bump' on an immutable binding
+// spec: TODO.md §18
+// a mut-self method needs a mut root: calling it through a binding
+// declared without 'mut' would write through a read-only root
+struct S { x: i32 }
+
+fn S.bump(mut self) { self.x = 2; }
+
+fn main() -> i32 {
+  let s = new S { x: 1 };
+  s.bump();
+  return 0;
+}

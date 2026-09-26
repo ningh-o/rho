@@ -1,0 +1,4 @@
+struct Box[T] { v: T }
+struct A { b: Box[A] }
+fn f(x: A) -> i32 { return 0; }
+fn main() -> i32 { return 0; }

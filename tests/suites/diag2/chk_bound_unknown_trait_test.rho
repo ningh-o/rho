@@ -1,0 +1,9 @@
+// expect: unknown trait 'Nope' in the bounds of f
+// spec: check — generics
+// a generic bound must name a declared trait
+fn f[T: Nope](x: T) -> T { return x; }
+
+fn main() -> i32 {
+  let a = f(1);
+  return 0;
+}

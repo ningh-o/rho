@@ -19,13 +19,13 @@ const MODS: string = ""; // the module tree: "@MOD@ <path>\n<text>" blocks
 const FMT: i64 = 0; // 1 = print the canonical formatting instead
 
 fn main() -> i32 {
-  let toks: []*Tok = lex.lex(SRC);
-  let prog: *Prog = parse.parse(toks, SRC);
+  let mut toks: []*Tok = lex.lex(SRC);
+  let mut prog: *Prog = parse.parse(toks, SRC);
   if prog.perrs > 0 {
     eprintf("parse: {} unresolved form(s)\n", prog.perrs);
     return 1;
   }
-  if !parse.load_mods(prog, MODS) {
+  if !parse.load_mods(mut prog, MODS) {
     eprintf("mods: unresolved module path(s)\n");
     return 1;
   }
@@ -33,7 +33,7 @@ fn main() -> i32 {
     eprintf("parse: {} unresolved form(s)\n", prog.perrs);
     return 1;
   }
-  let errs: i64 = check.check(prog);
+  let mut errs: i64 = check.check(prog);
   if errs > 0 {
     eprintf("check: {} error(s)\n", errs);
     return 1;
@@ -51,7 +51,7 @@ fn main() -> i32 {
     }
     return 0;
   }
-  let wat: string = emit.emit(prog);
+  let wat: string = emit.emit(mut prog);
   // stream in slices: the format scratch is bounded, programs are not
   let mut off: usize = 0;
   while off < len(wat) {

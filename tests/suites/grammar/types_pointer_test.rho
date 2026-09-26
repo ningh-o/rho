@@ -1,0 +1,20 @@
+// out: deref=7 copy=8
+// out: chain=42 identity=false
+// exit: 0
+// spec: syntax.md §3, §6.2
+// `*T` is the non-null heap pointer: `new` allocates, unary `*` copies
+// the pointee out. Deref chains (`(*(*(*p).p).p).v` — three unary `*`
+// interleaved with field access) walk nested boxes, and `==` on two
+// pointers compares identity, not content.
+struct Cell { v: i32 }
+struct Mid { p: *Cell }
+struct Top { p: *Mid }
+fn main() -> i32 {
+  let c = new Cell { v: 7 };
+  let x = *c;
+  printf("deref={} copy={}\n", c.v, x.v + 1);
+  let p = new Top { p: new Mid { p: new Cell { v: 41 } } };
+  let chain = (*(*(*p).p).p).v + 1;
+  printf("chain={} identity={}\n", chain, c == new Cell { v: 7 });
+  return 0;
+}

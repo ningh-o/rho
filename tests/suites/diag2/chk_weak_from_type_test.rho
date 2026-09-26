@@ -1,0 +1,7 @@
+// expect: weak.from takes *T, got i32
+// spec: check — weak pointers
+// weak.from borrows a pointer; a plain integer is not one
+fn main() -> i32 {
+  let w = weak.from(1);
+  return 0;
+}

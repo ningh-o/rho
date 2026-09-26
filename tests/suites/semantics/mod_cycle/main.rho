@@ -1,0 +1,18 @@
+// out: a.v=1 b.v=12
+// out: root const seen by a: 22
+// out: static across calls: 1 2
+// exit: 0
+// spec: module-system.md §1, §2, §9
+// Module cycles are LEGAL: a uses b and b uses a — each lookup finds
+// the sibling file, no topological order exists or is needed. The
+// root const rides prelude status (§9): a.rho reads ROOT_LIMIT with
+// no `use` at all. The static is module-private to a.rho but its pub
+// fn exports the mutation across calls.
+const ROOT_LIMIT: i32 = 21;
+use a;
+fn main() -> i32 {
+  printf("a.v={} b.v={}\n", a.v(), a.call_b());
+  printf("root const seen by a: {}\n", a.root_plus_one());
+  printf("static across calls: {} {}\n", a.bump(), a.bump());
+  return 0;
+}

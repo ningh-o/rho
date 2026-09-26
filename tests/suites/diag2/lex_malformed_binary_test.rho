@@ -1,0 +1,8 @@
+// expect: malformed binary literal
+// spec: syntax.md — lexer
+// 0b must be followed by binary digits; a decimal digit glued on is
+// refused
+fn main() -> i32 {
+  let x = 0b12;
+  return 0;
+}

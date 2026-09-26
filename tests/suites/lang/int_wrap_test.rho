@@ -1,0 +1,40 @@
+// out: i8 max+1=-128 min-1=127
+// out: i16 max+1=-32768 min-1=32767
+// out: i32 max+1=-2147483648 min-1=2147483647
+// out: i64 max+1=-9223372036854775808 min-1=9223372036854775807
+// out: u8 max+1=0 min-1=255
+// out: u16 max+1=0 min-1=65535
+// out: u32 max+1=0 min-1=4294967295
+// out: u64 max+1=0 min-1=18446744073709551615
+// exit: 0
+// spec: spec.md §4
+// Two's complement wrap at every signed width (MAX+1 = MIN, MIN-1 =
+// MAX) and unsigned modulo-2^n wrap (MAX+1 = 0, 0-1 = MAX): overflow
+// is a defined value, never a trap.
+fn main() -> i32 {
+  let a8: i8 = 127;
+  let m8: i8 = (-128);
+  printf("i8 max+1={} min-1={}\n", (a8 + 1), (m8 - 1));
+  let a16: i16 = 32767;
+  let m16: i16 = (-32768);
+  printf("i16 max+1={} min-1={}\n", (a16 + 1), (m16 - 1));
+  let a32: i32 = 2147483647;
+  let m32: i32 = (-2147483648);
+  printf("i32 max+1={} min-1={}\n", (a32 + 1), (m32 - 1));
+  let a64: i64 = 9223372036854775807;
+  let m64: i64 = (-9223372036854775808);
+  printf("i64 max+1={} min-1={}\n", (a64 + 1), (m64 - 1));
+  let au8: u8 = 255;
+  let mu8: u8 = 0;
+  printf("u8 max+1={} min-1={}\n", (au8 + 1), (mu8 - 1));
+  let au16: u16 = 65535;
+  let mu16: u16 = 0;
+  printf("u16 max+1={} min-1={}\n", (au16 + 1), (mu16 - 1));
+  let au32: u32 = 4294967295;
+  let mu32: u32 = 0;
+  printf("u32 max+1={} min-1={}\n", (au32 + 1), (mu32 - 1));
+  let au64: u64 = 18446744073709551615;
+  let mu64: u64 = 0;
+  printf("u64 max+1={} min-1={}\n", (au64 + 1), (mu64 - 1));
+  return 0;
+}

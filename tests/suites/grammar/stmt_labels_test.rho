@@ -1,0 +1,39 @@
+// out: hits=3
+// out: same_name=2
+// out: nested=5
+// exit: 0
+// spec: syntax.md §5
+// Labels: a plain identifier + `:` on `while`/`loop`; `break L;` and
+// `continue L;` jump out of / re-enter the labeled loop from any
+// nesting depth. Labels are function-unique and live in their own
+// namespace — a label may share a name with a variable.
+fn main() -> i32 {
+  let mut hits: i32 = 0;
+  outer: while hits < 3 {
+    inner: loop {
+      hits += 1;
+      if hits == 2 {
+        continue outer;
+      }
+      if hits == 3 {
+        break outer;
+      }
+      break;
+    }
+  }
+  printf("hits={}\n", hits);
+  let mut same_name: i32 = 0;
+  same_name: while true {
+    same_name += 1;
+    if same_name > 1 {
+      break;
+    }
+  }
+  printf("same_name={}\n", same_name);
+  let mut deep: i32 = 0;
+  out2: while deep < 1 {
+    deep += 1;
+  }
+  printf("nested={}\n", deep + 4);
+  return 0;
+}

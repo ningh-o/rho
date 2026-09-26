@@ -1,0 +1,14 @@
+// expect: does not satisfy Show (a dyn coercion needs every trait method)
+// spec: check — traits
+// a dyn value is a fat pointer: its vtable needs every trait method,
+// so coercing an unsatisfying type is refused
+trait Show {
+  fn to_str(self) -> string,
+}
+
+struct S { x: i32 }
+
+fn main() -> i32 {
+  let d: dyn Show = new S { x: 1 };
+  return 0;
+}

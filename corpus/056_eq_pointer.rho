@@ -6,7 +6,7 @@ struct Node {
 }
 
 fn main() -> i32 {
-  let a: *Node = new Node { v: 1 };
+  let mut a: *Node = new Node { v: 1 };
   let b: *Node = new Node { v: 1 };
   let alias: *Node = a;
   printf("distinct allocs: eq={} ne={}\n", (a == b), (a != b));

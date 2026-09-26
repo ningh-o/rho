@@ -1,0 +1,6 @@
+// spec: module-system.md §2
+// expect: ambiguous use of 'math.add'
+use math.add;
+fn main() -> i32 {
+  return 0;
+}

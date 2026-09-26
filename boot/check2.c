@@ -25,6 +25,9 @@ typedef struct FnCtx {
   size_t ngparams;
   Type **gbinds; // generic instance: name → concrete bind (parallel to
                  // gparams; NULL for templates)
+  bool or_relax; // inside an or-pattern's non-first alternative:
+                 // re-binding the same name at the same type is the
+                 // §19 identical-binder law, not a duplicate
 } FnCtx;
 
 static void ctx_push_scope(FnCtx *c) { c->scope++; }
@@ -287,6 +290,7 @@ static Type *check_match(FnCtx *c, NodeRef er, Type *expected);
 static void check_pattern(FnCtx *c, Node *p, Type *st);
 static Type *check_call(FnCtx *c, NodeRef er, Type *expected);
 static Type *check_method(FnCtx *c, NodeRef er, Type *expected);
+static Module *qualify_module(FnCtx *c, Node *e);
 static FnDef *instantiate_generic_seeded(FnCtx *c, FnDef *f, Node *call,
                                          Type *expected, Type **seed);
 static bool ty_has_param(Type *t);
@@ -343,8 +347,11 @@ static bool trait_satisfied(FnCtx *c, Type *t, TraitDef *td) {
       for (size_t q = 0; q < na && ok; q++) {
         Type *pa = a->params[q].ty;
         Type *pb = b->params[q].ty;
-        if (!pb) // the trait's bare self slot matches any receiver
+        if (!pb) { // the trait's bare self slot: mut-ness still joins
+          if (q == 0 && a->params[q].is_mut != b->params[q].is_mut)
+            ok = false;
           continue;
+        }
         if (!pa || !type_eq(pa, pb))
           ok = false;
       }
@@ -366,6 +373,12 @@ static void check_assign_target_base(FnCtx *c, NodeRef base);
 // returns match quality: 0 no, 1 yes
 static bool sig_matches_q(FnCtx *c, FnSig *sig, NodeRef call_r,
                           bool has_recv);
+// when set, overload probes ignore the §18 mut pairing (used for the
+// precise-diagnosis pass once a call matched nothing)
+static bool g_probe_mut_blind = false;
+void pair_arg_markers(FnCtx *c, RefList *args, FnSig *sig, size_t first,
+                      const char *what);
+static bool root_binding_mut(FnCtx *c, NodeRef er);
 
 static bool sig_matches(FnCtx *c, FnSig *sig, NodeRef call_r,
                         bool has_recv) {
@@ -403,6 +416,12 @@ static bool sig_matches_q(FnCtx *c, FnSig *sig, NodeRef call_r,
     Node *a = node_get(reflist_at(args, i + first));
     if (a->kind != NT_POSARG)
       return false; // named args only valid on constructors
+    // §18: the mut marker participates in overload selection —
+    // a marker selects the mut-view parameter, its absence the plain
+    if (!g_probe_mut_blind &&
+        (a->op == 2) != (i + first < nparams &&
+                         sig->params[i + first].is_mut))
+      return false;
     // a trailing spread passes the whole slice: it matches the FULL
     // variadic param type, not the element type (spec §12)
     if (a->bval && variadic && i == napplied - 1)
@@ -451,6 +470,35 @@ static FnDef *resolve_overload(FnCtx *c, FnDef *chain, NodeRef call_r,
     return match;
   Node *call = node_get(call_r);
   if (nmatch == 0) {
+    // mut-blind retry: when exactly one candidate matches with the
+    // §18 pairing ignored, the miss IS a marker problem — say which
+    g_probe_mut_blind = true;
+    FnDef *blind = NULL;
+    int nblind = 0;
+    for (FnDef *f = chain; f; f = f->next_overload) {
+      if (!f->ngparams && sig_matches(c, f->sig, call_r, has_recv)) {
+        blind = f;
+        nblind++;
+      }
+    }
+    if (!nblind)
+      for (FnDef *f = chain; f; f = f->next_overload) {
+        if (f->ngparams && sig_matches(c, f->sig, call_r, has_recv)) {
+          blind = f;
+          nblind++;
+        }
+      }
+    g_probe_mut_blind = false;
+    if (nblind == 1 && blind) {
+      // a real program error (the call matches exactly one candidate
+      // once mut-ness is ignored) — diagnose it even inside a probe
+      bool saved_q = g_probe_quiet;
+      g_probe_quiet = false;
+      pair_arg_markers(c, node_get(call_r)->list, blind->sig,
+                       has_recv ? 1 : 0, what);
+      g_probe_quiet = saved_q;
+      return NULL;
+    }
     err_at(c, call, "no overload of %s matches the arguments", what);
   } else {
     err_at(c, call,
@@ -556,6 +604,10 @@ bool sig_same(FnSig *a, FnSig *b) {
       return false;
     if (a->params[i].variadic != b->params[i].variadic)
       return false;
+    // mut-ness joins the signature (§18): self/mut self twins are
+    // distinct signatures — and ambiguous when both match one call
+    if (a->params[i].is_mut != b->params[i].is_mut)
+      return false;
   }
   return type_eq(a->ret, b->ret);
 }
@@ -599,10 +651,8 @@ static Type *check_format_call(FnCtx *c, Node *call, Type *expected) {
   }
   for (size_t i = 1; i < reflist_len(args); i++) {
     Node *aw = node_get(reflist_at(args, i));
-    if (aw->kind != NT_POSARG) {
-      err_at(c, aw, "format values are positional");
-      continue;
-    }
+    // every arg here is NT_POSARG: the parser refuses named arguments
+    // outside constructors before a format fn can ever see one
     Type *vt = check_expr(c, aw->a, NULL);
     switch (vt->kind) {
     case TY_I8: case TY_I16: case TY_I32: case TY_I64:
@@ -826,6 +876,45 @@ static Type *instantiate_enum_ctor(FnCtx *c, EnumDef *ed, Type *expected,
   return type_enum(ed, tys, ng);
 }
 
+// resolve a module-qualified receiver CHAIN (mod.sub.inner) to its
+// module: each segment after the first must be a PUB module use
+// binding in the previous module (§6 — `pub use sub;` publishes the
+// submodule under the facade). NULL = not a module chain (no error
+// here — the caller falls through to the value path)
+static Module *qualify_module(FnCtx *c, Node *e) {
+  if (e->kind != NT_FIELD_E)
+    return NULL;
+  Node *recv = node_get(e->a);
+  Module *base = NULL;
+  if (recv->kind == NT_PATH) {
+    Look lk;
+    if (!lookup(c, recv->name, &lk) || lk.kind != LOOK_MODULE)
+      return NULL;
+    base = lk.module;
+  } else {
+    base = qualify_module(c, recv);
+    if (!base)
+      return NULL;
+  }
+  Sym *s = base->syms ? symtab_get(base->syms, e->name) : NULL;
+  if (s && s->pub && s->kind == SYM_MODULE)
+    return s->u.module;
+  for (size_t i = 0; i < VLEN(base->uses); i++) {
+    UseBind *ub = VAT(base->uses, UseBind, i);
+    if (strcmp(ub->alias, e->name) == 0) {
+      // the binding speaks through its decl: pub rides the form bits
+      // (USE_PUB_MOD..USE_PUB_STAR), not bval
+      if (ub->decl != NO_REF) {
+        int form = node_get(ub->decl)->op & 7;
+        if (form >= USE_PUB_MOD && form <= USE_PUB_STAR)
+          return ub->target;
+      }
+      return NULL;
+    }
+  }
+  return NULL;
+}
+
 static Type *check_call(FnCtx *c, NodeRef er, Type *expected) {
   Node *call = node_get(er);
   RefList *args = call->list;
@@ -854,6 +943,7 @@ static Type *check_call(FnCtx *c, NodeRef er, Type *expected) {
       if (reflist_len(args) != nfixed)
         err_at(c, call, "call takes %zu argument(s), got %zu", nfixed,
                reflist_len(args));
+      pair_arg_markers(c, args, sig, 0, "the fn value");
       for (size_t i = 0; i < reflist_len(args); i++) {
         Node *aw = node_get(reflist_at(args, i));
         if (aw->kind != NT_POSARG) {
@@ -908,9 +998,9 @@ static Type *check_call(FnCtx *c, NodeRef er, Type *expected) {
         Node *targ = node_get(node_get(reflist_at(args, 0))->a);
         GScope g2 = {0};
         Type *el = resolve_type_pub(c->mod, targ->a, &g2);
-        Type *st = el && el->kind == TY_SLICE
-                       ? el
-                       : (el ? type_slice(el) : NULL);
+        // the parser consumed the outer `[]` prefix: el IS the element
+        // type, even when the element is itself a slice ([][]T)
+        Type *st = el ? type_slice(el) : NULL;
         if (st) {
           if (reflist_len(args) > 1) {
             Node *cnt = node_get(reflist_at(args, 1));
@@ -948,6 +1038,8 @@ static Type *check_call(FnCtx *c, NodeRef er, Type *expected) {
         return ty_unit;
       node_get(er)->sem2 = inst;
       f = inst;
+      // §18 pairing against the instantiated signature
+      pair_arg_markers(c, call->list, f->sig, 0, f->name);
       // re-check the args against the substituted signature
       for (size_t i = 0; i < reflist_len(call->list); i++) {
         Node *aw = node_get(reflist_at(call->list, i));
@@ -967,6 +1059,8 @@ static Type *check_call(FnCtx *c, NodeRef er, Type *expected) {
       return f->sig->ret;
     }
     node_get(er)->sem2 = f; // the chosen overload rides with the call
+    // §18 pairing: markers ↔ mut-view params, both directions
+    pair_arg_markers(c, args, f->sig, 0, f->name);
     // check args against the chosen signature (proper, with consumers)
     for (size_t i = 0; i < reflist_len(args); i++) {
       Node *aw = node_get(reflist_at(args, i));
@@ -1199,26 +1293,37 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
       err_at(c, m, "enum %s has no variant '%s'", recv->name, m->name);
       return ty_unit;
     }
-    // module-qualified call: mod.fn(args)
-    if (lookup(c, recv->name, &lk) && lk.kind == LOOK_MODULE) {
-      Sym *s = lk.module->syms ? symtab_get(lk.module->syms, m->name) : NULL;
-      if (s && s->kind == SYM_FN && s->pub) {
-        FnDef *f = resolve_overload(c, s->u.fns, er, false, m->name);
-        if (!f)
-          return ty_unit;
-        for (size_t i = 0; i < reflist_len(m->list); i++) {
-          Node *aw = node_get(reflist_at(m->list, i));
-          if (aw->kind == NT_POSARG)
-            check_expr(c, aw->a,
-                       i < f->sig->nparams ? f->sig->params[i].ty : NULL);
-        }
-        node_get(er)->op = 5; // a plain call on the module's namespace
-        node_get(er)->sem2 = f;
-        return f->sig->ret;
+  }
+
+  // module-qualified call: mod.fn(args) — also through a re-exported
+  // submodule (§6 `pub use sub;`): mod.sub.fn(args)
+  Module *qm = NULL;
+  if (recv0->kind == NT_PATH) {
+    Look lk;
+    if (lookup(c, recv0->name, &lk) && lk.kind == LOOK_MODULE)
+      qm = lk.module;
+  } else {
+    qm = qualify_module(c, recv0);
+  }
+  if (qm) {
+    Sym *s = qm->syms ? symtab_get(qm->syms, m->name) : NULL;
+    if (s && s->kind == SYM_FN && s->pub) {
+      FnDef *f = resolve_overload(c, s->u.fns, er, false, m->name);
+      if (!f)
+        return ty_unit;
+      pair_arg_markers(c, m->list, f->sig, 0, f->name);
+      for (size_t i = 0; i < reflist_len(m->list); i++) {
+        Node *aw = node_get(reflist_at(m->list, i));
+        if (aw->kind == NT_POSARG)
+          check_expr(c, aw->a,
+                     i < f->sig->nparams ? f->sig->params[i].ty : NULL);
       }
-      err_at(c, m, "module %s has no public fn '%s'", recv->name, m->name);
-      return ty_unit;
+      node_get(er)->op = 5; // a plain call on the module's namespace
+      node_get(er)->sem2 = f;
+      return f->sig->ret;
     }
+    err_at(c, m, "module %s has no public fn '%s'", qm->name, m->name);
+    return ty_unit;
   }
 
   // real method call on a value
@@ -1252,6 +1357,7 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
                m->name, td->name, nparams - 1, nargv);
         return ty_unit;
       }
+      pair_arg_markers(c, m->list, sig, 1, m->name);
       for (size_t j = 0; j < nargv; j++) {
         Node *aw = node_get(reflist_at(m->list, j));
         if (aw->kind != NT_POSARG) {
@@ -1310,11 +1416,25 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
     } else if (ok && f->nimplicit) {
       ok = false; // generic method needs an instantiated receiver
     }
+    // §18: a mut-self method needs a mut root binding; the pairing of
+    // markers with mut-view params participates in selection
+    if (ok && !g_probe_mut_blind && f->sig->params[0].is_mut &&
+        !root_binding_mut(c, m->a))
+      ok = false;
     for (size_t j = 0; ok && j < nargv; j++) {
       Node *aw = node_get(reflist_at(m->list, j));
       if (aw->kind != NT_POSARG) {
         ok = false;
         break;
+      }
+      if (!g_probe_mut_blind) {
+        bool pmut = (j + 1) < nfixed
+                        ? f->sig->params[j + 1].is_mut
+                        : variadic && f->sig->params[nfixed].is_mut;
+        if ((aw->op == 2) != pmut) {
+          ok = false;
+          break;
+        }
       }
       Type *pt = j < nfixed ? f->sig->params[j + 1].ty
                             : f->sig->params[nfixed].ty;
@@ -1337,10 +1457,59 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
   }
   g_probe_quiet = saved_quiet;
   if (nmatch != 1) {
-    if (nmatch == 0)
+    if (nmatch == 0) {
+      // mut-blind retry: when exactly one candidate matches with the
+      // §18 constraints ignored, the miss IS a permission problem —
+      // diagnose it precisely (receiver gate + marker pairing)
+      g_probe_mut_blind = true;
+      int nblind = 0;
+      FnDef *blind = NULL;
+      for (size_t i = 0; i < ncand; i++) {
+        FnDef *f = cands[i];
+        size_t nparams = f->sig->nparams;
+        size_t nargv = reflist_len(m->list);
+        bool variadic = nparams > 0 &&
+                        f->sig->params[nparams - 1].variadic;
+        size_t nfixed = variadic ? nparams - 1 : nparams;
+        bool ok = variadic ? nargv + 1 >= nfixed : nargv + 1 == nfixed;
+        for (size_t j = 0; ok && j < nargv; j++) {
+          Node *aw = node_get(reflist_at(m->list, j));
+          if (aw->kind != NT_POSARG) {
+            ok = false;
+            break;
+          }
+          Type *pt = j < nfixed ? f->sig->params[j + 1].ty
+                                : f->sig->params[nfixed].ty;
+          Node *arg = node_get(aw->a);
+          if (arg->kind == NT_INT || arg->kind == NT_FLOAT) {
+            if (!literal_adapts_to(c, arg, pt))
+              ok = false;
+          } else {
+            Type *at = check_expr(c, aw->a, pt);
+            if (!type_eq(at, pt))
+              ok = false;
+          }
+        }
+        if (ok) {
+          nblind++;
+          blind = f;
+        }
+      }
+      g_probe_mut_blind = false;
+      if (nblind == 1 && blind) {
+        bool saved_q = g_probe_quiet;
+        g_probe_quiet = false;
+        if (blind->sig->params[0].is_mut && !root_binding_mut(c, m->a))
+          err_at(c, m, "cannot call mut method '%s' on an immutable "
+                       "binding (declare with let mut)",
+                 m->name);
+        pair_arg_markers(c, m->list, blind->sig, 1, m->name);
+        g_probe_quiet = saved_q;
+        return ty_unit;
+      }
       err_at(c, m, "no overload of method '%s' matches the arguments",
              m->name);
-    else
+    } else
       err_at(c, m, "ambiguous method call '%s' (%d exact matches)",
              m->name, nmatch);
     return ty_unit;
@@ -1362,6 +1531,12 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
       return ty_unit;
     node_get(er)->sem2 = inst;
     node_get(er)->op = 2;
+    // §18: receiver gate + marker pairing against the instance sig
+    if (inst->sig->params[0].is_mut && !root_binding_mut(c, m->a))
+      err_at(c, m, "cannot call mut method '%s' on an immutable "
+                   "binding (declare with let mut)",
+             m->name);
+    pair_arg_markers(c, m->list, inst->sig, 1, m->name);
     for (size_t j = 0; j < reflist_len(m->list); j++) {
       Node *aw = node_get(reflist_at(m->list, j));
       if (aw->kind != NT_POSARG)
@@ -1377,6 +1552,13 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
   }
   node_get(er)->sem2 = chosen; // the chosen method (emit reads it)
   node_get(er)->op = 2;        // marks: real method call
+  // §18: a mut-self method needs a mut root binding; the explicit
+  // args pair their markers with the callee's mut-view params
+  if (chosen->sig->params[0].is_mut && !root_binding_mut(c, m->a))
+    err_at(c, m, "cannot call mut method '%s' on an immutable binding "
+                 "(declare with let mut)",
+           m->name);
+  pair_arg_markers(c, m->list, chosen->sig, 1, m->name);
   for (size_t j = 0; j < reflist_len(m->list); j++) {
     Node *aw = node_get(reflist_at(m->list, j));
     if (aw->kind != NT_POSARG)
@@ -1389,6 +1571,45 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
     check_expr(c, aw->a, pt);
   }
   return chosen->sig->ret;
+}
+
+// §6.8: closures capture locals by copy. A `mut` local of VALUE type
+// may not be captured (the copy would diverge from the original on
+// any rebind — the hazard the law targets). A `mut` local of HANDLE
+// type (*T, []T, string, dyn) captures fine: the copy IS the shared
+// view, and the shared mutable state lives in the heap object — the
+// escape hatch §6.8's own rationale names. The closure's own params
+// and pattern binders live at scopes at or past entry_scope, so only
+// genuine outer captures are seen; nested closures enforce their own
+// captures in their own case.
+static bool closure_captures_mut(FnCtx *c, NodeRef er, int entry_scope) {
+  if (er == NO_REF)
+    return false;
+  Node *e = node_get(er);
+  if (e->kind == NT_CLOSURE)
+    return false;
+  if (e->kind == NT_PATH) {
+    Look lk;
+    if (lookup(c, e->name, &lk) && lk.kind == LOOK_LOCAL &&
+        lk.local->mut && lk.local->scope <= entry_scope &&
+        lk.local->ty && !type_is_managed(lk.local->ty)) {
+      err_at(c, e, "a closure may not capture the mut local '%s' "
+                   "(a value copy would diverge; share a heap object "
+                   "through a pointer instead)", e->name);
+      return true;
+    }
+    return false;
+  }
+  if (closure_captures_mut(c, e->a, entry_scope) ||
+      closure_captures_mut(c, e->b, entry_scope) ||
+      closure_captures_mut(c, e->c, entry_scope) ||
+      closure_captures_mut(c, e->d, entry_scope))
+    return true;
+  if (e->list)
+    for (size_t i = 0; i < reflist_len(e->list); i++)
+      if (closure_captures_mut(c, reflist_at(e->list, i), entry_scope))
+        return true;
+  return false;
 }
 
 static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
@@ -1489,8 +1710,25 @@ static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
         if (lk.kind == LOOK_MODULE && lk.module->syms) {
           Sym *s = symtab_get(lk.module->syms, e->name);
           if (!s || !s->pub) {
-            err_at(c, e, "module %s has no public '%s'", recv->name,
-                   e->name);
+            // a re-exported submodule (`pub use sub;`, §6) resolves
+            // only on qualified call paths — as a value it is refused
+            bool pub_mod = false;
+            for (size_t i = 0; i < VLEN(lk.module->uses); i++) {
+              UseBind *ub = VAT(lk.module->uses, UseBind, i);
+              if (strcmp(ub->alias, e->name) == 0) {
+                pub_mod = ub->decl != NO_REF &&
+                          (node_get(ub->decl)->op & 7) >= USE_PUB_MOD &&
+                          (node_get(ub->decl)->op & 7) <= USE_PUB_STAR;
+                break;
+              }
+            }
+            if (pub_mod)
+              err_at(c, e, "'%s' is a module, not a value (call "
+                           "qualified: %s.%s.fn(…))",
+                     e->name, recv->name, e->name);
+            else
+              err_at(c, e, "module %s has no public '%s'", recv->name,
+                     e->name);
             return ty_unit;
           }
           if (s->kind == SYM_CONST) {
@@ -1658,8 +1896,15 @@ static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
       case TY_BOOL: case TY_F32: case TY_F64: case TY_STRING:
       case TY_I8: case TY_I16: case TY_I32: case TY_I64:
       case TY_U8: case TY_U16: case TY_U32: case TY_U64: case TY_USIZE:
-      case TY_PTR: case TY_WEAK: case TY_STRUCT: case TY_ENUM:
+      case TY_PTR: case TY_WEAK: case TY_STRUCT:
         break; // weak compares identity, like pointers (§10)
+      case TY_ENUM:
+        // Result is the one enum the == law refuses (§10): match on
+        // the tag instead — two Err payloads of different types would
+        // otherwise compare slotwise against their canonical shape
+        if (lt->edef->is_result)
+          err_at(c, e, "Result values never compare (match on the tag)");
+        break;
       case TY_SLICE:
         err_at(c, e, "slices never compare (write a loop)");
         break;
@@ -1849,29 +2094,37 @@ static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
     }
     sig->ret = e->b != NO_REF ? check_type_in_ctx(c, e->b, &dummy) : ty_unit;
     // body: a nested scope with the closure's params
+    int entry_scope = c->scope;
     ctx_push_scope(c);
     for (size_t i = 0; i < sig->nparams; i++) {
+      Node *pp = node_get(reflist_at(e->list, i));
       Local *l = ctx_decl_local(c, sig->params[i].name);
       l->ty = sig->params[i].ty;
-      l->mut = false;
+      l->mut = pp->bval; // §18: the declared mut is kept, not forced
     }
     // temporarily retarget the return context for return statements
     Type *saved_ret = c->ret;
     c->ret = sig->ret;
     check_block(c, e->c);
     c->ret = saved_ret;
+    // §6.8: the capture law — run before the body's binders pop, so
+    // the walk only ever sees genuine outer bindings
+    closure_captures_mut(c, e->c, entry_scope);
     ctx_pop_scope(c);
     return type_fn(sig);
   }
   case NT_QMARK: {
     // the operand is Option/Result; the value is the payload; the
     // enclosing return must be compatible (Option: any payload;
-    // Result: exact error type)
-    Type *ot = check_expr(c, e->a, NULL);
+    // Result: exact error type). The enclosing return flows in as the
+    // operand's expected type so a bare `Option.None?` infers its
+    // arguments from the return (a bare unit variant of a generic
+    // enum cannot infer on its own)
+    Type *ot = check_expr(c, e->a, c->ret);
     EnumDef *opt = prelude_enum("Option");
     EnumDef *res = prelude_enum("Result");
     Type *payload = NULL;
-    if (is_option_of(ot, opt) && ot->nargs == 1) {
+    if (is_option_of(ot, opt) && ot->nargs == 1 && ot->args) {
       payload = ot->args[0];
       if (c->ret) {
         if (!(is_option_of(c->ret, opt) && c->ret->nargs == 1))
@@ -1879,7 +2132,7 @@ static Type *check_expr_inner(FnCtx *c, NodeRef er, Type *expected) {
                        "Option, it returns %s",
                  type_name(c->ret));
       }
-    } else if (is_option_of(ot, res) && ot->nargs == 2) {
+    } else if (is_option_of(ot, res) && ot->nargs == 2 && ot->args) {
       payload = ot->args[0];
       if (c->ret) {
         if (!(is_option_of(c->ret, res) && c->ret->nargs == 2 &&
@@ -1984,11 +2237,91 @@ static Type *check_block_value(FnCtx *c, NodeRef br, Type *expected) {
   return tail_ty;
 }
 
+// §19: an arm's variant name resolves against the scrutinee's enum —
+// a bare name that names a variant IS the variant, with no scope
+// fallback (a nested inner match resolves by its own scrutinee).
+// Recurses through payload patterns against the payload field types.
+static void resolve_pattern(FnCtx *c, Node *p, Type *st) {
+  if (p->kind == NT_POR) {
+    for (size_t i = 0; i < reflist_len(p->list); i++)
+      resolve_pattern(c, node_get(reflist_at(p->list, i)), st);
+    return;
+  }
+  if (p->kind == NT_PBIND) {
+    if (st && st->kind == TY_ENUM)
+      for (size_t v = 0; v < st->edef->nvariants; v++)
+        if (strcmp(st->edef->variants[v].name, p->name) == 0) {
+          p->kind = NT_PVAR;
+          p->name = aprintf(g_arena, "%s.%s", st->edef->name, p->name);
+          p->op = VAR_UNIT;
+          p->list = reflist();
+          return;
+        }
+    return;
+  }
+  if (p->kind != NT_PVAR)
+    return;
+  if (!st || st->kind != TY_ENUM)
+    return; // check_pattern reports the mismatch
+  EnumVariant *var = NULL;
+  if (!strchr(p->name, '.')) {
+    for (size_t v = 0; v < st->edef->nvariants; v++)
+      if (strcmp(st->edef->variants[v].name, p->name) == 0)
+        var = &st->edef->variants[v];
+    if (!var)
+      return; // not a variant of this enum: a check error later
+    p->name = aprintf(g_arena, "%s.%s", st->edef->name, p->name);
+  } else {
+    const char *last = strchr(p->name, '.') + 1;
+    for (size_t v = 0; v < st->edef->nvariants; v++)
+      if (strcmp(st->edef->variants[v].name, last) == 0)
+        var = &st->edef->variants[v];
+    if (!var)
+      return;
+  }
+  TBind tb = {edef_gnames(st->edef), st->args,
+              st->args ? st->edef->ngparams : 0};
+  for (size_t i = 0; i < reflist_len(p->list); i++) {
+    Node *sub = node_get(reflist_at(p->list, i));
+    if (p->op == VAR_STRUCT) {
+      for (size_t k = 0; k < var->nfields; k++)
+        if (strcmp(var->fields[k].name, sub->name) == 0) {
+          resolve_pattern(c, node_get(sub->a),
+                          tsubst(var->fields[k].ty, &tb));
+          break;
+        }
+    } else if (i < var->nfields) {
+      resolve_pattern(c, sub, tsubst(var->fields[i].ty, &tb));
+    }
+  }
+}
+
+// the names an or-pattern alternative binds (for the identical-binder
+// law)
+static void pattern_binders(Node *p, Vec *names) {
+  if (p->kind == NT_PBIND) {
+    *VPUSH(*names, const char *) = p->name;
+  } else if (p->kind == NT_PVAR) {
+    for (size_t i = 0; i < reflist_len(p->list); i++) {
+      Node *sub = node_get(reflist_at(p->list, i));
+      if (p->op == VAR_STRUCT)
+        pattern_binders(node_get(sub->a), names);
+      else
+        pattern_binders(sub, names);
+    }
+  }
+}
+
 static Type *check_match(FnCtx *c, NodeRef er, Type *expected) {
   Node *m = node_get(er);
   Type *st = check_expr(c, m->a, NULL);
   Type *arm_ty = NULL;
   bool saw_wild = false;
+
+  // resolution runs before anything else: covering and pattern
+  // checking both see the resolved forms
+  for (size_t i = 0; i < reflist_len(m->list); i++)
+    resolve_pattern(c, node_get(node_get(reflist_at(m->list, i))->a), st);
 
   if (st->kind == TY_ENUM) {
     // exhaustive unless _ present: cover every variant
@@ -1998,19 +2331,31 @@ static Type *check_match(FnCtx *c, NodeRef er, Type *expected) {
     for (size_t i = 0; i < reflist_len(m->list); i++) {
       Node *arm = node_get(reflist_at(m->list, i));
       Node *pat = node_get(arm->a);
-      if (pat->kind == NT_PWILD)
-        saw_wild = true;
-      if (pat->kind == NT_PVAR) {
+      if (arm->c != NO_REF)
+        continue; // a guarded arm never counts toward exhaustiveness
+      // one alternative of an or-pattern at a time: an arm covers the
+      // union of its alternatives' variants
+      size_t nalts = 1;
+      Node **alts = &pat;
+      Node *por_alts[16];
+      if (pat->kind == NT_POR) {
+        nalts = reflist_len(pat->list);
+        for (size_t k = 0; k < nalts && k < 16; k++)
+          por_alts[k] = node_get(reflist_at(pat->list, k));
+        alts = por_alts;
+      }
+      for (size_t a = 0; a < nalts; a++) {
+        Node *pa = alts[a];
+        if (pa->kind == NT_PWILD)
+          saw_wild = true;
+        if (pa->kind != NT_PVAR)
+          continue;
+        const char *dot = strchr(pa->name, '.');
+        if (!dot)
+          continue;
         for (size_t v = 0; v < st->edef->nvariants; v++)
-          if (strcmp(st->edef->variants[v].name, pat->name +
-                         (strchr(pat->name, '.')
-                              ? (size_t)(strchr(pat->name, '.') - pat->name + 1)
-                              : 0)) == 0) {
-            // prefix check: pat->name is "Enum.Variant"
-            const char *dot = strchr(pat->name, '.');
-            if (dot && strcmp(dot + 1, st->edef->variants[v].name) == 0)
-              covered[v] = true;
-          }
+          if (strcmp(dot + 1, st->edef->variants[v].name) == 0)
+            covered[v] = true;
       }
     }
     if (!saw_wild)
@@ -2030,6 +2375,14 @@ static Type *check_match(FnCtx *c, NodeRef er, Type *expected) {
     // pattern binders scope the arm value
     ctx_push_scope(c);
     check_pattern(c, pat, st);
+    if (arm->c != NO_REF) {
+      // §19 guard: evaluated after the pattern matches, in scope of
+      // its bindings; a guarded arm never counts toward exhaustiveness
+      Type *gt = check_expr(c, arm->c, ty_bool);
+      if (!type_eq(gt, ty_bool))
+        err_at(c, node_get(arm->c), "guard must be bool, got %s",
+               type_name(gt));
+    }
     Type *vt;
     if (node_get(arm->b)->kind == NT_EXPRSTMT && node_get(arm->b)->op == 3)
       vt = check_block_value(c, arm->b, expected);
@@ -2050,11 +2403,51 @@ static void check_pattern(FnCtx *c, Node *p, Type *st) {
   switch (p->kind) {
   case NT_PWILD:
     return;
+  case NT_POR: {
+    // the identical-binder law: every alternative must bind the same
+    // set of names (§19). Alternative 0 checks fully and registers;
+    // the rest re-check under or_relax, re-binding at the same type.
+    VEC(const char *, names0);
+    pattern_binders(node_get(reflist_at(p->list, 0)), &names0);
+    for (size_t i = 1; i < reflist_len(p->list); i++) {
+      Node *alt = node_get(reflist_at(p->list, i));
+      VEC(const char *, namesi);
+      pattern_binders(alt, &namesi);
+      if (VLEN(namesi) != VLEN(names0))
+        err_at(c, alt, "or-pattern alternatives bind different names");
+      for (size_t a = 0; a < VLEN(namesi); a++) {
+        bool found = false;
+        for (size_t b = 0; b < VLEN(names0); b++)
+          if (strcmp(*VAT(namesi, const char *, a),
+                     *VAT(names0, const char *, b)) == 0)
+            found = true;
+        if (!found)
+          err_at(c, alt,
+                 "or-pattern alternatives bind different names");
+      }
+    }
+    for (size_t i = 0; i < reflist_len(p->list); i++) {
+      Node *alt = node_get(reflist_at(p->list, i));
+      c->or_relax = i > 0;
+      check_pattern(c, alt, st);
+      c->or_relax = false;
+    }
+    return;
+  }
   case NT_PBIND: {
     // duplicate binder check within this pattern is by scope: same name
-    // twice in one scope = error
+    // twice in one scope = error — except a sibling or-pattern
+    // alternative re-binding the same name at the same type (§19)
     if (ctx_find_local(c, p->name) &&
         ctx_find_local(c, p->name)->scope == c->scope) {
+      if (c->or_relax) {
+        Local *ex = ctx_find_local(c, p->name);
+        if (!type_eq(st, ex->ty))
+          err_at(c, p, "or-pattern binds '%s' at different types",
+                 p->name);
+        p->sem = st;
+        return;
+      }
       err_at(c, p, "binder '%s' appears twice", p->name);
       return;
     }
@@ -2068,6 +2461,37 @@ static void check_pattern(FnCtx *c, Node *p, Type *st) {
   case NT_PLIT:
     return; // literal pattern (values checked against subject in emit)
   case NT_PVAR: {
+    // struct pattern (§7 struct_pat): the path names the struct; subs
+    // bind by field name against the struct's own field types
+    if (st->kind == TY_STRUCT) {
+      const char *sname = strrchr(p->name, '.');
+      sname = sname ? sname + 1 : p->name;
+      if (strcmp(sname, st->sdef->name) != 0) {
+        err_at(c, p, "pattern %s does not name struct %s", p->name,
+               st->sdef->name);
+        return;
+      }
+      TBind sb = {st->sdef->gparams, st->args,
+                  st->args ? st->sdef->ngparams : 0};
+      for (size_t i = 0; i < reflist_len(p->list); i++) {
+        Node *sub = node_get(reflist_at(p->list, i));
+        if (sub->kind != NT_FIELD) {
+          err_at(c, sub, "struct patterns bind by field name");
+          continue;
+        }
+        bool found = false;
+        for (size_t k = 0; k < st->sdef->nfields; k++)
+          if (strcmp(st->sdef->fields[k].name, sub->name) == 0) {
+            check_pattern(c, node_get(sub->a),
+                          tsubst(st->sdef->fields[k].ty, &sb));
+            found = true;
+          }
+        if (!found)
+          err_at(c, sub, "struct %s has no field '%s'", st->sdef->name,
+                 sub->name);
+      }
+      return;
+    }
     // Enum.Variant pattern: must be a variant of the subject enum
     if (st->kind != TY_ENUM) {
       err_at(c, p, "variant pattern on non-enum %s", type_name(st));
@@ -2094,6 +2518,13 @@ static void check_pattern(FnCtx *c, Node *p, Type *st) {
                st->edef->name, var->name, var->nfields);
         return;
       }
+      if (p->op == VAR_STRUCT && var->form != VAR_STRUCT) {
+        // braced named binding on a positional payload — the pattern
+        // grammar parses `V { x }` for any variant, so the mismatch
+        // surfaces here, not in the parser
+        err_at(c, p, "named patterns need a struct-form variant");
+        return;
+      }
       for (size_t i = 0; i < reflist_len(p->list); i++) {
         Node *sub = node_get(reflist_at(p->list, i));
         if (p->op == VAR_STRUCT) {
@@ -2108,8 +2539,6 @@ static void check_pattern(FnCtx *c, Node *p, Type *st) {
           if (!found)
             err_at(c, sub, "variant %s has no payload field '%s'",
                    var->name, sub->name);
-        } else if (sub->kind == NT_FIELD) {
-          err_at(c, sub, "tuple variants bind positionally");
         } else {
           check_pattern(c, sub,
                         var->nfields > i ? tsubst(var->fields[i].ty, &tb)
@@ -2171,38 +2600,112 @@ static void check_assign_target(FnCtx *c, Node *lv) {
   }
   case NT_FIELD_E: {
     Type *bt = check_expr(c, lv->a, NULL);
-    if (bt->kind == TY_PTR)
-      return; // the pointee is mutable through a pointer
-    if (bt->kind != TY_STRUCT) {
+    if (bt->kind != TY_STRUCT && bt->kind != TY_PTR) {
       err_at(c, lv, "cannot assign through %s", type_name(bt));
       return;
     }
+    // §18: the store lands through the root binding — field or
+    // pointee, the view must be mut (a pointer is a handle too)
     check_assign_target_base(c, lv->a);
     return;
   }
   case NT_INDEX:
     // element stores through a slice mutate the view, not the binding
+    // itself — but the view is governed by its root binding's mut
     check_expr(c, lv->a, NULL);
     check_expr(c, lv->b, ty_usize);
+    check_assign_target_base(c, lv->a);
     return;
   default:
     err_at(c, lv, "invalid assignment target");
   }
 }
 
-// mutability for a path of field/index: the base must be a mutable
-// binding or reached through a pointer (pointers grant mutability)
+// mutability for a path of field/index stores: walk to the root — a
+// mut binding or a dereference grants the store; a non-mut binding
+// refuses (§18: the view is shallow, never tracked transitively)
 static void check_assign_target_base(FnCtx *c, NodeRef base) {
   Node *b = node_get(base);
+  if (b->kind == NT_FIELD_E || b->kind == NT_INDEX) {
+    check_assign_target_base(c, b->a);
+    return;
+  }
+  if (b->kind == NT_UNARY && b->op == OP_DEREF)
+    return; // through a pointer deref the pointee is writable
   if (b->kind == NT_PATH) {
     Look lk;
     if (lookup(c, b->name, &lk) && lk.kind == LOOK_LOCAL && !lk.local->mut)
-      err_at(c, b, "'%s' is immutable", b->name);
+      err_at(c, b, "'%s' is immutable (declare with let mut)", b->name);
     return;
   }
-  // through a pointer the pointee is mutable; nothing more to check
-  if (b->kind == NT_UNARY && b->op == OP_DEREF)
-    return;
+  // method-call results and other temporaries: their own (implicit)
+  // binding governs, which is mut
+}
+
+// the mut-ness of the root binding an expression's view hangs from —
+// used for mut-method receivers and `mut` argument markers (§18).
+// True for temporaries and deref roots (their own binding governs)
+static bool root_binding_mut(FnCtx *c, NodeRef er) {
+  Node *e = node_get(er);
+  switch (e->kind) {
+  case NT_PATH: {
+    Look lk;
+    if (!lookup(c, e->name, &lk))
+      return true; // unknown names report elsewhere
+    if (lk.kind == LOOK_LOCAL)
+      return lk.local->mut;
+    return true; // statics are module-lifetime mutable; consts/type
+                 // names never reach here as views
+  }
+  case NT_FIELD_E:
+  case NT_INDEX:
+    return root_binding_mut(c, e->a);
+  case NT_UNARY:
+    if (e->op == OP_DEREF)
+      return true;
+    return root_binding_mut(c, e->a);
+  default:
+    return true; // temporaries: their own binding governs
+  }
+}
+
+// §18: pair call-site `mut` markers with the callee's mut-view
+// parameters in both directions; a marker also requires the
+// argument's own root binding to be mut. `first` is the param index
+// the list's first entry pairs with (1 for method calls, whose
+// receiver occupies param slot 0 but never the arg list). Views are
+// pointers and slices; mut on a value parameter is refused at
+// declaration.
+void pair_arg_markers(FnCtx *c, RefList *args, FnSig *sig, size_t first,
+                      const char *what) {
+  size_t nargv = reflist_len(args);
+  size_t nparams = sig->nparams;
+  bool variadic = nparams > 0 && sig->params[nparams - 1].variadic;
+  size_t nfixed = variadic ? nparams - 1 : nparams;
+  for (size_t j = 0; j < nargv; j++) {
+    size_t pi = j + first; // the param this argument pairs with
+    Node *aw = node_get(reflist_at(args, j));
+    if (aw->kind != NT_POSARG)
+      continue; // named args are constructor-only, rejected elsewhere
+    bool marked = aw->op == 2; // §18 marker (make type-arg rides 1)
+    bool pmut = pi < nfixed ? sig->params[pi].is_mut
+                            : variadic && sig->params[nfixed].is_mut;
+    if (marked && !pmut) {
+      err_at(c, aw, "argument %zu of %s may not be marked 'mut' "
+                    "(the parameter is not a mut view)",
+             j + 1, what);
+      continue;
+    }
+    if (!marked && pmut) {
+      err_at(c, aw, "argument %zu of %s must be marked 'mut' (the "
+                    "parameter is a mut view)",
+             j + 1, what);
+      continue;
+    }
+    if (marked && pmut && !root_binding_mut(c, aw->a))
+      err_at(c, aw, "the marked argument needs a mut root binding "
+                    "(declare the binding with let mut)");
+  }
 }
 
 static void check_stmt(FnCtx *c, NodeRef sr) {
@@ -2217,9 +2720,14 @@ static void check_stmt(FnCtx *c, NodeRef sr) {
                    "(inner shadowing needs a deeper scope)",
              s->name);
     }
-    // root build params may never be shadowed
-    if (g_entry_mod && symtab_get(g_entry_mod->syms, s->name)) {
-      err_at(c, s, "'%s' shadows a root build parameter", s->name);
+    // root build params may never be shadowed — inside the ENTRY
+    // module only, and only by an actual build parameter (a root
+    // const): any other module's local may freely reuse the name,
+    // and fns/structs are not build parameters at all
+    if (g_entry_mod && c->mod == g_entry_mod) {
+      Sym *rs = symtab_get(g_entry_mod->syms, s->name);
+      if (rs && rs->kind == SYM_CONST && rs->u.konst->is_root)
+        err_at(c, s, "'%s' shadows a root build parameter", s->name);
     }
     Type *ann = NULL;
     if (s->a != NO_REF)
@@ -2311,7 +2819,7 @@ static void check_stmt(FnCtx *c, NodeRef sr) {
   case NT_RETURN: {
     if (s->a == NO_REF) {
       if (c->ret && c->ret->kind != TY_UNIT)
-        err_at(c, s, "return needs a %s value", type_name(c->ret));
+        err_at(c, s, "return needs a value of type %s", type_name(c->ret));
       return;
     }
     Type *vt = check_expr(c, s->a, c->ret);
@@ -2401,11 +2909,24 @@ static void check_fn_body(Program *p, FnDef *f) {
   for (size_t i = 0; i < f->sig->nparams; i++) {
     Local *l = ctx_decl_local(&ctx, f->sig->params[i].name);
     l->ty = f->sig->params[i].ty ? f->sig->params[i].ty : ty_unit;
-    l->mut = false;
+    l->mut = f->sig->params[i].is_mut; // §18: declared mut is kept
     l->decl = f->sig->params[i].decl;
   }
   collect_labels(&ctx, f->body);
   check_block(&ctx, f->body);
+  // a trailing expression is the body's value (§5 blocks carry
+  // values — the fn body is one): its type must match the return
+  Node *b = node_get(f->body);
+  if (b->kind == NT_EXPRSTMT && b->op == 3 && reflist_len(b->list)) {
+    Node *last = node_get(reflist_at(b->list, reflist_len(b->list) - 1));
+    if (last->kind == NT_EXPRSTMT && last->bval && last->a != NO_REF) {
+      Type *tt = (Type *)node_get(last->a)->sem;
+      if (tt && !type_eq(tt, f->sig->ret))
+        err_at(&ctx, last, "the body's tail expression is %s, the fn "
+                           "returns %s",
+               type_name(tt), type_name(f->sig->ret));
+    }
+  }
 }
 
 bool check_bodies(Program *p) {
@@ -2422,11 +2943,15 @@ bool check_bodies(Program *p) {
       }
     }
   }
-  // the entry module must define main
-  Sym *main = p->entry->syms ? symtab_get(p->entry->syms, "main") : NULL;
-  if (!main || main->kind != SYM_FN) {
-    diag_at(DIAG_ERROR, p->entry->path, 0, 0,
-            "the entry module must define fn main");
+  // the entry module must define main — except when the test verb
+  // compiles a test-block file, whose per-test programs have no main
+  extern bool g_test_main_optional;
+  if (!g_test_main_optional) {
+    Sym *main = p->entry->syms ? symtab_get(p->entry->syms, "main") : NULL;
+    if (!main || main->kind != SYM_FN) {
+      diag_at(DIAG_ERROR, p->entry->path, 0, 0,
+              "the entry module must define fn main");
+    }
   }
   return !g_had_error;
 }
@@ -2581,6 +3106,7 @@ static FnDef *instantiate_generic_seeded(FnCtx *c, FnDef *f, Node *call,
     inst->sig->params[i].decl = f->sig->params[i].decl;
     inst->sig->params[i].ty = tsubst(f->sig->params[i].ty, &tb);
     inst->sig->params[i].variadic = f->sig->params[i].variadic;
+    inst->sig->params[i].is_mut = f->sig->params[i].is_mut;
   }
   inst->sig->ret = tsubst(f->sig->ret, &tb);
   inst->ibinds = binds;

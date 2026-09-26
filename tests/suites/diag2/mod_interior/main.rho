@@ -1,0 +1,9 @@
+// expect: is interior to package
+// spec: module-system.md §3-4
+// interior files of a package are package-private: import the
+// facade, never the interior file
+use pkg.inner;
+
+fn main() -> i32 {
+  return 0;
+}

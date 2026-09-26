@@ -1,0 +1,30 @@
+// out: plain=1 2 explicit=3 x
+// out: inline=9 4 nested=19 trailing=6 7
+// exit: 0
+// spec: syntax.md §6.2
+// `new T { f: e, ... }` constructs a heap value — explicit generics
+// are optional (`new Pair[i32, string] { … }`), fields may carry a
+// trailing comma, constructors nest inline, and `*new T { … }` copies
+// the value out without a separate binding.
+struct Pt {
+  x: i32,
+  y: i32,
+}
+struct Pair[A, B] {
+  a: A,
+  b: B,
+}
+struct Outer {
+  inner: *Pt,
+  k: i32,
+}
+fn main() -> i32 {
+  let a = new Pt { x: 1, y: 2 };
+  let b = new Pair[i32, string] { a: 3, b: "x" };
+  printf("plain={} {} explicit={} {}\n", a.x, a.y, b.a, b.b);
+  let c = *new Pt { x: 4, y: 5 };
+  let o = new Outer { inner: new Pt { x: 19, y: 0 }, k: 0 };
+  let d = new Pt { x: 6, y: 7, };
+  printf("inline={} {} nested={} trailing={} {}\n", c.x + c.y, c.x, o.inner.x, d.x, d.y);
+  return 0;
+}

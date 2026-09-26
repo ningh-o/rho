@@ -1,0 +1,30 @@
+// out: side:L
+// out: side:L2
+// out: yes
+// out: not=false true
+// out: side:and
+// out: side:then
+// out: ladder=and-then-or
+// exit: 0
+// spec: syntax.md §6.1
+// `&&` (level 0, tighter) and `||` short-circuit: the right operand
+// is not evaluated when the left decides, so side effects pin the
+// evaluation order. `!` is bool-not only — one operator, one meaning.
+static mut CALLS: i32 = 0;
+fn side(v: bool, tag: string) -> bool {
+  printf("side:{}\n", tag);
+  CALLS += 1;
+  return v;
+}
+fn main() -> i32 {
+  if side(false, "L") && side(true, "R-unreachable") {
+    printf("taken-false\n");
+  }
+  if side(true, "L2") || side(true, "R2-unreachable") {
+    printf("yes\n");
+  }
+  printf("not={} {}\n", !true, !false);
+  let both = side(true, "and") && side(true, "then") || side(true, "or-unreached");
+  printf("ladder=and-then-or\n");
+  return 0;
+}

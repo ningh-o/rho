@@ -1,0 +1,10 @@
+// expect: return type mismatch: fn returns i32, got string
+// spec: check — returns
+// the returned expression must adapt to the declared return type
+fn f() -> i32 {
+  return "s";
+}
+
+fn main() -> i32 {
+  return 0;
+}

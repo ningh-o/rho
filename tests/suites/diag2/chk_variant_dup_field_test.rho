@@ -1,0 +1,9 @@
+// expect: field 'x' set twice
+// spec: check — enums
+// a struct-form variant field may be named only once
+enum E { P { x: i32, y: i32 } }
+
+fn main() -> i32 {
+  let e = E.P(x: 1, x: 2);
+  return 0;
+}

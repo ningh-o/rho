@@ -1,0 +1,20 @@
+// out: q=(41,2) p=(41,2)
+// exit: 0
+// spec: TODO.md §18
+// The view is shallow and per-binding: a handle copied out of a
+// non-mut binding is governed by the NEW binding's `mut` — the
+// `let mut q = p;` rebind idiom, so the store through `q` is
+// accepted. The language never tracks read-only-ness transitively,
+// and the copy is a handle: both names read the same pointee after
+// the store.
+struct P {
+  x: i32,
+  y: i32,
+}
+fn main() -> i32 {
+  let p = new P { x: 1, y: 2 };
+  let mut q = p;
+  q.x = 41;
+  printf("q=({},{}) p=({},{})\n", q.x, q.y, p.x, p.y);
+  return 0;
+}

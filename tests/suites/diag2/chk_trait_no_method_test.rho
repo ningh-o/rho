@@ -1,0 +1,18 @@
+// expect: trait Show has no method 'nope'
+// spec: check — traits
+// a dyn receiver can only call methods the trait itself declares
+trait Show {
+  fn to_str(self) -> string,
+}
+
+struct S { x: i32 }
+
+impl Show for S {
+  fn to_str(self: *S) -> string { return "s"; }
+}
+
+fn main() -> i32 {
+  let d: dyn Show = new S { x: 1 };
+  let a = d.nope();
+  return 0;
+}

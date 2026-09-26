@@ -1,0 +1,5 @@
+// expect: type 'S' nests too deeply
+// spec: type-system.md §11 — a struct that contains itself by
+// value has no finite layout: refused, named
+struct S { s: S }
+fn main() -> i32 { return 0; }

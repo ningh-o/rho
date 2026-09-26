@@ -1,0 +1,23 @@
+// out: 1.0/0.0=inf -1.0/0.0=-inf
+// out: nan!=nan is true, nan==nan is false
+// out: nan==1.0=false nan!=inf=true
+// out: f32 1.5 exact=1.5 f32 0.1 no trap=0.100000001
+// exit: 0
+// spec: spec.md §4
+// Floats are IEEE-754: division by zero yields signed infinity (no
+// trap — only INTEGER /0 %0 panic), NaN compares unequal to itself,
+// equal to nothing, and unordered — and no float operation ever
+// traps. (Ordered comparisons < <= > >= are pinned separately: they
+// are broken today, see num_float_cmp_pending.)
+fn main() -> i32 {
+  let inf: f64 = (1.0 / 0.0);
+  let ninf: f64 = (-1.0 / 0.0);
+  printf("1.0/0.0={} -1.0/0.0={}\n", inf, ninf);
+  let nan: f64 = (0.0 / 0.0);
+  printf("nan!=nan is {}, nan==nan is {}\n", (nan != nan), (nan == nan));
+  printf("nan==1.0={} nan!=inf={}\n", (nan == 1.0), (nan != inf));
+  let f: f32 = 0.1;
+  let g: f32 = 1.5;
+  printf("f32 1.5 exact={} f32 0.1 no trap={}\n", g, f);
+  return 0;
+}

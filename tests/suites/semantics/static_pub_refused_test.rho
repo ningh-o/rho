@@ -1,0 +1,11 @@
+// expect: statics are module-private
+// spec: module-system.md §5
+// Statics are ALWAYS module private: global state never crosses
+// modules, so `pub static` does not exist and the declaration is
+// refused at check time.
+pub static mut bad: i32 = 0;
+fn main() -> i32 {
+  bad += 1;
+  printf("{}\n", bad);
+  return 0;
+}

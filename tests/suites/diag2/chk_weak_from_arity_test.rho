@@ -1,0 +1,7 @@
+// expect: weak.from takes exactly one pointer
+// spec: check — weak pointers
+// weak.from is unary
+fn main() -> i32 {
+  let w = weak.from();
+  return 0;
+}

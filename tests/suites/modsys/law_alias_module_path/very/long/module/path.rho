@@ -1,0 +1,6 @@
+pub fn deep() -> i32 {
+  return 21;
+}
+pub fn deeper() -> i32 {
+  return 22;
+}

@@ -1,0 +1,7 @@
+// expect: 'null' does not exist
+// spec: syntax.md — pointers
+// pointers are non-null by law: absence is written ?T, never 'null'
+fn main() -> i32 {
+  let p = null;
+  return 0;
+}

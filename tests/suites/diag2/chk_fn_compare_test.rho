@@ -1,0 +1,9 @@
+// expect: fn values never compare
+// spec: check — operators
+// the == comparability law: fn values have no equality
+fn main() -> i32 {
+  let f = fn(a: i32) -> i32 { return a; };
+  let g = fn(a: i32) -> i32 { return a; };
+  let b = f == g;
+  return 0;
+}

@@ -1,0 +1,24 @@
+// out: alen=39
+// out: blen=18 b=[no leading newline]
+// out: clen=26
+// out: a_first_byte=10
+// exit: 0
+// spec: syntax.md §2.5
+// Triple-quoted strings are fully verbatim: the newline immediately
+// after the opening """ is included, escapes do not decode (the \n in
+// `c` is two literal bytes), "" inside is literal text, and content may
+// run right up to the closing """ mid-line.
+fn main() -> i32 {
+  let a = """
+line one
+line "two" with "" double
+end""";
+  printf("alen={}\n", len(a));
+  let b = """no leading newline""";
+  printf("blen={} b=[{}]\n", len(b), b);
+  let c = """
+tab	inside \n not escaped""";
+  printf("clen={}\n", len(c));
+  printf("a_first_byte={}\n", a[0]);
+  return 0;
+}

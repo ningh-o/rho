@@ -1,0 +1,5 @@
+// expect: expected a declaration
+// spec: syntax.md §2 — there are no block comments: `/*` is
+// garbage at top level, refused
+/* hi */
+fn main() -> i32 { return 0; }

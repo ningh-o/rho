@@ -1,0 +1,8 @@
+// expect: assignment type mismatch: i32 vs string
+// spec: check — assignment
+// a plain store must keep the binding's declared type
+fn main() -> i32 {
+  let mut x: i32 = 1;
+  x = "s";
+  return 0;
+}

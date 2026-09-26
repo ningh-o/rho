@@ -1,0 +1,9 @@
+// expect: type 'E' nests too deeply while checking layout
+// spec: module-system.md §5 — layout law
+// an enum whose variant payload holds itself by value has no finite
+// layout
+enum E { A(E) }
+
+fn main() -> i32 {
+  return 0;
+}

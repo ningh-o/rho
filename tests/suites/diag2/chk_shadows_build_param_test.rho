@@ -1,0 +1,10 @@
+// expect: 'zz' shadows a root build parameter
+// spec: check — bindings
+// a const in the entry module is a root build parameter: no let may
+// shadow it inside a body
+const zz: i32 = 3;
+
+fn main() -> i32 {
+  let zz = 1;
+  return zz;
+}

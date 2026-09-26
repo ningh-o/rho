@@ -1,0 +1,18 @@
+// out: add-mul=16 paren=40 sub=22 div=4 mod-mul=9
+// out: shift-add=32 shift-right=2 paren-shift=10 shift-eq=true
+// out: rel-eq=true and-or=true
+// out: not-eq=true neg-mul=-12 bits=10
+// exit: 0
+// spec: syntax.md §6.1
+// The C-style precedence ladder, pinned behaviorally — each value
+// would differ under any reassociation: * / % over + - over << >>
+// over < <= > >= over == != over & over ^ over |, with && binding
+// tighter than ||; unary and postfix bind tightest; `as` sits above
+// the multiplicative level; every binary level is left-associative.
+fn main() -> i32 {
+  printf("add-mul={} paren={} sub={} div={} mod-mul={}\n", (6 + 2 * 5), ((2 + 6) * 5), (30 - 6 - 2), (48 / 6 / 2), (11 % 4 * 3));
+  printf("shift-add={} shift-right={} paren-shift={} shift-eq={}\n", (1 << 3 + 2), (8 >> 1 + 1), ((1 << 3) + 2), (1 << 2 == 4));
+  printf("rel-eq={} and-or={}\n", (1 < 2 == 4 > 3), (true || false && false));
+  printf("not-eq={} neg-mul={} bits={}\n", (!true == false), (-4 * 3), (12 & 10 | 9 ^ 3));
+  return 0;
+}

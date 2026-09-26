@@ -1,0 +1,25 @@
+// out: distinct allocs: eq=false ne=true
+// out: alias: eq=true
+// out: mutated through alias, still identity: eq=true
+// out: boxed copies re-boxed: eq=false
+// exit: 0
+// spec: type-system.md §10
+// `*T` compares by IDENTITY (same object): two `new` allocations with
+// equal content are !=, an alias of the same allocation is ==, the
+// alias keeps comparing == after the shared content is mutated, and a
+// value copy re-boxed through `new` is a fresh allocation (!=).
+struct Node {
+  v: i32,
+}
+fn main() -> i32 {
+  let a: *Node = new Node { v: 1 };
+  let b: *Node = new Node { v: 1 };
+  printf("distinct allocs: eq={} ne={}\n", (a == b), (a != b));
+  let mut alias: *Node = a;
+  printf("alias: eq={}\n", (a == alias));
+  alias.v = 7;
+  printf("mutated through alias, still identity: eq={}\n", (a == alias));
+  let c: *Node = new Node { v: a.v };
+  printf("boxed copies re-boxed: eq={}\n", (c == a));
+  return 0;
+}

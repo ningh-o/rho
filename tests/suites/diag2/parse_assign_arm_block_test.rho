@@ -1,0 +1,11 @@
+// expect: an assignment arm body needs a block
+// spec: syntax.md — match
+// an assignment arm stores through its pattern; the store must live
+// in a block so the arm reads as a statement, not a value
+fn main() -> i32 {
+  let mut x = 0;
+  match 1 {
+    1 => x = 2,
+  }
+  return 0;
+}

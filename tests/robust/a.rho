@@ -1,0 +1,3 @@
+use b.bstep;
+pub fn astep() -> i32 { return 1 + bstep(); }
+fn main() -> i32 { printf("cycle={}\n", astep()); return 0; }

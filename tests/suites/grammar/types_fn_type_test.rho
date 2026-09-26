@@ -1,0 +1,33 @@
+// out: value=11 var=9
+// out: returned=8
+// out: void
+// out: no_return_fn=ok
+// exit: 0
+// spec: syntax.md §3, §6.8
+// Non-variadic functions and closures are first-class values of `fn`
+// type: parameters, locals, and return positions all carry them, the
+// return arrow is optional in the type, and a call through a bound
+// local dispatches to the value.
+fn add(a: i32, b: i32) -> i32 {
+  return a + b;
+}
+fn twice(x: i32) -> i32 {
+  return x * 2;
+}
+fn provide() -> fn(i32) -> i32 {
+  return twice;
+}
+fn take0(g: fn()) {
+  g();
+  return;
+}
+fn main() -> i32 {
+  let op: fn(i32, i32) -> i32 = add;
+  let f: fn(i32) -> i32 = fn(x: i32) -> i32 { return x + 5; };
+  printf("value={} var={}\n", op(2, 3) + twice(3), f(4));
+  let made = provide();
+  printf("returned={}\n", made(4));
+  take0(fn() { printf("void\n"); });
+  printf("no_return_fn=ok\n");
+  return 0;
+}

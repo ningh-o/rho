@@ -1,0 +1,11 @@
+// expect: 's' is immutable (declare with let mut)
+// spec: TODO.md §18
+// a store through a binding declared without 'mut' is refused: the
+// root is read-only
+struct S { x: i32 }
+
+fn main() -> i32 {
+  let s = new S { x: 1 };
+  s.x = 2;
+  return 0;
+}

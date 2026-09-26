@@ -1,0 +1,12 @@
+// expect: type mismatch
+// spec: type-system.md §13
+// There is no mixed-width arithmetic: both sides of a binary
+// arithmetic/bitwise/shift/comparison operator must be the SAME type,
+// and widening is explicit via `as`. i32 + i64 is refused at check
+// time, never implicitly widened.
+fn main() -> i32 {
+  let a: i32 = 1;
+  let b: i64 = 2;
+  printf("r={}\n", (a + b));
+  return 0;
+}

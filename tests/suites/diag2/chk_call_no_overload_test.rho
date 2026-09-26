@@ -1,0 +1,10 @@
+// expect: no overload of f matches the arguments
+// spec: check — calls
+// a call whose argument shapes match no overload of the callee is
+// refused; wrong arity lands here
+fn f(a: i32) -> i32 { return a; }
+
+fn main() -> i32 {
+  let x = f(1, 2);
+  return 0;
+}

@@ -1,0 +1,10 @@
+// expect: expected a type, found '('
+// spec: syntax.md §3
+// The type grammar has no parenthesized production — `type := builtin
+// | ptr | opt | slice | fn_type | app | dyn` — so `(i32)` as a type
+// annotation is refused (unlike the EXPRESSION `(e)`, which is
+// parenthesized).
+fn main() -> i32 {
+  let x: (i32) = 3;
+  return 0;
+}

@@ -19,6 +19,10 @@ void init_builtin_types(void);
 
 static Type *new_type(TyKind k) {
   Type *t = arena_alloc(g_arena, sizeof(Type), 8);
+  // zero the whole struct: the type walks (ty_has_param and friends)
+  // branch on base/args unconditionally, and recycled malloc pages
+  // hand back garbage that used to be walked as pointers
+  memset(t, 0, sizeof(Type));
   t->kind = k;
   return t;
 }
@@ -448,6 +452,124 @@ static Module *resolve_use(Program *p, Module *importer, NodeRef use_r,
   return NULL;
 }
 
+// the last component of a directory path (a package's given name)
+static const char *path_stem(const char *dir) {
+  const char *s = strrchr(dir, '/');
+  return s ? s + 1 : dir;
+}
+
+// same directory: the importer is a sibling (inside the package)
+static bool importer_inside(Module *importer, Module *found) {
+  return strcmp(dir_of(g_arena, importer->path),
+                dir_of(g_arena, found->path)) == 0;
+}
+
+// the import-collision law (§2): one name, one binding — against the
+// module's own declarations and against earlier import bindings; the
+// error names the colliding name at the import's site
+static bool use_collides(Module *m, Node *u, const char *alias) {
+  Sym *there = m->syms ? symtab_get(m->syms, alias) : NULL;
+  if (there && there->imported) {
+    diag_at(DIAG_ERROR, m->path, u->line, u->col,
+            "two import bindings of '%s'", alias);
+    return true;
+  }
+  if (there) {
+    diag_at(DIAG_ERROR, m->path, u->line, u->col,
+            "the import '%s' collides with an existing name in this "
+            "module",
+            alias);
+    return true;
+  }
+  for (size_t k = 0; k < VLEN(m->uses); k++) {
+    UseBind *ub = VAT(m->uses, UseBind, k);
+    if (strcmp(ub->alias, alias) == 0) {
+      Node *u0 = ub->decl ? node_get(ub->decl) : NULL;
+      if (u0)
+        diag_at(DIAG_ERROR, m->path, u->line, u->col,
+                "two import bindings of '%s' (the other at line %zu)",
+                alias, u0->line);
+      else
+        diag_at(DIAG_ERROR, m->path, u->line, u->col,
+                "two import bindings of '%s'", alias);
+      return true;
+    }
+  }
+  return false;
+}
+
+// reasons a module probe can end with
+enum { PR_FOUND = 0, PR_UNKNOWN, PR_AMBIG, PR_REFUSED, PR_STD };
+
+// the two-base module probe behind resolve_use, callable quietly: the
+// caller owns every message. When loud is set the shape errors (std,
+// facade ambiguity, package interior) are diagnosed here — exactly
+// once per use, by whichever pass probes the path first.
+static int probe_module_path(Program *p, Module *importer, Node *u,
+                             RefList *segs, size_t nsegs, bool loud,
+                             Module **out) {
+  *out = NULL;
+  const char *first = node_get(reflist_at(segs, 0))->name;
+  if (strcmp(first, "std") == 0) {
+    if (loud)
+      diag_at(DIAG_ERROR, importer->path, u->line, u->col,
+              "'std' is reserved; std packages arrive with the std "
+              "library (Phase 4)");
+    return PR_STD;
+  }
+  const char *bases[2];
+  bases[0] = dir_of(g_arena, importer->path);
+  bases[1] = dir_of(g_arena, p->entry->path);
+  for (int b = 0; b < 2; b++) {
+    char *path = NULL;
+    int r = resolve_under_base(g_arena, bases[b], segs, nsegs, &path);
+    if (r == 0)
+      continue;
+    if (r == 3) {
+      if (loud)
+        diag_at(DIAG_ERROR, importer->path, u->line, u->col,
+                "ambiguous module: both %s and a sibling file module "
+                "provide '%s' (exactly one real body)",
+                path, first);
+      return PR_AMBIG;
+    }
+    Module *found = program_find(p, path);
+    if (!found) {
+      found = module_load(g_arena, path);
+      found->is_package = (r == 2);
+      program_add(p, found, importer);
+    }
+    // the package interior is closed from outside (§4): a file inside
+    // a package directory is importable only by the facade and its
+    // siblings; the facade itself (r == 2) crosses freely
+    if (!found->is_package && !importer_inside(importer, found)) {
+      char *dp = dir_of(g_arena, found->path);
+      char *facade = aprintf(g_arena, "%s/lib.rho", dp);
+      if (file_exists(facade)) {
+        if (loud)
+          diag_at(DIAG_ERROR, importer->path, u->line, u->col,
+                  "'%s' is interior to package '%s': import the "
+                  "facade (use %s;) and reach it qualified",
+                  found->path, path_stem(dp), path_stem(dp));
+        return PR_REFUSED;
+      }
+    }
+    *out = found;
+    return PR_FOUND;
+  }
+  return PR_UNKNOWN;
+}
+
+// a dotted seg-list for diagnostics ("lex.token")
+static char *segs_text(Arena *a, RefList *segs, size_t n) {
+  char *s = NULL;
+  for (size_t i = 0; i < n; i++) {
+    const char *seg = node_get(reflist_at(segs, i))->name;
+    s = s ? aprintf(a, "%s.%s", s, seg) : aprintf(a, "%s", seg);
+  }
+  return s ? s : (char *)"";
+}
+
 // load-time module preparation: collect symbols, resolve consts, fold
 // dead branches — so a use inside a comptime-dead branch never loads.
 // The unpruned variant stops before the fold (the load BFS applies
@@ -460,6 +582,8 @@ static Program *g_program_for_load;
 static bool load_one_use(Module *m, NodeRef d) {
   Node *n = node_get(d);
   int form = n->op & 7;
+  if (form == USE_BRACE)
+    return true; // §4.4 sugar — the item pass expands it after the BFS
   const char *alias =
       n->name2 ? n->name2
                : node_get(reflist_at(n->list, reflist_len(n->list) - 1))
@@ -494,9 +618,29 @@ static bool load_one_use(Module *m, NodeRef d) {
       }
     }
   }
-  Module *t = resolve_use(g_program_for_load, m, d, reflist_len(n->list));
+  size_t nsegs = reflist_len(n->list);
+  if (form == USE_PLAIN && nsegs >= 2) {
+    // module first (§2): a quiet probe — when no module matches, the
+    // item pass owns the final segment after the BFS. Shape errors
+    // (std, facade ambiguity, package interior) report right here.
+    Module *t = NULL;
+    probe_module_path(g_program_for_load, m, n, n->list, nsegs, true,
+                      &t);
+    if (!t)
+      return true; // an item candidate — or already reported
+    if (use_collides(m, n, alias))
+      return true;
+    UseBind *ub = vec_push(&m->uses);
+    ub->alias = alias;
+    ub->target = t;
+    ub->decl = d;
+    return true;
+  }
+  Module *t = resolve_use(g_program_for_load, m, d, nsegs);
   if (!t)
     return true; // reported; keep walking for more diagnostics
+  if (use_collides(m, n, alias))
+    return true;
   UseBind *ub = vec_push(&m->uses);
   ub->alias = alias;
   ub->target = t;
@@ -566,6 +710,14 @@ static void expand_pub_uses(Program *p) {
             if (strcmp(ub->alias, mod0) == 0)
               owner = ub->target;
           }
+          if (!owner) {
+            // a bare item re-export (no `use inner;` beside it): the
+            // prefix was loaded at load_one_use — find it quietly
+            Module *t2 = NULL;
+            probe_module_path(p, m, u, u->list,
+                              reflist_len(u->list) - 1, false, &t2);
+            owner = t2;
+          }
         } else
           owner = tgt; // one seg: item of the same path
         if (owner && owner->syms)
@@ -586,16 +738,189 @@ static void expand_pub_uses(Program *p) {
   }
 }
 
+// ==================================================== item imports
+
+// bind one imported item under `alias` in the importer's symbol table
+// (a copy sharing the owner's def); the collision law names both
+static void bind_imported_item(Module *m, Node *u, Module *owner,
+                               const char *item, const char *alias) {
+  Sym *s = owner->syms ? symtab_get(owner->syms, item) : NULL;
+  if (!s) {
+    diag_at(DIAG_ERROR, m->path, u->line, u->col,
+            "no item '%s' in %s", item, owner->path);
+    return;
+  }
+  if (!s->pub) {
+    diag_at(DIAG_ERROR, m->path, u->line, u->col,
+            "item '%s' of %s is not public", item, owner->path);
+    return;
+  }
+  if (use_collides(m, u, alias))
+    return;
+  Sym *c = symtab_add(m->syms, alias);
+  c->kind = s->kind;
+  c->pub = false;
+  c->imported = true;
+  c->u = s->u;
+}
+
+// a module loaded after the BFS (a brace prefix, a facade probed for
+// the ambiguity check) gets the turn the load loop would have given it
+static void late_load_turn(Program *p, Module *m) {
+  module_prepare_unpruned(p, m);
+  prune_dead_uses(m);
+  for_each_live_use(m, load_one_use);
+}
+
+// the final segment of one plain use (or one brace item): module
+// first, then a public item of the module the prefix names (§2)
+static void resolve_use_final(Program *p, Module *m, NodeRef use_r,
+                              RefList *segs, const char *alias,
+                              bool bfs_probed) {
+  Node *u = node_get(use_r);
+  size_t nsegs = reflist_len(segs);
+  const char *item = node_get(reflist_at(segs, nsegs - 1))->name;
+
+  // the module the full path names: the BFS binding for a plain use
+  // (its probe already reported every shape error for this path), or
+  // a loud probe for a brace item
+  Module *mod = NULL;
+  if (bfs_probed) {
+    for (size_t k = 0; k < VLEN(m->uses); k++)
+      if (VAT(m->uses, UseBind, k)->decl == use_r) {
+        mod = VAT(m->uses, UseBind, k)->target;
+        break;
+      }
+    if (!mod) {
+      // the BFS probe said no quietly OR reported a shape error;
+      // re-probe quietly to tell the two apart
+      Module *t = NULL;
+      int pr = probe_module_path(p, m, u, segs, nsegs, false, &t);
+      if (pr != PR_UNKNOWN)
+        return; // std / ambiguity / interior — reported at the BFS
+    }
+  } else {
+    Module *t = NULL;
+    int pr = probe_module_path(p, m, u, segs, nsegs, true, &t);
+    if (pr == PR_FOUND) {
+      mod = t;
+      if (!mod->prepared)
+        late_load_turn(p, mod);
+    } else if (pr != PR_UNKNOWN) {
+      return; // reported right here
+    }
+  }
+
+  // the module the prefix names — a binding this module already holds
+  // wins, then the filesystem (loud: shape errors surface here once)
+  Module *owner = NULL;
+  if (nsegs >= 2) {
+    size_t npfx = nsegs - 1;
+    if (npfx == 1) {
+      const char *p0 = node_get(reflist_at(segs, 0))->name;
+      for (size_t k = 0; k < VLEN(m->uses); k++)
+        if (strcmp(VAT(m->uses, UseBind, k)->alias, p0) == 0) {
+          owner = VAT(m->uses, UseBind, k)->target;
+          break;
+        }
+    }
+    if (!owner) {
+      Module *t = NULL;
+      int pr = probe_module_path(p, m, u, segs, npfx, true, &t);
+      if (pr == PR_FOUND) {
+        owner = t;
+        if (!owner->prepared)
+          late_load_turn(p, owner);
+      } else if (pr != PR_UNKNOWN) {
+        return; // reported right here
+      }
+    }
+  }
+
+  Sym *is = owner && owner->syms ? symtab_get(owner->syms, item) : NULL;
+  bool item_pub = is && is->pub;
+
+  // both bases match: the across-kinds ambiguity (§2/§3)
+  if (mod && item_pub) {
+    char *full = segs_text(g_arena, segs, nsegs);
+    diag_at(DIAG_ERROR, m->path, u->line, u->col,
+            "ambiguous use of '%s': both the module %s and the public "
+            "item '%s' of %s match",
+            full, mod->path, item, owner->path);
+    return;
+  }
+  if (mod)
+    return; // the module binding stands (made at the BFS)
+  if (owner && owner->is_package && !importer_inside(m, owner)) {
+    const char *dp = dir_of(g_arena, owner->path);
+    diag_at(DIAG_ERROR, m->path, u->line, u->col,
+            "items of package '%s' are reachable only through its "
+            "facade: use %s; then qualify",
+            path_stem(dp), path_stem(dp));
+    return;
+  }
+  if (owner) {
+    bind_imported_item(m, u, owner, item, alias);
+    return;
+  }
+  diag_at(DIAG_ERROR, m->path, u->line, u->col,
+          "unknown module or item '%s'", segs_text(g_arena, segs, nsegs));
+}
+
+// the item half of the module law (§2): plain uses whose final
+// segment names a public item, and the brace form's expansion — run
+// after the BFS so every possible owner is loaded and prepared
+static void bind_item_imports(Program *p) {
+  for (Module *m = p->modules; m; m = m->next) {
+    if (!m->decls)
+      continue;
+    for (size_t i = 0; i < reflist_len(m->decls); i++) {
+      NodeRef dr = reflist_at(m->decls, i);
+      Node *u = node_get(dr);
+      if (u->kind != NT_USE || (u->op & USE_DEAD))
+        continue;
+      int form = u->op & 7;
+      if (form == USE_PLAIN) {
+        size_t nsegs = reflist_len(u->list);
+        if (nsegs < 2)
+          continue;
+        const char *item =
+            node_get(reflist_at(u->list, nsegs - 1))->name;
+        resolve_use_final(p, m, dr, u->list,
+                          u->name2 ? u->name2 : item, true);
+      } else if (form == USE_BRACE) {
+        if (!u->d)
+          continue;
+        Node *items = node_get(u->d);
+        size_t nsegs = reflist_len(u->list);
+        for (size_t j = 0; j < reflist_len(items->list); j++) {
+          NodeRef it = reflist_at(items->list, j);
+          Node *in = node_get(it);
+          RefList *full = reflist();
+          for (size_t si = 0; si < nsegs; si++)
+            reflist_add(full, reflist_at(u->list, si));
+          reflist_add(full, it);
+          resolve_use_final(p, m, dr, full,
+                            in->name2 ? in->name2 : in->name, false);
+        }
+      }
+    }
+  }
+}
+
 bool program_load_graph(Program *p, const char *entry_path) {
   g_program_for_load = p;
   // the prelude exists before ANY collection (load-time preparation
-  // resolves ?T through it)
+  // resolves ?T through it). It is a process-global singleton, but
+  // EVERY program carries it in its module list — a verb run compiles
+  // many programs in one process, and a program whose module list
+  // lacks the prelude cannot resolve Show/Option/Result at all.
   if (!g_prelude_mod) {
     extern const char *prelude_src(void);
     g_prelude_mod = module_parse_src("<prelude>", prelude_src());
-    program_add(p, g_prelude_mod, NULL);
     module_prepare(p, g_prelude_mod);
   }
+  program_add(p, g_prelude_mod, NULL);
   p->entry = module_load(g_arena, entry_path);
   program_add(p, p->entry, NULL);
   // the entry is the fold root from load time on: body folds during
@@ -626,6 +951,13 @@ bool program_load_graph(Program *p, const char *entry_path) {
   }
   // facades re-export now — every target is loaded and prepared
   expand_pub_uses(p);
+  // item imports bind last — every possible owner is prepared, so the
+  // module-first-then-item law can see both candidates (§2)
+  bind_item_imports(p);
+  // cross-module consts converge now — uses are bound and every owner
+  // prepared, so b.K / item-import / facade initializers fold; what
+  // still refuses breaks the comptime law and errors here (§2/§6)
+  consts_converge(p);
   // deferred field types resolve against the complete graph
   for (size_t i = 0; i < VLEN(g_deferred_tys); i++) {
     DeferredTy *dt = VAT(g_deferred_tys, DeferredTy, i);
@@ -667,6 +999,20 @@ static bool gscope_has_all(GScope *g, const char **names, size_t n) {
 // ============================================================ resolve types
 
 static Type *resolve_type(Module *m, NodeRef tr, GScope *g);
+
+static const char *sym_kind_word(SymKind k) {
+  switch (k) {
+  case SYM_FN: return "function";
+  case SYM_STRUCT: return "struct";
+  case SYM_ENUM: return "enum";
+  case SYM_TRAIT: return "trait";
+  case SYM_CONST: return "const";
+  case SYM_STATIC: return "static";
+  case SYM_EXTERN: return "extern";
+  case SYM_MODULE: return "module";
+  }
+  return "value";
+}
 
 static Type *resolve_named(Program *p, Module *m, const char *name,
                            Type **args, size_t nargs, NodeRef tr, GScope *g) {
@@ -729,7 +1075,7 @@ static Type *resolve_named(Program *p, Module *m, const char *name,
     return type_enum(ed, args, nargs);
   }
   diag_at(DIAG_ERROR, m->path, t->line, t->col,
-          "'%s' is not a type (has kind %d)", name, (int)sym->kind);
+          "'%s' is not a type (it names a %s)", name, sym_kind_word(sym->kind));
   return ty_i32;
 }
 
@@ -817,7 +1163,10 @@ static Type *resolve_type(Module *m, NodeRef tr, GScope *g) {
   default:
     break;
   }
-  diag_at(DIAG_ERROR, m->path, t->line, t->col, "invalid type syntax");
+  // unreachable in practice: parse_type emits only the kinds handled
+  // above, and its depth hole arrives with the diag gate already set
+  // (one-error mode) — a silent fallback keeps hostile input on the
+  // clean-refusal path without a diagnostic nothing can ever print
   return ty_i32;
 }
 
@@ -990,6 +1339,7 @@ static void collect_module(Program *p, Module *m) {
           Node *pp = node_get(reflist_at(fn->list, k));
           sig->params[k].name = pp->name;
           sig->params[k].decl = reflist_at(fn->list, k);
+          sig->params[k].is_mut = pp->bval; // `mut self` in the trait sig
           if (pp->op == 1) {
             // bare self: the implementing method supplies the receiver
             sig->params[k].ty = NULL;
@@ -1006,6 +1356,56 @@ static void collect_module(Program *p, Module *m) {
 
 // pass 3: consts, statics, externs, fn signatures
 static void collect_one_fn(Program *p, Module *m, NodeRef dr);
+static void collect_one_test(Program *p, Module *m, NodeRef dr);
+
+// the bare receiver's type, derived from the method's home: *T for a
+// struct/enum target (the type's own generic parameters ride as
+// TY_PARAMs), the value itself for a builtin primitive; NULL when the
+// receiver names no type in scope (existing NULL-typed behavior)
+static Type *bare_self_type(Program *p, Module *m, const char *recv) {
+  extern Type *ty_i8, *ty_i16, *ty_i32, *ty_i64, *ty_u8, *ty_u16,
+      *ty_u32, *ty_u64, *ty_usize, *ty_f32, *ty_f64, *ty_bool,
+      *ty_string;
+  if (!strcmp(recv, "i8")) return ty_i8;
+  if (!strcmp(recv, "i16")) return ty_i16;
+  if (!strcmp(recv, "i32")) return ty_i32;
+  if (!strcmp(recv, "i64")) return ty_i64;
+  if (!strcmp(recv, "u8")) return ty_u8;
+  if (!strcmp(recv, "u16")) return ty_u16;
+  if (!strcmp(recv, "u32")) return ty_u32;
+  if (!strcmp(recv, "u64")) return ty_u64;
+  if (!strcmp(recv, "usize")) return ty_usize;
+  if (!strcmp(recv, "f32")) return ty_f32;
+  if (!strcmp(recv, "f64")) return ty_f64;
+  if (!strcmp(recv, "bool")) return ty_bool;
+  if (!strcmp(recv, "string")) return ty_string;
+  for (Module *tm = p->modules; tm; tm = tm->next) {
+    Sym *ts = tm->syms ? symtab_get(tm->syms, recv) : NULL;
+    if (!ts || !(tm == m || ts->pub))
+      continue;
+    if (ts->kind == SYM_STRUCT) {
+      StructDef *sd = ts->u.sdef;
+      Type **args = NULL;
+      if (sd->ngparams) {
+        args = arena_alloc(g_arena, sd->ngparams * sizeof(Type *), 8);
+        for (size_t i = 0; i < sd->ngparams; i++)
+          args[i] = type_param(sd->gparams[i]);
+      }
+      return type_ptr(type_struct(sd, args, sd->ngparams));
+    }
+    if (ts->kind == SYM_ENUM) {
+      EnumDef *ed = ts->u.edef;
+      Type **args = NULL;
+      if (ed->ngparams) {
+        args = arena_alloc(g_arena, ed->ngparams * sizeof(Type *), 8);
+        for (size_t i = 0; i < ed->ngparams; i++)
+          args[i] = type_param(ed->gparams[i]);
+      }
+      return type_ptr(type_enum(ed, args, ed->ngparams));
+    }
+  }
+  return NULL;
+}
 
 static void collect_fns(Program *p, Module *m) {
   (void)p;
@@ -1028,11 +1428,44 @@ static void collect_fns(Program *p, Module *m) {
       }
       continue;
     }
+    if (d->kind == NT_TEST) {
+      collect_one_test(p, m, dr);
+      continue;
+    }
     if (d->kind != NT_CONST && d->kind != NT_STATIC && d->kind != NT_EXTERN &&
         d->kind != NT_FN)
       continue;
     collect_one_fn(p, m, dr);
   }
+}
+
+// a test block is a synthesized void fn in its own module (§17): it
+// sees everything the module sees (white-box) and is judged by panic
+// versus clean return. The symbol name carries the 'test:' prefix so
+// no user identifier can ever reach it.
+static void collect_one_test(Program *p, Module *m, NodeRef dr) {
+  (void)p;
+  Node *d = node_get(dr);
+  const char *sym = aprintf(g_arena, "test:%s", d->name);
+  if (symtab_get(m->syms, sym)) {
+    diag_at(DIAG_ERROR, m->path, d->line, d->col, "duplicate test '%s'",
+            d->name);
+    return;
+  }
+  Sym *s = symtab_add(m->syms, sym);
+  s->kind = SYM_FN;
+  s->pub = false;
+  FnDef *fd = arena_alloc(g_arena, sizeof(FnDef), 8);
+  memset(fd, 0, sizeof(FnDef));
+  fd->name = sym;
+  fd->mod = m;
+  fd->decl = dr;
+  fd->body = d->d;
+  fd->sig = arena_alloc(g_arena, sizeof(FnSig), 8);
+  fd->sig->params = NULL;
+  fd->sig->nparams = 0;
+  fd->sig->ret = ty_unit;
+  s->u.fns = fd;
 }
 
 static void collect_one_fn(Program *p, Module *m, NodeRef dr) {
@@ -1074,6 +1507,7 @@ static void collect_one_fn(Program *p, Module *m, NodeRef dr) {
     memset(cd, 0, sizeof(ConstDef));
     cd->name = d->name;
     cd->init = d->b;
+    cd->decl = dr;
     cd->mod = m;
     s->u.konst = cd;
     cd->ty = resolve_type(m, d->a, NULL);
@@ -1155,6 +1589,87 @@ static void module_prepare_unpruned(Program *p, Module *m) {
   m->prepared = true;
 }
 
+// §5 layout law: a by-value cycle (struct S { s: S }, its A↔B mutual
+// form) has no finite layout — reject at check, at the def. The walk
+// follows resolved field types through value edges; an instance's own
+// generics substitute into its fields and bare generic parameters are
+// leaves. Depth cap plus visit budget bound what the walk can spend;
+// a cycle hidden behind a generic instantiation still surfaces later
+// at layout (emit's own guard).
+#define SHAPE_WALK_CAP 1000
+#define SHAPE_WALK_BUDGET 2000000
+static size_t g_shape_visits;
+
+// layout-compatible with check2.c's TBind (tsubst takes void*)
+typedef struct ShapeBind {
+  const char **names;
+  Type **tys;
+  size_t n;
+} ShapeBind;
+
+static bool shape_walk(Type *t, int depth, Module *m, NodeRef decl,
+                       const char *name) {
+  if (++g_shape_visits > SHAPE_WALK_BUDGET || depth > SHAPE_WALK_CAP) {
+    Node *d = node_get(decl);
+    diag_at(DIAG_ERROR, m->path, d->line, d->col,
+            "type '%s' nests too deeply while checking layout (a "
+            "recursive type without indirection has no finite layout)",
+            name);
+    return true;
+  }
+  if (t->kind == TY_STRUCT) {
+    StructDef *sd = t->sdef;
+    for (size_t i = 0; i < sd->nfields; i++) {
+      Type *ft = sd->fields[i].ty;
+      if (t->nargs > 0) {
+        ShapeBind b = {sd->gparams, t->args,
+                       t->nargs < sd->ngparams ? t->nargs : sd->ngparams};
+        ft = tsubst(ft, &b);
+      }
+      if (shape_walk(ft, depth + 1, m, decl, name))
+        return true;
+    }
+  } else if (t->kind == TY_ENUM) {
+    EnumDef *ed = t->edef;
+    for (size_t i = 0; i < ed->nvariants; i++) {
+      for (size_t k = 0; k < ed->variants[i].nfields; k++) {
+        Type *ft = ed->variants[i].fields[k].ty;
+        if (t->nargs > 0) {
+          ShapeBind b = {ed->gparams, t->args,
+                         t->nargs < ed->ngparams ? t->nargs : ed->ngparams};
+          ft = tsubst(ft, &b);
+        }
+        if (shape_walk(ft, depth + 1, m, decl, name))
+          return true;
+      }
+    }
+  }
+  return false;
+}
+
+static void check_shape_cycles(Program *p) {
+  for (Module *m = p->modules; m; m = m->next) {
+    for (Sym *s = m->syms->order_head; s; s = s->order_next) {
+      Type *self = NULL;
+      const char *name = NULL;
+      NodeRef decl = NO_REF;
+      if (s->kind == SYM_STRUCT) {
+        self = type_struct(s->u.sdef, NULL, 0);
+        name = s->u.sdef->name;
+        decl = s->u.sdef->decl;
+      } else if (s->kind == SYM_ENUM) {
+        self = type_enum(s->u.edef, NULL, 0);
+        name = s->u.edef->name;
+        decl = s->u.edef->decl;
+      } else {
+        continue;
+      }
+      g_shape_visits = 0;
+      shape_walk(self, 0, m, decl, name);
+    }
+  }
+}
+
 bool check_program(Program *p) {
   g_program = p;
   g_program_ctx = p;
@@ -1180,6 +1695,10 @@ bool check_program(Program *p) {
       if (s->kind != SYM_FN)
         continue;
       for (FnDef *fd = s->u.fns; fd; fd = fd->next_overload) {
+        // a test block's signature was built at collection time (no
+        // params, unit return); its decl is not an NT_FN
+        if (node_get(fd->decl)->kind == NT_TEST)
+          continue;
         Node *d = node_get(fd->decl);
         // a method/assoc fn on a GENERIC type implicitly carries the
         // type's own generic parameters (bound from each receiver use):
@@ -1249,18 +1768,43 @@ bool check_program(Program *p) {
           Node *pp = node_get(reflist_at(d->list, k));
           sig->params[k].name = pp->name;
           sig->params[k].decl = reflist_at(d->list, k);
+          sig->params[k].is_mut = pp->bval;
           sig->params[k].ty =
               pp->op == 1 ? NULL
                           : resolve_type(m, pp->a, &g);
           if (pp->op == 2 && sig->params[k].ty)
             sig->params[k].ty = type_slice(sig->params[k].ty); // []T
           sig->params[k].variadic = pp->op == 2;
+          // the mut view law (§18): `mut` marks a handle-typed view
+          // parameter (*T, []T, string, dyn); on a value it is refused
+          if (pp->bval && sig->params[k].ty &&
+              sig->params[k].ty->kind != TY_PTR &&
+              sig->params[k].ty->kind != TY_SLICE &&
+              sig->params[k].ty->kind != TY_STRING &&
+              sig->params[k].ty->kind != TY_DYN &&
+              pp->op != 1) // bare self: the receiver's mut is decided
+                           // by the receiver type, checked at the call
+            diag_at(DIAG_ERROR, m->path, pp->line, pp->col,
+                    "'mut' marks a view parameter (*T, []T, string, "
+                    "dyn); '%s' is a value",
+                    pp->name ? pp->name : "?");
         }
         sig->ret = d->c != NO_REF ? resolve_type(m, d->c, &g) : ty_unit;
+        // a bare receiver (§18/T3.10): the type comes from the
+        // method's home — *T for a struct/enum target, the value
+        // itself for a builtin primitive. The fully-typed form stays
+        // legal (accepted, never required); fmt canonicalizes it away
+        if (fd->is_method && fd->recv && sig->nparams > 0 &&
+            sig->params[0].ty == NULL)
+          sig->params[0].ty = bare_self_type(p, m, fd->recv);
         fd->sig = sig;
       }
     }
   }
+
+  // the layout law before any body is checked: reject value cycles
+  // with the def's own location
+  check_shape_cycles(p);
 
   // bodies checked by check_bodies (T1.5/T1.6 drive it)
   {

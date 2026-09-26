@@ -1,0 +1,16 @@
+// expect: named patterns need a struct-form variant
+// spec: check — match
+// a braced pattern binds by payload field name; a tuple payload has
+// none — it binds positionally
+enum Sh { Circle(i32), Rec { x: i32 } }
+
+fn area(s: Sh) -> i32 {
+  match s {
+    Sh.Circle { r } => r,
+    Sh.Rec { x } => x,
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}

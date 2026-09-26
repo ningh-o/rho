@@ -1,0 +1,12 @@
+// expect: in match arm
+// spec: syntax.md — match
+// each match arm separates its pattern from its body with '=>'
+fn f(v: i32) -> i32 {
+  match v {
+    1 2,
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}

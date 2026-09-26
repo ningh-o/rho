@@ -1,0 +1,9 @@
+// spec: module-system.md §2
+// An item import may bind a const: it is used unqualified, under its
+// own name, with its value.
+use cfg.LIMIT;
+fn main() -> i32 {
+  printf("{}\n", LIMIT * 2);
+  return 0;
+}
+// out: 14

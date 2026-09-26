@@ -1,0 +1,15 @@
+// expect: unknown type 'B'
+// spec: syntax.md §4.1
+// The bounds grammar ruling: after `:` introduces a bound list, every
+// comma-separated identifier up to `]` is a bound of that parameter —
+// `[A: Show, B]` declares ONE parameter with bounds Show and B. When
+// the second name is not a trait, the checker refuses it.
+trait Show {
+  fn to_str(self) -> string,
+}
+fn f[A: Show, B](a: A, b: B) -> i32 {
+  return 0;
+}
+fn main() -> i32 {
+  return 0;
+}

@@ -1,0 +1,8 @@
+// expect: cannot infer the generic arguments of Option.None here
+// spec: check — generics
+// a generic enum's unit variant referenced as a value needs the
+// binding's annotation to carry the type arguments
+fn main() -> i32 {
+  let x = Option.None;
+  return 0;
+}

@@ -1,0 +1,32 @@
+// exit: 0
+// out: fresh allocs, equal values: eq=true
+// out: tail field differs: eq=false
+// out: nested field differs: eq=false
+// out: payloadless: eq=true ne=true
+// spec: type-system.md §10 — structs compare element-wise; nested
+// fields compare by value
+// struct data compares field by field: each `new Inner` here is a
+// distinct allocation, yet equal field values compare equal, one
+// differing nested field or tail field breaks ==, and a payloadless
+// variant pins the tag-only face
+struct Inner {
+  a: i32,
+  b: i32,
+}
+
+enum Carrier {
+  Hold(Inner, i32),
+  Nothing,
+}
+
+fn main() -> i32 {
+  let p: Carrier = Carrier.Hold(*new Inner { a: 1, b: 2 }, 3);
+  let q: Carrier = Carrier.Hold(*new Inner { a: 1, b: 2 }, 3);
+  let r: Carrier = Carrier.Hold(*new Inner { a: 1, b: 2 }, 9);
+  let s: Carrier = Carrier.Hold(*new Inner { a: 1, b: 9 }, 3);
+  printf("fresh allocs, equal values: eq={}\n", (p == q));
+  printf("tail field differs: eq={}\n", (p == r));
+  printf("nested field differs: eq={}\n", (p == s));
+  printf("payloadless: eq={} ne={}\n", (Carrier.Nothing == Carrier.Nothing), (p != Carrier.Nothing));
+  return 0;
+}

@@ -1,0 +1,10 @@
+// expect: module mdir is not a value
+// spec: module-system.md §2
+// a module binding names a namespace, not a value: it cannot be
+// assigned or passed around
+use mdir;
+
+fn main() -> i32 {
+  let x = mdir;
+  return 0;
+}

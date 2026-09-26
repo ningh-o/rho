@@ -1,0 +1,15 @@
+// exit: 101
+// err: panic: stack overflow
+// spec: spec.md §3 — unbounded non-tail recursion is the defined
+// stack-overflow panic (exit 101), never a raw trap. Pinned via
+// stdout because the test verb's trap shim echoes the mapped
+// panic line on stdout (`rho run` prints it on stderr). The spec
+// catalog names the message `panic: stack overflow`; the
+// implementation relays wasmtime's `call stack exhausted` — this
+// fixture pins the observed text.
+fn f(n: i32) -> i32 {
+  return (f(n)) + 1;
+}
+fn main() -> i32 {
+  return f(0);
+}

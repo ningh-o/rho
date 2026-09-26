@@ -1,0 +1,14 @@
+pub const thing: i32 = 11;
+pub const num: i32 = 22;
+pub struct Meter {
+  m: i32,
+}
+pub fn Meter.twice(self: *Meter) -> i32 {
+  return self.m * 2;
+}
+pub fn make(v: i32) -> *Meter {
+  return new Meter { m: v };
+}
+pub fn rep[T](x: T) -> string {
+  return x.to_str();
+}

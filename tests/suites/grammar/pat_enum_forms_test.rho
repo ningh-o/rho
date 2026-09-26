@@ -1,0 +1,66 @@
+// out: tuple=9
+// out: binders=10 true renamed=73
+// out: bare=9
+// out: lit=2 wild=-3
+// out: nested=8
+// exit: 0
+// spec: syntax.md §7
+// Variant patterns: tuple form matches tuple payloads, struct form
+// matches by field — `Sh.Rec { w, h }` binds directly and
+// `Sh.Rec { w: a, h: b }` renames. A variant name alone resolves
+// against the enum being matched first (prelude included); literal
+// and wildcard sub-patterns nest; other enums' variants need the
+// full path.
+enum Sh {
+  Circle(i32),
+  Rec { w: i32, h: i32 },
+  Dot,
+}
+fn rec_sum(s: Sh) -> i32 {
+  return match s {
+    Sh.Rec { w, h } => w + h,
+    _ => 0 - 1,
+  };
+}
+fn rec_renamed(s: Sh) -> i32 {
+  return match s {
+    Sh.Rec { w: a, h: b } => a * 10 + b,
+    _ => 0 - 1,
+  };
+}
+fn circle(s: Sh) -> i32 {
+  return match s {
+    Circle(v) => v,
+    Sh.Dot => 0 - 2,
+    _ => 0 - 1,
+  };
+}
+fn circle_lit(s: Sh) -> i32 {
+  return match s {
+    Sh.Circle(2) => 2,
+    Sh.Circle(_) => 0 - 3,
+    _ => 0 - 1,
+  };
+}
+fn main() -> i32 {
+  let t = Sh.Circle(9);
+  let r = Sh.Rec(w: 7, h: 3);
+  match t {
+    Sh.Circle(v) => printf("tuple={}\n", v),
+    _ => printf("tuple=miss\n"),
+  }
+  printf("binders={} {} renamed={}\n", rec_sum(r), rec_sum(Sh.Dot) == 0 - 1, rec_renamed(r));
+  printf("bare={}\n", circle(t));
+  printf("lit={} wild={}\n", circle_lit(Sh.Circle(2)), circle_lit(Sh.Circle(5)));
+  let o = Option.Some(Option.Some(8));
+  match o {
+    Option.Some(inner) => {
+      match inner {
+        Option.Some(v) => printf("nested={}\n", v),
+        Option.None => printf("nested=none\n"),
+      }
+    },
+    Option.None => printf("nested=outer\n"),
+  }
+  return 0;
+}

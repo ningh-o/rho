@@ -1,0 +1,14 @@
+// a test block checks like any declaration: the block bodies are
+// checked in every mode, and a green file with blocks checks clean
+fn main() -> i32 {
+  printf("main ran\n");
+  return 0;
+}
+
+test "arithmetic" {
+  assert_eq(1 + 1, 2);
+}
+
+test "strings" {
+  assert("ab" + "c" == "abc", "concat");
+}

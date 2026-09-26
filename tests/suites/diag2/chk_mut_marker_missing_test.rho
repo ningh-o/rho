@@ -1,0 +1,14 @@
+// expect: argument 1 of f must be marked 'mut' (the parameter is a mut view)
+// spec: TODO.md §18
+// the marker pairs in both directions: a mut-view parameter requires
+// the 'mut' marker on its argument at every call site
+fn f(mut xs: []i32) -> i32 {
+  xs[0] = 1;
+  return xs[0];
+}
+
+fn main() -> i32 {
+  let a: []i32 = [1, 2];
+  let n = f(a);
+  return n;
+}

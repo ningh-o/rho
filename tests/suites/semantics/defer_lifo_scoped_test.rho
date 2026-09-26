@@ -1,0 +1,41 @@
+// out: body
+// out: d2
+// out: d1
+// out: r=7
+// out: early-defer
+// out: r=1
+// out: inner-ran
+// out: inner-out
+// out: end
+// out: outer-ran
+// exit: 0
+// spec: spec.md §2, syntax.md §5
+// Defers run on every scope exit path except panic, LIFO across
+// defers (most recently registered fires first: d2 then d1), and they
+// are BLOCK-scoped: a defer registered inside an if-block fires when
+// THAT block exits — before the enclosing scope's own defers.
+fn work() -> i32 {
+  defer printf("d1\n");
+  defer printf("d2\n");
+  printf("body\n");
+  return 7;
+}
+fn early(x: bool) -> i32 {
+  defer printf("early-defer\n");
+  if x {
+    return 1;
+  }
+  printf("not taken\n");
+  return 2;
+}
+fn main() -> i32 {
+  printf("r={}\n", work());
+  printf("r={}\n", early(true));
+  defer printf("outer-ran\n");
+  if true {
+    defer printf("inner-out\n");
+    printf("inner-ran\n");
+  }
+  printf("end\n");
+  return 0;
+}

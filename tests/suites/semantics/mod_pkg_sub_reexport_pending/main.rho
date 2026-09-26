@@ -1,0 +1,14 @@
+// out: sub re-export: 7
+// exit: 0
+// spec: module-system.md §6 — `pub use sub;` binds submodule/package
+// sub under the facade (form 1 of 4)
+// OBSERVED TODAY (bug B-7): the module re-export form compiles in the
+// facade but nothing is published — access via the facade fails with
+// "module pkg has no public 'sub'" for both file-module and
+// subpackage targets. The line below is the LAW; the case promotes
+// when `pub use sub;` binds the submodule.
+use pkg;
+fn main() -> i32 {
+  printf("sub re-export: {}\n", pkg.sub.deep());
+  return 0;
+}

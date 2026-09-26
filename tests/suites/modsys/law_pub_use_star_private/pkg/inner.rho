@@ -1,0 +1,6 @@
+pub fn ok() -> i32 {
+  return 5;
+}
+fn hidden() -> i32 {
+  return 9;
+}

@@ -12,6 +12,12 @@
 
 extern const char *kernel_wat_src(void); // kernel_wat.c
 
+// the test verb (§17): when set (an entry-module symbol name of the
+// form "test:<name>"), _start calls that synthesized test fn instead
+// of main — the selection rides the emission side, one program
+// instance per test. NULL in every other mode.
+const char *g_emit_test_name = NULL;
+
 // ================================================================ text
 
 typedef struct Buf {
@@ -68,9 +74,23 @@ static const char *wty_s(WTy w) {
   }
 }
 
+// the declared width in bits — the shift-count mask law's denominator
+// (spec §4: counts mask by the left operand's width, not the lane)
+static int type_bits(Type *t) {
+  switch (t->kind) {
+  case TY_I8: case TY_U8: return 8;
+  case TY_I16: case TY_U16: return 16;
+  case TY_I64: case TY_U64: return 64;
+  default: return 32; // i32/u32/usize
+  }
+}
+
 static WTy scalar_wty(Type *t) {
   switch (t->kind) {
-  case TY_I64: case TY_U64: case TY_USIZE: return W_I64;
+  case TY_I64: case TY_U64: return W_I64;
+  // usize lives in the address width (wasm32 → i32, syntax.md §3):
+  // len, indices, and alloc counts are 32-bit values
+  case TY_USIZE: return W_I32;
   case TY_F32: return W_F32;
   case TY_F64: return W_F64;
   default: return W_I32;
@@ -108,6 +128,26 @@ static Type *inst_ty(Type *inst, Type *raw) {
   return tsubst(raw, &b);
 }
 
+// a value cycle (struct S { s: S }, its A↔B mutual form, or hidden
+// behind a generic instantiation) has no finite layout: the depth
+// bound turns it into a clean fatal instead of a C stack smash —
+// legal by-value nesting is written in the source, so it stays far
+// below the cap
+#define SHAPE_DEPTH_CAP 1000
+static int g_shape_depth;
+
+static void shape_too_deep(Type *t) {
+  StructDef *sd = t->kind == TY_STRUCT ? t->sdef : NULL;
+  EnumDef *ed = t->kind == TY_ENUM ? t->edef : NULL;
+  Node *d = node_get(sd ? sd->decl : ed->decl);
+  fprintf(stderr,
+          "%s:%d:%d: error: type '%s' nests too deeply while computing "
+          "layout (a recursive type without indirection has no finite "
+          "layout)\n",
+          d->file, d->line, d->col, sd ? sd->name : ed->name);
+  exit(1);
+}
+
 static size_t shape_nlocals(Type *t) {
   switch (t->kind) {
   case TY_PTR: return 1;
@@ -116,12 +156,17 @@ static size_t shape_nlocals(Type *t) {
   case TY_SLICE: return 3;
   case TY_STRING: case TY_DYN: case TY_FN: return 2;
   case TY_STRUCT: {
+    if (++g_shape_depth > SHAPE_DEPTH_CAP)
+      shape_too_deep(t);
     size_t n = 0;
     for (size_t i = 0; i < t->sdef->nfields; i++)
       n += shape_nlocals(inst_ty(t, t->sdef->fields[i].ty));
+    g_shape_depth--;
     return n ? n : 1;
   }
   case TY_ENUM: {
+    if (++g_shape_depth > SHAPE_DEPTH_CAP)
+      shape_too_deep(t);
     size_t max = 0;
     for (size_t i = 0; i < t->edef->nvariants; i++) {
       size_t n = 0;
@@ -129,6 +174,7 @@ static size_t shape_nlocals(Type *t) {
         n += shape_nlocals(inst_ty(t, t->edef->variants[i].fields[k].ty));
       if (n > max) max = n;
     }
+    g_shape_depth--;
     return 1 + max;
   }
   default: return 1;
@@ -373,6 +419,12 @@ static Type *slot_type(FnCx *cx, size_t vreg) {
 static VarInfo *cx_var(FnCx *cx, const char *name) {
   for (size_t i = VLEN(cx->vars); i > 0; i--) {
     VarInfo *v = VAT(cx->vars, VarInfo, i - 1);
+    // match-arm binders keep their entries until the block-end
+    // release walk; once the arm's scope has exited they must not
+    // answer lookups again (they used to shadow the outer binding
+    // forever)
+    if (v->scope > cx->scope)
+      continue;
     if (strcmp(v->name, name) == 0)
       return v;
   }
@@ -470,8 +522,22 @@ static const char *fn_wat_name(FnDef *f) {
   for (size_t i = 0; i < VLEN(em->fnnames); i++)
     if (VAT(em->fnnames, FnNameEnt, i)->f == f)
       return VAT(em->fnnames, FnNameEnt, i)->name;
-  const char *name = f->name;
-  for (size_t try = 1;; try++) {
+  // the wat identifier grammar admits no spaces: test blocks carry
+  // arbitrary names ("test:always true"), so every run byte outside
+  // the idchar set folds to '_'
+  size_t nl = strlen(f->name);
+  char *clean = arena_alloc(g_arena, nl + 1, 1);
+  size_t ci = 0;
+  for (const char *q = f->name; *q; q++) {
+    char c = *q;
+    bool idch = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                (c >= '0' && c <= '9') ||
+                strchr("!#$%&'*+./:<=>?@^_`|~-", c) != NULL;
+    clean[ci++] = idch ? c : '_';
+  }
+  clean[ci] = '\0';
+  const char *name = clean;
+  for (size_t try = VLEN(em->fnnames);; try++) {
     bool taken = false;
     for (size_t i = 0; i < VLEN(em->fnnames); i++)
       if (strcmp(VAT(em->fnnames, FnNameEnt, i)->name, name) == 0) {
@@ -480,7 +546,17 @@ static const char *fn_wat_name(FnDef *f) {
       }
     if (!taken)
       break;
-    name = aprintf(g_arena, "%s.%zu", f->name, try);
+    // the retry candidate folds too: a raw f->name can carry
+    // non-idchars ("test:a b.1"), which wat2wasm would reject.
+    // Probing from the table size keeps duplicate-heavy inputs
+    // linear-ish (400 same-named fns once cost quartic time)
+    char *cand = aprintf(g_arena, "%s.%zu", f->name, try);
+    for (char *q = cand; *q; q++)
+      if (!((*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') ||
+            (*q >= '0' && *q <= '9') ||
+            strchr("!#$%&'*+./:<=>?@^_`|~-", *q) != NULL))
+        *q = '_';
+    name = cand;
   }
   FnNameEnt *e = VPUSH(em->fnnames, FnNameEnt);
   e->f = f;
@@ -592,6 +668,71 @@ static void truncate_after(FnCx *cx, Type *t, size_t v) {
 
 // signedness-aware division with the panic catalog (MIN/-1 = MIN, /0 %0
 // panic per spec §4)
+// the compound-assignment op over two scalar slot runs: res =
+// oldv opk rhs (width-masked, truncated); false when the op has no
+// scalar form. Shared by the local, field, and index store paths.
+static void emit_div(FnCx *cx, int opkind, Type *t, size_t out,
+                     size_t a, size_t b);
+
+static bool emit_compound_op(FnCx *cx, Type *t, int opk, size_t res,
+                             size_t oldv, size_t rhs) {
+  if (t->kind == TY_STRING) {
+    // the one compound a string supports: += is concat (§6); the
+    // result is a fresh string — the caller releases the old value
+    // it overwrites
+    if (opk != OP_ADD)
+      return false;
+    op(cx, "(call $rho_cat2 (local.get %zu) (local.get %zu) "
+           "(local.get %zu) (local.get %zu))\n", oldv, oldv + 1, rhs,
+       rhs + 1);
+    op(cx, "(local.set %zu (global.get $cat_ptr))\n", res);
+    op(cx, "(local.set %zu (global.get $cat_len))\n", res + 1);
+    return true;
+  }
+  if (type_is_float(t)) {
+    const char *fw = t->kind == TY_F32 ? "f32" : "f64";
+    const char *finstr = opk == OP_ADD   ? "add"
+                         : opk == OP_SUB ? "sub"
+                         : opk == OP_MUL ? "mul"
+                         : opk == OP_DIV ? "div"
+                                         : NULL;
+    if (!finstr)
+      return false;
+    op(cx, "(local.set %zu (%s.%s (local.get %zu) (local.get %zu)))\n",
+       res, fw, finstr, oldv, rhs);
+    return true;
+  }
+  const char *w = scalar_wty(t) == W_I64 ? "i64" : "i32";
+  bool uns = t->kind >= TY_U8;
+  const char *instr = NULL;
+  switch (opk) {
+  case OP_ADD: instr = "add"; break;
+  case OP_SUB: instr = "sub"; break;
+  case OP_MUL: instr = "mul"; break;
+  case OP_BAND: instr = "and"; break;
+  case OP_BOR: instr = "or"; break;
+  case OP_BXOR: instr = "xor"; break;
+  default: break;
+  }
+  if (instr) {
+    op(cx, "(local.set %zu (%s.%s (local.get %zu) (local.get %zu)))\n",
+       res, w, instr, oldv, rhs);
+  } else if (opk == OP_DIV || opk == OP_MOD) {
+    emit_div(cx, opk, t, res, oldv, rhs);
+  } else if (opk == OP_SHL || opk == OP_SHR) {
+    // the count masks by the left operand's declared width (spec §4)
+    int bits = type_bits(t);
+    op(cx, "(local.set %zu (%s.%s (local.get %zu) (%s.and "
+           "(local.get %zu) (%s.const %d))))\n",
+       res, w, opk == OP_SHL ? "shl" : (uns ? "shr_u" : "shr_s"), oldv,
+       w, rhs, w, bits - 1);
+  } else {
+    return false;
+  }
+  truncate_after(cx, t, res);
+  return true;
+}
+
 __attribute__((unused)) static void emit_div(FnCx *cx, int opkind, Type *t, size_t out, size_t a,
                      size_t b) {
   if (type_is_float(t)) {
@@ -605,8 +746,8 @@ __attribute__((unused)) static void emit_div(FnCx *cx, int opkind, Type *t, size
   bool uns = t->kind >= TY_U8;
   // divisor zero → panic "division by zero"
   op(cx, "(if (%s.eqz (local.get %zu)) (then\n", w, b);
-  size_t msg = data_intern("division by zero", 18);
-  op(cx, "  (call $rho_panic (i32.const %zu) (i32.const 18))))\n", msg);
+  size_t msg = data_intern("division by zero", 16);
+  op(cx, "  (call $rho_panic (i32.const %zu) (i32.const 16))))\n", msg);
   if (!uns) {
     // wasm traps on MIN/-1: the defined answers are MIN (div) and 0
     // (rem) — spec §11; branch around the trapping instruction. The
@@ -675,6 +816,34 @@ static size_t field_offset(Type *st, size_t idx) {
   return off;
 }
 
+// the SLOT offset of field idx within a value struct's flat run
+static size_t field_slot_off(Type *st, size_t idx) {
+  size_t off = 0;
+  for (size_t i = 0; i < idx; i++)
+    off += shape_nlocals(inst_ty(st, st->sdef->fields[i].ty));
+  return off;
+}
+
+// the flat-run base slot of a value-struct lvalue chain (a.b.c):
+// the rooted variable's vreg plus the walked slot offsets — a value
+// has no memory behind it, so this is where a field store lands
+static size_t value_lvalue_base(FnCx *cx, Node *lv) {
+  if (lv->kind == NT_PATH) {
+    VarInfo *v = cx_var(cx, lv->name);
+    return v ? v->vreg : MATCH_DISCARD;
+  }
+  if (lv->kind == NT_FIELD_E) {
+    Type *bt = (Type *)node_get(lv->a)->sem;
+    if (!bt || bt->kind != TY_STRUCT)
+      return MATCH_DISCARD;
+    size_t b = value_lvalue_base(cx, node_get(lv->a));
+    if (b == MATCH_DISCARD)
+      return MATCH_DISCARD;
+    return b + field_slot_off(bt, (size_t)lv->op);
+  }
+  return MATCH_DISCARD;
+}
+
 // numeric const from a folded value stored in a node's type-checked
 // literal — emit constants directly
 static void emit_const_to(FnCx *cx, Node *e, Type *t, size_t dst) {
@@ -683,7 +852,7 @@ static void emit_const_to(FnCx *cx, Node *e, Type *t, size_t dst) {
     op(cx, "(local.set %zu (i32.const %d))\n", dst, e->kind == NT_BOOL
                        ? (e->bval ? 1 : 0) : 0);
     break;
-  case TY_I64: case TY_U64: case TY_USIZE: {
+  case TY_I64: case TY_U64: {
     uint64_t v = 0;
     if (e->kind == NT_INT) v = e->ival;
     else if (e->kind == NT_UNARY) {
@@ -695,6 +864,21 @@ static void emit_const_to(FnCx *cx, Node *e, Type *t, size_t dst) {
     } else if (e->kind == NT_FLOAT) v = (uint64_t)(int64_t)e->fval;
     op(cx, "(local.set %zu (i64.const %llu))\n", dst,
        (unsigned long long)v);
+    break;
+  }
+  case TY_USIZE: {
+    // the address width (wasm32): usize lives in the i32 lane
+    uint64_t v = 0;
+    if (e->kind == NT_INT) v = e->ival;
+    else if (e->kind == NT_UNARY) {
+      Node *op0 = node_get(e->a);
+      uint64_t base = op0->kind == NT_INT   ? op0->ival
+                      : op0->kind == NT_FLOAT ? (uint64_t)(int64_t)op0->fval
+                                              : 0;
+      v = (uint64_t)(0 - (int64_t)base);
+    } else if (e->kind == NT_FLOAT) v = (uint64_t)(int64_t)e->fval;
+    op(cx, "(local.set %zu (i32.const %llu))\n", dst,
+       (unsigned long long)(v & 0xFFFFFFFFull));
     break;
   }
   case TY_F32: {
@@ -1255,6 +1439,42 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
 
   case NT_CALL: {
     Node *callee = node_get(e->a);
+    // an immediate call of a fn-valued EXPRESSION — make_adder(5)(3),
+    // a parenthesized chain, a field holding a closure: evaluate the
+    // callee into its {code, capture} pair, then call through the table
+    {
+      Type *ct = (Type *)callee->sem;
+      if (callee->kind != NT_PATH && ct && ct->kind == TY_FN) {
+        FnSig *sig = ct->sig;
+        size_t cpair = cx_fresh(cx, ct);
+        emit_expr(cx, e->a, cpair);
+        size_t argregs3[16];
+        for (size_t i = 0; i < sig->nparams; i++) {
+          size_t v = cx_fresh(cx, sig->params[i].ty);
+          argregs3[i] = v;
+          Node *aw = i < reflist_len(e->list)
+                         ? node_get(reflist_at(e->list, i))
+                         : NULL;
+          if (aw && aw->kind == NT_POSARG)
+            emit_expr(cx, aw->a, v);
+        }
+        for (size_t i = 0; i < sig->nparams; i++) {
+          size_t n = shape_nlocals(sig->params[i].ty);
+          for (size_t k = 0; k < n; k++)
+            op(cx, "%s", L(cx, argregs3[i] + k));
+        }
+        op(cx, "%s\n", L(cx, cpair + 1)); // capture ptr
+        extern size_t clofn_type_idx(FnCx * cx, FnSig * sig);
+        op(cx, "(call_indirect (type $cloty_%zu) %s)\n",
+           clofn_type_idx(cx, sig), L(cx, cpair));
+        if (sig->ret->kind != TY_UNIT) {
+          size_t n = shape_nlocals(sig->ret);
+          for (size_t i = n; i > 0; i--)
+            op(cx, "(local.set %zu)\n", dst + i - 1);
+        }
+        return;
+      }
+    }
     if (callee->kind != NT_PATH) {
       op(cx, ";; call of non-name (T1.7c)\n");
       return;
@@ -1310,11 +1530,20 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       if (aw1 && aw1->kind == NT_POSARG)
         emit_expr(cx, aw1->a, n);
       else
-        op(cx, "(local.set %zu (i64.const 0))\n", n);
-      // byte size = n * esz (i64 math, wrap to i32 for alloc)
+        op(cx, "(local.set %zu (i32.const 0))\n", n);
+      // byte size = n * esz (64-bit product; oversized asks panic —
+      // a wrap here would allocate short and corrupt the heap)
       size_t bytes = cx_fresh(cx, ty_i64);
-      op(cx, "(local.set %zu (i64.mul (local.get %zu) (i64.const %zu)))\n",
+      op(cx, "(local.set %zu (i64.mul (i64.extend_i32_u (local.get %zu))"
+             " (i64.const %zu)))\n",
          bytes, n, esz);
+      {
+        size_t msg = data_intern("allocation too large", 20);
+        op(cx, "(if (i64.gt_u (local.get %zu) (i64.const 1073741824))"
+               " (then (call $rho_panic (i32.const %zu)"
+               " (i32.const 20))))\n",
+           bytes, msg);
+      }
       size_t b32 = cx_fresh(cx, ty_i32);
       op(cx, "(local.set %zu (i32.wrap_i64 (local.get %zu)))\n", b32,
          bytes);
@@ -1324,11 +1553,9 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       op(cx, "(local.set %zu (i32.add (local.get %zu) (i32.const 24)))\n",
          dst, blk);
       {
-        size_t n32 = cx_fresh(cx, ty_i32);
-        op(cx, "(local.set %zu (i32.wrap_i64 %s))\n", n32, L(cx, n));
-        // fat slice: {owner, data, len}
+        // fat slice: {owner, data, len} — the len field is i32
         op(cx, "(local.set %zu %s)\n", dst + 1, L(cx, dst));
-        op(cx, "(local.set %zu %s)\n", dst + 2, L(cx, n32));
+        op(cx, "(local.set %zu %s)\n", dst + 2, L(cx, n));
       }
       return;
     }
@@ -1360,11 +1587,9 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
         size_t v = cx_fresh(cx, at);
         emit_expr(cx, aw->a, v);
         if (at->kind == TY_SLICE) // len rides the third slot
-          op(cx, "(local.set %zu (i64.extend_i32_u %s))\n", dst,
-             L(cx, v + 2));
+          op(cx, "(local.set %zu %s)\n", dst, L(cx, v + 2));
         else if (at->kind == TY_STRING)
-          op(cx, "(local.set %zu (i64.extend_i32_u %s))\n", dst,
-             L(cx, v + 1));
+          op(cx, "(local.set %zu %s)\n", dst, L(cx, v + 1));
         else {
           op(cx, "(local.set %zu (i32.const 0))\n", dst);
         }
@@ -1577,6 +1802,32 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       op(cx, "(local.set %zu %s)\n", dst, L(cx, res));
       return;
     }
+    if ((e->op == OP_EQ || e->op == OP_NE) && lt->kind == TY_STRUCT) {
+      // structs compare element-wise (§10): the values ride as flat
+      // field runs — each slot against its own face (floats by IEEE
+      // eq: NaN != NaN)
+      size_t res = cx_fresh(cx, ty_bool);
+      size_t n2 = shape_nlocals(lt);
+      for (size_t k = 0; k < n2; k++) {
+        WTy w2 = local_wty(lt, k);
+        const char *eqop = w2 == W_I64   ? "i64.eq"
+                           : w2 == W_F32 ? "f32.eq"
+                           : w2 == W_F64 ? "f64.eq"
+                                         : "i32.eq";
+        size_t eq = cx_fresh(cx, ty_bool);
+        op(cx, "(local.set %zu (%s %s %s))\n", eq, eqop, L(cx, a + k),
+           L(cx, b + k));
+        if (k == 0)
+          op(cx, "(local.set %zu %s)\n", res, L(cx, eq));
+        else
+          op(cx, "(local.set %zu (i32.and %s %s))\n", res, L(cx, res),
+             L(cx, eq));
+      }
+      if (e->op == OP_NE)
+        op(cx, "(local.set %zu (i32.eqz %s))\n", res, L(cx, res));
+      op(cx, "(local.set %zu %s)\n", dst, L(cx, res));
+      return;
+    }
     if ((e->op == OP_EQ || e->op == OP_NE) && lt->kind == TY_WEAK) {
       // weak identity is the TARGET's identity, not the box's (§10)
       size_t res = cx_fresh(cx, ty_bool);
@@ -1615,8 +1866,10 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
     case OP_BOR: instr = "or"; break;
     case OP_BXOR: instr = "xor"; break;
     case OP_SHL: {
-      int bits = scalar_wty(lt) == W_I64 ? 64 : 32; // storage width
-      if (scalar_wty(lt) == W_I64)
+      // the count masks by the LEFT operand's declared width (spec §4),
+      // not the wasm lane: 1 << 9 on an i8 is 2
+      int bits = type_bits(lt); // storage width
+      if (bits == 64)
         op(cx, "(local.set %zu (i64.shl (local.get %zu) "
                "(i64.and (local.get %zu) (i64.const %d))))\n", dst, a, b,
            bits - 1);
@@ -1629,41 +1882,34 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       return;
     }
     case OP_SHR: {
-      int bits = scalar_wty(lt) == W_I64 ? 64 : 32;
-      const char *k = uns || lt->kind == TY_USIZE
-                          ? "shr_u"
-                          : (scalar_wty(lt) == W_I64 ? "shr_s" : "shr_u");
-      // signed narrow ints live zero-extended in i32: use i32 shifts
-      // with manual sign handling via extension
-      if (scalar_wty(lt) == W_I64)
+      int bits = type_bits(lt);
+      // signed narrow ints live zero-extended in i32: sign-extend to
+      // the declared width, then arithmetic-shift by the masked count
+      if (bits == 64)
         op(cx, "(local.set %zu (i64.%s (local.get %zu) "
                "(i64.and (local.get %zu) (i64.const %d))))\n", dst,
            uns ? "shr_u" : "shr_s", a, b, bits - 1);
-      else {
-        if (!uns && bits < 32) {
-          // sign-extend to the width first, then arithmetic shift
-          int sh = 32 - bits;
-          op(cx, "(local.set %zu (i32.shr_s (i32.shl (local.get %zu) "
-                 "(i32.const %d)) (i32.const %d)))\n", dst, a, sh, sh);
-          op(cx, "(local.set %zu (i32.shr_s (local.get %zu) "
-                 "(i32.and (local.get %zu) (i32.const %d))))\n", dst, dst,
-             b, bits - 1);
-        } else {
-          op(cx, "(local.set %zu (i32.%s (local.get %zu) "
-                 "(i32.and (local.get %zu) (i32.const %d))))\n", dst,
-             uns ? "shr_u" : "shr_s", a, b, bits - 1);
-        }
+      else if (!uns && bits < 32) {
+        int sh = 32 - bits;
+        op(cx, "(local.set %zu (i32.shr_s (i32.shl (local.get %zu) "
+               "(i32.const %d)) (i32.const %d)))\n", dst, a, sh, sh);
+        op(cx, "(local.set %zu (i32.shr_s (local.get %zu) "
+               "(i32.and (local.get %zu) (i32.const %d))))\n", dst, dst,
+           b, bits - 1);
+      } else {
+        op(cx, "(local.set %zu (i32.%s (local.get %zu) "
+               "(i32.and (local.get %zu) (i32.const %d))))\n", dst,
+           uns ? "shr_u" : "shr_s", a, b, bits - 1);
         truncate_after(cx, t, dst);
       }
-      (void)k;
       return;
     }
     case OP_EQ: instr = "eq"; cmp = true; break;
     case OP_NE: instr = "ne"; cmp = true; break;
-    case OP_LT: instr = uns ? "lt_u" : "lt_s"; cmp = true; break;
-    case OP_LE: instr = uns ? "le_u" : "le_s"; cmp = true; break;
-    case OP_GT: instr = uns ? "gt_u" : "gt_s"; cmp = true; break;
-    case OP_GE: instr = uns ? "ge_u" : "ge_s"; cmp = true; break;
+    case OP_LT: instr = isf ? "lt" : uns ? "lt_u" : "lt_s"; cmp = true; break;
+    case OP_LE: instr = isf ? "le" : uns ? "le_u" : "le_s"; cmp = true; break;
+    case OP_GT: instr = isf ? "gt" : uns ? "gt_u" : "gt_s"; cmp = true; break;
+    case OP_GE: instr = isf ? "ge" : uns ? "ge_u" : "ge_s"; cmp = true; break;
     default: return;
     }
     if (isf) {
@@ -2150,6 +2396,32 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       }
       size_t n = shape_nlocals(ft);
       if (found != NO_REF) {
+        Node *init = node_get(node_get(found)->a);
+        Type *it = (Type *)init->sem;
+        if (ft->kind == TY_STRUCT && it && it->kind == TY_PTR) {
+          // a boxed initializer for an inline value-struct field: the
+          // box rides one pointer slot; the parent owns field-wise
+          // copies of its payload (the box itself was fresh — the
+          // bump kernel keeps it, the header rc never re-fires)
+          size_t ptmp = cx_fresh(cx, it);
+          emit_expr(cx, node_get(found)->a, ptmp);
+          for (size_t k = 0; k < n; k++) {
+            WTy w = local_wty(ft, k);
+            const char *ld = w == W_I64   ? "i64.load"
+                             : w == W_F32 ? "f32.load"
+                             : w == W_F64 ? "f64.load"
+                                          : "i32.load";
+            const char *str_op = w == W_I64   ? "i64.store"
+                                 : w == W_F32 ? "f32.store"
+                                 : w == W_F64 ? "f64.store"
+                                              : "i32.store";
+            size_t fo = off + shape_slot_off(ft, k);
+            op(cx, "(%s (i32.add (local.get %zu) (i32.const %zu)) "
+                   "(%s (i32.add (local.get %zu) (i32.const %zu))))\n",
+               str_op, dst, fo, ld, ptmp, fo);
+          }
+          continue;
+        }
         size_t tmp = cx_fresh(cx, ft);
         emit_expr(cx, node_get(found)->a, tmp);
         for (size_t k = 0; k < n; k++) {
@@ -2175,27 +2447,25 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
     emit_expr(cx, e->a, b);
     size_t i = cx_fresh(cx, ty_usize);
     emit_expr(cx, e->b, i);
-    size_t i32v = cx_fresh(cx, ty_i32);
-    op(cx, "(local.set %zu (i32.wrap_i64 (local.get %zu)))\n", i32v, i);
     // bounds check: i >=u len → panic (spec §3); the len slot is +1
     // for strings and +2 for fat slices
     size_t msg = data_intern("index out of bounds", 19);
-    op(cx, "(if (i32.ge_u (local.get %zu) %s) (then\n", i32v,
+    op(cx, "(if (i32.ge_u (local.get %zu) %s) (then\n", i,
        L(cx, b + (bt->kind == TY_SLICE ? 2 : 1)));
     op(cx, "  (call $rho_panic (i32.const %zu) (i32.const 19))))\n", msg);
     if (bt->kind == TY_STRING) {
       op(cx, "(local.set %zu (i32.load8_u (i32.add %s (local.get %zu))))\n",
-         dst, L(cx, b), i32v);
+         dst, L(cx, b), i);
     } else {
       Type *el = bt->base;
       size_t esz = type_size(el);
       size_t addr = cx_fresh(cx, ty_i32);
       if (esz == 1)
         op(cx, "(local.set %zu (i32.add %s (local.get %zu)))\n", addr,
-           L(cx, b + 1), i32v); // fat slice: data rides the second slot
+           L(cx, b + 1), i); // fat slice: data rides the second slot
       else
         op(cx, "(local.set %zu (i32.add %s (i32.mul (local.get %zu) "
-               "(i32.const %zu))))\n", addr, L(cx, b + 1), i32v, esz);
+               "(i32.const %zu))))\n", addr, L(cx, b + 1), i, esz);
       size_t n = shape_nlocals(el);
       for (size_t k = 0; k < n; k++) {
         WTy w = local_wty(el, k);
@@ -2228,14 +2498,14 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
     if (e->b != NO_REF) {
       size_t t = cx_fresh(cx, ty_usize);
       emit_expr(cx, e->b, t);
-      op(cx, "(local.set %zu (i32.wrap_i64 (local.get %zu)))\n", lo, t);
+      op(cx, "(local.set %zu %s)\n", lo, L(cx, t));
     } else {
       op(cx, "(local.set %zu (i32.const 0))\n", lo);
     }
     if (e->c != NO_REF) {
       size_t t = cx_fresh(cx, ty_usize);
       emit_expr(cx, e->c, t);
-      op(cx, "(local.set %zu (i32.wrap_i64 (local.get %zu)))\n", hi, t);
+      op(cx, "(local.set %zu %s)\n", hi, L(cx, t));
     } else {
       op(cx, "(local.set %zu %s)\n", hi, L(cx, b + lenslot));
     }
@@ -2310,17 +2580,21 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
     for (size_t i2 = 0; i2 < n; i2++) {
       Node *el = node_get(reflist_at(e->list, i2));
       Type *elt = (Type *)el->sem;
-      size_t v = cx_fresh(cx, elt);
+      // a dyn slice literal coerces each element at its face: the
+      // fresh must carry the DYN type or the fat {vtable, obj} pair
+      // never forms and the vtable slot stores garbage
+      Type *face = st->base->kind == TY_DYN ? st->base : elt;
+      size_t v = cx_fresh(cx, face);
       emit_expr(cx, reflist_at(e->list, i2), v);
-      size_t nl = shape_nlocals(elt);
+      size_t nl = shape_nlocals(face);
       for (size_t k = 0; k < nl; k++) {
-        WTy w = local_wty(elt, k);
+        WTy w = local_wty(face, k);
         const char *strop = w == W_I64   ? "i64.store"
                             : w == W_F32 ? "f32.store"
                             : w == W_F64 ? "f64.store"
                                          : "i32.store";
         op(cx, "(%s (i32.add %s (i32.const %zu)) %s)\n", strop,
-           L(cx, dst), i2 * esz + shape_slot_off(elt, k),
+           L(cx, dst), i2 * esz + shape_slot_off(face, k),
            L(cx, v + k));
       }
     }
@@ -2550,6 +2824,50 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
   }
 }
 
+// literal payload tests for a top-level variant pattern: a pattern
+// that names a value (Circ(0), Box(_, "heavy")) must test the
+// payload slots, not just the tag. Returns the number of nested
+// (if ... (then opened — the caller closes them after the body.
+static size_t emit_payload_tests(FnCx *cx, Node *pat, Type *st,
+                                 EnumVariant *var, size_t base) {
+  size_t opens = 0;
+  size_t slot = 1; // payload slots start after the tag
+  for (size_t i = 0; i < reflist_len(pat->list); i++) {
+    Node *sub = node_get(reflist_at(pat->list, i));
+    Node *sp = sub;
+    if (pat->op == VAR_STRUCT && sub->kind == NT_FIELD)
+      sp = node_get(sub->a);
+    Type *ft = i < var->nfields ? inst_ty(st, var->fields[i].ty)
+                                : ty_unit;
+    size_t w = ft ? shape_nlocals(ft) : 1;
+    size_t at = base + slot;
+    if (sp->kind == NT_PLIT && sp->op == 0) { // integer
+      if (local_wty(st, slot) == W_I64)
+        op(cx, "(if (i64.eq (local.get %zu) (i64.const %lld)) (then\n",
+           at, (long long)sp->ival);
+      else
+        op(cx, "(if (i32.eq (local.get %zu) (i32.const %d)) (then\n",
+           at, (int32_t)(uint32_t)sp->ival);
+      opens++;
+    } else if (sp->kind == NT_PLIT && sp->op == 2) { // bool
+      op(cx, "(if (i32.eq (local.get %zu) (i32.const %d)) (then\n", at,
+         sp->bval ? 1 : 0);
+      opens++;
+    } else if (sp->kind == NT_PLIT && sp->op == 3 && w == 2) { // string
+      size_t di = data_intern(sp->sval.p, sp->sval.n);
+      op(cx, "(if (call $rho_streq (local.get %zu) (local.get %zu) "
+             "(i32.const %zu) (i32.const %zu)) (then\n", at, at + 1,
+         di, sp->sval.n);
+      opens++;
+    }
+    slot += w;
+  }
+  return opens;
+}
+
+static bool pa_kind_is_wild(Node *p) { return p->kind == NT_PWILD; }
+static bool pa_kind_is_bind(Node *p) { return p->kind == NT_PBIND; }
+
 // match: if-chain over arms by tag (br_table is optimizer backlog);
 // literal/string arms compare values
 static void emit_match(FnCx *cx, NodeRef er, size_t dst) {
@@ -2559,100 +2877,151 @@ static void emit_match(FnCx *cx, NodeRef er, size_t dst) {
   emit_expr(cx, m->a, v);
   bool is_enum = st->kind == TY_ENUM;
   (void)is_enum;
-  // a wildcard arm runs only when no guarded arm matched (arms are
-  // exclusive; the if-chain accumulates a matched flag)
-  size_t matched = NO_REF;
-  bool has_wild = false;
-  for (size_t i = 0; i < reflist_len(m->list); i++)
-    if (node_get(reflist_at(m->list, i))->a != NO_REF &&
-        node_get(node_get(reflist_at(m->list, i))->a)->kind == NT_PWILD)
-      has_wild = true;
-  if (has_wild) {
-    matched = cx_fresh(cx, ty_bool);
-    op(cx, "(local.set %zu (i32.const 0))\n", matched);
-  }
+  // arms are exclusive because every arm's test is gated on the
+  // matched flag: same-tag arms (guards, or-patterns, a binder arm)
+  // must never clobber an earlier arm's result
+  size_t matched = cx_fresh(cx, ty_bool);
+  op(cx, "(local.set %zu (i32.const 0))\n", matched);
   for (size_t i = 0; i < reflist_len(m->list); i++) {
     Node *arm = node_get(reflist_at(m->list, i));
-    Node *pat = node_get(arm->a);
-    bool wildcard = pat->kind == NT_PWILD;
-    if (!wildcard) {
-      if (pat->kind == NT_PVAR) {
-        EnumVariant *var = NULL;
+    bool guarded = arm->c != NO_REF;
+    // an or-pattern (§19) emits once per alternative; the body
+    // duplicates per alternative and at most one can match a given
+    // subject (variants are disjoint, literal alternatives distinct)
+    Node *alts[16];
+    size_t nalts = 1;
+    Node *solo = node_get(arm->a);
+    Node **altp = &solo;
+    if (solo->kind == NT_POR) {
+      nalts = reflist_len(solo->list);
+      if (nalts > 16)
+        nalts = 16;
+      for (size_t k = 0; k < nalts; k++)
+        alts[k] = node_get(reflist_at(solo->list, k));
+      altp = alts;
+    }
+    for (size_t a = 0; a < nalts; a++) {
+      Node *pat = altp[a];
+      // the arm's test, gated on the matched flag: the flag makes
+      // same-tag arms — guards, or-patterns — exclusive
+      bool opened = true;
+      EnumVariant *arm_var = NULL;
+      size_t payload_opens = 0;
+      if (pa_kind_is_wild(pat) || pa_kind_is_bind(pat)) {
+        // a wildcard or a top-level binder matches everything left
+        op(cx, "(if (i32.eqz %s) (then\n", L(cx, matched));
+      } else if (pat->kind == NT_PVAR && st->kind == TY_STRUCT) {
+        // struct pattern: no tag — the arm always matches; the
+        // matched flag keeps it exclusive with earlier arms
+        op(cx, "(if (i32.eqz %s) (then\n", L(cx, matched));
+      } else if (pat->kind == NT_PVAR) {
         for (size_t k = 0; k < st->edef->nvariants; k++)
           if (strcmp(st->edef->variants[k].name,
                      strchr(pat->name, '.') + 1) == 0)
-            var = &st->edef->variants[k];
-        if (has_wild)
-          op(cx, "(if (i32.and (i32.eq (local.get %zu) (i32.const %d)) "
-                 "(i32.eqz %s)) (then\n", v, var ? var->tag : -1,
-             L(cx, matched));
-        else
-          op(cx, "(if (i32.eq (local.get %zu) (i32.const %d)) (then\n",
-             v, var ? var->tag : -1);
+            arm_var = &st->edef->variants[k];
+        op(cx, "(if (i32.and (i32.eq (local.get %zu) (i32.const %d)) "
+               "(i32.eqz %s)) (then\n", v, arm_var ? arm_var->tag : -1,
+           L(cx, matched));
       } else if (pat->kind == NT_PLIT) {
         // literal arm: guard on the subject value
         if (pat->op == 0) { // integer: compare at the subject's width
           if (scalar_wty(st) == W_I64)
-            op(cx, "(if (i64.eq (local.get %zu) (i64.const %lld))"
-                   " (then\n", v, (long long)pat->ival);
+            op(cx, "(if (i32.and (i64.eq (local.get %zu) (i64.const %lld))"
+                   " (i32.eqz %s)) (then\n", v, (long long)pat->ival,
+               L(cx, matched));
           else
-            op(cx, "(if (i32.eq (local.get %zu) (i32.const %d)) (then\n",
-               v, (int32_t)(uint32_t)pat->ival);
+            op(cx, "(if (i32.and (i32.eq (local.get %zu) (i32.const %d)) "
+                   "(i32.eqz %s)) (then\n", v,
+               (int32_t)(uint32_t)pat->ival, L(cx, matched));
         } else if (pat->op == 2) { // bool
-          op(cx, "(if (i32.eq (local.get %zu) (i32.const %d)) (then\n",
-             v, pat->bval ? 1 : 0);
+          op(cx, "(if (i32.and (i32.eq (local.get %zu) (i32.const %d)) "
+                 "(i32.eqz %s)) (then\n", v, pat->bval ? 1 : 0,
+             L(cx, matched));
         } else if (pat->op == 3) { // string content
           size_t at = data_intern(pat->sval.p, pat->sval.n);
-          op(cx, "(if (call $rho_streq (local.get %zu) (local.get %zu) "
-                 "(i32.const %zu) (i32.const %zu)) (then\n", v, v + 1,
-             at, pat->sval.n);
+          op(cx, "(if (i32.and (call $rho_streq (local.get %zu) "
+                 "(local.get %zu) (i32.const %zu) (i32.const %zu)) "
+                 "(i32.eqz %s)) (then\n", v, v + 1, at, pat->sval.n,
+             L(cx, matched));
+        } else if (pat->op == 1) { // float: IEEE eq at the subject's width
+          const char *fw = scalar_wty(st) == W_F32 ? "f32" : "f64";
+          double fv = scalar_wty(st) == W_F32 ? (double)(float)pat->fval
+                                              : pat->fval;
+          op(cx, "(if (i32.and (%s.eq (local.get %zu) (%s.const %.17g)) "
+                 "(i32.eqz %s)) (then\n", fw, v, fw, fv, L(cx, matched));
         } else {
-          op(cx, ";; float literal arm (with the prelude to_str era)\n");
+          op(cx, ";; unhandled literal arm form\n");
+          opened = false;
           continue;
         }
       } else {
+        opened = false;
         continue;
       }
-    }
-    if (!wildcard && has_wild)
-      op(cx, "(local.set %zu (i32.const 1))\n", matched);
-    if (wildcard && has_wild)
-      op(cx, "(if (i32.eqz %s) (then\n", L(cx, matched));
-    // bind pattern locals from the payload run
-    cx->scope++;
-    size_t slot = v + 1;
-    register_pattern_binders(cx, pat, st);
-    bind_pattern(cx, pat, st, &slot, v);
-    // arm value
-    if (dst != SIZE_MAX) {
-      Node *ab0 = node_get(arm->b);
-      emit_expr(cx, arm->b, dst);
-      // a copied-out managed value owns a new reference when it
-      // escapes the match (bare binder/path arms)
-      Type *vt0 = (Type *)ab0->sem;
-      if (vt0 && type_is_managed(vt0) &&
-          (ab0->kind == NT_PATH ||
-           (ab0->kind == NT_EXPRSTMT && ab0->op == 3 &&
-            reflist_len(ab0->list) &&
-            node_get(reflist_at(ab0->list, reflist_len(ab0->list) - 1))
-                    ->bval)))
-        retain(cx, vt0, dst);
-    } else {
-      Node *ab = node_get(arm->b);
-      if (ab->kind == NT_EXPRSTMT && ab->op == 3)
-        emit_stmt(cx, arm->b);
-      else {
-        Type *at = (Type *)ab->sem;
-        size_t tmp = cx_fresh(cx, at);
-        emit_expr(cx, arm->b, tmp);
-        release(cx, at, tmp);
+      // bind pattern locals: a variant pattern skips the tag slot; a
+      // top-level binder binds the whole subject
+      cx->scope++;
+      size_t slot = v + 1;
+      if (pa_kind_is_bind(pat))
+        slot = v;
+      // a struct pattern has no tag: its subs bind from the run start
+      if (pat->kind == NT_PVAR && st->kind == TY_STRUCT)
+        slot = v;
+      register_pattern_binders(cx, pat, st);
+      bind_pattern(cx, pat, st, &slot, v);
+      // payload literal patterns pin values, not just the tag
+      if (pat->kind == NT_PVAR && arm_var)
+        payload_opens = emit_payload_tests(cx, pat, st, arm_var, v);
+      // §19 guard: evaluated after the pattern matches, in scope of
+      // its bindings; a failed guard leaves the matched flag alone so
+      // later arms still run
+      bool guard_open = false;
+      if (guarded) {
+        size_t gv = cx_fresh(cx, ty_bool);
+        emit_expr(cx, arm->c, gv);
+        op(cx, "(if (local.get %zu) (then\n", gv);
+        guard_open = true;
       }
+      // arm value
+      if (dst != SIZE_MAX) {
+        Node *ab0 = node_get(arm->b);
+        emit_expr(cx, arm->b, dst);
+        // a copied-out managed value owns a new reference when it
+        // escapes the match (bare binder/path arms)
+        Type *vt0 = (Type *)ab0->sem;
+        if (vt0 && type_is_managed(vt0) &&
+            (ab0->kind == NT_PATH ||
+             (ab0->kind == NT_EXPRSTMT && ab0->op == 3 &&
+              reflist_len(ab0->list) &&
+              node_get(reflist_at(ab0->list, reflist_len(ab0->list) - 1))
+                      ->bval)))
+          retain(cx, vt0, dst);
+      } else {
+        Node *ab = node_get(arm->b);
+        if (ab->kind == NT_EXPRSTMT && ab->op == 3)
+          emit_stmt(cx, arm->b);
+        else {
+          Type *at = (Type *)ab->sem;
+          size_t tmp = cx_fresh(cx, at);
+          emit_expr(cx, arm->b, tmp);
+          release(cx, at, tmp);
+        }
+      }
+      // the matched flag rides inside every opened test (payload
+      // literals and guards): an arm only latches when its body ran
+      op(cx, "(local.set %zu (i32.const 1))\n", matched);
+      for (size_t o = 0; o < payload_opens; o++)
+        op(cx, "))\n");
+      if (guard_open)
+        op(cx, "))\n");
+      cx->scope--;
+      // the binder ENTRIES stay until the block-end walk releases them
+      // (rc timing unchanged); cx_var skips entries whose scope has
+      // exited, so a stale binder can no longer shadow the outer
+      // binding after the arm
+      if (opened)
+        op(cx, "))\n");
     }
-    cx->scope--;
-    if (!wildcard)
-      op(cx, "))\n");
-    else if (has_wild)
-      op(cx, "))\n");
   }
 }
 
@@ -2710,19 +3079,87 @@ static void bind_pattern(FnCx *cx, Node *pat, Type *st, size_t *slot,
     return;
   }
   if (pat->kind == NT_PVAR) {
-    // variant pattern: sub-patterns bind the variant's fields in order
+    // variant pattern: subs bind the variant's payload fields. The
+    // entry *slot is the payload start (the arm's tag compare already
+    // consumed the tag) and every slot is the OUTER enum's canonical
+    // layout — widening is per flat position across variants, so a
+    // nested field's slots stay outer-driven; only a nested variant's
+    // own tag is skipped (+1). A VAR_STRUCT sub may name a subset:
+    // resolve by field NAME, not position (§7).
+    StructDef *sd = st && st->kind == TY_STRUCT ? st->sdef : NULL;
+    if (sd) {
+      // struct pattern: the subject rides its flat field run from
+      // *slot (no tag); subs bind by field NAME at the field's own
+      // offset — slots are the struct's own representation, so plain
+      // copies are exact
+      for (size_t i = 0; i < reflist_len(pat->list); i++) {
+        Node *sub = node_get(reflist_at(pat->list, i));
+        if (sub->kind != NT_FIELD)
+          continue; // checker reported
+        Node *subpat = node_get(sub->a);
+        size_t k = (size_t)-1;
+        for (size_t fk = 0; fk < sd->nfields; fk++)
+          if (strcmp(sd->fields[fk].name, sub->name) == 0)
+            k = fk;
+        if (k == (size_t)-1)
+          continue; // checker reported
+        size_t fstart = *slot;
+        for (size_t fk = 0; fk < k; fk++)
+          fstart += shape_nlocals(inst_ty(st, sd->fields[fk].ty));
+        size_t save = *slot;
+        *slot = fstart;
+        bind_pattern(cx, subpat, st, slot, base);
+        *slot = save;
+      }
+      return;
+    }
+    EnumDef *ed = st && st->kind == TY_ENUM ? st->edef : NULL;
+    EnumVariant *var = NULL;
+    // the pattern's name may be the full path ("Sh.Rec") or the bare
+    // variant ("Rec", §19): resolve against the last dot segment
+    const char *vname = pat->name;
+    if (vname) {
+      const char *dot = strrchr(vname, '.');
+      if (dot)
+        vname = dot + 1;
+    }
+    if (ed && vname) {
+      for (size_t vi = 0; vi < ed->nvariants; vi++)
+        if (strcmp(ed->variants[vi].name, vname) == 0)
+          var = &ed->variants[vi];
+    }
     for (size_t i = 0; i < reflist_len(pat->list); i++) {
       Node *sub = node_get(reflist_at(pat->list, i));
-      if (pat->op == VAR_STRUCT && sub->kind == NT_FIELD)
-        bind_pattern(cx, node_get(sub->a), st, slot, base);
-      else if (sub->kind == NT_PBIND || sub->kind == NT_PWILD ||
-               sub->kind == NT_PVAR)
-        bind_pattern(cx, sub, st, slot, base);
-      // literal sub-patterns consume their slots without binding
-      else {
-        extern size_t pattern_slot_size(Node *);
-        *slot += pattern_slot_size(sub);
+      Node *subpat = sub;
+      size_t k = i; // payload field index
+      if (pat->op == VAR_STRUCT && sub->kind == NT_FIELD) {
+        subpat = node_get(sub->a);
+        k = (size_t)-1;
+        if (var)
+          for (size_t fk = 0; fk < var->nfields; fk++)
+            if (strcmp(var->fields[fk].name, sub->name) == 0)
+              k = fk;
+        if (k == (size_t)-1)
+          return; // checker reported the unknown field
       }
+      // the field's slot offset within the payload
+      size_t fstart = *slot;
+      if (var)
+        for (size_t fk = 0; fk < k && fk < var->nfields; fk++)
+          fstart += shape_nlocals(inst_ty(st, var->fields[fk].ty));
+      size_t save = *slot;
+      if (subpat->kind == NT_PBIND || subpat->kind == NT_PWILD) {
+        *slot = fstart;
+        bind_pattern(cx, subpat, st, slot, base);
+      } else if (subpat->kind == NT_PVAR) {
+        // a nested variant pattern: its field is enum-typed, its own
+        // tag rides fstart — bind from the payload
+        *slot = fstart + 1;
+        bind_pattern(cx, subpat, st, slot, base);
+      } else {
+        // literal sub-pattern: consume its slots without binding
+      }
+      *slot = save;
     }
     return;
   }
@@ -2930,8 +3367,14 @@ static void emit_format_build(FnCx *cx, Node *call) {
         op(cx, "(call $fb_push %s %s)\n", L(cx, v), L(cx, v + 1));
       } else if (at->kind == TY_I64) {
         op(cx, "(call $fb_i64 %s)\n", L(cx, v));
-      } else if (at->kind == TY_U64 || at->kind == TY_USIZE) {
+      } else if (at->kind == TY_U64) {
         op(cx, "(call $fb_u64 %s)\n", L(cx, v));
+      } else if (at->kind == TY_USIZE) {
+        // address width: widen to the formatter's 64-bit face
+        size_t wide = cx_fresh(cx, ty_i64);
+        op(cx, "(local.set %zu (i64.extend_i32_u %s))\n", wide,
+           L(cx, v));
+        op(cx, "(call $fb_u64 %s)\n", L(cx, wide));
       } else if (at->kind == TY_BOOL) {
         size_t t1 = data_intern("true", 4);
         size_t t0 = data_intern("false", 5);
@@ -3206,26 +3649,12 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
           // compound: load old, op, store
           size_t oldv = cx_fresh(cx, ft);
           size_t nv = cx_fresh(cx, ft);
-          const char *w = scalar_wty(ft) == W_I64 ? "i64" : "i32";
-          const char *instr = NULL;
-          switch (s->op) {
-          case OP_ADD: instr = "add"; break;
-          case OP_SUB: instr = "sub"; break;
-          case OP_MUL: instr = "mul"; break;
-          case OP_BAND: instr = "and"; break;
-          case OP_BOR: instr = "or"; break;
-          case OP_BXOR: instr = "xor"; break;
-          default: break;
-          }
           const char *ld = scalar_wty(ft) == W_I64 ? "i64.load" : "i32.load";
           const char *strop = scalar_wty(ft) == W_I64 ? "i64.store"
                                                        : "i32.store";
           op(cx, "(local.set %zu (%s (i32.add (local.get %zu) "
                  "(i32.const %zu))))\n", oldv, ld, p, off);
-          if (instr) {
-            op(cx, "(local.set %zu (%s.%s (local.get %zu) "
-                   "(local.get %zu)))\n", nv, w, instr, oldv, rhs);
-            truncate_after(cx, ft, nv);
+          if (emit_compound_op(cx, ft, s->op, nv, oldv, rhs)) {
             op(cx, "(%s (i32.add (local.get %zu) (i32.const %zu)) "
                    "(local.get %zu))\n", strop, p, off, nv);
             return;
@@ -3244,19 +3673,47 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
         }
         return;
       }
-      return; // inline-value field stores arrive with copies (later)
+      if (bt->kind == TY_STRUCT) {
+        // value-struct face: the base rides a flat field run, so the
+        // store lands in the rooted variable's own slots — a value has
+        // no memory behind it
+        Type *st = bt;
+        int idx = lv->op;
+        size_t base = value_lvalue_base(cx, node_get(lv->a));
+        if (base == MATCH_DISCARD)
+          return; // bases without a root (through boxes) are not faces
+        Type *ft = inst_ty(st, st->sdef->fields[idx].ty);
+        size_t off = base + field_slot_off(st, (size_t)idx);
+        size_t rhs = cx_fresh(cx, lt);
+        emit_expr(cx, s->b, rhs);
+        if (s->op != OP_NONE) {
+          size_t nv = cx_fresh(cx, ft);
+          if (emit_compound_op(cx, ft, s->op, nv, off, rhs)) {
+            size_t fn2 = shape_nlocals(ft);
+            for (size_t k = 0; k < fn2; k++)
+              op(cx, "(local.set %zu %s)\n", off + k, L(cx, nv + k));
+          }
+          return; // aggregates reject compound at check
+        }
+        release(cx, ft, off); // the old field value's own refs
+        if (node_get(s->b)->kind == NT_PATH &&
+            cx_var(cx, node_get(s->b)->name))
+          retain(cx, ft, rhs); // copy-in owns a new ref
+        size_t n = shape_nlocals(ft);
+        for (size_t k = 0; k < n; k++)
+          op(cx, "(local.set %zu %s)\n", off + shape_slot_off(ft, k),
+             L(cx, rhs + k));
+        return;
+      }
+      return; // other field-store bases are not value faces
     }
     if (lv->kind == NT_INDEX) {
       // s[i] = v: bounds-checked store at ptr + i*esz
       Type *bt = (Type *)node_get(lv->a)->sem;
       size_t b = cx_fresh(cx, bt);
       emit_expr(cx, lv->a, b);
-      size_t i = cx_fresh(cx, ty_i32);
-      {
-        size_t iw = cx_fresh(cx, ty_usize);
-        emit_expr(cx, lv->b, iw);
-        op(cx, "(local.set %zu (i32.wrap_i64 (local.get %zu)))\n", i, iw);
-      }
+      size_t i = cx_fresh(cx, ty_usize);
+      emit_expr(cx, lv->b, i);
       size_t msg = data_intern("index out of bounds", 19);
       op(cx, "(if (i32.ge_u (local.get %zu) %s) (then\n", i,
          L(cx, b + (bt->kind == TY_SLICE ? 2 : 1)));
@@ -3275,6 +3732,21 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
                "(i32.const %zu))))\n", addr,
            L(cx, b + (bt->kind == TY_SLICE ? 1 : 0)), i, esz);
       size_t nl = shape_nlocals(el);
+      if (s->op != OP_NONE && nl == 1) {
+        // compound: load old, op, store (scalar elements only — the
+        // check side rejects compound on aggregates)
+        size_t oldv = cx_fresh(cx, el);
+        size_t nv = cx_fresh(cx, el);
+        const char *ld = scalar_wty(el) == W_I64 ? "i64.load" : "i32.load";
+        const char *strop = scalar_wty(el) == W_I64 ? "i64.store"
+                                                    : "i32.store";
+        op(cx, "(local.set %zu (%s (local.get %zu)))\n", oldv, ld, addr);
+        if (emit_compound_op(cx, el, s->op, nv, oldv, rhs)) {
+          op(cx, "(%s (local.get %zu) (local.get %zu))\n", strop, addr,
+             nv);
+          return;
+        }
+      }
       for (size_t k = 0; k < nl; k++) {
         WTy w = local_wty(el, k);
         const char *strop2 = w == W_I64   ? "i64.store"
@@ -3386,49 +3858,15 @@ static void emit_stmt(FnCx *cx, NodeRef sr) {
       if (s->op != OP_NONE) {
         // compound: op(old, rhs) into a fresh result
         size_t res = cx_fresh(cx, lt);
-        const char *w = scalar_wty(lt) == W_I64 ? "i64" : "i32";
-        const char *instr = NULL;
-        bool uns = lt->kind >= TY_U8;
-        switch (s->op) {
-        case OP_ADD: instr = "add"; break;
-        case OP_SUB: instr = "sub"; break;
-        case OP_MUL: instr = "mul"; break;
-        case OP_BAND: instr = "and"; break;
-        case OP_BOR: instr = "or"; break;
-        case OP_BXOR: instr = "xor"; break;
-        default: break;
-        }
-        if (instr) {
-          op(cx, "(local.set %zu (%s.%s (local.get %zu) (local.get %zu)))\n",
-             res, w, instr, v->vreg, rhs);
-          truncate_after(cx, lt, res);
+        if (emit_compound_op(cx, lt, s->op, res, v->vreg, rhs)) {
+          // the overwrite kills the old value's own ref (a string +=,
+          // say — the op already read the old bytes)
+          release(cx, lt, v->vreg);
           size_t n = shape_nlocals(lt);
           for (size_t i = 0; i < n; i++)
             op(cx, "(local.set %zu %s)\n", v->vreg + i, L(cx, res + i));
           return;
         }
-        if (s->op == OP_DIV || s->op == OP_MOD) {
-          emit_div(cx, s->op, lt, res, v->vreg, rhs);
-          truncate_after(cx, lt, res);
-          size_t n = shape_nlocals(lt);
-          for (size_t i = 0; i < n; i++)
-            op(cx, "(local.set %zu %s)\n", v->vreg + i, L(cx, res + i));
-          return;
-        }
-        // shifts mask by the storage width (spec §4)
-        int bits = scalar_wty(lt) == W_I64 ? 64 : 32;
-        if (scalar_wty(lt) == W_I64)
-          op(cx, "(local.set %zu (i64.%s (local.get %zu) (i64.and "
-                 "(local.get %zu) (i64.const %d))))\n", res,
-             s->op == OP_SHL ? "shl" : (uns ? "shr_u" : "shr_s"), v->vreg,
-             rhs, bits - 1);
-        else
-          op(cx, "(local.set %zu (i32.%s (local.get %zu) (i32.and "
-                 "(local.get %zu) (i32.const %d))))\n", res,
-             s->op == OP_SHL ? "shl" : (uns ? "shr_u" : "shr_s"), v->vreg,
-             rhs, bits - 1);
-        truncate_after(cx, lt, res);
-        op(cx, "(local.set %zu (local.get %zu))\n", v->vreg, res);
         return;
       }
       size_t n = shape_nlocals(lt);
@@ -3618,6 +4056,16 @@ static void emit_fndef(Em *em, FnDef *f) {
   }
   op(&cx, "(loop $tco\n");
   cx.depth++;
+  // a trailing expression is the body's value: turn it into the
+  // return (§5 blocks carry values — the fn body is one), so
+  // `fn f() -> i32 { 3 }` returns 3 instead of trapping
+  Node *body = node_get(f->body);
+  if (body->kind == NT_EXPRSTMT && body->op == 3 && reflist_len(body->list)) {
+    Node *last = node_get(reflist_at(body->list,
+                                     reflist_len(body->list) - 1));
+    if (last->kind == NT_EXPRSTMT && last->bval && last->a != NO_REF)
+      last->kind = NT_RETURN;
+  }
   emit_stmt(&cx, f->body);
   cx.depth--;
   op(&cx, ")\n");
@@ -3661,11 +4109,13 @@ static void emit_fndef(Em *em, FnDef *f) {
 // ============================================================ module
 
 static void emit_start(Em *em) {
-  Sym *main = symtab_get(em->p->entry->syms, "main");
+  Sym *main = g_emit_test_name
+                  ? symtab_get(em->p->entry->syms, g_emit_test_name)
+                  : symtab_get(em->p->entry->syms, "main");
   Buf b;
   buf_init(&b);
   tprintf(&b, "  (func $_start\n");
-  {
+  if (!g_emit_test_name) {
     Sym *main0 = symtab_get(em->p->entry->syms, "main");
     if (main0 && main0->kind == SYM_FN &&
         main0->u.fns->sig->ret->kind != TY_UNIT)
@@ -3717,10 +4167,17 @@ static void emit_start(Em *em) {
   }
   if (main && main->kind == SYM_FN) {
     FnDef *mf = main->u.fns;
-    tprintf(&b, "    (local.set $rc (call $%s))\n", fn_wat_name(mf));
-    // POSIX exit semantics: the status travels as its low byte
-    tprintf(&b, "    (call $proc_exit (i32.and (local.get $rc) "
-               "(i32.const 255)))\n");
+    if (g_emit_test_name) {
+      // a test instance: clean return = exit 0; a panic exits 101
+      // through the kernel's own path (§17 judges panic vs clean)
+      tprintf(&b, "    (call $%s)\n", fn_wat_name(mf));
+      tprintf(&b, "    (call $proc_exit (i32.const 0))\n");
+    } else {
+      tprintf(&b, "    (local.set $rc (call $%s))\n", fn_wat_name(mf));
+      // POSIX exit semantics: the status travels as its low byte
+      tprintf(&b, "    (call $proc_exit (i32.and (local.get $rc) "
+                 "(i32.const 255)))\n");
+    }
   } else {
     tprintf(&b, "    (call $proc_exit (i32.const 0))\n");
   }
@@ -3780,6 +4237,9 @@ static void prereg_drop_walkers_stmt(Node *s) {
 }
 
 static void emit_all_fns(Em *em) {
+  // test blocks ride only under the verb, and only the selected test's
+  // fn emits (§17: the selection rides the emission side)
+  bool test_mode = g_emit_test_name != NULL;
   // the pre-pass walks modules × symbol order (the emission order)
   for (Module *m = em->p->modules; m; m = m->next) {
     if (!m->syms)
@@ -3788,6 +4248,9 @@ static void emit_all_fns(Em *em) {
       if (s->kind != SYM_FN)
         continue;
       for (FnDef *f = s->u.fns; f; f = f->next_overload) {
+        if (node_get(f->decl)->kind == NT_TEST &&
+            !(test_mode && strcmp(f->name, g_emit_test_name) == 0))
+          continue;
         // generic templates never run — only their instantiations do
         if (f->body != NO_REF && !f->ngparams)
           prereg_drop_walkers_stmt(node_get(f->body));
@@ -3807,6 +4270,9 @@ static void emit_all_fns(Em *em) {
       if (s->kind != SYM_FN)
         continue;
       for (FnDef *f = s->u.fns; f; f = f->next_overload) {
+        if (node_get(f->decl)->kind == NT_TEST &&
+            !(test_mode && strcmp(f->name, g_emit_test_name) == 0))
+          continue;
         if (f->body != NO_REF && !f->ngparams)
           emit_fndef(em, f);
         // generic instances emit right after their template

@@ -1,0 +1,7 @@
+// expect: the entry module must define fn main
+// spec: module-system.md — entry
+// the whole-file check treats the module as an entry program: a
+// module without fn main is refused
+fn helper() -> i32 {
+  return 0;
+}

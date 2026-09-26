@@ -1,0 +1,5 @@
+// expect: type 'E' nests too deeply
+// spec: type-system.md §11 — an enum variant carrying itself by
+// value is the same infinite layout: refused
+enum E { V(E) }
+fn main() -> i32 { return 0; }

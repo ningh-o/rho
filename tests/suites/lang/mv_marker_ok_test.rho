@@ -1,0 +1,27 @@
+// out: a0=42 px=7
+// exit: 0
+// spec: TODO.md §18
+// The call-site `mut` argument marker pairs with a `mut` view
+// parameter (syntax.md §6.2): a parameter of view type ([]T or *T)
+// declared `mut` accepts a marked argument, and the callee's stores
+// are observable at the call site — for both view shapes, slice and
+// pointer. The marker is the visible contract of a write-through
+// parameter; `mut` is permission, never layout (emitter untouched).
+fn push(mut xs: []i32, v: i32) {
+  xs[0] = v;
+}
+struct P {
+  x: i32,
+  y: i32,
+}
+fn sink(mut p: *P, v: i32) {
+  p.x = v;
+}
+fn main() -> i32 {
+  let mut a = make([]i32, 3);
+  push(mut a, 42);
+  let mut p = new P { x: 1, y: 2 };
+  sink(mut p, 7);
+  printf("a0={} px={}\n", a[0], p.x);
+  return 0;
+}

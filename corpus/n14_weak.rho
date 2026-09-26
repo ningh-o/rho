@@ -16,7 +16,7 @@ fn churn() -> i32 {
   let mut acc: i32 = 0;
   let mut i: i32 = 0;
   while i < 10000 {
-    let xs: []i32 = make([]i32, 8);
+    let mut xs: []i32 = make([]i32, 8);
     xs[0] = i;
     acc = acc + xs[0] - i;
     i += 1;

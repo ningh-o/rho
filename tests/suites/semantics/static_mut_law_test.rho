@@ -1,0 +1,23 @@
+// out: counter: 1 2 3
+// out: static read+write: 7
+// exit: 0
+// spec: module-system.md §5, syntax.md §4.3
+// `static mut` is the ONLY global state: module lifetime, mutable,
+// and always module-private (global state never crosses modules —
+// `pub static` does not exist, pinned refused in
+// static_pub_refused_test). Initializers must be acyclic and
+// comptime-evaluable; this file pins the literal-initialized form
+// (const-expression initializers are pinned separately — they
+// mis-initialize today, see static_const_init_pending).
+static mut counter: i32 = 0;
+fn bump() -> i32 {
+  counter += 1;
+  return counter;
+}
+fn main() -> i32 {
+  printf("counter: {} {} {}\n", bump(), bump(), bump());
+  counter = 6;
+  counter += 1;
+  printf("static read+write: {}\n", counter);
+  return 0;
+}

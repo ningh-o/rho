@@ -4,7 +4,7 @@
 // fell through to the claimed join without its phi copy, the && result
 // went stale, and the loop ran the index out of bounds
 fn main() -> i32 {
-  let w: []u32 = make([]u32, 6);
+  let mut w: []u32 = make([]u32, 6);
   w[0] = 9;
   let mut n: usize = 6;
   loop {

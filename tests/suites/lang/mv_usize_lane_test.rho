@@ -1,0 +1,16 @@
+// out: 4294967295 0
+// out: 20 3
+// exit: 0
+// spec: TODO.md §18
+// The usize lane is the address width (u32 on wasm32, syntax.md §3):
+// it wraps modulo 2^32 like every other unsigned lane — usize MAX
+// plus one lands on 0 — and it is the type of indexing and len, so a
+// usize variable indexes a slice directly.
+fn main() -> i32 {
+  let s: usize = 4294967295;
+  printf("{} {}\n", s, s + 1);
+  let a: []i32 = [10, 20, 30];
+  let i: usize = 1;
+  printf("{} {}\n", a[i], len(a));
+  return 0;
+}

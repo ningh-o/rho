@@ -29,7 +29,7 @@ fn main() -> i32 {
   let mut i: i32 = 0;
   while i < 400 {
     // phase A: allocate pointer-carrying slices, let some die in-scope
-    let a: []?*N = make([]?*N, 32);
+    let mut a: []?*N = make([]?*N, 32);
     let b: []string = make([]string, 24);
     nonempty += drain(b);
     // fill a with real nodes, then overwrite the slice binding so the
@@ -71,7 +71,7 @@ fn main() -> i32 {
   }
   // keep a later-generation slice alive past the loop: its elements were
   // written by real allocations, its neighbors died around it
-  let tail: []?*N = make([]?*N, 32);
+  let mut tail: []?*N = make([]?*N, 32);
   tail[5] = Option.Some(new N { v: 55, next: Option.None });
   match tail[5] {
     Option.Some(n) => printf("rounds={} nonempty={} live={} tail5={}\n",

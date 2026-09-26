@@ -1,0 +1,9 @@
+// expect: unterminated triple-quoted string
+// spec: syntax.md — lexer
+// a triple-quoted string must find its closing triple quote; at EOF
+// the lexer refuses the literal
+fn main() -> i32 {
+  let s = """abc
+  still open
+  return 0;
+}

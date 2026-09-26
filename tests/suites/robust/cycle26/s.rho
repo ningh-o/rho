@@ -1,0 +1,2 @@
+use t.tstep;
+pub fn sstep() -> i32 { return 19 + tstep(); }

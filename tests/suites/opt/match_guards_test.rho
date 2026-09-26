@@ -1,0 +1,23 @@
+// spec: TODO.md §19 — guards: pattern if cond, cond sees the pattern's bindings
+// spec: syntax.md §7 — guarded arms never close exhaustiveness, a fallback remains
+// out: small
+// out: medium
+// out: large
+// ratified §19 ergonomics, not implemented in boot yet: today check
+// refuses `if` between pattern and arrow; the trailing `_` arm is the
+// ratified shape — a match whose arms are all guarded still needs a
+// fallback, so this match keeps one
+fn classify(n: i32) -> string {
+  return match n {
+    x if x < 10 => "small",
+    x if x < 100 => "medium",
+    _ => "large",
+  };
+}
+
+fn main() -> i32 {
+  printf("{}\n", classify(3));
+  printf("{}\n", classify(42));
+  printf("{}\n", classify(1000));
+  return 0;
+}

@@ -1,0 +1,18 @@
+// expect: mut
+// spec: TODO.md §18
+// The mut view law (TODO.md §18, landed with T3.6): a binding
+// without `mut` is a read-only view — a field store through it
+// (`p.x = 5`) and a slice-element store through it (`s[0] = 9`)
+// are refused at check time; the law is permission, never layout.
+struct P {
+  x: i32,
+  y: i32,
+}
+fn main() -> i32 {
+  let p = new P { x: 1, y: 2 };
+  p.x = 5;
+  let s: []i32 = [1, 2, 3];
+  s[0] = 9;
+  printf("p.x={} s0={}\n", p.x, s[0]);
+  return 0;
+}

@@ -1,0 +1,25 @@
+// out: rect twin: eq=true ne=false
+// out: different tag: eq=false ne=true
+// out: tuple payload: eq=true
+// out: unit variants: eq=true
+// exit: 0
+// spec: type-system.md §10
+// Enums compare tag first, then payload element-wise: two Rect
+// payloads compare field-by-field, a tag mismatch is != regardless of
+// payload, and bare unit variants compare by tag alone. Tuple and
+// struct variants both compare by payload values, not identity.
+enum Shape {
+  Circle(i32),
+  Rect { w: i32, h: i32 },
+  Dot,
+}
+fn main() -> i32 {
+  let r1: Shape = Shape.Rect(w: 7, h: 3);
+  let r2: Shape = Shape.Rect(w: 7, h: 3);
+  printf("rect twin: eq={} ne={}\n", (r1 == r2), (r1 != r2));
+  let c: Shape = Shape.Circle(7);
+  printf("different tag: eq={} ne={}\n", (r1 == c), (r1 != c));
+  printf("tuple payload: eq={}\n", (c == Shape.Circle(7)));
+  printf("unit variants: eq={}\n", (Shape.Dot == Shape.Dot));
+  return 0;
+}

@@ -1,0 +1,8 @@
+// expect: \x needs two hex digits
+// spec: syntax.md — lexer
+// \x consumes exactly two hex digits; one digit then a quote is a
+// malformed escape
+fn main() -> i32 {
+  let s = "a\x2";
+  return 0;
+}

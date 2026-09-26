@@ -1,0 +1,11 @@
+// out: 2 2
+// spec: syntax.md §6.2 — make([]T, n) where the element type T is
+// itself a slice: the outer [] prefix belongs to make, the rest is
+// the element type verbatim
+fn main() -> i32 {
+  let mut rows: [][]i32 = make([][]i32, 2);
+  rows[0] = [1, 2];
+  rows[1] = [3, 4];
+  printf("{} {}\n", len(rows), rows[0][1]);
+  return 0;
+}

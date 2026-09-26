@@ -1,0 +1,8 @@
+// expect: to open the struct body
+// spec: syntax.md — declarations
+// a struct declaration must open a brace body right after its name
+struct S x: i32 }
+
+fn main() -> i32 {
+  return 0;
+}

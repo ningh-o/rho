@@ -1,0 +1,7 @@
+// expect: ordering needs numbers or strings, got bool
+// spec: check — operators
+// < and friends are defined for numbers and strings only
+fn main() -> i32 {
+  let a = true < false;
+  return 0;
+}

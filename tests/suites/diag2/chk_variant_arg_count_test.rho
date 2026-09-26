@@ -1,0 +1,9 @@
+// expect: variant E.A takes 1 value(s), got 2
+// spec: check — enums
+// a tuple variant is built with exactly its payload count
+enum E { A(i32), B }
+
+fn main() -> i32 {
+  let e = E.A(1, 2);
+  return 0;
+}

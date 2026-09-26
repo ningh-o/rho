@@ -1,0 +1,11 @@
+// expect: never compare
+// spec: type-system.md §10
+// Slices `[]T` are NEVER comparable: no element-wise comparison is
+// offered (and none can be — the check refuses ==/!= on slice
+// operands outright, naming the law).
+fn main() -> i32 {
+  let a: []i32 = [1, 2];
+  let b: []i32 = [1, 2];
+  printf("r={}\n", (a == b));
+  return 0;
+}

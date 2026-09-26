@@ -1,0 +1,35 @@
+// out: if 3 40
+// out: opt 14
+// out: arg 11
+// out: nest 50
+// out: pick 10 20
+// exit: 0
+// spec: syntax.md §6.2
+// if and match are expressions: arms must share one type, an `if`
+// expression requires `else`, and both may stand in let position, in
+// argument position, nested inside a match arm, and as the operand of
+// return.
+fn pick(flag: bool) -> i32 {
+  return if flag { 10 } else { 20 };
+}
+fn main() -> i32 {
+  let a: i32 = if true { 3 } else { 4 };
+  printf("if {} {}\n", a, if false { 30 } else { 40 });
+  let o: ?i32 = Option.Some(7);
+  let d: i32 = match o {
+    Option.Some(v) => v * 2,
+    Option.None => 0,
+  };
+  printf("opt {}\n", d);
+  printf("arg {}\n", match 1 {
+    1 => 11,
+    _ => 12,
+  });
+  let n: i32 = match 5 {
+    5 => if true { 50 } else { 51 },
+    _ => 0,
+  };
+  printf("nest {}\n", n);
+  printf("pick {} {}\n", pick(true), pick(false));
+  return 0;
+}

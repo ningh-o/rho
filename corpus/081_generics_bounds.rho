@@ -50,7 +50,7 @@ fn main() -> i32 {
   printf("wrap={} {}\n", wrap(p), wrap(w));
   // all the instantiations in one line
   printf("mix={} {} {}\n", label(p), twice_str(7), label(w));
-  let tags: []string = make([]string, 3);
+  let mut tags: []string = make([]string, 3);
   tags[0] = label(p);
   tags[1] = twice_str(false);
   tags[2] = label(w);

@@ -1,0 +1,36 @@
+// exit: 0
+// spec: syntax.md §2.5 — the escape set is exactly the eight spellings
+// spec: spec.md §5 — strings are UTF-8 byte slices; \u{…} encodes UTF-8
+// out: hex=[Az] 2
+// out: uni=[😀é] 6
+// out: nul_len=3 nul_byte=0
+// out: cr_len=3 cr_byte=13
+// out: bs=[q\w] 3
+// out: tab_len=3 tab_byte=9
+// out: nl_len=3 nl_byte=10
+// \0 and \r are pinned through their byte values: a raw NUL cannot ride
+// a `// out:` header line, so the byte itself is the exact pin
+fn main() -> i32 {
+  let hex: string = "\x41\x7a";
+  printf("hex=[{}] {}\n", hex, len(hex));
+  let uni: string = "\u{1F600}\u{e9}";
+  printf("uni=[{}] {}\n", uni, len(uni));
+  let nul: string = "a\0b";
+  printf("nul_len={} nul_byte={}\n", len(nul), nul[1]);
+  let cr: string = "a\rb";
+  printf("cr_len={} cr_byte={}\n", len(cr), cr[1]);
+  let bs: string = "q\\w";
+  printf("bs=[{}] {}\n", bs, len(bs));
+  let tab: string = "x\ty";
+  printf("tab_len={} tab_byte={}\n", len(tab), tab[1]);
+  let nl: string = "x\ny";
+  printf("nl_len={} nl_byte={}\n", len(nl), nl[1]);
+  assert_eq(hex, "Az");
+  assert_eq(len(uni), 6);
+  assert_eq(nul[1], 0);
+  assert_eq(cr[1], 13);
+  assert_eq(bs, "q" + "\\" + "w");
+  assert_eq(tab[1], 9);
+  assert_eq(nl[1], 10);
+  return 0;
+}

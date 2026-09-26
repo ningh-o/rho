@@ -1,0 +1,9 @@
+// spec: module-system.md §6
+// The item form re-exports one public item of an interior module
+// through the package name; the consumer qualifies through the facade.
+use pkg;
+fn main() -> i32 {
+  printf("{}\n", pkg.tool());
+  return 0;
+}
+// out: 6

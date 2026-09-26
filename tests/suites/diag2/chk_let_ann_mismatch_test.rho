@@ -1,0 +1,7 @@
+// expect: let x: i32 = … (value is string)
+// spec: check — bindings
+// an annotated let checks its initializer against the annotation
+fn main() -> i32 {
+  let x: i32 = "s";
+  return 0;
+}

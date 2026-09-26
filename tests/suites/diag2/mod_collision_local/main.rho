@@ -1,0 +1,11 @@
+// expect: collides with an existing
+// spec: module-system.md §2
+// an import alias must not collide with a name this module already
+// declares
+use m.f as h;
+
+fn h(a: i32) -> i32 { return a; }
+
+fn main() -> i32 {
+  return 0;
+}

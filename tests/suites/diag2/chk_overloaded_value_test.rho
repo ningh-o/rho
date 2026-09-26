@@ -1,0 +1,11 @@
+// expect: ambiguous function value 'f' (overloaded)
+// spec: check — overloads
+// an overloaded fn cannot be handled as a first-class value: which
+// overload would the value carry?
+fn f(a: i32) -> i32 { return a; }
+fn f(a: f64) -> f64 { return a; }
+
+fn main() -> i32 {
+  let g = f;
+  return 0;
+}

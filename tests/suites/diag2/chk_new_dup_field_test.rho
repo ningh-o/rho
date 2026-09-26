@@ -1,0 +1,9 @@
+// expect: field 'x' initialized twice
+// spec: check — constructors
+// every constructor field appears exactly once
+struct S { x: i32 }
+
+fn main() -> i32 {
+  let s = new S { x: 1, x: 2 };
+  return 0;
+}

@@ -1,0 +1,18 @@
+// out: hit
+// out: hit2
+// exit: 0
+// spec: syntax.md §7
+// Literal patterns include floats (`literal := int | float | bool |
+// string`), so `1.5 =>` must match the value 1.5. Today float patterns
+// compile but never match — every value falls through to `_`.
+fn main() -> i32 {
+  match 1.5 {
+    1.5 => printf("hit\n"),
+    _ => printf("miss\n"),
+  }
+  match 2.0 {
+    2.0 => printf("hit2\n"),
+    _ => printf("miss2\n"),
+  }
+  return 0;
+}

@@ -1,0 +1,37 @@
+// spec: TODO.md §18
+// The receiver's type is derivable from its home: bare `self` inside
+// an impl block or a dotted method, bare `mut self` for writes. The
+// typed form stays legal; bare and typed mix freely in one impl; a
+// bare-self impl satisfies its trait. Builtin primitives derive the
+// value form.
+struct Counter {
+  n: i64,
+}
+
+trait Bump {
+  fn bump(self) -> i64,
+}
+
+impl Bump for Counter {
+  fn bump(self) -> i64 {
+    return self.n;
+  }
+}
+
+fn Counter.add(mut self, k: i64) -> i64 {
+  self.n = self.n + k;
+  return self.n;
+}
+
+fn i32.hello(self) -> string {
+  return "hi";
+}
+
+fn main() -> i32 {
+  let mut c: *Counter = new Counter { n: 5 };
+  printf("{} {} {}\n", c.bump(), c.add(3), c.n);
+  printf("{}\n", 5.hello());
+  return 0;
+}
+// out: 5 8 8
+// out: hi

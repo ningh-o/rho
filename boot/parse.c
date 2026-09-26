@@ -8,6 +8,8 @@
 typedef struct Parser {
   Module *m;
   size_t pos;
+  int depth;  // guarded-recursion depth (PARSE_DEPTH_CAP)
+  int chain;  // operator nodes in the current expression (PARSE_CHAIN_CAP)
 } Parser;
 
 static Token *cur(Parser *p) {
@@ -58,6 +60,26 @@ static Token *expect(Parser *p, TokKind k, const char *what) {
           "expected %s %s, found %s", tok_spell(k), what,
           tok_spell(kind(p)));
   return cur(p);
+}
+
+// deep nesting must fail with a diagnostic, never a C stack smash:
+// the guarded entries (expr/unary/type/pattern/block) bump a shared
+// depth; past the cap the parse reports one error, swallows the rest
+// of the file, and unwinds — the diag gate keeps the unwind silent
+#define PARSE_DEPTH_CAP 4000
+#define PARSE_CHAIN_CAP 8000
+static NodeRef nnew(Parser *p, NodeKind k);
+static NodeRef parse_type_inner(Parser *p);
+static NodeRef parse_pattern_inner(Parser *p);
+static NodeRef parse_block_inner(Parser *p);
+static NodeRef parse_unary_inner(Parser *p);
+static NodeRef parse_depth_hole(Parser *p, const char *what) {
+  diag_at(DIAG_ERROR, p->m->path, cur(p)->line, cur(p)->col,
+          "%s nests too deeply (over %d levels)", what, PARSE_DEPTH_CAP);
+  diag_gate_set();
+  while (!is(p, T_EOF))
+    eat(p);
+  return nnew(p, NT_INT);
 }
 
 static NodeRef nnew(Parser *p, NodeKind k) {
@@ -112,6 +134,15 @@ static NodeRef parse_fn_type(Parser *p) {
 }
 
 static NodeRef parse_type(Parser *p) {
+  if (p->depth >= PARSE_DEPTH_CAP)
+    return parse_depth_hole(p, "a type");
+  p->depth++;
+  NodeRef r = parse_type_inner(p);
+  p->depth--;
+  return r;
+}
+
+static NodeRef parse_type_inner(Parser *p) {
   switch (kind(p)) {
   case T_STAR: {
     eat(p);
@@ -184,7 +215,58 @@ static NodeRef parse_type(Parser *p) {
 
 // ============================================================ patterns
 
+static NodeRef parse_pattern(Parser *p);
+
+// the ( ... ) tuple-payload or { ... } struct-payload part of a
+// variant pattern; n is an NT_PVAR with its name already set
+static void parse_variant_payload(Parser *p, Node *n) {
+  n->list = reflist();
+  if (accept(p, T_LPAREN)) {
+    n->op = VAR_TUPLE;
+    if (!is(p, T_RPAREN)) {
+      for (;;) {
+        reflist_add(n->list, parse_pattern(p));
+        if (!accept(p, T_COMMA))
+          break;
+      }
+    }
+    expect(p, T_RPAREN, "to close variant pattern");
+  } else if (accept(p, T_LBRACE)) {
+    n->op = VAR_STRUCT;
+    if (!is(p, T_RBRACE)) {
+      for (;;) {
+        NodeRef fld = nnew(p, NT_FIELD);
+        Node *fn = node_get(fld);
+        Token *fnm = expect(p, T_IDENT, "as field binder");
+        fn->name = intern(fnm->text.p, fnm->text.n);
+        if (accept(p, T_COLON))
+          fn->a = parse_pattern(p);
+        else {
+          NodeRef bind = nnew(p, NT_PBIND);
+          node_get(bind)->name = fn->name;
+          fn->a = bind;
+        }
+        reflist_add(n->list, fld);
+        if (!accept(p, T_COMMA))
+          break;
+      }
+    }
+    expect(p, T_RBRACE, "to close variant pattern");
+  } else {
+    n->op = VAR_UNIT;
+  }
+}
+
 static NodeRef parse_pattern(Parser *p) {
+  if (p->depth >= PARSE_DEPTH_CAP)
+    return parse_depth_hole(p, "a pattern");
+  p->depth++;
+  NodeRef r = parse_pattern_inner(p);
+  p->depth--;
+  return r;
+}
+
+static NodeRef parse_pattern_inner(Parser *p) {
   switch (kind(p)) {
   case T_INT: {
     Token *t = eat(p);
@@ -256,41 +338,21 @@ static NodeRef parse_pattern(Parser *p) {
       n->line = second->line;
       n->col = second->col;
       n->name = joined;
+      parse_variant_payload(p, n);
+      return r;
+    }
+    // bare variant candidate: Some(v) / None — resolves against the
+    // match's scrutinee enum at check time (§19); a name that is not
+    // a variant stays a binder. Parens/brace demand the variant form.
+    if (is(p, T_LPAREN) || is(p, T_LBRACE)) {
+      NodeRef r = nnew(p, NT_PVAR);
+      Node *n = node_get(r);
+      n->file = first->file;
+      n->line = first->line;
+      n->col = first->col;
+      n->name = name;
       n->list = reflist();
-      if (accept(p, T_LPAREN)) {
-        n->op = VAR_TUPLE;
-        if (!is(p, T_RPAREN)) {
-          for (;;) {
-            reflist_add(n->list, parse_pattern(p));
-            if (!accept(p, T_COMMA))
-              break;
-          }
-        }
-        expect(p, T_RPAREN, "to close variant pattern");
-      } else if (accept(p, T_LBRACE)) {
-        n->op = VAR_STRUCT;
-        if (!is(p, T_RBRACE)) {
-          for (;;) {
-            NodeRef fld = nnew(p, NT_FIELD);
-            Node *fn = node_get(fld);
-            Token *fnm = expect(p, T_IDENT, "as field binder");
-            fn->name = intern(fnm->text.p, fnm->text.n);
-            if (accept(p, T_COLON))
-              fn->a = parse_pattern(p);
-            else {
-              NodeRef bind = nnew(p, NT_PBIND);
-              node_get(bind)->name = fn->name;
-              fn->a = bind;
-            }
-            reflist_add(n->list, fld);
-            if (!accept(p, T_COMMA))
-              break;
-          }
-        }
-        expect(p, T_RBRACE, "to close variant pattern");
-      } else {
-        n->op = VAR_UNIT;
-      }
+      parse_variant_payload(p, n);
       return r;
     }
     // plain binder
@@ -311,7 +373,19 @@ static NodeRef parse_pattern(Parser *p) {
 }
 
 // patterns: parse_pattern handles all forms including '_'
-#define parse_pattern_top(p) parse_pattern(p)
+static NodeRef parse_pattern_top(Parser *p);
+static NodeRef parse_pattern_top(Parser *p) {
+  NodeRef first = parse_pattern(p);
+  if (!is(p, T_PIPE))
+    return first;
+  NodeRef r = nnew(p, NT_POR);
+  Node *n = node_get(r);
+  n->list = reflist();
+  reflist_add(n->list, first);
+  while (accept(p, T_PIPE))
+    reflist_add(n->list, parse_pattern(p));
+  return r;
+}
 
 // ========================================================== expressions
 
@@ -538,10 +612,14 @@ static NodeRef parse_primary(Parser *p) {
       for (;;) {
         NodeRef arm = nnew(p, NT_ARM);
         node_get(arm)->a = parse_pattern_top(p);
+        if (accept(p, K_IF))
+          node_get(arm)->c = parse_expr(p); // §19 guard
         expect(p, T_FATARROW, "in match arm");
-        if (is(p, T_LBRACE))
+        bool blocked = false;
+        if (is(p, T_LBRACE)) {
           node_get(arm)->b = parse_block(p);
-        else {
+          blocked = true;
+        } else {
           node_get(arm)->b = parse_expr(p);
           // an assignment is a statement: an arm body that is one
           // needs a block — diagnose instead of derailing the parse
@@ -554,7 +632,9 @@ static NodeRef parse_primary(Parser *p) {
           }
         }
         reflist_add(node_get(r)->list, arm);
-        if (!accept(p, T_COMMA))
+        if (blocked)
+          accept(p, T_COMMA); // a block arm ends at '}': comma optional
+        else if (!accept(p, T_COMMA))
           break;
         if (is(p, T_RBRACE) || is(p, T_RBRACK) || is(p, T_RPAREN))
           break;
@@ -641,11 +721,13 @@ static NodeRef parse_postfix(Parser *p) {
             node_get(aw)->a = parse_expr(p);
             reflist_add(n->list, aw);
           } else {
+            bool want_mut = accept(p, K_MUT); // §18 argument marker
             NodeRef arg = parse_expr(p);
             bool spread = accept(p, T_ELLIPSIS);
             NodeRef aw = nnew(p, NT_POSARG);
             node_get(aw)->a = arg;
             node_get(aw)->bval = spread;
+            node_get(aw)->op = want_mut ? 2 : 0; // §18 marker: op 2 (make type-arg is 1) // marker rides op
             reflist_add(n->list, aw);
           }
           if (!accept(p, T_COMMA))
@@ -677,11 +759,13 @@ static NodeRef parse_postfix(Parser *p) {
               node_get(aw)->a = parse_expr(p);
               reflist_add(n->list, aw);
             } else {
+              bool want_mut = accept(p, K_MUT); // §18 argument marker
               NodeRef arg = parse_expr(p);
               bool spread = accept(p, T_ELLIPSIS);
               NodeRef aw = nnew(p, NT_POSARG);
               node_get(aw)->a = arg;
               node_get(aw)->bval = spread;
+              node_get(aw)->op = want_mut ? 2 : 0; // §18 marker: op 2 (make type-arg is 1)
               reflist_add(n->list, aw);
             }
             if (!accept(p, T_COMMA))
@@ -745,6 +829,15 @@ static NodeRef parse_postfix(Parser *p) {
 }
 
 static NodeRef parse_unary(Parser *p) {
+  if (p->depth >= PARSE_DEPTH_CAP)
+    return parse_depth_hole(p, "an expression");
+  p->depth++;
+  NodeRef r = parse_unary_inner(p);
+  p->depth--;
+  return r;
+}
+
+static NodeRef parse_unary_inner(Parser *p) {
   if (is(p, T_DASH)) {
     NodeRef r = nnew(p, NT_UNARY);
     node_get(r)->op = OP_NEG;
@@ -807,10 +900,30 @@ static NodeRef parse_binary(Parser *p, int min_prec) {
     node_get(r)->b =
         prec + 1 <= PREC_MUL ? parse_binary(p, prec + 1) : parse_unary(p);
     lhs = r;
+    if (++p->chain > PARSE_CHAIN_CAP) {
+      diag_at(DIAG_ERROR, p->m->path, cur(p)->line, cur(p)->col,
+              "an expression is too long (over %d operator levels)",
+              PARSE_CHAIN_CAP);
+      diag_gate_set();
+      while (!is(p, T_EOF))
+        eat(p);
+      return lhs;
+    }
   }
 }
 
-static NodeRef parse_expr(Parser *p) { return parse_binary(p, PREC_OR); }
+static NodeRef parse_expr(Parser *p) {
+  if (p->depth >= PARSE_DEPTH_CAP)
+    return parse_depth_hole(p, "an expression");
+  // the chain cap bounds AST depth the recursion guards cannot see:
+  // a left-associative chain parses iteratively but checks/emits
+  // recursively, so 14k flat terms once smashed the C stack
+  p->chain = 0;
+  p->depth++;
+  NodeRef r = parse_binary(p, PREC_OR);
+  p->depth--;
+  return r;
+}
 
 // ============================================================ statements
 
@@ -860,7 +973,14 @@ static RefList *parse_params(Parser *p, bool *is_variadic) {
       }
       if (!accept(p, T_COMMA))
         break;
-      if (is(p, T_RBRACE) || is(p, T_RBRACK) || is(p, T_RPAREN))
+      if (is(p, T_RPAREN)) {
+        // the grammar has no ','? here (§4.1): struct fields and
+        // variant payloads take trailing commas, parameter lists do not
+        diag_at(DIAG_ERROR, p->m->path, cur(p)->line, cur(p)->col,
+                "no trailing ',' in parameter lists");
+        break;
+      }
+      if (is(p, T_RBRACE) || is(p, T_RBRACK))
         break;
     }
   }
@@ -900,6 +1020,20 @@ static int assign_op_of(TokKind k) {
 static NodeRef parse_stmt(Parser *p);
 
 static NodeRef parse_block(Parser *p) {
+  if (p->depth >= PARSE_DEPTH_CAP) {
+    NodeRef hole = parse_depth_hole(p, "a block");
+    Node *hn = node_get(hole);
+    hn->list = reflist(); // block-shaped: safe for callers to iterate
+    hn->op = 3;
+    return hole;
+  }
+  p->depth++;
+  NodeRef r = parse_block_inner(p);
+  p->depth--;
+  return r;
+}
+
+static NodeRef parse_block_inner(Parser *p) {
   NodeRef r = nnew(p, NT_EXPRSTMT); // block = expr-stmt list wrapper
   Node *n = node_get(r);
   n->list = reflist();
@@ -1143,6 +1277,8 @@ static RefList *parse_use_segs(Parser *p) {
     reflist_add(segs, s);
     if (!accept(p, T_DOT))
       break;
+    if (is(p, T_LBRACE))
+      break; // the brace form leaves the items to the caller (§4.4)
   }
   return segs;
 }
@@ -1218,6 +1354,27 @@ static NodeRef parse_decl(Parser *p) {
     n->list = parse_params(p, &variadic);
     if (accept(p, T_ARROW))
       n->c = parse_type(p);
+    n->d = parse_block(p);
+    return r;
+  }
+  case K_TEST: {
+    if (pub) {
+      diag_at(DIAG_ERROR, p->m->path, cur(p)->line, cur(p)->col,
+              "a test block cannot be 'pub'");
+      pub = false;
+    }
+    eat(p);
+    NodeRef r = nnew(p, NT_TEST);
+    Node *n = node_get(r);
+    if (!is(p, T_STRING)) {
+      diag_at(DIAG_ERROR, p->m->path, cur(p)->line, cur(p)->col,
+              "expected a quoted test name after 'test', found %s",
+              tok_spell(kind(p)));
+      n->name = intern_c("?");
+    } else {
+      n->name = intern(cur(p)->text.p, cur(p)->text.n);
+      eat(p);
+    }
     n->d = parse_block(p);
     return r;
   }
@@ -1299,6 +1456,8 @@ static NodeRef parse_decl(Parser *p) {
               reflist_add(vn->list, f);
               if (!accept(p, T_COMMA))
                 break;
+              if (is(p, T_RBRACE))
+                break; // the payload is `fields`: a trailing ',' is legal
             }
           }
           expect(p, T_RBRACE, "to close the variant payload");
@@ -1422,6 +1581,39 @@ static NodeRef parse_decl(Parser *p) {
     Node *n = node_get(r);
     n->op = USE_PLAIN;
     n->list = parse_use_segs(p);
+    // the brace form: use segs.{a, b as c,} — pure sugar for one
+    // plain use per item (§4.4); expansion happens at load time.
+    // parse_use_segs left the cursor on '{' (the dot is consumed)
+    if (accept(p, T_LBRACE)) {
+      NodeRef items_ref = nnew(p, NT_SEG);
+      Node *items = node_get(items_ref);
+      items->list = reflist();
+      if (is(p, T_RBRACE)) {
+        diag_at(DIAG_ERROR, p->m->path, cur(p)->line, cur(p)->col,
+                "the brace form needs at least one item");
+      } else {
+        for (;;) {
+          NodeRef it = nnew(p, NT_SEG);
+          Token *inm = expect(p, T_IDENT, "as an item name");
+          node_get(it)->name = intern(inm->text.p, inm->text.n);
+          if (accept(p, K_AS)) {
+            Token *al = expect(p, T_IDENT, "as the item alias");
+            node_get(it)->name2 = intern(al->text.p, al->text.n);
+          }
+          reflist_add(items->list, it);
+          if (!accept(p, T_COMMA))
+            break;
+          if (is(p, T_RBRACE))
+            break; // the grammar's trailing comma (§4.4)
+        }
+      }
+      expect(p, T_RBRACE, "to close the item list");
+      n->op = USE_BRACE;
+      // the items ride a synthetic NT_SEG whose list carries them
+      n->d = items_ref;
+      expect(p, T_SEMI, "after the use items");
+      return r;
+    }
     if (accept(p, K_AS)) {
       Token *alias = expect(p, T_IDENT, "as the use alias");
       n->name2 = intern(alias->text.p, alias->text.n);
@@ -1476,7 +1668,7 @@ Module *module_parse_src(const char *path, const char *src) {
   m->decls = reflist();
   vec_init(&m->uses, sizeof(UseBind));
 
-  Parser p = {m, 0};
+  Parser p = {m, 0, 0, 0};
   while (!is(&p, T_EOF)) {
     if (accept(&p, T_SEMI))
       continue; // stray semicolons between decls

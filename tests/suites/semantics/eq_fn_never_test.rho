@@ -1,0 +1,13 @@
+// expect: never compare
+// spec: type-system.md §10
+// `fn` types are NEVER comparable: functions have no meaningful
+// equality, and `==` on two fn values (or a closure) is refused at
+// check time.
+fn f(x: i32) -> i32 {
+  return x;
+}
+fn main() -> i32 {
+  let g: fn(i32) -> i32 = f;
+  printf("r={}\n", (g == f));
+  return 0;
+}

@@ -1,0 +1,9 @@
+// expect: unknown label 'missing'
+// spec: check — loops
+// a labeled break names a loop label declared in this function
+fn main() -> i32 {
+  while true {
+    break missing;
+  }
+  return 0;
+}

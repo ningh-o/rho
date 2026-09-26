@@ -1,0 +1,16 @@
+// expect: does not satisfy Show: T bound to *Q here
+// spec: check — generics
+// a trait bound is verified per instantiation: the concrete bind
+// must carry the trait
+struct Q { v: i32 }
+
+trait Show {
+  fn to_str(self) -> string,
+}
+
+fn f[T: Show](x: T) -> T { return x; }
+
+fn main() -> i32 {
+  let a = f(new Q { v: 1 });
+  return 0;
+}

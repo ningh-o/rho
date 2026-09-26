@@ -1,0 +1,15 @@
+// expect: guard must be bool, got i32
+// spec: check — match
+// an arm guard is a condition: it must evaluate to bool
+enum E { A(i32), B }
+
+fn f(e: E, n: i32) -> i32 {
+  match e {
+    E.A(a) if n => a,
+    E.B => 2,
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}

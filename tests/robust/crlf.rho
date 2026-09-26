@@ -1,0 +1,4 @@
+fn main() -> i32 {
+  printf("crlf\n");
+  return 0;
+}

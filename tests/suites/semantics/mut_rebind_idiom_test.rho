@@ -1,0 +1,31 @@
+// out: param rebind store: 42
+// out: match-binder rebind store: 43
+// out: original through the view: 43
+// exit: 0
+// spec: TODO.md §18
+// The rebind idiom: value parameters and match-arm binders are
+// non-`mut` bindings; `let mut p = p;` gives the copy its own `mut`
+// permission so field stores through the handle are legal — the view
+// is shallow, so the store lands in the shared pointee and is
+// observable through the original binding too.
+struct P {
+  x: i32,
+}
+fn store_after_rebind(p: *P) -> i32 {
+  let mut v = p;
+  v.x = 42;
+  return v.x;
+}
+fn main() -> i32 {
+  let frozen = new P { x: 1 };
+  printf("param rebind store: {}\n", store_after_rebind(frozen));
+  let h: *P = match Option.Some(frozen) {
+    Option.Some(b) => b,
+    Option.None => frozen,
+  };
+  let mut w = h;
+  w.x += 1;
+  printf("match-binder rebind store: {}\n", w.x);
+  printf("original through the view: {}\n", frozen.x);
+  return 0;
+}

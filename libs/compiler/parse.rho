@@ -105,7 +105,7 @@ fn mk_stmt(tag: i32) -> *Stmt {
 
 // verbatim deep clones (other modules rebind type texts over them)
 pub fn clone_expr(e: *Expr) -> *Expr {
-  let out = new Expr { tag: e.tag, lit: e.lit, name: e.name, op: e.op,
+  let mut out = new Expr { tag: e.tag, lit: e.lit, name: e.name, op: e.op,
                        lhs: Option.None, rhs: Option.None,
                        args: make([]*Expr, len(e.args)),
                        fnames: e.fnames,
@@ -130,13 +130,13 @@ pub fn clone_expr(e: *Expr) -> *Expr {
   let mut m: usize = 0;
   while m < len(e.marms) {
     let src = e.marms[m];
-    let nab = make([]*Stmt, len(src.body));
+    let mut nab = make([]*Stmt, len(src.body));
     let mut q: usize = 0;
     while q < len(src.body) {
       nab[q] = clone_stmt(src.body[q]);
       q = q + 1;
     }
-    let arm = new MatchArm { pat: src.pat, body: nab,
+    let mut arm = new MatchArm { pat: src.pat, body: nab,
                              val: src.val };
     match src.val {
       Option.Some(v13) => {
@@ -151,7 +151,7 @@ pub fn clone_expr(e: *Expr) -> *Expr {
 }
 
 pub fn clone_stmt(st: *Stmt) -> *Stmt {
-  let out = new Stmt { tag: st.tag, fmt: st.fmt,
+  let mut out = new Stmt { tag: st.tag, fmt: st.fmt,
                        args: make([]*Expr, len(st.args)),
                        name: st.name, val: Option.None, ret: st.ret,
                        body: make([]*Stmt, len(st.body)),
@@ -189,7 +189,7 @@ pub fn clone_stmt(st: *Stmt) -> *Stmt {
 }
 
 pub fn clone_fndef(fd: *FnDef) -> *FnDef {
-  let nbody: []*Stmt = make([]*Stmt, len(fd.body));
+  let mut nbody: []*Stmt = make([]*Stmt, len(fd.body));
   let mut bi: usize = 0;
   while bi < len(fd.body) {
     nbody[bi] = clone_stmt(fd.body[bi]);
@@ -204,9 +204,9 @@ pub fn clone_fndef(fd: *FnDef) -> *FnDef {
 
 pub fn clo_expr(params: []string, body: []*Stmt,
                 rtype: string) -> *Expr {
-  let arm = new MatchArm { pat: mk_pat(0), body: body,
+  let mut arm = new MatchArm { pat: mk_pat(0), body: body,
                            val: Option.None };
-  let arms: []*MatchArm = make([]*MatchArm, 1);
+  let mut arms: []*MatchArm = make([]*MatchArm, 1);
   arms[0] = arm;
   return new Expr { tag: EX_CLO, lit: 0, name: rtype, op: 0,
                     lhs: Option.None, rhs: Option.None,
@@ -215,7 +215,7 @@ pub fn clo_expr(params: []string, body: []*Stmt,
 }
 
 pub fn ret_stmt(v: *Expr) -> *Stmt {
-  let st = mk_stmt(ST_RET);
+  let mut st = mk_stmt(ST_RET);
   st.val = Option.Some(v);
   return st;
 }
@@ -230,7 +230,7 @@ pub fn lit(v: i64) -> *Expr {
 // a one-statement wrapper: an expression riding as a statement (the
 // checker walks arm tails through it, scoped with the block's lets)
 pub fn wrap_expr_stmt(e: *Expr) -> *Stmt {
-  let st = mk_stmt(ST_CALL);
+  let mut st = mk_stmt(ST_CALL);
   st.val = Option.Some(e);
   return st;
 }
@@ -261,7 +261,7 @@ pub fn strlit(text: string) -> *Expr {
 // operator codes: 0=+ 1=- 2=* 3=/ 4=% 5=< 6=> 7=<= 8=>= 9=== 10=!=
 // 13=&& 14=|| 15=& 16=| 17=^ 18=<< 19=>>
 pub fn op_code(t: *Tok) -> i64 {
-  let a: u8 = t.text[0];
+  let mut a: u8 = t.text[0];
   if len(t.text) == 2 {
     if a == 38 {
       return 13;
@@ -376,7 +376,7 @@ pub struct Prog {
 }
 
 pub fn make_expr(count: *Expr) -> *Expr {
-  let args: []*Expr = make([]*Expr, 1);
+  let mut args: []*Expr = make([]*Expr, 1);
   args[0] = count;
   return new Expr { tag: EX_MAKE, lit: 0, name: "", op: 0,
                     lhs: Option.None, rhs: Option.None, args: args,
@@ -394,7 +394,7 @@ pub fn idx_expr(base: *Expr, index: *Expr) -> *Expr {
 // op bit0 = explicit lo, bit1 = explicit hi
 pub fn slice_expr(base: *Expr, lo: *Expr, hi: *Expr,
                   has_lo: bool, has_hi: bool) -> *Expr {
-  let args: []*Expr = make([]*Expr, 2);
+  let mut args: []*Expr = make([]*Expr, 2);
   args[0] = lo;
   args[1] = hi;
   let mut flags: i64 = 0;
@@ -432,7 +432,7 @@ pub fn arr_expr(args: []*Expr) -> *Expr {
 }
 
 pub fn if_expr(cond: *Expr, thenv: *Expr, elsev: *Expr) -> *Expr {
-  let args: []*Expr = make([]*Expr, 2);
+  let mut args: []*Expr = make([]*Expr, 2);
   args[0] = thenv;
   args[1] = elsev;
   return new Expr { tag: EX_IF, lit: 0, name: "", op: 0,
@@ -534,9 +534,9 @@ pub fn mk_enumdef(name: string, vnames: []string, vslots: []i64,
 
 // append a table entry, growing the table when full (instantiations
 // are unbounded; the slice doubles)
-pub fn reg_struct_inst(prog: *Prog, inst: *StructDef) -> i64 {
+pub fn reg_struct_inst(mut prog: *Prog, inst: *StructDef) -> i64 {
   if prog.nstructs >= len(prog.structs) {
-    let bigger: []*StructDef = make([]*StructDef,
+    let mut bigger: []*StructDef = make([]*StructDef,
                                     len(prog.structs) * 2);
     let mut q: usize = 0;
     while q < prog.nstructs {
@@ -550,9 +550,9 @@ pub fn reg_struct_inst(prog: *Prog, inst: *StructDef) -> i64 {
   return (prog.nstructs as i64) - 1;
 }
 
-pub fn reg_enum_inst(prog: *Prog, inst: *EnumDef) -> i64 {
+pub fn reg_enum_inst(mut prog: *Prog, inst: *EnumDef) -> i64 {
   if prog.nenums >= len(prog.enums) {
-    let bigger: []*EnumDef = make([]*EnumDef, len(prog.enums) * 2);
+    let mut bigger: []*EnumDef = make([]*EnumDef, len(prog.enums) * 2);
     let mut q: usize = 0;
     while q < prog.nenums {
       bigger[q] = prog.enums[q];
@@ -583,14 +583,14 @@ fn tk2(c: *PCur, k: usize) -> *Tok {
   return c.toks[len(c.toks) - 1];
 }
 
-fn tkadv(c: *PCur) {
+fn tkadv(mut c: *PCur) {
   c.pos = c.pos + 1;
 }
 
-fn eat_punct(c: *PCur, ch: u8) -> bool {
+fn eat_punct(mut c: *PCur, ch: u8) -> bool {
   let t = tk(c);
   if t.kind == lex.TK_PUNCT && len(t.text) == 1 && t.text[0] == ch {
-    tkadv(c);
+    tkadv(mut c);
     return true;
   }
   return false;
@@ -602,16 +602,16 @@ fn is_punct(t: *Tok, ch: u8) -> bool {
 
 // []T — the element type FOLLOWS the closed brackets (recursively
 // for [][]T); returns true when a bracketed type was eaten
-fn eat_slice_type(c: *PCur) -> bool {
+fn eat_slice_type(mut c: *PCur) -> bool {
   if !is_punct(tk(c), 91) {
     return false;
   }
-  tkadv(c); // [
-  eat_punct(c, 93); // ]
+  tkadv(mut c); // [
+  eat_punct(mut c, 93); // ]
   if is_punct(tk(c), 91) {
-    eat_slice_type(c);
+    eat_slice_type(mut c);
   } else {
-    tkadv(c); // the element type name
+    tkadv(mut c); // the element type name
   }
   return true;
 }
@@ -619,28 +619,28 @@ fn eat_slice_type(c: *PCur) -> bool {
 // a written type, composed: ?*T, *T, []T (recursively), weak[T],
 // Option[T]/Result[T], or a bare name; "" when nothing eatable sits
 // at the cursor
-fn eat_type(c: *PCur) -> string {
+fn eat_type(mut c: *PCur) -> string {
   let mut pre: string = "";
   if is_punct(tk(c), 63) {
-    tkadv(c); // ?
+    tkadv(mut c); // ?
     pre = "?";
   }
   if is_punct(tk(c), 42) {
-    tkadv(c); // *
-    return pre + "*" + eat_type(c);
+    tkadv(mut c); // *
+    return pre + "*" + eat_type(mut c);
   }
   if is_punct(tk(c), 91) {
-    tkadv(c); // [
-    eat_punct(c, 93); // ]
-    return pre + "[]" + eat_type(c);
+    tkadv(mut c); // [
+    eat_punct(mut c, 93); // ]
+    return pre + "[]" + eat_type(mut c);
   }
   let t = tk(c);
   if t.kind == lex.TK_KEYWORD && t.text == "fn" &&
       c.pos + 1 < len(c.toks) && is_punct(c.toks[c.pos + 1], 40) {
     // fn(params) -> T — the fn type; the whole form rides as text
     // (captures and calls key on the 'fn' prefix)
-    tkadv(c); // fn
-    tkadv(c); // (
+    tkadv(mut c); // fn
+    tkadv(mut c); // (
     let mut depth: i64 = 1;
     while tk(c).kind != lex.TK_EOF && depth > 0 {
       if is_punct(tk(c), 40) {
@@ -649,67 +649,67 @@ fn eat_type(c: *PCur) -> string {
       if is_punct(tk(c), 41) {
         depth = depth - 1;
       }
-      tkadv(c);
+      tkadv(mut c);
     }
-    eat_arrow(c);
-    eat_type(c);
+    eat_arrow(mut c);
+    eat_type(mut c);
     return pre + "fn";
   }
   if t.kind == lex.TK_IDENT || t.kind == lex.TK_KEYWORD {
     let name: string = t.text;
-    tkadv(c);
+    tkadv(mut c);
     if name == "weak" && is_punct(tk(c), 91) {
       // weak[T] — the payload text rides whole (the target keys get())
-      tkadv(c); // [
+      tkadv(mut c); // [
       let mut wargs: string = "";
       while tk(c).kind != lex.TK_EOF && !is_punct(tk(c), 93) {
         if len(wargs) > 0 {
           wargs = wargs + ",";
         }
-        wargs = wargs + eat_type(c);
-        if !eat_punct(c, 44) {
+        wargs = wargs + eat_type(mut c);
+        if !eat_punct(mut c, 44) {
           break;
         }
       }
-      eat_punct(c, 93); // ]
+      eat_punct(mut c, 93); // ]
       return pre + "weak[" + wargs + "]";
     }
     if (name == "Option" || name == "Result") &&
        is_punct(tk(c), 91) {
       // the bracketed payload(s): consumed whole, the builtin name
       // rides on (norm_enum collapses the text downstream)
-      tkadv(c); // [
+      tkadv(mut c); // [
       while tk(c).kind != lex.TK_EOF && !is_punct(tk(c), 93) {
-        eat_type(c);
-        if !eat_punct(c, 44) {
+        eat_type(mut c);
+        if !eat_punct(mut c, 44) {
           break;
         }
       }
-      eat_punct(c, 93); // ]
+      eat_punct(mut c, 93); // ]
       return pre + name;
     }
     if name == "dyn" && tk(c).kind == lex.TK_IDENT {
       // dyn Trait — the fat-dispatch type rides its trait's name
       let trt: string = tk(c).text;
-      tkadv(c);
+      tkadv(mut c);
       return pre + "dyn " + trt;
     }
     if is_punct(tk(c), 91) && c.pos + 1 < len(c.toks) &&
         !is_punct(c.toks[c.pos + 1], 93) {
       // Name[T1, T2] — explicit generic arguments; the normalized
       // full text rides as the type (instantiations key on it)
-      tkadv(c); // [
+      tkadv(mut c); // [
       let mut args: string = "";
       while tk(c).kind != lex.TK_EOF && !is_punct(tk(c), 93) {
         if len(args) > 0 {
           args = args + ",";
         }
-        args = args + eat_type(c);
-        if !eat_punct(c, 44) {
+        args = args + eat_type(mut c);
+        if !eat_punct(mut c, 44) {
           break;
         }
       }
-      eat_punct(c, 93); // ]
+      eat_punct(mut c, 93); // ]
       return pre + name + "[" + args + "]";
     }
     return pre + name;
@@ -719,18 +719,17 @@ fn eat_type(c: *PCur) -> string {
 
 // ( args… ) with optional 'name:' prefixes riding anames ("" when
 // positional) — constructors take named payload fields
-fn parse_args_named(c: *PCur, anames0: []string) -> []*Expr {
-  let mut anames: []string = anames0;
+fn parse_args_named(mut c: *PCur, mut anames: []string) -> []*Expr {
   let mut args: []*Expr = make([]*Expr, 8);
   let mut na: usize = 0;
   while true {
     if is_punct(tk(c), 41) {
-      tkadv(c);
+      tkadv(mut c);
       break;
     }
     if na >= len(args) {
-      let big: []*Expr = make([]*Expr, len(args) * 2);
-      let bign: []string = make([]string, len(anames) * 2);
+      let mut big: []*Expr = make([]*Expr, len(args) * 2);
+      let mut bign: []string = make([]string, len(anames) * 2);
       let mut gi: usize = 0;
       while gi < len(args) {
         big[gi] = args[gi];
@@ -745,13 +744,13 @@ fn parse_args_named(c: *PCur, anames0: []string) -> []*Expr {
     if t.kind == lex.TK_IDENT && c.pos + 1 < len(c.toks) &&
         is_punct(c.toks[c.pos + 1], 58) {
       anames[na] = t.text;
-      tkadv(c); // the name
-      tkadv(c); // :
+      tkadv(mut c); // the name
+      tkadv(mut c); // :
     }
-    args[na] = parse_bin(c, 0);
+    args[na] = parse_bin(mut c, 0);
     na = na + 1;
-    if !eat_punct(c, 44) {
-      eat_punct(c, 41);
+    if !eat_punct(mut c, 44) {
+      eat_punct(mut c, 41);
       break;
     }
   }
@@ -759,16 +758,16 @@ fn parse_args_named(c: *PCur, anames0: []string) -> []*Expr {
 }
 
 // ( args… ) — the shared call-argument list
-fn parse_args(c: *PCur) -> []*Expr {
+fn parse_args(mut c: *PCur) -> []*Expr {
   let mut args: []*Expr = make([]*Expr, 8);
   let mut na: usize = 0;
   while true {
     if is_punct(tk(c), 41) {
-      tkadv(c);
+      tkadv(mut c);
       break;
     }
     if na >= len(args) {
-      let big: []*Expr = make([]*Expr, len(args) * 2);
+      let mut big: []*Expr = make([]*Expr, len(args) * 2);
       let mut gi: usize = 0;
       while gi < len(args) {
         big[gi] = args[gi];
@@ -776,19 +775,19 @@ fn parse_args(c: *PCur) -> []*Expr {
       }
       args = big;
     }
-    args[na] = parse_bin(c, 0);
+    args[na] = parse_bin(mut c, 0);
     // xs... — the spread marker rides the argument's lit slot
     if is_punct(tk(c), 46) && c.pos + 2 < len(c.toks) &&
         is_punct(c.toks[c.pos + 1], 46) &&
         is_punct(c.toks[c.pos + 2], 46) {
       args[na].lit = 0 - 99;
-      tkadv(c);
-      tkadv(c);
-      tkadv(c);
+      tkadv(mut c);
+      tkadv(mut c);
+      tkadv(mut c);
     }
     na = na + 1;
-    if !eat_punct(c, 44) {
-      eat_punct(c, 41);
+    if !eat_punct(mut c, 44) {
+      eat_punct(mut c, 41);
       break;
     }
   }
@@ -799,7 +798,7 @@ fn parse_args(c: *PCur) -> []*Expr {
 // 0=|| 1=&& 2=| 3=^ 4=& 5===/!= 6=relational 7=<< >> 8=+ - 9=* / %
 fn prec_of(t: *Tok) -> i32 {
   if len(t.text) == 2 {
-    let a: u8 = t.text[0];
+    let mut a: u8 = t.text[0];
     if a == 38 {
       return 1; // &&
     }
@@ -814,7 +813,7 @@ fn prec_of(t: *Tok) -> i32 {
     }
     return 6; // <= >=
   }
-  let b: u8 = t.text[0];
+  let mut b: u8 = t.text[0];
   if b == 60 || b == 62 {
     return 6;
   }
@@ -839,8 +838,8 @@ fn is_binop(t: *Tok) -> bool {
   }
   if len(t.text) == 2 {
     // == != <= >= && || << >>
-    let a: u8 = t.text[0];
-    let b: u8 = t.text[1];
+    let mut a: u8 = t.text[0];
+    let mut b: u8 = t.text[1];
     if a == b && (a == 38 || a == 124 || a == 60 || a == 62) {
       return true;
     }
@@ -849,14 +848,14 @@ fn is_binop(t: *Tok) -> bool {
   if len(t.text) != 1 {
     return false;
   }
-  let b: u8 = t.text[0];
+  let mut b: u8 = t.text[0];
   return b == 43 || b == 45 || b == 42 || b == 47 || b == 37 ||
          b == 60 || b == 62 || b == 38 || b == 124 || b == 94;
 }
 
 // the wasm compare for an operator pair (spelling, is_eq_family)
 fn cmp_wat(t: *Tok) -> string {
-  let a: u8 = t.text[0];
+  let mut a: u8 = t.text[0];
   if len(t.text) == 2 {
     if a == 61 {
       return "i64.eq";
@@ -878,7 +877,7 @@ fn cmp_wat(t: *Tok) -> string {
 // split a format literal into its text pieces around {} holes;
 // {{ and }} escape to literal braces (collapsed into the piece text)
 fn split_fmt(s: string) -> []string {
-  let parts: []string = make([]string, len(s) + 2);
+  let mut parts: []string = make([]string, len(s) + 2);
   let mut n: usize = 0;
   let mut piece: string = "";
   let mut i: usize = 0;
@@ -915,47 +914,47 @@ pub fn fmt_pieces(s: string) -> []string {
 // postfix: [e] indexes, [a..b] slices (either end open), .name reads
 // a field, .name(args) calls a method — all bind tighter than every
 // binary level
-fn parse_postfix(c: *PCur, e0: *Expr) -> *Expr {
+fn parse_postfix(mut c: *PCur, e0: *Expr) -> *Expr {
   let mut e: *Expr = e0;
   while true {
     if is_punct(tk(c), 91) {
-      tkadv(c); // [
+      tkadv(mut c); // [
       if is_punct(tk(c), 46) {
         // [.. — open lo
-        tkadv(c);
-        eat_punct(c, 46);
+        tkadv(mut c);
+        eat_punct(mut c, 46);
         let mut hi: *Expr = lit(0);
         let mut has_hi: bool = false;
         if !is_punct(tk(c), 93) {
-          hi = parse_bin(c, 0);
+          hi = parse_bin(mut c, 0);
           has_hi = true;
         }
-        eat_punct(c, 93);
+        eat_punct(mut c, 93);
         e = slice_expr(e, lit(0), hi, false, has_hi);
         continue;
       }
-      let inner = parse_bin(c, 0);
+      let inner = parse_bin(mut c, 0);
       if is_punct(tk(c), 46) {
         // [a.. — slice with explicit lo
-        tkadv(c);
-        eat_punct(c, 46);
+        tkadv(mut c);
+        eat_punct(mut c, 46);
         let mut hi: *Expr = lit(0);
         let mut has_hi: bool = false;
         if !is_punct(tk(c), 93) {
-          hi = parse_bin(c, 0);
+          hi = parse_bin(mut c, 0);
           has_hi = true;
         }
-        eat_punct(c, 93);
+        eat_punct(mut c, 93);
         e = slice_expr(e, inner, hi, true, has_hi);
         continue;
       }
-      eat_punct(c, 93);
+      eat_punct(mut c, 93);
       e = idx_expr(e, inner);
       continue;
     }
     if is_punct(tk(c), 63) {
       // e? — the Result/Option unwrap-and-propagate
-      tkadv(c);
+      tkadv(mut c);
       e = q_expr(e);
       continue;
     }
@@ -963,14 +962,14 @@ fn parse_postfix(c: *PCur, e0: *Expr) -> *Expr {
         is_punct(c.toks[c.pos + 1], 46)) {
       // .name — a field read, or a method call when '(' follows
       // (a following '.' means this is a range's '..' — never a field)
-      tkadv(c); // .
+      tkadv(mut c); // .
       let ft = tk(c);
       let fname: string = ft.text;
-      tkadv(c);
+      tkadv(mut c);
       if is_punct(tk(c), 40) {
-        tkadv(c); // (
-        let anames: []string = make([]string, 8);
-        let args = parse_args_named(c, anames);
+        tkadv(mut c); // (
+        let mut anames: []string = make([]string, 8);
+        let mut args = parse_args_named(mut c, mut anames);
         e = mcall_named(e, fname, args, anames[0..len(args)]);
       } else {
         e = field_expr(e, fname);
@@ -983,44 +982,44 @@ fn parse_postfix(c: *PCur, e0: *Expr) -> *Expr {
 }
 
 // primary: INT | STRING | IDENT | ( expr ) | -expr — postfix follows
-fn parse_primary(c: *PCur) -> *Expr {
-  let e: *Expr = parse_atom(c);
-  return parse_postfix(c, e);
+fn parse_primary(mut c: *PCur) -> *Expr {
+  let mut e: *Expr = parse_atom(mut c);
+  return parse_postfix(mut c, e);
 }
 
-fn parse_atom(c: *PCur) -> *Expr {
+fn parse_atom(mut c: *PCur) -> *Expr {
   let t = tk(c);
   if t.kind == lex.TK_KEYWORD && t.text == "fn" &&
       c.pos + 1 < len(c.toks) && is_punct(c.toks[c.pos + 1], 40) {
     // fn(params) -> T { body } — the closure literal (params bind at
     // 64-bit lanes; captures resolve in the emitter's env)
-    tkadv(c); // fn
-    let pstr2: []bool = make([]bool, 8);
-    let pslc2: []bool = make([]bool, 8);
-    let ptypes2: []string = make([]string, 8);
-    let pvar2: []bool = make([]bool, 8);
-    let params = parse_params2(c, pstr2, pslc2, ptypes2, pvar2);
-    let rtype2: string = eat_arrow_typed(c);
+    tkadv(mut c); // fn
+    let mut pstr2: []bool = make([]bool, 8);
+    let mut pslc2: []bool = make([]bool, 8);
+    let mut ptypes2: []string = make([]string, 8);
+    let mut pvar2: []bool = make([]bool, 8);
+    let params = parse_params2(mut c, mut pstr2, mut pslc2, mut ptypes2, mut pvar2);
+    let rtype2: string = eat_arrow_typed(mut c);
     let mut body2: []*Stmt = make([]*Stmt, 0);
-    if eat_punct(c, 123) {
-      let bstmts: []*Stmt = make([]*Stmt, 16);
+    if eat_punct(mut c, 123) {
+      let mut bstmts: []*Stmt = make([]*Stmt, 16);
       let mut bn: usize = 0;
       while tk(c).kind != lex.TK_EOF {
         if is_punct(tk(c), 125) {
-          tkadv(c);
+          tkadv(mut c);
           break;
         }
-        bstmts[bn] = parse_stmt(c);
+        bstmts[bn] = parse_stmt(mut c);
         bn = bn + 1;
       }
       body2 = bstmts[0..bn];
     }
-    return parse_postfix(c, clo_expr(params, body2, rtype2));
+    return parse_postfix(mut c, clo_expr(params, body2, rtype2));
   }
   if is_punct(t, 45) {
     // -literal folds; -expr negates
-    tkadv(c);
-    let inner = parse_primary(c);
+    tkadv(mut c);
+    let inner = parse_primary(mut c);
     if inner.tag == EX_LIT {
       return lit(0 - inner.lit);
     }
@@ -1028,12 +1027,12 @@ fn parse_atom(c: *PCur) -> *Expr {
   }
   if is_punct(t, 91) {
     // [a, b, c] — a fresh slice literal
-    tkadv(c);
+    tkadv(mut c);
     let mut args: []*Expr = make([]*Expr, 8);
     let mut na: usize = 0;
     while tk(c).kind != lex.TK_EOF && !is_punct(tk(c), 93) {
       if na >= len(args) {
-        let big: []*Expr = make([]*Expr, len(args) * 2);
+        let mut big: []*Expr = make([]*Expr, len(args) * 2);
         let mut gi: usize = 0;
         while gi < len(args) {
           big[gi] = args[gi];
@@ -1041,112 +1040,112 @@ fn parse_atom(c: *PCur) -> *Expr {
         }
         args = big;
       }
-      args[na] = parse_bin(c, 0);
+      args[na] = parse_bin(mut c, 0);
       na = na + 1;
-      if !eat_punct(c, 44) {
+      if !eat_punct(mut c, 44) {
         break;
       }
     }
-    eat_punct(c, 93);
+    eat_punct(mut c, 93);
     return arr_expr(args[0..na]);
   }
   if is_punct(t, 40) && c.pos + 1 < len(c.toks) &&
       is_punct(c.toks[c.pos + 1], 42) {
     // (*e) — the deref read ('*' never opens a parenthesized binary)
-    tkadv(c); // (
-    tkadv(c); // *
-    let inner = parse_primary(c);
-    eat_punct(c, 41);
-    return parse_postfix(c, deref_expr(inner));
+    tkadv(mut c); // (
+    tkadv(mut c); // *
+    let inner = parse_primary(mut c);
+    eat_punct(mut c, 41);
+    return parse_postfix(mut c, deref_expr(inner));
   }
   if is_punct(t, 33) {
     // !expr: logical not (the value is a 0/1 i64)
-    tkadv(c);
-    let inner = parse_primary(c);
+    tkadv(mut c);
+    let inner = parse_primary(mut c);
     return bin(12, lit(0), inner);
   }
   if is_punct(t, 126) {
     // ~expr: integer bitwise-not = -1 ^ x
-    tkadv(c);
-    let inner = parse_primary(c);
+    tkadv(mut c);
+    let inner = parse_primary(mut c);
     return bin(17, lit(0 - 1), inner);
   }
   if t.kind == lex.TK_KEYWORD && t.text == "if" {
     // the if EXPRESSION: both arms are braced expressions (else-if
     // chains nest); requires else (§9 — same-type arms)
-    tkadv(c);
-    let cond = parse_bin(c, 0);
+    tkadv(mut c);
+    let cond = parse_bin(mut c, 0);
     let mut thenv: *Expr = lit(0);
-    if eat_punct(c, 123) {
-      thenv = parse_bin(c, 0);
-      eat_punct(c, 125);
+    if eat_punct(mut c, 123) {
+      thenv = parse_bin(mut c, 0);
+      eat_punct(mut c, 125);
     }
     let mut elsev: *Expr = lit(0);
     if tk(c).kind == lex.TK_KEYWORD && tk(c).text == "else" {
-      tkadv(c);
+      tkadv(mut c);
       if tk(c).kind == lex.TK_KEYWORD && tk(c).text == "if" {
-        elsev = parse_primary(c);
+        elsev = parse_primary(mut c);
       } else {
-        if eat_punct(c, 123) {
-          elsev = parse_bin(c, 0);
-          eat_punct(c, 125);
+        if eat_punct(mut c, 123) {
+          elsev = parse_bin(mut c, 0);
+          eat_punct(mut c, 125);
         }
       }
     }
     return if_expr(cond, thenv, elsev);
   }
   if t.kind == lex.TK_KEYWORD && t.text == "true" {
-    tkadv(c);
-    let b = lit(1);
+    tkadv(mut c);
+    let mut b = lit(1);
     b.name = "true"; // fmt spells the word, not the 1
     return b;
   }
   if t.kind == lex.TK_KEYWORD && t.text == "false" {
-    tkadv(c);
-    let b = lit(0);
+    tkadv(mut c);
+    let mut b = lit(0);
     b.name = "false";
     return b;
   }
   if t.kind == lex.TK_INT {
-    tkadv(c);
+    tkadv(mut c);
     return lit(t.ival);
   }
   if t.kind == lex.TK_FLOAT {
-    tkadv(c);
+    tkadv(mut c);
     return flit(t.text);
   }
   if t.kind == lex.TK_STR {
-    tkadv(c);
+    tkadv(mut c);
     return strlit(t.text);
   }
   if t.kind == lex.TK_IDENT {
-    tkadv(c);
+    tkadv(mut c);
     // make([]T, n) — the zeroed-slice allocation; 'make(' followed
     // by '[' is the builtin, anything else is an ordinary call (a
     // user fn may own the name)
     if t.text == "make" && c.pos + 1 < len(c.toks) &&
         is_punct(c.toks[c.pos], 40) &&
         is_punct(c.toks[c.pos + 1], 91) {
-      tkadv(c); // (
+      tkadv(mut c); // (
       // []elem — the composed element type rides after ]
       let mut elem: string = "";
       if is_punct(tk(c), 91) {
-        tkadv(c);
-        eat_punct(c, 93);
-        elem = eat_type(c);
+        tkadv(mut c);
+        eat_punct(mut c, 93);
+        elem = eat_type(mut c);
       }
-      eat_punct(c, 44); // ,
-      let n = parse_bin(c, 0);
-      eat_punct(c, 41); // )
-      let m = make_expr(n);
+      eat_punct(mut c, 44); // ,
+      let n = parse_bin(mut c, 0);
+      eat_punct(mut c, 41); // )
+      let mut m = make_expr(n);
       m.name = elem;
       return m;
     }
     if t.text == "match" {
       // match scrut { arms } — the expression form ('match' already
       // rode the branch-top advance; the cursor sits on the scrutinee)
-      let scrut = parse_bin(c, 0);
-      let arms = parse_arms(c);
+      let scrut = parse_bin(mut c, 0);
+      let mut arms = parse_arms(mut c);
       return match_expr(scrut, arms);
     }
     if t.text == "new" && c.pos < len(c.toks) &&
@@ -1155,32 +1154,32 @@ fn parse_atom(c: *PCur) -> *Expr {
       // new T[A, B] { field: expr, ... } — the zeroed allocation
       // ('new' already rode the branch-top advance; the cursor sits
       // on T); explicit generic args normalize into the name text
-      let st = tk(c);
+      let mut st = tk(c);
       let mut sname: string = st.text;
-      tkadv(c);
+      tkadv(mut c);
       if is_punct(tk(c), 91) && c.pos + 1 < len(c.toks) &&
           !is_punct(c.toks[c.pos + 1], 93) {
-        tkadv(c); // [
+        tkadv(mut c); // [
         let mut gargs: string = "";
         while tk(c).kind != lex.TK_EOF && !is_punct(tk(c), 93) {
           if len(gargs) > 0 {
             gargs = gargs + ",";
           }
-          gargs = gargs + eat_type(c);
-          if !eat_punct(c, 44) {
+          gargs = gargs + eat_type(mut c);
+          if !eat_punct(mut c, 44) {
             break;
           }
         }
-        eat_punct(c, 93);
+        eat_punct(mut c, 93);
         sname = sname + "[" + gargs + "]";
       }
       let mut fnames: []string = make([]string, 8);
       let mut fargs: []*Expr = make([]*Expr, 8);
       let mut nf: usize = 0;
-      if eat_punct(c, 123) {
+      if eat_punct(mut c, 123) {
         while tk(c).kind != lex.TK_EOF {
           if is_punct(tk(c), 125) {
-            tkadv(c);
+            tkadv(mut c);
             break;
           }
           let ft = tk(c);
@@ -1189,8 +1188,8 @@ fn parse_atom(c: *PCur) -> *Expr {
               // a struct literal may name every field the struct
               // declares — the tables grow on demand (a fixed cap is
               // an out-of-bounds write in the mirror)
-              let bn: []string = make([]string, len(fnames) * 2);
-              let ba: []*Expr = make([]*Expr, len(fargs) * 2);
+              let mut bn: []string = make([]string, len(fnames) * 2);
+              let mut ba: []*Expr = make([]*Expr, len(fargs) * 2);
               let mut gi2: usize = 0;
               while gi2 < len(fnames) {
                 bn[gi2] = fnames[gi2];
@@ -1201,15 +1200,15 @@ fn parse_atom(c: *PCur) -> *Expr {
               fargs = ba;
             }
             fnames[nf] = ft.text;
-            tkadv(c);
-            eat_punct(c, 58); // :
-            fargs[nf] = parse_bin(c, 0);
+            tkadv(mut c);
+            eat_punct(mut c, 58); // :
+            fargs[nf] = parse_bin(mut c, 0);
             nf = nf + 1;
           } else {
-            tkadv(c);
+            tkadv(mut c);
           }
-          if !eat_punct(c, 44) {
-            eat_punct(c, 125);
+          if !eat_punct(mut c, 44) {
+            eat_punct(mut c, 125);
             break;
           }
         }
@@ -1218,8 +1217,8 @@ fn parse_atom(c: *PCur) -> *Expr {
     }
     // name(args…) — a call
     if is_punct(tk(c), 40) {
-      tkadv(c);
-      let args = parse_args(c);
+      tkadv(mut c);
+      let mut args = parse_args(mut c);
       return call(t.text, args);
     }
     return var(t.text);
@@ -1227,36 +1226,36 @@ fn parse_atom(c: *PCur) -> *Expr {
   if is_punct(t, 42) {
     // *e — the bare deref, a unary prefix below postfix (boot's
     // parse_unary: *p.x is *(p.x); (*p).x takes the paren form)
-    tkadv(c);
-    let inner = parse_primary(c);
+    tkadv(mut c);
+    let inner = parse_primary(mut c);
     return deref_expr(inner);
   }
   if is_punct(t, 40) {
-    tkadv(c);
-    let inner = parse_bin(c, 0);
-    eat_punct(c, 41);
+    tkadv(mut c);
+    let inner = parse_bin(mut c, 0);
+    eat_punct(mut c, 41);
     return inner;
   }
   // unusable primary: a zero literal keeps the walk alive — the
   // fallback count refuses the program before anything emits
   c.perrs = c.perrs + 1;
-  tkadv(c);
+  tkadv(mut c);
   return lit(0);
 }
 
 // binary expressions by precedence climbing; 'as T' is a postfix
 // that rides at every level (the skeleton is i64 throughout: as i64
 // is identity, as i32/i32-family wraps)
-fn parse_bin(c: *PCur, min_prec: i32) -> *Expr {
-  let mut lhs: *Expr = parse_primary(c);
+fn parse_bin(mut c: *PCur, min_prec: i32) -> *Expr {
+  let mut lhs: *Expr = parse_primary(mut c);
   while true {
     let t = tk(c);
     if t.kind == lex.TK_KEYWORD && t.text == "as" {
-      tkadv(c);
+      tkadv(mut c);
       let tt = tk(c);
       let tname: string = tt.text;
-      tkadv(c);
-      let as_node = bin(11, lhs, lit(0));
+      tkadv(mut c);
+      let mut as_node = bin(11, lhs, lit(0));
       as_node.name = tname; // the width rides the name for emit/fmt
       lhs = as_node;
       continue;
@@ -1264,71 +1263,71 @@ fn parse_bin(c: *PCur, min_prec: i32) -> *Expr {
     if !is_binop(t) {
       break;
     }
-    let p: i32 = prec_of(t);
+    let mut p: i32 = prec_of(t);
     if p < min_prec {
       break;
     }
     let op: i64 = op_code(t);
-    tkadv(c);
-    let rhs: *Expr = parse_bin(c, p + 1);
+    tkadv(mut c);
+    let rhs: *Expr = parse_bin(mut c, p + 1);
     lhs = bin(op, lhs, rhs);
   }
   return lhs;
 }
 
 // one pattern: _ | INT | Enum.Var | Enum.Var(a, b) | Enum.Var { a, b }
-fn parse_pat(c: *PCur) -> *Pat {
+fn parse_pat(mut c: *PCur) -> *Pat {
   let t = tk(c);
   if t.kind == lex.TK_IDENT && t.text == "_" {
-    tkadv(c);
+    tkadv(mut c);
     return mk_pat(0);
   }
   if t.kind == lex.TK_INT {
-    tkadv(c);
-    let p = mk_pat(1);
+    tkadv(mut c);
+    let mut p = mk_pat(1);
     p.lit = t.ival;
     return p;
   }
   if is_punct(t, 45) && c.pos + 1 < len(c.toks) &&
       c.toks[c.pos + 1].kind == lex.TK_INT {
     // -INT
-    tkadv(c);
+    tkadv(mut c);
     let it = tk(c);
-    tkadv(c);
-    let p = mk_pat(1);
+    tkadv(mut c);
+    let mut p = mk_pat(1);
     p.lit = 0 - it.ival;
     return p;
   }
   if t.kind == lex.TK_IDENT || t.kind == lex.TK_KEYWORD {
     let name0: string = t.text;
-    tkadv(c);
+    tkadv(mut c);
     if is_punct(tk(c), 46) {
-      tkadv(c); // .
+      tkadv(mut c); // .
       let vt = tk(c);
-      let p = mk_pat(2);
+      let mut p = mk_pat(2);
       p.ename = name0;
       p.vname = vt.text;
-      tkadv(c);
-      let binders: []string = make([]string, 8);
+      tkadv(mut c);
+      let mut binders: []string = make([]string, 8);
       let mut nb: usize = 0;
       if is_punct(tk(c), 40) {
         // tuple payload binders
-        tkadv(c);
+        tkadv(mut c);
         while true {
           if is_punct(tk(c), 41) {
-            tkadv(c);
+            tkadv(mut c);
             break;
           }
           let bt = tk(c);
           if bt.kind == lex.TK_IDENT || bt.kind == lex.TK_KEYWORD {
             binders[nb] = bt.text;
             nb = nb + 1;
-            tkadv(c);
+            tkadv(mut c);
           } else {
-            tkadv(c);
+            tkadv(mut c);
           }
-          if !eat_punct(c, 44) {
-            eat_punct(c, 41);
+          if !eat_punct(mut c, 44) {
+            eat_punct(mut c, 41);
             break;
           }
         }
@@ -1336,24 +1335,24 @@ fn parse_pat(c: *PCur) -> *Pat {
         if is_punct(tk(c), 123) {
           // struct payload binders: 'field: binder' pairs — the name
           // after the colon binds (the field name itself does not)
-          tkadv(c);
+          tkadv(mut c);
           while tk(c).kind != lex.TK_EOF {
             if is_punct(tk(c), 125) {
-              tkadv(c);
+              tkadv(mut c);
               break;
             }
             let bt = tk(c);
             if bt.kind == lex.TK_IDENT || bt.kind == lex.TK_KEYWORD {
-              tkadv(c);
+              tkadv(mut c);
               if is_punct(tk(c), 58) {
                 // 'field: binder' — the name after the colon binds
-                tkadv(c); // :
+                tkadv(mut c); // :
                 let bnd = tk(c);
                 if bnd.kind == lex.TK_IDENT ||
                     bnd.kind == lex.TK_KEYWORD {
                   binders[nb] = bnd.text;
                   nb = nb + 1;
-                  tkadv(c);
+                  tkadv(mut c);
                 }
               } else {
                 // a bare name binds itself (the field's own name)
@@ -1361,10 +1360,10 @@ fn parse_pat(c: *PCur) -> *Pat {
                 nb = nb + 1;
               }
             } else {
-              tkadv(c);
+              tkadv(mut c);
             }
-            if !eat_punct(c, 44) {
-              eat_punct(c, 125);
+            if !eat_punct(mut c, 44) {
+              eat_punct(mut c, 125);
               break;
             }
           }
@@ -1378,35 +1377,35 @@ fn parse_pat(c: *PCur) -> *Pat {
     return p0;
   }
   c.perrs = c.perrs + 1;
-  tkadv(c);
+  tkadv(mut c);
   return mk_pat(0);
 }
 
 // the arm list: PAT => expr, | PAT => { stmts tail-expr }, — the
 // trailing comma is optional after the last arm
-fn parse_arms(c: *PCur) -> []*MatchArm {
-  let arms: []*MatchArm = make([]*MatchArm, 12);
+fn parse_arms(mut c: *PCur) -> []*MatchArm {
+  let mut arms: []*MatchArm = make([]*MatchArm, 12);
   let mut na: usize = 0;
-  if !eat_punct(c, 123) {
+  if !eat_punct(mut c, 123) {
     return arms[0..0];
   }
   while tk(c).kind != lex.TK_EOF {
     if is_punct(tk(c), 125) {
-      tkadv(c);
+      tkadv(mut c);
       break;
     }
-    let pat = parse_pat(c);
-    eat_punct(c, 61); // = (the arrow's two tokens)
-    eat_punct(c, 62); // >
+    let pat = parse_pat(mut c);
+    eat_punct(mut c, 61); // = (the arrow's two tokens)
+    eat_punct(mut c, 62); // >
     if is_punct(tk(c), 123) {
       // a block arm: statements, then an optional tail expression
-      tkadv(c);
-      let body: []*Stmt = make([]*Stmt, 16);
+      tkadv(mut c);
+      let mut body: []*Stmt = make([]*Stmt, 16);
       let mut nb: usize = 0;
       let mut tail: ?*Expr = Option.None;
       while tk(c).kind != lex.TK_EOF {
         if is_punct(tk(c), 125) {
-          tkadv(c);
+          tkadv(mut c);
           break;
         }
         // a tail expression: an expr followed by } (no ';') — the
@@ -1415,25 +1414,25 @@ fn parse_arms(c: *PCur) -> []*MatchArm {
         // cursor rewinds (parse_stmt re-parses it for real)
         let save: usize = c.pos;
         let psave: i64 = c.perrs;
-        let e = parse_bin(c, 0);
+        let mut e = parse_bin(mut c, 0);
         if is_punct(tk(c), 125) {
           tail = Option.Some(e);
-          tkadv(c);
+          tkadv(mut c);
           break;
         }
         c.pos = save;
         c.perrs = psave;
-        body[nb] = parse_stmt(c);
+        body[nb] = parse_stmt(mut c);
         nb = nb + 1;
       }
       arms[na] = mk_arm(pat, body[0..nb], tail);
     } else {
-      let e = parse_bin(c, 0);
+      let mut e = parse_bin(mut c, 0);
       arms[na] = mk_arm(pat, make([]*Stmt, 0), Option.Some(e));
     }
     na = na + 1;
-    if !eat_punct(c, 44) {
-      eat_punct(c, 125);
+    if !eat_punct(mut c, 44) {
+      eat_punct(mut c, 125);
       break;
     }
   }
@@ -1441,68 +1440,68 @@ fn parse_arms(c: *PCur) -> []*MatchArm {
 }
 
 // a { stmt* } block
-fn parse_block(c: *PCur) -> []*Stmt {
-  let out: []*Stmt = make([]*Stmt, 64);
+fn parse_block(mut c: *PCur) -> []*Stmt {
+  let mut out: []*Stmt = make([]*Stmt, 64);
   let mut n: usize = 0;
-  if !eat_punct(c, 123) {
+  if !eat_punct(mut c, 123) {
     return out[0..0];
   }
   while tk(c).kind != lex.TK_EOF {
     if is_punct(tk(c), 125) {
-      tkadv(c);
+      tkadv(mut c);
       break;
     }
-    out[n] = parse_stmt(c);
+    out[n] = parse_stmt(mut c);
     n = n + 1;
   }
   return out[0..n];
 }
 
 // one statement: printf/let/return/if/while
-fn parse_stmt(c: *PCur) -> *Stmt {
+fn parse_stmt(mut c: *PCur) -> *Stmt {
   let t = tk(c);
   if t.kind == lex.TK_KEYWORD && t.text == "return" {
-    tkadv(c);
-    let st = mk_stmt(ST_RET);
+    tkadv(mut c);
+    let mut st = mk_stmt(ST_RET);
     if !is_punct(tk(c), 59) {
-      st.val = Option.Some(parse_bin(c, 0));
+      st.val = Option.Some(parse_bin(mut c, 0));
     }
-    eat_punct(c, 59);
+    eat_punct(mut c, 59);
     return st;
   }
   if t.kind == lex.TK_KEYWORD && t.text == "let" {
-    tkadv(c);
+    tkadv(mut c);
     let nt = tk(c);
     let mut nm: string = "_";
     let mut is_mut: bool = false;
     if nt.kind == lex.TK_IDENT || nt.kind == lex.TK_KEYWORD {
       nm = nt.text;
-      tkadv(c);
+      tkadv(mut c);
     }
     if nm == "mut" {
       let mt = tk(c);
       if mt.kind == lex.TK_IDENT || mt.kind == lex.TK_KEYWORD {
         nm = mt.text;
         is_mut = true;
-        tkadv(c);
+        tkadv(mut c);
       }
     }
     // optional : type ([]T eats the bracketed element form; a
     // scalar annotation rides the fmt slot for width fidelity)
     let mut tyname: string = "";
     if is_punct(tk(c), 58) {
-      tkadv(c);
-      tyname = eat_type(c);
+      tkadv(mut c);
+      tyname = eat_type(mut c);
     }
-    if !eat_punct(c, 61) {
+    if !eat_punct(mut c, 61) {
       c.perrs = c.perrs + 1;
-      let bad = mk_stmt(ST_RET);
+      let mut bad = mk_stmt(ST_RET);
       bad.ret = 0 - 21;
       return bad;
     }
-    let e = parse_bin(c, 0);
-    eat_punct(c, 59);
-    let st = mk_stmt(ST_LET);
+    let mut e = parse_bin(mut c, 0);
+    eat_punct(mut c, 59);
+    let mut st = mk_stmt(ST_LET);
     st.name = nm;
     st.fmt = tyname;
     if is_mut {
@@ -1513,30 +1512,30 @@ fn parse_stmt(c: *PCur) -> *Stmt {
   }
   if (t.kind == lex.TK_IDENT || t.kind == lex.TK_KEYWORD) &&
       t.text == "printf" {
-    tkadv(c);
-    if !eat_punct(c, 40) {
+    tkadv(mut c);
+    if !eat_punct(mut c, 40) {
       c.perrs = c.perrs + 1;
-      let bad = mk_stmt(ST_RET);
+      let mut bad = mk_stmt(ST_RET);
       bad.ret = 0 - 22;
       return bad;
     }
     let ft = tk(c);
     if ft.kind != lex.TK_STR {
       c.perrs = c.perrs + 1;
-      let bad = mk_stmt(ST_RET);
+      let mut bad = mk_stmt(ST_RET);
       bad.ret = 0 - 23;
       return bad;
     }
-    tkadv(c);
-    let args: []*Expr = make([]*Expr, 8);
+    tkadv(mut c);
+    let mut args: []*Expr = make([]*Expr, 8);
     let mut na: usize = 0;
-    while eat_punct(c, 44) {
-      args[na] = parse_bin(c, 0);
+    while eat_punct(mut c, 44) {
+      args[na] = parse_bin(mut c, 0);
       na = na + 1;
     }
-    eat_punct(c, 41);
-    eat_punct(c, 59);
-    let st = mk_stmt(ST_PF);
+    eat_punct(mut c, 41);
+    eat_punct(mut c, 59);
+    let mut st = mk_stmt(ST_PF);
     st.fmt = ft.text;
     st.args = args[0..na];
     return st;
@@ -1565,16 +1564,16 @@ fn parse_stmt(c: *PCur) -> *Stmt {
       look = look + 1;
     }
     if !dot_next {
-    tkadv(c); // the base name
-    eat_punct(c, 91); // [
-    let idx = parse_bin(c, 0);
-    eat_punct(c, 93); // ]
-    eat_punct(c, 61); // =
-    let e = parse_bin(c, 0);
-    eat_punct(c, 59);
-    let st = mk_stmt(ST_ISTORE);
+    tkadv(mut c); // the base name
+    eat_punct(mut c, 91); // [
+    let idx = parse_bin(mut c, 0);
+    eat_punct(mut c, 93); // ]
+    eat_punct(mut c, 61); // =
+    let mut e = parse_bin(mut c, 0);
+    eat_punct(mut c, 59);
+    let mut st = mk_stmt(ST_ISTORE);
     st.name = t.text;
-    let a: []*Expr = make([]*Expr, 1);
+    let mut a: []*Expr = make([]*Expr, 1);
     a[0] = idx;
     st.args = a;
     st.val = Option.Some(e);
@@ -1584,20 +1583,20 @@ fn parse_stmt(c: *PCur) -> *Stmt {
   if t.kind == lex.TK_IDENT && c.pos + 1 < len(c.toks) &&
       is_punct(c.toks[c.pos + 1], 40) {
     // name(args); — a call statement, its result discarded
-    let e = parse_bin(c, 0);
-    eat_punct(c, 59);
-    let st = mk_stmt(ST_CALL);
+    let mut e = parse_bin(mut c, 0);
+    eat_punct(mut c, 59);
+    let mut st = mk_stmt(ST_CALL);
     st.val = Option.Some(e);
     return st;
   }
   if t.kind == lex.TK_IDENT && c.pos + 1 < len(c.toks) &&
       is_punct(c.toks[c.pos + 1], 61) {
     // name = expr;
-    tkadv(c); // the name
-    eat_punct(c, 61); // '='
-    let e = parse_bin(c, 0);
-    eat_punct(c, 59);
-    let st = mk_stmt(ST_SET);
+    tkadv(mut c); // the name
+    eat_punct(mut c, 61); // '='
+    let mut e = parse_bin(mut c, 0);
+    eat_punct(mut c, 59);
+    let mut st = mk_stmt(ST_SET);
     st.name = t.text;
     st.val = Option.Some(e);
     return st;
@@ -1612,11 +1611,11 @@ fn parse_stmt(c: *PCur) -> *Stmt {
     // the spelling rides st.fmt so fmt prints the compound back
     let opt: u8 = c.toks[c.pos + 1].text[0];
     let opspell: string = c.toks[c.pos + 1].text;
-    tkadv(c); // the name
-    tkadv(c); // the operator
-    let rhs = parse_bin(c, 0);
-    eat_punct(c, 59);
-    let st = mk_stmt(ST_SET);
+    tkadv(mut c); // the name
+    tkadv(mut c); // the operator
+    let rhs = parse_bin(mut c, 0);
+    eat_punct(mut c, 59);
+    let mut st = mk_stmt(ST_SET);
     st.name = t.text;
     st.fmt = opspell; // the two-char token already carries its =
     let code: i64 = match opt {
@@ -1644,12 +1643,12 @@ fn parse_stmt(c: *PCur) -> *Stmt {
       _ => 19,
     };
     let opspell: string = c.toks[c.pos + 1].text;
-    tkadv(c); // the name
-    tkadv(c); // << or >>
-    tkadv(c); // '='
-    let rhs = parse_bin(c, 0);
-    eat_punct(c, 59);
-    let st = mk_stmt(ST_SET);
+    tkadv(mut c); // the name
+    tkadv(mut c); // << or >>
+    tkadv(mut c); // '='
+    let rhs = parse_bin(mut c, 0);
+    eat_punct(mut c, 59);
+    let mut st = mk_stmt(ST_SET);
     st.name = t.text;
     st.fmt = opspell + "=";
     st.val = Option.Some(bin(code, var(t.text), rhs));
@@ -1659,11 +1658,11 @@ fn parse_stmt(c: *PCur) -> *Stmt {
       t.kind == lex.TK_KEYWORD) {
     // match scrut { arms } — the statement form (arm values drop);
     // the trailing ';' is optional, like boot's
-    tkadv(c);
-    let st = mk_stmt(ST_MATCH);
-    st.val = Option.Some(parse_bin(c, 0));
-    st.marms = parse_arms(c);
-    eat_punct(c, 59);
+    tkadv(mut c);
+    let mut st = mk_stmt(ST_MATCH);
+    st.val = Option.Some(parse_bin(mut c, 0));
+    st.marms = parse_arms(mut c);
+    eat_punct(mut c, 59);
     return st;
   }
   let mut index_first: bool = false;
@@ -1695,49 +1694,49 @@ fn parse_stmt(c: *PCur) -> *Stmt {
     // base[i].f = e (the index-first form rides st.ret = 1), or a
     // method-call statement base.m(args);
     let base: string = t.text;
-    tkadv(c); // the base
+    tkadv(mut c); // the base
     if elem_store {
       // base[i].f... — the element's field
-      tkadv(c); // [
-      idx0 = parse_bin(c, 0);
-      eat_punct(c, 93); // ]
+      tkadv(mut c); // [
+      idx0 = parse_bin(mut c, 0);
+      eat_punct(mut c, 93); // ]
       index_first = true;
-      eat_punct(c, 46); // .
+      eat_punct(mut c, 46); // .
     } else {
-      tkadv(c); // .
+      tkadv(mut c); // .
     }
-    let names: []string = make([]string, 8);
+    let mut names: []string = make([]string, 8);
     let mut nn: usize = 1;
     names[0] = tk(c).text;
-    tkadv(c);
+    tkadv(mut c);
     while is_punct(tk(c), 46) {
-      tkadv(c);
+      tkadv(mut c);
       names[nn] = tk(c).text;
       nn = nn + 1;
-      tkadv(c);
+      tkadv(mut c);
     }
     if is_punct(tk(c), 40) {
       // base.m(args); — the method-call statement, result discarded
-      tkadv(c); // (
-      let args = parse_args(c);
-      eat_punct(c, 59);
-      let st = mk_stmt(ST_CALL);
+      tkadv(mut c); // (
+      let mut args = parse_args(mut c);
+      eat_punct(mut c, 59);
+      let mut st = mk_stmt(ST_CALL);
       st.val = Option.Some(mcall_expr(var(base), names[0], args));
       return st;
     }
     let mut indexed: bool = false;
     let mut idx: *Expr = lit(0);
     if is_punct(tk(c), 91) {
-      tkadv(c); // [
+      tkadv(mut c); // [
       indexed = true;
-      idx = parse_bin(c, 0);
-      eat_punct(c, 93); // ]
+      idx = parse_bin(mut c, 0);
+      eat_punct(mut c, 93); // ]
     }
     // '=' or a compound operator (the shift compounds are 3 tokens)
     let mut opspell: string = "";
     let mut code: i64 = 0 - 1;
     if is_punct(tk(c), 61) {
-      tkadv(c);
+      tkadv(mut c);
     } else {
       if c.pos + 1 < len(c.toks) && tk(c).kind == lex.TK_PUNCT &&
           len(tk(c).text) == 2 && tk(c).text[1] == 61 &&
@@ -1754,7 +1753,7 @@ fn parse_stmt(c: *PCur) -> *Stmt {
           94 => 17,
           _ => 4,
         };
-        tkadv(c); // the compound operator is ONE two-char token
+        tkadv(mut c); // the compound operator is ONE two-char token
       } else {
         if c.pos + 2 < len(c.toks) && tk(c).kind == lex.TK_PUNCT &&
             (tk(c).text == "<<" || tk(c).text == ">>") &&
@@ -1764,29 +1763,29 @@ fn parse_stmt(c: *PCur) -> *Stmt {
             _ => 19,
           };
           opspell = tk(c).text + "=";
-          tkadv(c);
-          tkadv(c);
-          tkadv(c);
+          tkadv(mut c);
+          tkadv(mut c);
+          tkadv(mut c);
         } else {
-          let bad = mk_stmt(ST_RET);
+          let mut bad = mk_stmt(ST_RET);
           bad.ret = 0 - 24;
           return bad;
         }
       }
     }
-    let rhs = parse_bin(c, 0);
-    eat_punct(c, 59);
-    let st = mk_stmt(ST_FSTORE);
+    let rhs = parse_bin(mut c, 0);
+    eat_punct(mut c, 59);
+    let mut st = mk_stmt(ST_FSTORE);
     st.name = base;
     st.path = names[0..nn];
     if index_first {
       st.ret = 1;
-      let a0: []*Expr = make([]*Expr, 1);
+      let mut a0: []*Expr = make([]*Expr, 1);
       a0[0] = idx0;
       st.args = a0;
     }
     if indexed {
-      let a: []*Expr = make([]*Expr, 1);
+      let mut a: []*Expr = make([]*Expr, 1);
       a[0] = idx;
       st.args = a;
     }
@@ -1812,28 +1811,28 @@ fn parse_stmt(c: *PCur) -> *Stmt {
     // { stmts } — a bare block: its own scope, its defers unwind at
     // its end (boot's T_LBRACE statement form); an optional ';' may
     // follow the closing brace
-    let st = mk_stmt(ST_BLOCK);
-    st.body = parse_block(c);
-    eat_punct(c, 59);
+    let mut st = mk_stmt(ST_BLOCK);
+    st.body = parse_block(mut c);
+    eat_punct(mut c, 59);
     return st;
   }
   if t.kind == lex.TK_KEYWORD && t.text == "if" {
-    tkadv(c);
-    let st = mk_stmt(ST_IF);
-    let cond = parse_bin(c, 0);
+    tkadv(mut c);
+    let mut st = mk_stmt(ST_IF);
+    let cond = parse_bin(mut c, 0);
     st.val = Option.Some(cond);
-    st.body = parse_block(c);
-    let t2 = tk(c);
+    st.body = parse_block(mut c);
+    let mut t2 = tk(c);
     if t2.kind == lex.TK_KEYWORD && t2.text == "else" {
-      tkadv(c);
+      tkadv(mut c);
       let t3 = tk(c);
       if t3.kind == lex.TK_KEYWORD && t3.text == "if" {
         // else if: a one-statement else holding the nested if
-        let nested: []*Stmt = make([]*Stmt, 1);
-        nested[0] = parse_stmt(c);
+        let mut nested: []*Stmt = make([]*Stmt, 1);
+        nested[0] = parse_stmt(mut c);
         st.body2 = nested[0..1];
       } else {
-        st.body2 = parse_block(c);
+        st.body2 = parse_block(mut c);
       }
     }
     return st;
@@ -1845,77 +1844,77 @@ fn parse_stmt(c: *PCur) -> *Stmt {
     if (after.kind == lex.TK_KEYWORD && after.text == "while") ||
        (after.kind == lex.TK_KEYWORD && after.text == "loop") {
       let label: string = t.text;
-      tkadv(c); // the ident
-      tkadv(c); // ':'
-      let st = parse_stmt(c);
+      tkadv(mut c); // the ident
+      tkadv(mut c); // ':'
+      let mut st = parse_stmt(mut c);
       st.name = label;
       return st;
     }
   }
   if t.kind == lex.TK_KEYWORD && t.text == "defer" {
     // defer stmt; — an assignment or a call, run at scope exit
-    tkadv(c);
-    let st = mk_stmt(ST_DEFER);
-    st.sub = Option.Some(parse_stmt(c));
+    tkadv(mut c);
+    let mut st = mk_stmt(ST_DEFER);
+    st.sub = Option.Some(parse_stmt(mut c));
     return st;
   }
   if t.kind == lex.TK_KEYWORD && t.text == "break" {
-    tkadv(c);
-    let st = mk_stmt(ST_BREAK);
+    tkadv(mut c);
+    let mut st = mk_stmt(ST_BREAK);
     let nt = tk(c);
     if nt.kind == lex.TK_IDENT {
       st.name = nt.text;
-      tkadv(c);
+      tkadv(mut c);
     }
-    eat_punct(c, 59);
+    eat_punct(mut c, 59);
     return st;
   }
   if t.kind == lex.TK_KEYWORD && t.text == "continue" {
-    tkadv(c);
-    let st = mk_stmt(ST_CONT);
+    tkadv(mut c);
+    let mut st = mk_stmt(ST_CONT);
     let nt = tk(c);
     if nt.kind == lex.TK_IDENT {
       st.name = nt.text;
-      tkadv(c);
+      tkadv(mut c);
     }
-    eat_punct(c, 59);
+    eat_punct(mut c, 59);
     return st;
   }
   if t.kind == lex.TK_KEYWORD && t.text == "loop" {
-    tkadv(c);
-    let st = mk_stmt(ST_LOOP);
-    st.body = parse_block(c);
+    tkadv(mut c);
+    let mut st = mk_stmt(ST_LOOP);
+    st.body = parse_block(mut c);
     return st;
   }
   if t.kind == lex.TK_KEYWORD && t.text == "while" {
-    tkadv(c);
-    let st = mk_stmt(ST_WHILE);
-    let cond = parse_bin(c, 0);
+    tkadv(mut c);
+    let mut st = mk_stmt(ST_WHILE);
+    let cond = parse_bin(mut c, 0);
     st.val = Option.Some(cond);
-    st.body = parse_block(c);
+    st.body = parse_block(mut c);
     return st;
   }
   // unknown statement: skip a token so the walk makes progress —
   // the fallback count refuses the program before anything emits
   c.perrs = c.perrs + 1;
-  tkadv(c);
-  let bad = mk_stmt(ST_RET);
+  tkadv(mut c);
+  let mut bad = mk_stmt(ST_RET);
   bad.ret = 0 - 100;
   return bad;
 }
 
 // ( params ) — names plus a string flag per parameter (': string');
 // everything else is i64
-fn parse_params2(c: *PCur, pstr: []bool, pslc: []bool,
-                 ptypes: []string, pvar: []bool) -> []string {
-  let names: []string = make([]string, 8);
+fn parse_params2(mut c: *PCur, mut pstr: []bool, mut pslc: []bool,
+                 mut ptypes: []string, mut pvar: []bool) -> []string {
+  let mut names: []string = make([]string, 8);
   let mut n: usize = 0;
-  if !eat_punct(c, 40) {
+  if !eat_punct(mut c, 40) {
     return names[0..0];
   }
   while true {
     if is_punct(tk(c), 41) {
-      tkadv(c);
+      tkadv(mut c);
       break;
     }
     let pt = tk(c);
@@ -1925,19 +1924,19 @@ fn parse_params2(c: *PCur, pstr: []bool, pslc: []bool,
       pslc[n] = false;
       pvar[n] = false;
       n = n + 1;
-      tkadv(c);
+      tkadv(mut c);
       // optional : type ([]T and *T ride composed text; string and
       // the slice forms take the pair ABI, pointers the plain lane)
       if is_punct(tk(c), 58) {
-        tkadv(c);
-        let ty: string = eat_type(c);
+        tkadv(mut c);
+        let ty: string = eat_type(mut c);
         // T... — the variadic rest parameter: a []T in the body
         if is_punct(tk(c), 46) && c.pos + 2 < len(c.toks) &&
             is_punct(c.toks[c.pos + 1], 46) &&
             is_punct(c.toks[c.pos + 2], 46) {
-          tkadv(c);
-          tkadv(c);
-          tkadv(c);
+          tkadv(mut c);
+          tkadv(mut c);
+          tkadv(mut c);
           ptypes[n - 1] = "[]" + ty;
           pstr[n - 1] = true;
           pslc[n - 1] = true;
@@ -1955,10 +1954,10 @@ fn parse_params2(c: *PCur, pstr: []bool, pslc: []bool,
         }
       }
     } else {
-      tkadv(c);
+      tkadv(mut c);
     }
-    if !eat_punct(c, 44) {
-      eat_punct(c, 41);
+    if !eat_punct(mut c, 44) {
+      eat_punct(mut c, 41);
       break;
     }
   }
@@ -1966,17 +1965,17 @@ fn parse_params2(c: *PCur, pstr: []bool, pslc: []bool,
 }
 
 // the optional '-> type' tail; returns the composed type text or ""
-fn eat_arrow_typed(c: *PCur) -> string {
+fn eat_arrow_typed(mut c: *PCur) -> string {
   if is_punct(tk(c), 45) {
-    tkadv(c);          // -
-    eat_punct(c, 62);  // > (the arrow is two tokens)
-    return eat_type(c);
+    tkadv(mut c);          // -
+    eat_punct(mut c, 62);  // > (the arrow is two tokens)
+    return eat_type(mut c);
   }
   return "";
 }
 
-fn eat_arrow(c: *PCur) {
-  eat_arrow_typed(c);
+fn eat_arrow(mut c: *PCur) {
+  eat_arrow_typed(mut c);
 }
 
 // fold a const initializer: literals, earlier names, arithmetic and
@@ -2029,25 +2028,25 @@ pub fn fold_const(e: *Expr, names: []string, vals: []i64,
 pub fn parse(toks: []*Tok, src: string) -> *Prog {
   let mut fns: []*FnDef = make([]*FnDef, 16);
   let mut nf: usize = 0;
-  let nodes: []*Stmt = make([]*Stmt, len(src) + 4);
+  let mut nodes: []*Stmt = make([]*Stmt, len(src) + 4);
   let mut n: usize = 0;
-  let c = new PCur { toks: toks, pos: 0, perrs: 0,
+  let mut c = new PCur { toks: toks, pos: 0, perrs: 0,
                     impl_type: "" };
-  let cnames: []string = make([]string, 64);
-  let cvals: []i64 = make([]i64, 64);
-  let cstatic: []bool = make([]bool, 64);
-  let ctypes: []string = make([]string, 64);
-  let cmuts: []bool = make([]bool, 64);
-  let cexprs: []*Expr = make([]*Expr, 64);
+  let mut cnames: []string = make([]string, 64);
+  let mut cvals: []i64 = make([]i64, 64);
+  let mut cstatic: []bool = make([]bool, 64);
+  let mut ctypes: []string = make([]string, 64);
+  let mut cmuts: []bool = make([]bool, 64);
+  let mut cexprs: []*Expr = make([]*Expr, 64);
   let mut nc: usize = 0;
-  let structs: []*StructDef = make([]*StructDef, 32);
+  let mut structs: []*StructDef = make([]*StructDef, 32);
   let mut ns: usize = 0;
-  let enums: []*EnumDef = make([]*EnumDef, 32);
+  let mut enums: []*EnumDef = make([]*EnumDef, 32);
   let mut ne: usize = 0;
-  let traits: []*TraitDef = make([]*TraitDef, 16);
-  let uses: []string = make([]string, 32);
-  let ualias: []string = make([]string, 32);
-  let upub: []bool = make([]bool, 32);
+  let mut traits: []*TraitDef = make([]*TraitDef, 16);
+  let mut uses: []string = make([]string, 32);
+  let mut ualias: []string = make([]string, 32);
+  let mut upub: []bool = make([]bool, 32);
   let mut nu: usize = 0;
   let mut pending_pub: bool = false;
   let mut ntr: usize = 0;
@@ -2060,23 +2059,23 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
         c.toks[c.pos + 1].kind == lex.TK_KEYWORD) {
       // trait Name { fn method(self) -> T, ... } — the declaration
       // names the vtable ordinals; satisfaction is name-matching
-      tkadv(c); // trait
+      tkadv(mut c); // trait
       let trname: string = tk(c).text;
-      tkadv(c);
-      let tms: []string = make([]string, 8);
-      let trts: []string = make([]string, 8);
+      tkadv(mut c);
+      let mut tms: []string = make([]string, 8);
+      let mut trts: []string = make([]string, 8);
       let mut ntm: usize = 0;
-      if eat_punct(c, 123) {
+      if eat_punct(mut c, 123) {
         while tk(c).kind != lex.TK_EOF {
           if is_punct(tk(c), 125) {
-            tkadv(c);
+            tkadv(mut c);
             break;
           }
           if tk(c).kind == lex.TK_KEYWORD && tk(c).text == "fn" {
-            tkadv(c);
+            tkadv(mut c);
             let mt2 = tk(c);
             if mt2.kind == lex.TK_IDENT || mt2.kind == lex.TK_KEYWORD {
-              tkadv(c); // past the name — the cursor sits on '('
+              tkadv(mut c); // past the name — the cursor sits on '('
               if ntm < 8 {
                 tms[ntm] = mt2.text;
                 // the declared signature: skip to ')' then read the
@@ -2091,15 +2090,15 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
                     if is_punct(tk(c), 41) {
                       dep = dep - 1;
                       if dep == 0 {
-                        tkadv(c);
+                        tkadv(mut c);
                         break;
                       }
                     }
-                    tkadv(c);
+                    tkadv(mut c);
                   }
                   // eat_arrow_typed returns the arrow's type itself
                   // (eat_arrow would swallow it)
-                  rty = eat_arrow_typed(c);
+                  rty = eat_arrow_typed(mut c);
                   if len(rty) == 0 {
                     rty = "i64";
                   }
@@ -2109,7 +2108,7 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
               }
             }
           } else {
-            tkadv(c);
+            tkadv(mut c);
           }
         }
       }
@@ -2126,20 +2125,20 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
         c.toks[c.pos + 1].kind == lex.TK_KEYWORD) {
       // impl Trait for Type { fn ... } — the fns register as the
       // type's methods (the trait itself is a compile-time fact)
-      tkadv(c); // impl
-      tkadv(c); // the trait name
+      tkadv(mut c); // impl
+      tkadv(mut c); // the trait name
       if tk(c).kind == lex.TK_IDENT && tk(c).text == "for" {
-        tkadv(c); // for
+        tkadv(mut c); // for
         let itp = tk(c);
         if itp.kind == lex.TK_IDENT || itp.kind == lex.TK_KEYWORD {
           c.impl_type = itp.text;
-          tkadv(c);
+          tkadv(mut c);
         }
       }
-      if eat_punct(c, 123) {
+      if eat_punct(mut c, 123) {
         while tk(c).kind != lex.TK_EOF {
           if is_punct(tk(c), 125) {
-            tkadv(c);
+            tkadv(mut c);
             break;
           }
           if tk(c).kind == lex.TK_KEYWORD && tk(c).text == "fn" {
@@ -2148,7 +2147,7 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
             break_to_fn = true;
             break;
           }
-          tkadv(c);
+          tkadv(mut c);
         }
         if break_to_fn {
           continue;
@@ -2162,15 +2161,15 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
        (c.toks[c.pos + 1].kind == lex.TK_IDENT ||
         c.toks[c.pos + 1].kind == lex.TK_KEYWORD) {
       // struct Name[T1, T2] { field: type, ... }
-      tkadv(c); // struct
+      tkadv(mut c); // struct
       let nt = tk(c);
       let sname: string = nt.text;
-      tkadv(c);
-      let tps: []string = make([]string, 8);
+      tkadv(mut c);
+      let mut tps: []string = make([]string, 8);
       let mut ntp: usize = 0;
       if is_punct(tk(c), 91) {
         // the declared type parameters
-        tkadv(c);
+        tkadv(mut c);
         while tk(c).kind != lex.TK_EOF && !is_punct(tk(c), 93) {
           let tt = tk(c);
           if tt.kind == lex.TK_IDENT || tt.kind == lex.TK_KEYWORD {
@@ -2178,23 +2177,23 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
               tps[ntp] = tt.text;
               ntp = ntp + 1;
             }
-            tkadv(c);
+            tkadv(mut c);
           } else {
-            tkadv(c);
+            tkadv(mut c);
           }
-          if !eat_punct(c, 44) {
+          if !eat_punct(mut c, 44) {
             break;
           }
         }
-        eat_punct(c, 93);
+        eat_punct(mut c, 93);
       }
       let mut fnames: []string = make([]string, 16);
       let mut ftypes: []string = make([]string, 16);
       let mut nfl: usize = 0;
-      if eat_punct(c, 123) {
+      if eat_punct(mut c, 123) {
         while tk(c).kind != lex.TK_EOF {
           if is_punct(tk(c), 125) {
-            tkadv(c);
+            tkadv(mut c);
             break;
           }
           let ft = tk(c);
@@ -2202,8 +2201,8 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
             if nfl >= len(fnames) {
               // a struct may declare any number of fields (the
               // compiler's own Prog rides 28) — grow on demand
-              let bn2: []string = make([]string, len(fnames) * 2);
-              let bt2: []string = make([]string, len(ftypes) * 2);
+              let mut bn2: []string = make([]string, len(fnames) * 2);
+              let mut bt2: []string = make([]string, len(ftypes) * 2);
               let mut gj: usize = 0;
               while gj < len(fnames) {
                 bn2[gj] = fnames[gj];
@@ -2214,15 +2213,15 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
               ftypes = bt2;
             }
             fnames[nfl] = ft.text;
-            tkadv(c);
-            eat_punct(c, 58); // :
-            ftypes[nfl] = eat_type(c);
+            tkadv(mut c);
+            eat_punct(mut c, 58); // :
+            ftypes[nfl] = eat_type(mut c);
             nfl = nfl + 1;
           } else {
-            tkadv(c);
+            tkadv(mut c);
           }
-          if !eat_punct(c, 44) {
-            eat_punct(c, 125);
+          if !eat_punct(mut c, 44) {
+            eat_punct(mut c, 125);
             break;
           }
         }
@@ -2240,14 +2239,14 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
         c.toks[c.pos + 1].kind == lex.TK_KEYWORD) {
       // enum Name[T] { Var, Var(T, ...), Var { f: T, ... } } — the
       // declaration order is the tag order (0, 1, 2, ...)
-      tkadv(c); // enum
+      tkadv(mut c); // enum
       let nt = tk(c);
       let ename: string = nt.text;
-      tkadv(c);
-      let etps: []string = make([]string, 8);
+      tkadv(mut c);
+      let mut etps: []string = make([]string, 8);
       let mut etp: usize = 0;
       if is_punct(tk(c), 91) {
-        tkadv(c);
+        tkadv(mut c);
         while tk(c).kind != lex.TK_EOF && !is_punct(tk(c), 93) {
           let tt2 = tk(c);
           if tt2.kind == lex.TK_IDENT || tt2.kind == lex.TK_KEYWORD {
@@ -2255,41 +2254,41 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
               etps[etp] = tt2.text;
               etp = etp + 1;
             }
-            tkadv(c);
+            tkadv(mut c);
           } else {
-            tkadv(c);
+            tkadv(mut c);
           }
-          if !eat_punct(c, 44) {
+          if !eat_punct(mut c, 44) {
             break;
           }
         }
-        eat_punct(c, 93);
+        eat_punct(mut c, 93);
       }
-      let vnames: []string = make([]string, 16);
-      let vslots: []i64 = make([]i64, 16);
-      let vtpool: []string = make([]string, 128);
+      let mut vnames: []string = make([]string, 16);
+      let mut vslots: []i64 = make([]i64, 16);
+      let mut vtpool: []string = make([]string, 128);
       let mut nv: usize = 0;
-      if eat_punct(c, 123) {
+      if eat_punct(mut c, 123) {
         while tk(c).kind != lex.TK_EOF {
           if is_punct(tk(c), 125) {
-            tkadv(c);
+            tkadv(mut c);
             break;
           }
           let vt = tk(c);
           if vt.kind == lex.TK_IDENT || vt.kind == lex.TK_KEYWORD {
             vnames[nv] = vt.text;
             vslots[nv] = 0;
-            tkadv(c);
+            tkadv(mut c);
             let vbase: usize = nv * 8;
             let mut npt: usize = 0;
             if is_punct(tk(c), 40) {
               // tuple payload: the types in order
-              tkadv(c);
+              tkadv(mut c);
               let mut nsl: i64 = 0;
               while tk(c).kind != lex.TK_EOF && !is_punct(tk(c), 41) {
-                let eaten: string = eat_type(c);
+                let eaten: string = eat_type(mut c);
                 if len(eaten) == 0 {
-                  tkadv(c);
+                  tkadv(mut c);
                 } else {
                   if npt < 8 {
                     vtpool[vbase + npt] = eaten;
@@ -2297,46 +2296,46 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
                   }
                 }
                 nsl = nsl + 1;
-                if !eat_punct(c, 44) {
+                if !eat_punct(mut c, 44) {
                   break;
                 }
               }
-              eat_punct(c, 41);
+              eat_punct(mut c, 41);
               vslots[nv] = nsl;
             } else {
               if is_punct(tk(c), 123) {
                 // struct payload: the named fields' types in order
-                tkadv(c);
+                tkadv(mut c);
                 let mut nsl2: i64 = 0;
                 while tk(c).kind != lex.TK_EOF && !is_punct(tk(c), 125) {
                   let ft = tk(c);
                   if ft.kind == lex.TK_IDENT ||
                       ft.kind == lex.TK_KEYWORD {
-                    tkadv(c);
-                    eat_punct(c, 58);
-                    let eaten2: string = eat_type(c);
+                    tkadv(mut c);
+                    eat_punct(mut c, 58);
+                    let eaten2: string = eat_type(mut c);
                     if len(eaten2) > 0 && npt < 8 {
                       vtpool[vbase + npt] = eaten2;
                       npt = npt + 1;
                     }
                     nsl2 = nsl2 + 1;
                   } else {
-                    tkadv(c);
+                    tkadv(mut c);
                   }
-                  if !eat_punct(c, 44) {
+                  if !eat_punct(mut c, 44) {
                     break;
                   }
                 }
-                eat_punct(c, 125);
+                eat_punct(mut c, 125);
                 vslots[nv] = nsl2;
               }
             }
             nv = nv + 1;
           } else {
-            tkadv(c);
+            tkadv(mut c);
           }
-          if !eat_punct(c, 44) {
-            eat_punct(c, 125);
+          if !eat_punct(mut c, 44) {
+            eat_punct(mut c, 125);
             break;
           }
         }
@@ -2352,35 +2351,35 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
     if (t.kind == lex.TK_KEYWORD && t.text == "const") ||
        (t.kind == lex.TK_KEYWORD && t.text == "static") {
       let is_static: bool = t.text == "static";
-      tkadv(c);
+      tkadv(mut c);
       // static mut NAME — the mut is a soft word here too
       let mut is_smut: bool = false;
       let nt = tk(c);
       if nt.text == "mut" &&
           (nt.kind == lex.TK_IDENT || nt.kind == lex.TK_KEYWORD) {
         is_smut = true;
-        tkadv(c);
+        tkadv(mut c);
       }
       let nt2 = tk(c);
       if nt2.kind == lex.TK_IDENT || nt2.kind == lex.TK_KEYWORD {
         let nm: string = nt2.text;
-        tkadv(c);
+        tkadv(mut c);
         // optional : type
         let mut cty: string = "";
         if is_punct(tk(c), 58) {
-          tkadv(c);
+          tkadv(mut c);
           if is_punct(tk(c), 91) {
-            tkadv(c);
-            eat_punct(c, 93);
+            tkadv(mut c);
+            eat_punct(mut c, 93);
             cty = "[]" + tk(c).text;
-            tkadv(c);
+            tkadv(mut c);
           } else {
             cty = tk(c).text;
-            tkadv(c);
+            tkadv(mut c);
           }
         }
-        if eat_punct(c, 61) {
-          let ie = parse_bin(c, 0);
+        if eat_punct(mut c, 61) {
+          let ie = parse_bin(mut c, 0);
           cnames[nc] = nm;
           cvals[nc] = fold_const(ie, cnames, cvals, nc);
           cstatic[nc] = is_static;
@@ -2389,10 +2388,10 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
           cexprs[nc] = ie;
           nc = nc + 1;
         }
-        eat_punct(c, 59);
+        eat_punct(mut c, 59);
         continue;
       }
-      tkadv(c);
+      tkadv(mut c);
       continue;
     }
     if t.kind == lex.TK_IDENT && t.text == "pub" &&
@@ -2402,7 +2401,7 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
          (c.toks[c.pos + 1].kind == lex.TK_IDENT &&
           c.toks[c.pos + 1].text == "use")) {
       // `pub` rides the next fn or use declaration
-      tkadv(c);
+      tkadv(mut c);
       pending_pub = true;
       continue;
     }
@@ -2411,7 +2410,7 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
         c.toks[c.pos + 1].kind == lex.TK_IDENT {
       // use a.b.c; / use a.b as x; — the module binding (private at
       // the root; a facade's `pub use` re-exports through the tree)
-      tkadv(c);
+      tkadv(mut c);
       let mut path: string = "";
       let mut al: string = "";
       let mut seg: usize = 0;
@@ -2421,19 +2420,19 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
         }
         path = path + tk(c).text;
         seg = seg + 1;
-        tkadv(c);
-        if !eat_punct(c, 46) {
+        tkadv(mut c);
+        if !eat_punct(mut c, 46) {
           break;
         }
       }
       if tk(c).kind == lex.TK_KEYWORD && tk(c).text == "as" {
-        tkadv(c);
+        tkadv(mut c);
         if tk(c).kind == lex.TK_IDENT || tk(c).kind == lex.TK_KEYWORD {
           al = tk(c).text;
-          tkadv(c);
+          tkadv(mut c);
         }
       }
-      eat_punct(c, 59);
+      eat_punct(mut c, 59);
       if nu < len(uses) && seg > 0 {
         uses[nu] = path;
         ualias[nu] = al;
@@ -2444,19 +2443,19 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
       continue;
     }
     if t.kind == lex.TK_KEYWORD && t.text == "fn" {
-      tkadv(c);
+      tkadv(mut c);
       let nm = tk(c);
       if nm.kind == lex.TK_KEYWORD || nm.kind == lex.TK_IDENT {
-        tkadv(c);
+        tkadv(mut c);
       }
       // fn Type.name — a method (or associated fn) of that type
       let mut fname: string = nm.text;
       if is_punct(tk(c), 46) {
-        tkadv(c); // .
+        tkadv(mut c); // .
         let mt = tk(c);
         if mt.kind == lex.TK_IDENT || mt.kind == lex.TK_KEYWORD {
           fname = nm.text + "." + mt.text;
-          tkadv(c);
+          tkadv(mut c);
         }
       } else {
         if len(c.impl_type) > 0 {
@@ -2465,16 +2464,16 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
         }
       }
       if fname == "main" {
-        eat_punct(c, 40);
-        eat_punct(c, 41);
-        eat_arrow(c);
-        if eat_punct(c, 123) {
+        eat_punct(mut c, 40);
+        eat_punct(mut c, 41);
+        eat_arrow(mut c);
+        if eat_punct(mut c, 123) {
           while tk(c).kind != lex.TK_EOF {
             if is_punct(tk(c), 125) {
-              tkadv(c);
+              tkadv(mut c);
               break;
             }
-            nodes[n] = parse_stmt(c);
+            nodes[n] = parse_stmt(mut c);
             n = n + 1;
           }
         }
@@ -2482,10 +2481,10 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
       }
       // fn name[T] / [T: Bound] — the type parameters (bounds ride
       // unparsed; trait satisfaction is boot's checker surface)
-      let tparams: []string = make([]string, 4);
+      let mut tparams: []string = make([]string, 4);
       let mut ntp: usize = 0;
       if is_punct(tk(c), 91) {
-        tkadv(c); // [
+        tkadv(mut c); // [
         while tk(c).kind != lex.TK_EOF && !is_punct(tk(c), 93) {
           let tt = tk(c);
           if tt.kind == lex.TK_IDENT || tt.kind == lex.TK_KEYWORD {
@@ -2493,47 +2492,47 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
               tparams[ntp] = tt.text;
               ntp = ntp + 1;
             }
-            tkadv(c);
-            while eat_punct(c, 58) {
+            tkadv(mut c);
+            while eat_punct(mut c, 58) {
               let bt0 = tk(c);
               if bt0.kind == lex.TK_IDENT ||
                   bt0.kind == lex.TK_KEYWORD {
-                tkadv(c);
+                tkadv(mut c);
               }
-              while eat_punct(c, 43) {
+              while eat_punct(mut c, 43) {
                 let bt1 = tk(c);
                 if bt1.kind == lex.TK_IDENT ||
                     bt1.kind == lex.TK_KEYWORD {
-                  tkadv(c);
+                  tkadv(mut c);
                 }
               }
             }
           } else {
-            tkadv(c);
+            tkadv(mut c);
           }
-          if !eat_punct(c, 44) {
-            eat_punct(c, 93);
+          if !eat_punct(mut c, 44) {
+            eat_punct(mut c, 93);
             break;
           }
         }
       }
       // a user fn: params, arrow, body
-      let pstr: []bool = make([]bool, 8);
-      let pslc: []bool = make([]bool, 8);
-      let ptypes: []string = make([]string, 8);
-      let pvar: []bool = make([]bool, 8);
-      let params = parse_params2(c, pstr, pslc, ptypes, pvar);
-      let rtype: string = eat_arrow_typed(c);
+      let mut pstr: []bool = make([]bool, 8);
+      let mut pslc: []bool = make([]bool, 8);
+      let mut ptypes: []string = make([]string, 8);
+      let mut pvar: []bool = make([]bool, 8);
+      let params = parse_params2(mut c, mut pstr, mut pslc, mut ptypes, mut pvar);
+      let rtype: string = eat_arrow_typed(mut c);
       let mut body: []*Stmt = make([]*Stmt, 0);
-      if eat_punct(c, 123) {
-        let bstmts: []*Stmt = make([]*Stmt, 64);
+      if eat_punct(mut c, 123) {
+        let mut bstmts: []*Stmt = make([]*Stmt, 64);
         let mut bn: usize = 0;
         while tk(c).kind != lex.TK_EOF {
           if is_punct(tk(c), 125) {
-            tkadv(c);
+            tkadv(mut c);
             break;
           }
-          bstmts[bn] = parse_stmt(c);
+          bstmts[bn] = parse_stmt(mut c);
           bn = bn + 1;
         }
         body = bstmts[0..bn];
@@ -2550,7 +2549,7 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
       if nf == len(fns) {
         // the fn table grows on demand (the float cluster alone rides
         // 19 fns through this parser)
-        let bigger: []*FnDef = make([]*FnDef, len(fns) * 2);
+        let mut bigger: []*FnDef = make([]*FnDef, len(fns) * 2);
         let mut gi: usize = 0;
         while gi < len(fns) {
           bigger[gi] = fns[gi];
@@ -2562,15 +2561,15 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
       nf = nf + 1;
       if len(c.impl_type) > 0 && is_punct(tk(c), 125) {
         // the impl block closes: further fns are plain again
-        tkadv(c);
+        tkadv(mut c);
         c.impl_type = "";
         break_to_fn = false;
       }
       continue;
     }
-    tkadv(c);
+    tkadv(mut c);
   }
-  let prog = new Prog { fns: fns[0..nf], main: nodes[0..n],
+  let mut prog = new Prog { fns: fns[0..nf], main: nodes[0..n],
                         consts: cnames[0..nc], cvals: cvals[0..nc],
                         cstatic: cstatic[0..nc], ctypes: ctypes[0..nc],
                         cmuts: cmuts[0..nc], cexprs: cexprs[0..nc],
@@ -2667,15 +2666,15 @@ fn mods_slashes(p: string) -> string {
 
 // register a const under a (possibly qualified) name; the six
 // tables grow together
-fn mods_const_add(prog: *Prog, nm: string, cv: i64, ct: string,
+fn mods_const_add(mut prog: *Prog, nm: string, cv: i64, ct: string,
                   ce: *Expr) {
   let n2: usize = prog.nconsts;
-  let c2: []string = make([]string, n2 + 1);
-  let v2: []i64 = make([]i64, n2 + 1);
-  let s2: []bool = make([]bool, n2 + 1);
-  let t2: []string = make([]string, n2 + 1);
-  let m2: []bool = make([]bool, n2 + 1);
-  let e2: []*Expr = make([]*Expr, n2 + 1);
+  let mut c2: []string = make([]string, n2 + 1);
+  let mut v2: []i64 = make([]i64, n2 + 1);
+  let mut s2: []bool = make([]bool, n2 + 1);
+  let mut t2: []string = make([]string, n2 + 1);
+  let mut m2: []bool = make([]bool, n2 + 1);
+  let mut e2: []*Expr = make([]*Expr, n2 + 1);
   let mut qi: usize = 0;
   while qi < n2 {
     c2[qi] = prog.consts[qi];
@@ -2714,7 +2713,7 @@ fn mods_const_in(prog: *Prog, nm: string) -> bool {
 }
 
 // an export row: (owner, item, target)
-fn mods_export_add(prog: *Prog, own: string, item: string,
+fn mods_export_add(mut prog: *Prog, own: string, item: string,
                    tar: string) {
   if prog.nx >= len(prog.xown) {
     return;
@@ -2726,11 +2725,11 @@ fn mods_export_add(prog: *Prog, own: string, item: string,
 }
 
 // the module's export rows under a new owner (the pub-use flatten)
-fn mods_export_copy(prog: *Prog, from_own: string, to_own: string) {
+fn mods_export_copy(mut prog: *Prog, from_own: string, to_own: string) {
   let mut i: usize = 0;
   while i < prog.nx {
     if prog.xown[i] == from_own {
-      mods_export_add(prog, to_own, prog.xitem[i],
+      mods_export_add(mut prog, to_own, prog.xitem[i],
                       prog.xtar[i]);
     }
     i = i + 1;
@@ -2751,55 +2750,58 @@ fn mods_fn_in(mp: *Prog, nm: string) -> bool {
   return false;
 }
 
-fn mods_qualify_stmt(st: *Stmt, mp: *Prog, canon: string,
+fn mods_qualify_stmt(mut st: *Stmt, mp: *Prog, canon: string,
                      prog: *Prog, bnames: []string,
                      bcans: []string, nb: usize) {
   let mut k: usize = 0;
   while k < len(st.args) {
-    mods_qual_expr(st.args[k], mp, canon, prog, bnames, bcans, nb);
+    mods_qual_expr(mut st.args[k], mp, canon, prog, bnames, bcans, nb);
     k = k + 1;
   }
   match st.val {
     Option.Some(v6) => {
-      mods_qual_expr(v6, mp, canon, prog, bnames, bcans, nb);
+      let mut v6b: *Expr = v6;
+      mods_qual_expr(mut v6b, mp, canon, prog, bnames, bcans, nb);
     },
     Option.None => {},
   }
   match st.sub {
     Option.Some(s6) => {
-      mods_qualify_stmt(s6, mp, canon, prog, bnames, bcans, nb);
+      let mut s6b: *Stmt = s6;
+      mods_qualify_stmt(mut s6b, mp, canon, prog, bnames, bcans, nb);
     },
     Option.None => {},
   }
   let mut b: usize = 0;
   while b < len(st.body) {
-    mods_qualify_stmt(st.body[b], mp, canon, prog, bnames, bcans, nb);
+    mods_qualify_stmt(mut st.body[b], mp, canon, prog, bnames, bcans, nb);
     b = b + 1;
   }
   let mut b2: usize = 0;
   while b2 < len(st.body2) {
-    mods_qualify_stmt(st.body2[b2], mp, canon, prog, bnames, bcans, nb);
+    mods_qualify_stmt(mut st.body2[b2], mp, canon, prog, bnames, bcans, nb);
     b2 = b2 + 1;
   }
   let mut m3: usize = 0;
   while m3 < len(st.marms) {
-    let arm3: *MatchArm = st.marms[m3];
+    let mut arm3: *MatchArm = st.marms[m3];
     match arm3.val {
       Option.Some(av3) => {
-        mods_qual_expr(av3, mp, canon, prog, bnames, bcans, nb);
+        let mut av3b: *Expr = av3;
+        mods_qual_expr(mut av3b, mp, canon, prog, bnames, bcans, nb);
       },
       Option.None => {},
     }
     let mut sb3: usize = 0;
     while sb3 < len(arm3.body) {
-      mods_qualify_stmt(arm3.body[sb3], mp, canon, prog, bnames, bcans, nb);
+      mods_qualify_stmt(mut arm3.body[sb3], mp, canon, prog, bnames, bcans, nb);
       sb3 = sb3 + 1;
     }
     m3 = m3 + 1;
   }
 }
 
-fn mods_qual_expr(e: *Expr, mp: *Prog, canon: string,
+fn mods_qual_expr(mut e: *Expr, mp: *Prog, canon: string,
                    prog: *Prog, bnames: []string,
                    bcans: []string, nb: usize) {
   if e.tag == EX_CALL && mods_fn_in(mp, e.name) {
@@ -2830,33 +2832,36 @@ fn mods_qual_expr(e: *Expr, mp: *Prog, canon: string,
   }
   match e.lhs {
     Option.Some(l7) => {
-      mods_qual_expr(l7, mp, canon, prog, bnames, bcans, nb);
+      let mut l7b: *Expr = l7;
+      mods_qual_expr(mut l7b, mp, canon, prog, bnames, bcans, nb);
     },
     Option.None => {},
   }
   match e.rhs {
     Option.Some(r7) => {
-      mods_qual_expr(r7, mp, canon, prog, bnames, bcans, nb);
+      let mut r7b: *Expr = r7;
+      mods_qual_expr(mut r7b, mp, canon, prog, bnames, bcans, nb);
     },
     Option.None => {},
   }
   let mut k: usize = 0;
   while k < len(e.args) {
-    mods_qual_expr(e.args[k], mp, canon, prog, bnames, bcans, nb);
+    mods_qual_expr(mut e.args[k], mp, canon, prog, bnames, bcans, nb);
     k = k + 1;
   }
   let mut m4: usize = 0;
   while m4 < len(e.marms) {
-    let arm4: *MatchArm = e.marms[m4];
+    let mut arm4: *MatchArm = e.marms[m4];
     match arm4.val {
       Option.Some(av4) => {
-        mods_qual_expr(av4, mp, canon, prog, bnames, bcans, nb);
+        let mut av4b: *Expr = av4;
+        mods_qual_expr(mut av4b, mp, canon, prog, bnames, bcans, nb);
       },
       Option.None => {},
     }
     let mut sb4: usize = 0;
     while sb4 < len(arm4.body) {
-      mods_qualify_stmt(arm4.body[sb4], mp, canon, prog, bnames, bcans, nb);
+      mods_qualify_stmt(mut arm4.body[sb4], mp, canon, prog, bnames, bcans, nb);
       sb4 = sb4 + 1;
     }
     m4 = m4 + 1;
@@ -2865,9 +2870,9 @@ fn mods_qual_expr(e: *Expr, mp: *Prog, canon: string,
 
 // append one fn under a qualified name (the table grows by one —
 // len() IS the count everywhere downstream)
-fn mods_fn_add(prog: *Prog, fd: *FnDef) {
+fn mods_fn_add(mut prog: *Prog, fd: *FnDef) {
   let old: []*FnDef = prog.fns;
-  let bigger: []*FnDef = make([]*FnDef, len(old) + 1);
+  let mut bigger: []*FnDef = make([]*FnDef, len(old) + 1);
   let mut i: usize = 0;
   while i < len(old) {
     bigger[i] = old[i];
@@ -2879,7 +2884,7 @@ fn mods_fn_add(prog: *Prog, fd: *FnDef) {
 
 // load one module (recursively) and register it; the CANONICAL name
 // returns, "" when the tree cannot resolve the path
-fn mods_load(prog: *Prog, mods: string, path: string,
+fn mods_load(mut prog: *Prog, mods: string, path: string,
              dir: string) -> string {
   let mut base: string = dir;
   if len(base) > 0 {
@@ -2929,8 +2934,8 @@ fn mods_load(prog: *Prog, mods: string, path: string,
   if len(filetext) > 0 {
     mdir = base;
   }
-  let bnames: []string = make([]string, 16);
-  let bcans: []string = make([]string, 16);
+  let mut bnames: []string = make([]string, 16);
+  let mut bcans: []string = make([]string, 16);
   let mut nb: usize = 0;
   let mut ui: usize = 0;
   while ui < mp.nuses {
@@ -2954,12 +2959,12 @@ fn mods_load(prog: *Prog, mods: string, path: string,
         bsearch = bsearch + 1;
       }
       if hit >= 0 {
-        mods_export_copy(prog, bcans[hit as usize], canon);
+        mods_export_copy(mut prog, bcans[hit as usize], canon);
         ui = ui + 1;
         continue;
       }
     }
-    let subcan: string = mods_load(prog, mods, upath, mdir);
+    let subcan: string = mods_load(mut prog, mods, upath, mdir);
     if len(subcan) == 0 {
       prog.perrs = prog.perrs + 1;
       return "";
@@ -2985,7 +2990,7 @@ fn mods_load(prog: *Prog, mods: string, path: string,
     }
     // a pub use of a module flattens its exports under THIS facade
     if mp.usepub[ui] {
-      mods_export_copy(prog, subcan, canon);
+      mods_export_copy(mut prog, subcan, canon);
     }
     ui = ui + 1;
   }
@@ -3021,7 +3026,7 @@ fn mods_load(prog: *Prog, mods: string, path: string,
             while ei < prog.nx {
               if prog.xown[ei] == srcmod &&
                   prog.xitem[ei] == itempart {
-                mods_export_add(prog, canon, mp.usealias[ui2],
+                mods_export_add(mut prog, canon, mp.usealias[ui2],
                                 prog.xtar[ei]);
               }
               ei = ei + 1;
@@ -3039,11 +3044,11 @@ fn mods_load(prog: *Prog, mods: string, path: string,
   // call inside the module resolves to the module's own fn first
   let mut fi: usize = 0;
   while fi < len(mp.fns) {
-    let fd2: *FnDef = mp.fns[fi];
+    let mut fd2: *FnDef = mp.fns[fi];
     if len(fd2.name) > 0 && fd2.name != "main" {
       let mut si2: usize = 0;
       while si2 < len(fd2.body) {
-        mods_qualify_stmt(fd2.body[si2], mp, canon, prog,
+        mods_qualify_stmt(mut fd2.body[si2], mp, canon, prog,
                           bnames, bcans, nb);
         si2 = si2 + 1;
       }
@@ -3052,14 +3057,14 @@ fn mods_load(prog: *Prog, mods: string, path: string,
   }
   let mut fi2: usize = 0;
   while fi2 < len(mp.fns) {
-    let fd3: *FnDef = mp.fns[fi2];
+    let mut fd3: *FnDef = mp.fns[fi2];
     if len(fd3.name) > 0 && fd3.name != "main" {
       let qname: string = canon + "." + fd3.name;
       if fd3.ispub {
-        mods_export_add(prog, canon, fd3.name, qname);
+        mods_export_add(mut prog, canon, fd3.name, qname);
       }
       fd3.name = qname;
-      mods_fn_add(prog, fd3);
+      mods_fn_add(mut prog, fd3);
     }
     fi2 = fi2 + 1;
   }
@@ -3068,12 +3073,12 @@ fn mods_load(prog: *Prog, mods: string, path: string,
   let mut ci2: usize = 0;
   while ci2 < mp.nconsts {
     if !mods_const_in(prog, mp.consts[ci2]) {
-      mods_const_add(prog, mp.consts[ci2], mp.cvals[ci2],
+      mods_const_add(mut prog, mp.consts[ci2], mp.cvals[ci2],
                      mp.ctypes[ci2], mp.cexprs[ci2]);
     }
     let qn: string = canon + "." + mp.consts[ci2];
     if !mods_const_in(prog, qn) {
-      mods_const_add(prog, qn, mp.cvals[ci2], mp.ctypes[ci2],
+      mods_const_add(mut prog, qn, mp.cvals[ci2], mp.ctypes[ci2],
                      mp.cexprs[ci2]);
     }
     ci2 = ci2 + 1;
@@ -3083,7 +3088,7 @@ fn mods_load(prog: *Prog, mods: string, path: string,
 
 // rewrite `binding.item(...)` method calls into plain calls of the
 // exported fn (check and emit then see one known name)
-fn mods_resolve_expr(e: *Expr, prog: *Prog, bnames: []string,
+fn mods_resolve_expr(mut e: *Expr, mut prog: *Prog, bnames: []string,
                      bcans: []string, nb: usize) {
   if e.tag == EX_FIELD {
     // binding.CONST — a module's exported const as a value
@@ -3134,80 +3139,86 @@ fn mods_resolve_expr(e: *Expr, prog: *Prog, bnames: []string,
   }
   match e.lhs {
     Option.Some(l4) => {
-      mods_resolve_expr(l4, prog, bnames, bcans, nb);
+      let mut l4b: *Expr = l4;
+      mods_resolve_expr(mut l4b, mut prog, bnames, bcans, nb);
     },
     Option.None => {},
   }
   match e.rhs {
     Option.Some(r4) => {
-      mods_resolve_expr(r4, prog, bnames, bcans, nb);
+      let mut r4b: *Expr = r4;
+      mods_resolve_expr(mut r4b, mut prog, bnames, bcans, nb);
     },
     Option.None => {},
   }
   let mut k: usize = 0;
   while k < len(e.args) {
-    mods_resolve_expr(e.args[k], prog, bnames, bcans, nb);
+    mods_resolve_expr(mut e.args[k], mut prog, bnames, bcans, nb);
     k = k + 1;
   }
   let mut m: usize = 0;
   while m < len(e.marms) {
-    let arm: *MatchArm = e.marms[m];
+    let mut arm: *MatchArm = e.marms[m];
     match arm.val {
       Option.Some(av) => {
-        mods_resolve_expr(av, prog, bnames, bcans, nb);
+        let mut avb: *Expr = av;
+        mods_resolve_expr(mut avb, mut prog, bnames, bcans, nb);
       },
       Option.None => {},
     }
     let mut sb: usize = 0;
     while sb < len(arm.body) {
-      mods_resolve_stmt(arm.body[sb], prog, bnames, bcans, nb);
+      mods_resolve_stmt(mut arm.body[sb], mut prog, bnames, bcans, nb);
       sb = sb + 1;
     }
     m = m + 1;
   }
 }
 
-fn mods_resolve_stmt(st: *Stmt, prog: *Prog, bnames: []string,
+fn mods_resolve_stmt(mut st: *Stmt, mut prog: *Prog, bnames: []string,
                      bcans: []string, nb: usize) {
   let mut k: usize = 0;
   while k < len(st.args) {
-    mods_resolve_expr(st.args[k], prog, bnames, bcans, nb);
+    mods_resolve_expr(mut st.args[k], mut prog, bnames, bcans, nb);
     k = k + 1;
   }
   match st.val {
     Option.Some(v5) => {
-      mods_resolve_expr(v5, prog, bnames, bcans, nb);
+      let mut v5b: *Expr = v5;
+      mods_resolve_expr(mut v5b, mut prog, bnames, bcans, nb);
     },
     Option.None => {},
   }
   match st.sub {
     Option.Some(s5) => {
-      mods_resolve_stmt(s5, prog, bnames, bcans, nb);
+      let mut s5b: *Stmt = s5;
+      mods_resolve_stmt(mut s5b, mut prog, bnames, bcans, nb);
     },
     Option.None => {},
   }
   let mut b: usize = 0;
   while b < len(st.body) {
-    mods_resolve_stmt(st.body[b], prog, bnames, bcans, nb);
+    mods_resolve_stmt(mut st.body[b], mut prog, bnames, bcans, nb);
     b = b + 1;
   }
   let mut b2: usize = 0;
   while b2 < len(st.body2) {
-    mods_resolve_stmt(st.body2[b2], prog, bnames, bcans, nb);
+    mods_resolve_stmt(mut st.body2[b2], mut prog, bnames, bcans, nb);
     b2 = b2 + 1;
   }
   let mut m2: usize = 0;
   while m2 < len(st.marms) {
-    let arm2: *MatchArm = st.marms[m2];
+    let mut arm2: *MatchArm = st.marms[m2];
     match arm2.val {
       Option.Some(av2) => {
-        mods_resolve_expr(av2, prog, bnames, bcans, nb);
+        let mut av2b: *Expr = av2;
+        mods_resolve_expr(mut av2b, mut prog, bnames, bcans, nb);
       },
       Option.None => {},
     }
     let mut sb2: usize = 0;
     while sb2 < len(arm2.body) {
-      mods_resolve_stmt(arm2.body[sb2], prog, bnames, bcans, nb);
+      mods_resolve_stmt(mut arm2.body[sb2], mut prog, bnames, bcans, nb);
       sb2 = sb2 + 1;
     }
     m2 = m2 + 1;
@@ -3217,16 +3228,16 @@ fn mods_resolve_stmt(st: *Stmt, prog: *Prog, bnames: []string,
 // load the root's uses against the MODS tree, then resolve every
 // binding.item() call in main and the fn bodies; perrs grows on any
 // unresolved path (the honest refusal)
-pub fn load_mods(prog: *Prog, mods: string) -> bool {
+pub fn load_mods(mut prog: *Prog, mods: string) -> bool {
   if prog.nuses == 0 {
     return true;
   }
-  let bnames: []string = make([]string, 32);
-  let bcans: []string = make([]string, 32);
+  let mut bnames: []string = make([]string, 32);
+  let mut bcans: []string = make([]string, 32);
   let mut nb: usize = 0;
   let mut ui: usize = 0;
   while ui < prog.nuses {
-    let can: string = mods_load(prog, mods, prog.usepath[ui], "");
+    let can: string = mods_load(mut prog, mods, prog.usepath[ui], "");
     if len(can) == 0 {
       prog.perrs = prog.perrs + 1;
       return false;
@@ -3253,14 +3264,14 @@ pub fn load_mods(prog: *Prog, mods: string) -> bool {
   }
   let mut si: usize = 0;
   while si < len(prog.main) {
-    mods_resolve_stmt(prog.main[si], prog, bnames, bcans, nb);
+    mods_resolve_stmt(mut prog.main[si], mut prog, bnames, bcans, nb);
     si = si + 1;
   }
   let mut fi: usize = 0;
   while fi < len(prog.fns) {
     let mut bi: usize = 0;
     while bi < len(prog.fns[fi].body) {
-      mods_resolve_stmt(prog.fns[fi].body[bi], prog, bnames,
+      mods_resolve_stmt(mut prog.fns[fi].body[bi], mut prog, bnames,
                         bcans, nb);
       bi = bi + 1;
     }

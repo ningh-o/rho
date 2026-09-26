@@ -1,0 +1,24 @@
+// out: sum=500000500000
+// out: fact=2432902008176640000
+// exit: 0
+// spec: TODO.md §9
+// A direct self tail call becomes a loop: a million-deep recursion
+// must return in constant stack (fast, no overflow). The recursive
+// call may also sit in the tail of a match arm.
+fn down(n: i64, acc: i64) -> i64 {
+  if n == 0 {
+    return acc;
+  }
+  return down((n - 1), (acc + n));
+}
+fn fact(n: i64, acc: i64) -> i64 {
+  return match n {
+    0 => acc,
+    _ => fact((n - 1), (acc * n)),
+  };
+}
+fn main() -> i32 {
+  printf("sum={}\n", down(1000000, 0));
+  printf("fact={}\n", fact(20, 1));
+  return 0;
+}

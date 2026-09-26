@@ -1,0 +1,10 @@
+// expect: two import bindings of 'm' (the other at line 5)
+// spec: module-system.md §2
+// importing the same module twice under its own name binds the alias
+// twice; the checker points at the earlier line
+use m;
+use m;
+
+fn main() -> i32 {
+  return 0;
+}

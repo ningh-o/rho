@@ -1,0 +1,9 @@
+// expect: enum E has no unit variant 'A'
+// spec: check — enums
+// a tuple-carrying variant cannot be referenced as a bare unit value
+enum E { A(i32) }
+
+fn main() -> i32 {
+  let e = E.A;
+  return 0;
+}

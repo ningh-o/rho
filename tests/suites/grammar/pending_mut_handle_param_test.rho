@@ -1,0 +1,28 @@
+// out: s=hey d=w1
+// exit: 0
+// spec: syntax.md §4.1
+// `mut` is legal on handle-typed parameters — the law names `*T`,
+// `[]T`, `string`, and `dyn` — granting write access to the shared
+// view. Today boot accepts `mut` on *T and []T only and refuses
+// string/dyn with "'mut' marks a view parameter (*T, []T); 's' is a
+// value".
+trait Show2 {
+  fn to_str(self) -> string,
+}
+struct W { n: i32 }
+fn W.to_str(self: *W) -> string {
+  return format("w{}", self.n);
+}
+fn shout(mut s: string, mark: string) {
+  s = s + mark;
+  return;
+}
+fn tag(mut d: dyn Show2) -> string {
+  return d.to_str();
+}
+fn main() -> i32 {
+  let mut s: string = "hey";
+  shout(mut s, "!");
+  printf("s={} d={}\n", s, tag(mut new W { n: 1 }));
+  return 0;
+}

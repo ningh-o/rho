@@ -1,0 +1,10 @@
+// expect: label 'a' declared twice in this function
+// spec: check — loops
+// a function's labels are unique
+fn main() -> i32 {
+  a: while true {
+  }
+  a: while true {
+  }
+  return 0;
+}

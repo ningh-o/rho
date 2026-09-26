@@ -1,0 +1,8 @@
+// expect: after the field name
+// spec: syntax.md — declarations
+// every struct field is written 'name: type' — the colon is required
+struct S { x i32 }
+
+fn main() -> i32 {
+  return 0;
+}

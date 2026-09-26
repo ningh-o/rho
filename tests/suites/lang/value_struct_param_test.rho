@@ -1,0 +1,17 @@
+// out: 5
+// spec: type-system.md §10 — a value-struct field passes by value
+struct V {
+  a: i64,
+  b: i32,
+}
+struct W {
+  inner: V,
+}
+fn take(v: V) -> i64 {
+  return v.a;
+}
+fn main() -> i32 {
+  let w1 = new W { inner: new V { a: 5, b: 1 } };
+  printf("{}\n", take(w1.inner));
+  return 0;
+}

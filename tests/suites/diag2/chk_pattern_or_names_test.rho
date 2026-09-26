@@ -1,0 +1,12 @@
+// expect: or-pattern alternatives bind different names
+// spec: check — match
+// the alternatives of one arm must bind the same name set: the body
+// could not tell them apart otherwise
+fn main() -> i32 {
+  let o: ?i32 = 5;
+  match o {
+    Some(x) | Some(y) => 1,
+    None => 2,
+  }
+  return 0;
+}

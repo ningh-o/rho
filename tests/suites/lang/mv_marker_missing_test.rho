@@ -1,0 +1,14 @@
+// expect: must be marked 'mut'
+// spec: TODO.md §18
+// The marker pairs in BOTH directions: a parameter declared as a mut
+// view requires the `mut` marker at every call site — an unmarked
+// argument is refused at check time, so a write-through parameter can
+// never be called as if it took a plain copy.
+fn push(mut xs: []i32, v: i32) {
+  xs[0] = v;
+}
+fn main() -> i32 {
+  let mut a: []i32 = [1, 2, 3];
+  push(a, 42);
+  return 0;
+}

@@ -1,0 +1,8 @@
+// expect: ? applies to Option or Result, got i32
+// spec: check — propagation
+// the ? operator propagates Option/Result; a plain i32 has nothing
+// to propagate
+fn main() -> i32 {
+  let y = (5)?;
+  return 0;
+}

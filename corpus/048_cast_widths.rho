@@ -15,7 +15,7 @@ fn main() -> i32 {
   printf("i32 -2 -> i64={} u32={} u64={}\n", n32 as i64, n32 as u32, n32 as u64);
   let m32: u32 = 4294967295;
   printf("u32 max -> i8={} i32={} i64={}\n", m32 as i8, m32 as i32, m32 as i64);
-  let s: usize = 18446744073709551615;
+  let s: usize = 4294967295; // usize max at the address width (u32)
   printf("usize max -> i64={} usize+1={}\n", s as i64, (s + 1));
   let rt: i32 = 305419896;
   let up: i64 = rt as i64;

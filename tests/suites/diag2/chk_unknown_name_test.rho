@@ -1,0 +1,7 @@
+// expect: unknown name 'nope'
+// spec: check — name resolution
+// every path in an expression must resolve to a visible declaration
+fn main() -> i32 {
+  let x = nope + 1;
+  return 0;
+}

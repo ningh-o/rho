@@ -1,0 +1,11 @@
+// expect: not public
+// spec: module-system.md §5
+// Two visibility tiers: `pub` (visible to importers) and private
+// (visible inside the module only). Importing a private const from
+// another module is a compile error naming the item; the same file's
+// pub fn that internally uses the private items is the legal path.
+use inner.hidden;
+fn main() -> i32 {
+  printf("{}\n", inner.shown());
+  return 0;
+}

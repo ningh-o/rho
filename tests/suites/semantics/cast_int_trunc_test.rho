@@ -1,0 +1,31 @@
+// out: 300 as u8=44 (-1) as u8=255 (-1) as u16=65535
+// out: i64 4294967297 as i32=1 i64 min as i32=0
+// out: i16 400 as u16=400 32780 as i16=-32756
+// out: u32 max as i32=-1
+// out: const trunc == var trunc: true
+// exit: 0
+// spec: type-system.md §3
+// Integer `as` is two's-complement wrap/truncate/extend, and
+// constants truncate EXACTLY like variables — there is no
+// constant-only precision. 300 keeps its low 8 bits (44), -1 extends
+// to all-ones in any unsigned width, i64→i32 keeps the low 32 bits
+// (i64 min's low word is 0), and u32 max as i32 reinterprets the bit
+// pattern as -1.
+const C300: i32 = 300;
+
+fn main() -> i32 {
+  let big: i32 = 300;
+  printf("300 as u8={} (-1) as u8={} (-1) as u16={}\n",
+         (big as u8), ((-1) as u8), ((-1) as u16));
+  let l: i64 = 4294967297;
+  let min: i64 = -9223372036854775808;
+  printf("i64 4294967297 as i32={} i64 min as i32={}\n", (l as i32), (min as i32));
+  let w: i32 = 400;
+  let over: i32 = 32780;
+  printf("i16 400 as u16={} 32780 as i16={}\n", (w as u16), (over as i16));
+  let u: u32 = 4294967295;
+  printf("u32 max as i32={}\n", (u as i32));
+  let cv: i32 = C300;
+  printf("const trunc == var trunc: {}\n", ((C300 as u8) == (cv as u8)));
+  return 0;
+}

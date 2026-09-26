@@ -1,0 +1,44 @@
+// out: or=30 30
+// out: or_bind=7 7
+// out: guard=50 1
+// out: guard_closed=0
+// exit: 0
+// spec: syntax.md §7
+// Or-patterns (`a | b`) bind the identical name set across
+// alternatives; an arm guard (`if cond`) evaluates after the pattern
+// matches, in scope of its bindings, and never closes exhaustiveness
+// on its own (a guarded arm still needs the other variants or `_`).
+enum Two {
+  A(i32),
+  B(i32),
+}
+fn or(n: i32) -> i32 {
+  return match n {
+    3 | 4 => 30,
+    _ => 0,
+  };
+}
+fn or_bind(t: Two) -> i32 {
+  return match t {
+    A(x) | B(x) => x,
+  };
+}
+fn guard(n: i32) -> i32 {
+  return match n {
+    x if x > 4 => x * 10,
+    x => x,
+  };
+}
+fn guarded_only(n: i32) -> i32 {
+  return match n {
+    x if x > 100 => x,
+    _ => 0,
+  };
+}
+fn main() -> i32 {
+  printf("or={} {}\n", or(3), or(4));
+  printf("or_bind={} {}\n", or_bind(Two.A(7)), or_bind(Two.B(7)));
+  printf("guard={} {}\n", guard(5), guard(1));
+  printf("guard_closed={}\n", guarded_only(1));
+  return 0;
+}

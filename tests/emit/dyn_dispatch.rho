@@ -6,7 +6,7 @@ trait Show {
 }
 
 trait Bump {
-  fn bump(self) -> i32,
+  fn bump(mut self) -> i32,
 }
 
 struct Pt {
@@ -26,7 +26,7 @@ fn Ct.to_str(self: *Ct) -> string {
   return format("ct({})", self.n);
 }
 
-fn Ct.bump(self: *Ct) -> i32 {
+fn Ct.bump(mut self: *Ct) -> i32 {
   self.n = self.n + 1;
   return self.n;
 }
@@ -36,7 +36,7 @@ fn main() -> i32 {
   let d: dyn Show = p;
   printf("d={}\n", d);
   // re-coercion through assignment; identity is the object
-  let c = new Ct { n: 5 };
+  let mut c = new Ct { n: 5 };
   let v1: dyn Show = c;
   let mut v2: dyn Show = p;
   v2 = c;
@@ -44,7 +44,7 @@ fn main() -> i32 {
   c.bump();
   printf("v={} {}\n", v1, v2);
   // a second trait over the same type dispatches its own vtable
-  let b: dyn Bump = c;
+  let mut b: dyn Bump = c;
   printf("p={}\n", if b.bump() == 8 { "bx:t" } else { "no" });
   return 0;
 }

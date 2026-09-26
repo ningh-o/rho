@@ -15,8 +15,22 @@ Arena *arena_new(size_t cap) {
 void *arena_alloc(Arena *a, size_t n, size_t align) {
   assert(align <= 16);
   size_t pad = (align - (a->used & (align - 1))) & (align - 1);
-  if (a->used + pad + n > a->cap) {
-    // grow by chained blocks; big allocations get their own block
+  if (a->used + pad + n <= a->cap) {
+    void *p = a->base + a->used + pad;
+    a->used += pad + n;
+    return p;
+  }
+  // the head is full: continue allocating from the chained tail —
+  // steady state stays O(1): one short walk over block-sized fills,
+  // a new block only when the tail cannot take the allocation. The
+  // old grow path created a fresh block for EVERY overflowing call
+  // (and walked the whole chain to reach it), which made any compile
+  // big enough to fill the head quadratic in its allocation count.
+  Arena *t = a;
+  while (t->next)
+    t = t->next;
+  pad = (align - (t->used & (align - 1))) & (align - 1);
+  if (t->used + pad + n > t->cap) {
     size_t bc = a->cap * 2;
     if (bc < n + pad + 64)
       bc = n + pad + 64;
@@ -24,18 +38,16 @@ void *arena_alloc(Arena *a, size_t n, size_t align) {
     na->base = malloc(bc);
     na->cap = bc;
     // chain at the tail so traversal order is creation order
-    Arena *t = a;
-    while (t->next)
-      t = t->next;
     t->next = na;
-    if (pad + n <= na->cap) {
-      na->used = pad + n;
-      return na->base + pad;
-    }
-    assert(!"arena block too small");
+    t = na;
+    // the new block's base is 16-aligned: alignment restarts at zero.
+    // Applying the OLD block's pad here handed every chained
+    // allocation a (used & (align-1)) skewed address whenever the
+    // block happened to fill at a non-aligned offset
+    pad = 0;
   }
-  void *p = a->base + a->used + pad;
-  a->used += pad + n;
+  void *p = t->base + t->used + pad;
+  t->used += pad + n;
   return p;
 }
 
@@ -170,8 +182,23 @@ void *vec_at(const Vec *v, size_t i) {
 Vec g_diags;
 bool g_had_error;
 
+// one-error mode: a hostile input that trips a structural limit (a
+// depth bomb, say) would otherwise surface thousands of secondary
+// diagnostics from the same root cause. Per-compile, never per-
+// process: compile boundaries call diag_gate_clear.
+static bool g_diag_gate;
+
+void diag_gate_set(void) { g_diag_gate = true; }
+
+void diag_gate_clear(void) { g_diag_gate = false; }
+
 void diag_at(DiagKind kind, const char *file, int line, int col,
              const char *fmt, ...) {
+  if (g_diag_gate) {
+    if (kind == DIAG_ERROR)
+      g_had_error = true;
+    return;
+  }
   va_list ap, ap2;
   va_start(ap, fmt);
   va_copy(ap2, ap);
@@ -286,7 +313,8 @@ static const struct { NodeKind k; const char *s; } k_node_names[] = {
     {NT_ENUM, "enum"},              {NT_TRAIT, "trait"},
     {NT_IMPL, "impl"},              {NT_CONST, "const"},
     {NT_STATIC, "static"},          {NT_EXTERN, "extern"},
-    {NT_USE, "use"},                {NT_GPARAM, "generic-param"},
+    {NT_USE, "use"},                {NT_TEST, "test"},
+    {NT_POR, "or-pattern"},                {NT_GPARAM, "generic-param"},
     {NT_FIELD, "field"},            {NT_ENUMVAR, "variant"},
     {NT_ARM, "arm"},                {NT_FIELDINIT, "field-init"},
     {NT_POSARG, "pos-arg"},         {NT_PARAM, "param"},
@@ -340,6 +368,10 @@ const char *op_spell(int op) {
   return "?";
 }
 
+// spelling law for diagnostics: CATEGORIES render bare (identifier,
+// integer, string, end of file), literal tokens render quoted ('(',
+// 'as', 'mut') — the same split rustc uses. Hand-written format
+// strings follow it: quoted literals, bare categories, no drift.
 static const struct { TokKind k; const char *s; } k_tok_names[] = {
     {T_EOF, "end of file"},
     {T_IDENT, "identifier"},   {T_INT, "integer"},
@@ -378,8 +410,9 @@ static const struct { TokKind k; const char *s; } k_tok_names[] = {
     {K_MUT, "'mut'"},          {K_NEW, "'new'"},
     {K_NULL, "'null'"},        {K_PUB, "'pub'"},
     {K_RETURN, "'return'"},    {K_STATIC, "'static'"},
-    {K_STRUCT, "'struct'"},    {K_TRAIT, "'trait'"},
-    {K_TRUE, "'true'"},        {K_USE, "'use'"},
+    {K_STRUCT, "'struct'"},    {K_TEST, "'test'"},
+    {K_TRAIT, "'trait'"},      {K_TRUE, "'true'"},
+    {K_USE, "'use'"},
     {K_WHILE, "'while'"},      {K_I8, "'i8'"},
     {K_I16, "'i16'"},          {K_I32, "'i32'"},
     {K_I64, "'i64'"},          {K_U8, "'u8'"},

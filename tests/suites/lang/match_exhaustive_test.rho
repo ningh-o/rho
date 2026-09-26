@@ -1,0 +1,20 @@
+// expect: not exhaustive
+// spec: TODO.md §9
+// Match is exhaustive unless `_` is present: an enum match that skips
+// the Blue variant must fail check — no implicit wildcard, no
+// fallback arm inferred.
+enum Color {
+  Red,
+  Green,
+  Blue,
+}
+fn price(c: Color) -> i32 {
+  return match c {
+    Color.Red => 1,
+    Color.Green => 2,
+  };
+}
+fn main() -> i32 {
+  printf("price={}\n", price(Color.Red));
+  return 0;
+}

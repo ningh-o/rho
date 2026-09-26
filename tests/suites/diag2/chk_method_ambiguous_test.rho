@@ -1,0 +1,13 @@
+// expect: ambiguous method call 'get' (2 exact matches)
+// spec: check — methods
+// two same-signature methods on one type cannot both be candidates
+struct S { x: i32 }
+
+fn S.get(self) -> i32 { return self.x; }
+fn S.get(self) -> i32 { return self.x + 1; }
+
+fn main() -> i32 {
+  let s = new S { x: 1 };
+  let a = s.get();
+  return 0;
+}

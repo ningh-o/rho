@@ -1,0 +1,21 @@
+// exit: 0
+// out: live branch: FLAG folded to false
+// spec: spec.md §6 — comptime folding: only the live branch is
+// checked and emitted; dead branches are skipped whole
+// the dead branch names a function that does not exist, so this file
+// only compiles while FLAG folds to false. The override
+// `--set FLAG=true` folds the other way and the branch goes live:
+// `rho run set_fold_dead_branch_test.rho --set FLAG=true` must then
+// FAIL check with `unknown name 'missing_live_only_fn'` — that
+// failure is the proof the override landed in the fold
+const FLAG: bool = false;
+
+fn main() -> i32 {
+  if FLAG {
+    let x: i32 = missing_live_only_fn(3);
+    printf("{}\n", x);
+  } else {
+    printf("live branch: FLAG folded to false\n");
+  }
+  return 0;
+}

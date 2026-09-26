@@ -1,0 +1,8 @@
+// expect: no item 'nope' in
+// spec: module-system.md §2
+// an item import must name an item the module actually declares
+use m.nope;
+
+fn main() -> i32 {
+  return 0;
+}

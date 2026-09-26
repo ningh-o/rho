@@ -1,0 +1,26 @@
+// out: literal=42 arg=24
+// out: copy=101 frozen=5
+// out: returned=13
+// exit: 0
+// spec: syntax.md §6.8
+// Closures are anonymous fn expressions; they capture immutable
+// locals BY COPY, so the value the closure sees is frozen at capture
+// time even though the original lives on. Closures pass as fn-typed
+// arguments and come back from functions through a binding.
+fn apply(f: fn(i32) -> i32, x: i32) -> i32 {
+  return f(x);
+}
+fn make_adder(n: i32) -> fn(i32) -> i32 {
+  return fn(x: i32) -> i32 { return x + n; };
+}
+fn main() -> i32 {
+  let lit = fn(x: i32) -> i32 { return x * 2; };
+  printf("literal={} arg={}\n", lit(21), apply(fn(x: i32) -> i32 { return x * 3; }, 8));
+  let captured: i32 = 100;
+  let cl = fn(x: i32) -> i32 { return x + captured; };
+  let frozen = cl(1);
+  printf("copy={} frozen={}\n", frozen, 5);
+  let ad = make_adder(6);
+  printf("returned={}\n", ad(7));
+  return 0;
+}

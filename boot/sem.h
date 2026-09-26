@@ -53,6 +53,7 @@ typedef struct ParamDef {
   const char *name;
   Type *ty;
   bool variadic;
+  bool is_mut; // declared `mut` — a mut view (permission, not layout)
   NodeRef decl;
 } ParamDef;
 
@@ -140,6 +141,7 @@ Type *resolve_type_pub(Module *m, NodeRef tr, GScope *g);
 Type *tsubst(Type *t, void *b); // TBind is checker-internal
 void for_each_live_use(Module *m, bool (*cb)(Module *, NodeRef));
 void const_resolve_module_pub(Module *m);
+void consts_converge(Program *p); // post-BFS cross-module fold + comptime law
 void prune_dead_uses(Module *m);
 
 // ---------------------------------------------------------------- symbols
@@ -190,6 +192,7 @@ typedef struct Sym {
   SymKind kind;
   const char *name;
   bool pub;
+  bool imported; // bound by an item import (the collision law's voice)
   union {
     FnDef *fns;        // SYM_FN (overload chain)
     StructDef *sdef;

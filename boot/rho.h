@@ -75,6 +75,8 @@ extern bool g_had_error;
 
 void diag_at(DiagKind kind, const char *file, int line, int col,
              const char *fmt, ...);
+void diag_gate_set(void); // one-error mode after a structural limit trips
+void diag_gate_clear(void); // compile boundary: the gate is not a latch
 void diags_print(FILE *out);
 size_t diags_count(void);
 
@@ -94,8 +96,8 @@ typedef enum {
   T_AMPEQ, T_PIPEEQ, T_CARETEQ, T_SHLEQ, T_SHREQ,
   K_AS, K_BREAK, K_CONST, K_CONTINUE, K_DEFER, K_DYN, K_ELSE, K_ENUM,
   K_EXTERN, K_FALSE, K_FN, K_FOR, K_IF, K_IMPL, K_LET, K_LOOP, K_MATCH,
-  K_MUT, K_NEW, K_NULL, K_PUB, K_RETURN, K_STATIC, K_STRUCT, K_TRAIT,
-  K_TRUE, K_USE, K_WHILE,
+  K_MUT, K_NEW, K_NULL, K_PUB, K_RETURN, K_STATIC, K_STRUCT, K_TEST,
+  K_TRAIT, K_TRUE, K_USE, K_WHILE,
   K_I8, K_I16, K_I32, K_I64, K_U8, K_U16, K_U32, K_U64, K_USIZE,
   K_F32, K_F64, K_BOOL, K_STRING,
 } TokKind;
@@ -132,7 +134,7 @@ typedef enum {
   NT_BUILTIN, NT_PTR, NT_OPT, NT_SLICE, NT_FNTYPE, NT_APP, NT_DYN,
   // declarations
   NT_FN, NT_STRUCT, NT_ENUM, NT_TRAIT, NT_IMPL, NT_CONST, NT_STATIC,
-  NT_EXTERN, NT_USE,
+  NT_EXTERN, NT_USE, NT_TEST,
   // generic-parameter / field / variant / arm helpers
   NT_GPARAM, NT_FIELD, NT_ENUMVAR, NT_ARM, NT_FIELDINIT, NT_POSARG,
   NT_PARAM, NT_SEG,
@@ -145,7 +147,7 @@ typedef enum {
   NT_SLICE_LIT, NT_SLICE_E, NT_CLOSURE, NT_QMARK, NT_IF_EXPR,
   NT_MATCH_EXPR,
   // patterns
-  NT_PLIT, NT_PBIND, NT_PWILD, NT_PVAR,
+  NT_PLIT, NT_PBIND, NT_PWILD, NT_PVAR, NT_POR,
 } NodeKind;
 
 const char *node_kind_name(NodeKind k);
@@ -190,7 +192,7 @@ enum {
   // forms for NT_USE: plain use / pub use segs / pub use item / rename /
   // star
   USE_PLAIN = 0, USE_PUB_MOD = 1, USE_PUB_ITEM = 2, USE_PUB_AS = 3,
-  USE_PUB_STAR = 4,
+  USE_PUB_STAR = 4, USE_BRACE = 5, // use a.{b, c as d} — §4.4 sugar
   USE_DEAD = 8, // or-ed in when a comptime-folded branch kills the use
   // enum variant forms
   VAR_UNIT = 0, VAR_TUPLE = 1, VAR_STRUCT = 2,

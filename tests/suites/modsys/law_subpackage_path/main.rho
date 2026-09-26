@@ -1,0 +1,10 @@
+// spec: module-system.md §4
+// A subpackage behind its own facade is nameable from outside one
+// level at a time: use geom.units; binds the subpackage, access
+// stays qualified through that binding.
+use geom.units;
+fn main() -> i32 {
+  printf("{}\n", units.conv());
+  return 0;
+}
+// out: 5

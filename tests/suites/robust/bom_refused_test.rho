@@ -1,0 +1,4 @@
+// expect: unexpected character
+// spec: syntax.md §2 — a UTF-8 BOM is not whitespace: refused
+// with a clean diagnostic, not skipped
+﻿fn main() -> i32 { return 0; }

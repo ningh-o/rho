@@ -1,0 +1,2 @@
+use h.hstep;
+pub fn gstep() -> i32 { return 7 + hstep(); }

@@ -1,0 +1,17 @@
+// expect: the type does not carry every trait method with a matching signature
+// spec: check — traits
+// the impl law is eager: an impl block whose type is missing a trait
+// method (or carries one with a different signature) is refused at
+// the declaration
+trait Show {
+  fn to_str(self) -> string,
+}
+
+struct S { x: i32 }
+
+impl Show for S {
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -1,0 +1,4 @@
+// expect: unexpected character
+// spec: syntax.md Â§2 â€” invalid UTF-8 bytes are refused
+// with a clean diagnostic
+fn main() -> i32 { let ÿşa: i32 = 0; return 0; }

@@ -1,0 +1,54 @@
+// out: per-instantiation: meow:3 woof:40
+// out: single bound: woof
+// exit: 0
+// spec: type-system.md §8
+// Bounds are verified at EVERY instantiation and dispatch through a
+// bound is STATIC: the same generic body instantiated at Cat and Dog
+// calls each type's own satisfying methods (name + signature
+// satisfaction, §4). Bounds stack — [T: Words, Num] declares one
+// parameter with two bounds.
+trait Words {
+  fn word(self) -> string,
+}
+trait Num {
+  fn num(self) -> i32,
+}
+struct Cat {
+  v: i32,
+}
+impl Words for Cat {
+  fn word(self) -> string {
+    return "meow";
+  }
+}
+impl Num for Cat {
+  fn num(self) -> i32 {
+    return self.v;
+  }
+}
+struct Dog {
+  v: i32,
+}
+impl Words for Dog {
+  fn word(self) -> string {
+    return "woof";
+  }
+}
+impl Num for Dog {
+  fn num(self) -> i32 {
+    return self.v * 10;
+  }
+}
+fn both[T: Words, Num](x: *T) -> string {
+  return x.word() + ":" + (x.num().to_str());
+}
+fn shout[T: Words](x: *T) -> string {
+  return x.word();
+}
+fn main() -> i32 {
+  let c: *Cat = new Cat { v: 3 };
+  let d: *Dog = new Dog { v: 4 };
+  printf("per-instantiation: {} {}\n", both(c), both(d));
+  printf("single bound: {}\n", shout(d));
+  return 0;
+}

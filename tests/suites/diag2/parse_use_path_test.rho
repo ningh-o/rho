@@ -1,0 +1,8 @@
+// expect: as a use path segment
+// spec: module-system.md §2
+// a use path is built from identifier segments
+use ;
+
+fn main() -> i32 {
+  return 0;
+}

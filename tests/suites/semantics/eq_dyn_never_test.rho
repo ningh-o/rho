@@ -1,0 +1,22 @@
+// expect: never compare
+// spec: type-system.md §10
+// `dyn Trait` values are NEVER comparable: an existential carries a
+// pointer plus a vtable and the law offers no equality across
+// erasures. The refusal is at check time.
+trait Area {
+  fn area(self) -> i32,
+}
+struct Sq {
+  s: i32,
+}
+impl Area for Sq {
+  fn area(self) -> i32 {
+    return self.s * self.s;
+  }
+}
+fn main() -> i32 {
+  let d: dyn Area = new Sq { s: 1 };
+  let e: dyn Area = new Sq { s: 1 };
+  printf("r={}\n", (d == e));
+  return 0;
+}

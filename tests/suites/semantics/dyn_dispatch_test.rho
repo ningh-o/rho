@@ -1,0 +1,53 @@
+// out: sq=16 rect=30 (two impls, one trait)
+// out: dyn return picks the bigger: 30
+// out: dyn total over slice via make: 4
+// out: coercion at field: 9
+// exit: 0
+// spec: type-system.md §9
+// `dyn Trait` is the existential: *T coerces to dyn Trait at
+// expected-type sites (annotation, argument, return, field) when T
+// satisfies the trait, and method calls dispatch VIRTUALLY — two
+// impls of one trait choose different behavior through the same
+// dyn type, and payload methods read the value behind the pointer.
+trait Area {
+  fn area(self) -> i32,
+}
+struct Sq {
+  s: i32,
+}
+struct Rec {
+  w: i32,
+  h: i32,
+}
+impl Area for Sq {
+  fn area(self) -> i32 {
+    return self.s * self.s;
+  }
+}
+impl Area for Rec {
+  fn area(self) -> i32 {
+    return self.w * self.h;
+  }
+}
+struct Bag {
+  shape: dyn Area,
+}
+fn biggest(a: dyn Area, b: dyn Area) -> dyn Area {
+  if a.area() >= b.area() {
+    return a;
+  }
+  return b;
+}
+fn main() -> i32 {
+  let sq: dyn Area = new Sq { s: 4 };
+  let rec: dyn Area = new Rec { w: 3, h: 10 };
+  printf("sq={} rect={} (two impls, one trait)\n", sq.area(), rec.area());
+  let b: dyn Area = biggest(sq, rec);
+  printf("dyn return picks the bigger: {}\n", b.area());
+  let mut one: []dyn Area = make([]dyn Area, 1);
+  one[0] = new Sq { s: 2 };
+  printf("dyn total over slice via make: {}\n", one[0].area());
+  let bag = new Bag { shape: new Sq { s: 3 } };
+  printf("coercion at field: {}\n", bag.shape.area());
+  return 0;
+}

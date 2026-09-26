@@ -483,7 +483,7 @@ section — no placeholder stages. boot is the reference compiler.
       old boot-vs-mirror differential retired with the old code — the
       fuzz framework is the price of the clean slate; rebuild it before
       calling anything done.)
-- [ ] **T3.5** The test protocol (§17) — **lands before T3.4, so the
+- [x] **T3.5** The test protocol (§17) — **lands before T3.4, so the
       suites are written directly on the real verb and no second runner
       ever exists.** boot grows the `test` block and rebuilds the
       `rho test` verb from its script-forwarding stub into the real
@@ -501,7 +501,12 @@ section — no placeholder stages. boot is the reference compiler.
       promotion = the marker comes off). Fixtures are the suites' first
       directories; the suite leg wires into make test. The self-hosted
       compiler mirrors the surface when its CLI lands (a T2 dogfood
-      leg: rho's test suite running rho).
+      leg: rho's test suite running rho). Landed 2026-09-26: the
+      block form through lex/parse/check/emit/fmt, the in-binary
+      runner (collection, name sort, filter, per-test isolation under
+      a 10 s hard cap, honest zero-match exit 1), the six headers with
+      PROMOTE counted as failure until the marker comes off, and the
+      suites leg wired into make test.
 - [ ] **T3.4** Suites: lang/modsys/opt/eq/params/multiline/strops/diag
       rebuilt for the new language, incl. the fixes the design mandates
       (aggregate let-position values are legal; `as` truncates constants
@@ -515,6 +520,25 @@ section — no placeholder stages. boot is the reference compiler.
       from the anchors, and a rule whose test does not exist is a rule
       not implemented. Multi-file cases (packages, facades) are
       directories with a `main.rho` entry carrying the same headers.
+      VALUE-STRUCT FACE (closed 2026-09-26 by probe + fix): the
+      grammar-audit round found nested value-struct construction
+      failing to emit — the FIELDINIT staging stuffed the
+      initializer's box pointer into the field's flat slot run. The
+      landed model: a boxed initializer for an inline value-struct
+      field stages the pointer and the parent owns field-wise copies
+      of the payload; value-struct expressions ride flat field runs
+      (construction, reads, lets, value params all verified), and the
+      §10 element-wise struct `==` compares each slot in its own face
+      (floats by IEEE eq). `new V{}` itself stays `*V` — pointer
+      identity == for freshly boxed structs is eq_pointer_identity's
+      pinned law. Also closed in the same audit: `make([][]T, n)`
+      (the type-arg parse consumed the outer `[]`; the checker then
+      mistook the slice element for an already-sliced type), and the
+      test-block leg of `rho test` — a block name with a space
+      produced an illegal wat identifier (`$test:always true`) so
+      wat2wasm failed and every block test was misjudged as panicked;
+      fn_wat_name now folds non-idchars to `_`. Four new lang
+      fixtures pin all of it; suites 98/0/0.
       Two tiers: green files gate; a case for law already ratified
       but not yet implemented (§18 mut view, §19 match ergonomics,
       T3.7 item imports, the T3.6 usize lane) carries
@@ -522,8 +546,11 @@ section — no placeholder stages. boot is the reference compiler.
       promoting per case when its task lands. The suite runs on
       T3.5's verb — it is the verb's fixtures and acceptance; no
       interim runner exists. The existing tests/check
-      negatives stay put — no migration churn.
-- [ ] **T3.6** The mut view law (§18) + the usize lane. Boot surface
+      negatives stay put — no migration churn. The skeleton is
+      seeded (lang/modsys/eq/params/strops/multiline/opt/diag, green
+      tier + the §18/§19/T3.7 pending ledger); the full §11 map keeps
+      growing per area until the map is complete.
+- [x] **T3.6** The mut view law (§18) + the usize lane. Boot surface
       map: parse grows the `mut` argument prefix in call argument
       lists (params already carry the flag); check_fn_body keeps the
       parameter's declared mut instead of forcing false; dotted,
@@ -551,12 +578,54 @@ section — no placeholder stages. boot is the reference compiler.
       assign through a mut view; match — impl/trait receiver-mut
       mismatch, dual `mut self` overload ambiguity; fmt — the
       argument marker round-trips.
-- [ ] **T3.7** Module item imports (module-system.md §2/§4/§6,
+      Landed: `mut` argument markers ride NT_POSARG op=2 (make's type
+      arg keeps op=1); ParamDef.is_mut flows from parse through trait
+      sigs, closures, and generic instances; check_fn_body keeps the
+      declared mut; field/index/compound stores gate on the root
+      binding (the pointer free-pass is gone — a pointer is a handle);
+      mut receivers gate the root binding; markers pair both
+      directions, with a mut-blind retry that diagnoses the exact
+      argument even under a quiet probe (err_at respects the probe,
+      so the diagnosis bypasses it — a real error, not selection);
+      sig_same joins mut-ness (self/mut self twins are distinct and
+      ambiguous together); trait satisfaction joins receiver mut;
+      value params refuse `mut`. Emitter and kernel: zero layout —
+      only the usize lane (i64 → i32, the wasm32 address width) with
+      its consumers unwrapped, plus a defined `allocation too large`
+      panic when make's byte size exceeds 1 GiB (was a silent wrap).
+      fmt renders the marker; suites 71/0/0 (the three pending_mut
+      legs promoted); corpus + libs + prelude adapted mechanically
+      (let mut, mut view params, markers, the `let mut p = p;` rebind
+      idiom for match binders). Mirror note: the self-host still
+      parses neither markers nor `mut self` (092/098 :refuse) and
+      computes usize at 64 bits (041/046/048 :diff, 005 :w2w) — those
+      five legs close when the mirror grows the matching surface; the
+      differential floor is re-pinned 91 → 85 with justification in
+      run-corpus-diff.sh.
+- [x] **T3.7** Module item imports (module-system.md §2/§4/§6,
       syntax.md §4.4): the final use-segment binds a public item
       unqualified (`use lex.a as b;`), the brace form expands one
       plain use per item, module-vs-item and name collisions are
       errors naming both, and item imports stop at package facades.
-      Implemented with the T3.4 modsys suite; the self-host mirrors.
+      Landed: parse (`use a.{b, c as d};` — parse_use_segs leaves the
+      cursor on `{`), a post-BFS item pass (bind_item_imports — every
+      owner prepared, so module-first-then-item sees both candidates;
+      the across-kinds ambiguity names module path and owner), copies
+      of pub Syms under the alias (Sym.imported gives the collision
+      law its voice: two-imports vs import-vs-local), the package
+      facade stop for item forms, and the §4 interior closure (a file
+      inside a package directory imports only from siblings — the
+      facade crosses freely). Seven modsys fixtures; suites 54/0/3;
+      corpus differential floor 91 untouched. The self-host mirrors
+      (floor per T3.4). Follow-ups landed with the law fixtures: the
+      bare `pub use inner.tool;` re-export (the owner resolves even
+      without a sibling `use inner;`), the grammar's trailing comma
+      in the brace form, and the empty-brace refusal. Ledgered
+      divergence: `pub use inner;` (the module re-export form)
+      flattens inner's public items instead of binding the submodule
+      under the facade — the consumer's `pkg.inner` needs nested
+      module-qualified access, machinery the checker does not have
+      yet; until then the §6 module form behaves star-like.
 - [ ] **T3.8** The in-tree wasm toolchain, sequenced after the corpus
       differential closes (108/108) so the mirror's climb is not
       disturbed mid-growth: `std.wasm` — an encoder/decoder package
@@ -567,7 +636,90 @@ section — no placeholder stages. boot is the reference compiler.
       Acceptance: dual-run byte-compare over the whole corpus, the
       wat→wasm→wat fixpoint leg (fmt's law, applied to assembly), and
       a readable decode diff for the T3.2 canary.
-- [ ] **T3.9** Match arm ergonomics (§19): variant resolution by
+- [ ] **T3.10** The bug-fix-wave mirror re-adaptation (opened
+      2026-09-26): boot grew six real fixes (value-struct field
+      stores, float compound assignment, the narrow-width shift mask,
+      the comptime &&/|| bool fold, static-from-const initializers,
+      ordered float compares) and the mirror binary — compiled BY
+      boot — moved with them: its parser/checker state machines were
+      calibrated against the broken faces (feature tables kept their
+      initial values because field stores silently vanished; folded
+      conditions took the wrong branch). The corpus differential sits
+      at floor 84 with 24 legs open (19 :refuse — the mirror lacks
+      traits/dyn/package/pub-use-forms/weak/rc and friends; 4 :diff on
+      041/045/046/048 — the new mask law; 1 :w2w — 005 still emits on
+      the old 64-bit usize lane; zero :build — boot compiles the
+      mirror cleanly). The mirror source needs the same error-driven
+      adaptation the mut law got; each leg that closes lifts the
+      floor. The boot-side hygiene ledger from the coverage agents
+      closed same-day (the hygiene wave): `pub use sub;` re-export
+      landed with T3.11 (B-7 done); three dead diagnostics pruned
+      (resolve_type's unreachable "invalid type syntax", the never-
+      called const_resolve_all and its report path, the format-values
+      non-POSARG arm); "tuple variants bind positionally" was dead as
+      written and now fires where its case actually lands — a braced
+      pattern on a tuple payload refuses "named patterns need a
+      struct-form variant"; parse.c's "cannot open file" is ALIVE (the
+      entry-file message — agent misjudged); tok_spell's bare/quoted
+      split is a convention (categories bare, literals quoted — now
+      documented at the table, zero drift found); and the quadratic
+      check time was not check at all — arena_alloc's grow path
+      created a fresh block AND walked the whole chain per overflowing
+      allocation once the 1 MiB head filled; continuing from the tail
+      made 16k fns go 15 s → 0.53 s, every compile faster. The sweep
+      also uncovered and fixed a real silent-miscompile family: const
+      initializers that read another module's const (qualified b.K,
+      item import, facade) folded too early and silently read 0 —
+      consts_converge now re-folds post-BFS and the comptime law is
+      hard (cyclic / non-comptime / annotation-mismatch consts error).
+      Still open from the old ledger: the float-literal-beyond-range
+      → inf spec ruling — ruled in T3.12 (out of range = compile
+      error, never silent inf). The strictness question parked here —
+      positional binding of a struct-form variant (`V(x)` on
+      `V { x }`) — ruled in T3.12 as well: the pattern form must
+      match the payload form, both directions refuse.
+- [x] **T3.11** Grammar-campaign leftovers (opened and closed
+      2026-09-26): the 68-fixture grammar suite (tests/suites/grammar)
+      closed one crash (`Option.None?` segfault — ? now infers the
+      payload from the enclosing return) and eight gaps (struct
+      patterns §7, immediate closure calls `make_adder(5)(3)`, float
+      literal patterns, `s += "cd"` on strings, `mut` on string/dyn
+      params, comma-less block match arms, variant-payload trailing
+      commas, subset variant binders by name); the same wave closed
+      the rest: `pub use sub;` module re-export resolves through the
+      facade (qualify_module walks pub module-use chains); the §6.8
+      capture law lands REFINED — a mut local of VALUE type may not
+      be captured (the copy would diverge on rebind), a mut HANDLE
+      captures fine (the copy is the shared view; the heap object
+      holds the state — the escape hatch §6.8's rationale names;
+      corpus 078 pins it. Spec pass pending: §6.8's wording should
+      narrow to "a mut local of value type"); parameter-list trailing
+      commas refuse (§4.1 has no ','? there); the fn-body tail
+      expression is the body's value — typed against the return at
+      check, turned into the return at emit (`fn f() -> i32 { 3 }`
+      returns 3). make test green end to end: 436 pass, 0 fail,
+      0 pending — no expected-fail ledger left in the suites.
+- [ ] **T3.12** The operator traits — Eq, Ord, Hash (opened
+      2026-09-26; design §11 amended, docs landed in the same wave).
+      The full law is design §11 + type-system.md §15; the two parked
+      rulings also ruled here: a float literal that rounds to ±inf or
+      (from a nonzero literal) to zero is out of range — a compile
+      error, never a silent inf (type-system.md §1's fit law, now
+      enforced for floats); a variant pattern's binder form must match
+      the declared payload form — braced on a tuple payload and
+      positional on a struct payload both refuse (syntax.md §7).
+      Construction order: parse `Self` (keyword, type positions in
+      trait/impl contexts) → check resolves the six operators through
+      trait lookup with the choice pinned on the node (op=5 style) →
+      emit direct calls → bounds verified per instantiation → corpus +
+      fixture regression, differential floor untouched. Acceptance:
+      default slotwise `==` unchanged everywhere; `impl Eq` overrides;
+      `<` on user types refuses without `impl Ord`; the never-list
+      stays locked; `impl Hash` replaces the FNV default; `[T: Eq]`
+      dispatches statically; `dyn Eq` `.eq` dispatches virtually
+      (ordinary §9 dyn); cycle-through-user-eq ends in the documented
+      stack-overflow panic.
+- [x] **T3.9** Match arm ergonomics (§19): variant resolution by
       scrutinee (bare `Some`/`None`/`Ok`/`Err` and user-enum variants,
       full paths stay legal, no scope fallback), or-patterns with the
       identical-binder law, guards with the never-exhaustive rule.
@@ -577,14 +729,27 @@ section — no placeholder stages. boot is the reference compiler.
       mismatch rejection; guard selects conditionally, guard
       referencing bindings, guarded-only match demanding a fallback;
       fmt round-trips all three forms. Boot implements; the self-host
-      mirrors.
-- [ ] **T3.10** Bare receiver in impl methods (§18): `self` = `*T`
+      mirrors. Landed 2026-09-26: resolution rewrites bare
+      binder/variant names against the scrutinee's enum before
+      covering or checking (payload field types drive the recursion);
+      or-patterns emit once per alternative with the arm body gated by
+      the matched flag; payload literal patterns now pin values (the
+      tag alone used to decide, silently matching every payload); the
+      matched flag gates every arm unconditionally (same-tag arms
+      used to clobber each other); guards evaluate after the binders
+      and never close exhaustiveness.
+- [x] **T3.10** Bare receiver in impl methods (§18): `self` = `*T`
       read-only, `mut self` = writable — the type inferred from the
       implemented type; fully-typed receivers stay legal; signature
       match (impl vs trait) keeps the receiver mut form. Acceptance:
       bare-self impl satisfies a trait, bare `mut self` writes through
       with the §18 gates, typed and bare forms mix in one impl, fmt
-      round-trips.
+      round-trips. Landed 2026-09-26: the signature pass derives the
+      bare receiver from its home (*T for a struct/enum target with
+      the type's own parameters, the value for a builtin primitive),
+      the typed form is accepted and never required, and fmt
+      canonicalizes it away. The §18-gated acceptance legs ride
+      T3.6's commit (the gates do not exist yet anywhere).
 
 ## Phase 4 — kernel boundary and the std library
 
@@ -736,7 +901,9 @@ weight.
 10. `==` comparability law: pointers identity, strings content, enums
     tag-then-payload, aggregates element-wise; `fn`/`dyn`/err-payloads
     never compare; comparing cyclic data ends in a stack-overflow panic
-    (documented, not detected).
+    (documented, not detected). On user types the law resolves through
+    the **operator traits** (§11): the element-wise default holds until
+    an `impl Eq for T` replaces it.
 11. Everything is a value type; no moves, no borrows, no address-of.
 
 ### 4. Errors
@@ -810,13 +977,51 @@ left width; floats are IEEE-754 (`/0.0` = inf, `NaN != NaN`); precedence
 C-style, 11 levels + postfix, left-associative; `&&`/`||` short-circuit;
 assignment is a statement with no value.
 
+**Operator traits** (ratified 2026-09-26): `==`/`!=`/`<`/`<=`/`>`/`>=`
+on user types resolve through the prelude traits `Eq` and `Ord` —
+operator overloading with one shape, no magic:
+
+- `trait Eq { fn eq(self, other: Self) -> bool }` — user structs/enums
+  compare element-wise by default; an `impl Eq for T` **replaces** the
+  default (never merges).
+- `trait Ord { fn lt(self, other: Self) -> bool }` — explicit impl
+  only; there is no lexicographic auto-derive. `a < b` calls `lt`; the
+  other three derive: `a <= b` = `!(b < a)`, `a > b` = `b < a`,
+  `a >= b` = `!(a < b)`. One method, one meaning.
+- `trait Hash { fn hash(self) -> u64 }` — the default folds the same
+  values the `==` law compares, FNV-1a 64-bit over the slots in
+  declaration order (string = content bytes; `*T` = the 32-bit
+  address, little-endian; integers/floats = their little-endian bit
+  patterns; bool = one byte; enums = tag then payload slots). An
+  `impl Hash for T` replaces the default. Equal values hash equal —
+  the defaults are built to; an impl overriding Eq but not Hash (or
+  the reverse) is its author's to keep consistent.
+- Builtins never consult the traits (direct emission, as today). The
+  never-list — `fn` types, `dyn`, slices, `Result` — is **locked**:
+  never comparable, never hashable, and no impl can unlock them; the
+  `==` operator itself never applies to `dyn` (though a `dyn Eq` value
+  dispatches `.eq` like any trait method).
+- `Self` is a reserved word: inside a trait declaration it names the
+  type satisfying the trait; inside an impl (and its methods) the
+  impl's target type. Nowhere else.
+- Bounds (`[T: Eq]`) are the first wave, ordinary §8 bounds verified
+  per instantiation with static dispatch; virtual dispatch of the
+  trait methods through `dyn` is ordinary §9 dyn dispatch.
+- Coherence is §4/§5's law unchanged: impls in any module,
+  exact-match-unique — two satisfying `eq` methods for one
+  (trait, type) is the ordinary ambiguity error.
+
 ### 12. Closures and variadics
 
-Closures capture immutables by copy; **mut capture stays rejected**
-(shared mutable state is a heap object: `new` a counter, pass `*T`).
-Variadics: `rest: T...` last parameter, concrete element type, `[]T` in
-the body, spread `xs...` last argument, call materializes a fresh slice,
-variadic functions are not first-class values.
+Closures capture locals by copy; capturing a **`mut` local of value
+type** is rejected — two live paths to one mutable value could diverge
+after a rebind. Capturing a **`mut` handle** binding (`*T`, `[]T`,
+`string`, `dyn`) is legal: the copy is the shared view and the heap
+object holds the state (§14's law governs stores through it) — the
+escape hatch this rule's own rationale names (`new` a counter, pass
+`*T`). Variadics: `rest: T...` last parameter, concrete element type,
+`[]T` in the body, spread `xs...` last argument, call materializes a
+fresh slice, variadic functions are not first-class values.
 
 ### 13. Toolchain architecture
 

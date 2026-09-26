@@ -1,0 +1,16 @@
+// expect: mut
+// spec: TODO.md §18
+// The mut view law (TODO.md §18, landed with T3.6): compound
+// assignment is a store — `r.x += 4` through a binding declared
+// without `mut` is a write through a read-only view, refused at
+// check time exactly like a plain `=` store.
+struct P {
+  x: i32,
+  y: i32,
+}
+fn main() -> i32 {
+  let r = new P { x: 10, y: 20 };
+  r.x += 4;
+  printf("r.x={}\n", r.x);
+  return 0;
+}

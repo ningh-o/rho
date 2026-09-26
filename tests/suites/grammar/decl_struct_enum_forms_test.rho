@@ -1,0 +1,56 @@
+// out: fields=1 2 trailing=ok
+// out: empty=ok unit=true tuple=9 rec=73
+// out: generic=42 wrapped
+// exit: 0
+// spec: syntax.md §4.2
+// Struct and enum declaration forms: fields and variants carry an
+// optional trailing comma; the empty struct `struct En {}` allocates
+// with `new En {}`; enums mix unit, tuple-payload, and struct-payload
+// variants (struct variants construct with named args, `Sh.Rec(w: …)`);
+// both kinds may be generic.
+struct Trailing {
+  a: i32,
+  b: i32,
+}
+struct En {}
+enum Mixed {
+  A,
+  B(i32),
+  C { w: i32, h: i32 },
+}
+struct GBox[T] {
+  v: T,
+}
+enum GWrap[T] {
+  Got(T),
+  Miss,
+}
+fn mixed_tag(m: Mixed) -> i32 {
+  return match m {
+    Mixed.A => 0,
+    Mixed.B(v) => v,
+    _ => 1,
+  };
+}
+fn rec_sum(m: Mixed) -> i32 {
+  return match m {
+    Mixed.C { w: a, h: b } => a * 10 + b,
+    _ => 0 - 1,
+  };
+}
+fn main() -> i32 {
+  let t = new Trailing { a: 1, b: 2 };
+  let e = new En {};
+  printf("fields={} {} trailing=ok\n", t.a, t.b);
+  let m1 = Mixed.A;
+  let m2 = Mixed.B(9);
+  let m3 = Mixed.C(w: 7, h: 3);
+  printf("empty=ok unit={} tuple={} rec={}\n", m1 == Mixed.A, mixed_tag(m2), rec_sum(m3));
+  let g = new GBox[i32] { v: 42 };
+  let w = GWrap.Got(1);
+  match w {
+    GWrap.Got(_) => printf("generic={} wrapped\n", g.v),
+    GWrap.Miss => printf("generic={} missed\n", g.v),
+  }
+  return 0;
+}

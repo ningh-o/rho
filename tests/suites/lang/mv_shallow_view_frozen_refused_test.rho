@@ -1,0 +1,18 @@
+// expect: 'q' is immutable
+// spec: TODO.md §18
+// The shallow view cuts BOTH ways: the copy `q` is governed by its
+// own binding's `mut`, not the source's — `let q = p` is a read-only
+// view even though a `let mut` rebind of the same handle would be
+// writable (mv_shallow_view_rebind_ok pins that half). The store
+// through the plain alias is refused at check time.
+struct P {
+  x: i32,
+  y: i32,
+}
+fn main() -> i32 {
+  let p = new P { x: 1, y: 2 };
+  let q = p;
+  q.x = 1;
+  printf("q=({},{})\n", q.x, q.y);
+  return 0;
+}

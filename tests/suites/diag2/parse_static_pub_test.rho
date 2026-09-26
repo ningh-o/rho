@@ -1,0 +1,8 @@
+// expect: 'pub static' does not exist
+// spec: syntax.md — statics
+// statics are module-private by law; 'pub' cannot widen them
+pub static X: mut i32 = 1;
+
+fn main() -> i32 {
+  return 0;
+}

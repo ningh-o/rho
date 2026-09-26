@@ -1,0 +1,6 @@
+pub fn tool() -> i32 {
+  return 3;
+}
+pub fn anvil() -> i32 {
+  return 4;
+}

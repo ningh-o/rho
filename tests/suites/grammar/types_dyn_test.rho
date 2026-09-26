@@ -1,0 +1,39 @@
+// out: field=w5 arg=w5 ret=w6
+// out: dyns=w7 w8 v9
+// exit: 0
+// spec: syntax.md §3, type-system.md §9
+// `dyn Trait` is the existential: a *T coerces to dyn Trait at every
+// expected-type site — annotation, argument, field initializer, and
+// return — and method calls through it dispatch virtually.
+trait Named {
+  fn tag(self) -> string,
+}
+struct W { n: i32 }
+fn W.tag(self: *W) -> string {
+  return format("w{}", self.n);
+}
+struct V { n: i32 }
+impl Named for V {
+  fn tag(self: *V) -> string {
+    return format("v{}", self.n);
+  }
+}
+struct Holder { item: dyn Named }
+fn call(d: dyn Named) -> string {
+  return d.tag();
+}
+fn give() -> dyn Named {
+  return new W { n: 6 };
+}
+fn main() -> i32 {
+  let w = new W { n: 5 };
+  let h = new Holder { item: w };
+  printf("field={} arg={} ret={}\n", h.item.tag(), call(w), give().tag());
+  let ann: dyn Named = new W { n: 7 };
+  let mut many = make([]dyn Named, 3);
+  many[0] = ann;
+  many[1] = new W { n: 8 };
+  many[2] = new V { n: 9 };
+  printf("dyns={} {} {}\n", many[0].tag(), many[1].tag(), many[2].tag());
+  return 0;
+}

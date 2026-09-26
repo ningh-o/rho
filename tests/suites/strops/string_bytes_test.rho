@@ -1,0 +1,31 @@
+// exit: 0
+// spec: spec.md §5 — len, s[i] (yields u8), and s[a:b] are byte-based
+// spec: syntax.md §2.5 — string is a UTF-8 byte slice, no char abstraction
+// out: len=6
+// out: b0=104
+// out: b1=195
+// out: b2=169
+// out: last=111
+// out: e=[é] 2
+// out: head=[h]
+// out: tail=[llo]
+// "héllo" is 6 BYTES: é is the two UTF-8 bytes 0xC3 0xA9
+fn main() -> i32 {
+  let s: string = "héllo";
+  printf("len={}\n", len(s));
+  printf("b0={}\n", s[0]);
+  printf("b1={}\n", s[1]);
+  printf("b2={}\n", s[2]);
+  printf("last={}\n", s[5]);
+  let e: string = s[1..3];
+  printf("e=[{}] {}\n", e, len(e));
+  printf("head=[{}]\n", s[0..1]);
+  printf("tail=[{}]\n", s[3..6]);
+  assert_eq(len(s), 6);
+  assert_eq(s[1], 195);
+  assert_eq(s[2], 169);
+  assert_eq(len(e), 2);
+  assert_eq(e, "\u{e9}");
+  assert_eq(s[0..1] + s[3..6], "hllo");
+  return 0;
+}

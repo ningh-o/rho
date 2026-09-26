@@ -1,0 +1,9 @@
+// expect: if condition is i32, want bool
+// spec: check — conditions
+// an if condition must be bool; a binding of another type is refused
+fn main() -> i32 {
+  let x = 1;
+  if x {
+  }
+  return 0;
+}

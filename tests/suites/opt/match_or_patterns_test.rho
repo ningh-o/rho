@@ -1,0 +1,28 @@
+// spec: TODO.md §19 — or-patterns: any alternative matches, identical binder sets
+// spec: syntax.md §7 — arm_pat := pattern ('|' pattern)*
+// out: 9
+// out: 16
+// out: 0
+// ratified §19 ergonomics, not implemented in boot yet: today check
+// refuses the `|` arm separator outright; the same binder `r` on both
+// alternatives is the ratified shape — full paths keep the bare-variant
+// sugar out of this file so it pins exactly the or-pattern law
+enum Shape {
+  Circle(i32),
+  Square(i32),
+  Dot,
+}
+
+fn area(s: Shape) -> i32 {
+  return match s {
+    Shape.Circle(r) | Shape.Square(r) => r * r,
+    Shape.Dot => 0,
+  };
+}
+
+fn main() -> i32 {
+  printf("{}\n", area(Shape.Circle(3)));
+  printf("{}\n", area(Shape.Square(4)));
+  printf("{}\n", area(Shape.Dot));
+  return 0;
+}

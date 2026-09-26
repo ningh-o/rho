@@ -1,0 +1,8 @@
+// expect: type i32 is not indexable
+// spec: check — indexing
+// only slices and strings carry an index operation
+fn main() -> i32 {
+  let x = 5;
+  let a = x[0];
+  return 0;
+}

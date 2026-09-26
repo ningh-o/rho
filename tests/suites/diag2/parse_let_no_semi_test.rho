@@ -1,0 +1,7 @@
+// expect: after the let initializer
+// spec: syntax.md — statements
+// the let statement ends with a semicolon
+fn main() -> i32 {
+  let x = 1
+  return 0;
+}

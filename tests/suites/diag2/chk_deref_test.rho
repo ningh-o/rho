@@ -1,0 +1,8 @@
+// expect: cannot dereference i32
+// spec: check — pointers
+// dereference needs a pointer; an integer is not one
+fn main() -> i32 {
+  let x = 5;
+  let y = *x;
+  return 0;
+}

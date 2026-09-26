@@ -1,0 +1,9 @@
+// expect: variadic functions are not first-class values
+// spec: check — calls
+// a variadic fn has no fixed signature a value could carry
+fn f(a: i32...) -> i32 { return a; }
+
+fn main() -> i32 {
+  let g = f;
+  return 0;
+}

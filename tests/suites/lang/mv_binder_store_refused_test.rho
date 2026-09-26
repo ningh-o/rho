@@ -1,0 +1,21 @@
+// expect: 'n' is immutable
+// spec: TODO.md §18
+// Match pattern binders are non-mut bindings: a handle captured by a
+// match arm arrives as a fresh value binding without `mut`, so a
+// store through the bare binder is refused at check time even when
+// the scrutinee's handle came from a writable place. The rebind
+// idiom (`let mut h = n;`) is the way through — mv_binder_rebind_ok
+// pins that half.
+struct P {
+  x: i32,
+  y: i32,
+}
+fn main() -> i32 {
+  let p = new P { x: 1, y: 2 };
+  let n: *P = match Option.Some(p) {
+    Option.Some(h) => h,
+    Option.None => p,
+  };
+  n.x = 5;
+  return 0;
+}

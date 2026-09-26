@@ -1,0 +1,26 @@
+// out: fold&&fold=true
+// out: dead-else never runs
+// exit: 0
+// spec: spec.md §6 — comptime folding of conditions over comptime-
+// known values; only the LIVE branch is emitted
+// `&&`/`||` over comptime-folded comparisons in an if CONDITION
+// mis-folds to false today (bug B-8): `if (2 == 2) && (3 == 3)` takes
+// the ELSE branch. The same expressions in argument position evaluate
+// true, one runtime operand on either side fixes the condition, and
+// literal-bool operands (`true && true`) fold correctly — only the
+// folded-comparison/folded-comparison pair is wrong. The outputs
+// below are the LAW; the case promotes when const-condition folding
+// handles folded comparisons.
+fn main() -> i32 {
+  if (2 == 2) && (3 == 3) {
+    printf("fold&&fold=true\n");
+  } else {
+    printf("fold&&fold=false\n");
+  }
+  if (2 == 2) && (3 == 3) {
+    printf("dead-else never runs\n");
+  } else {
+    printf("dead-else ran\n");
+  }
+  return 0;
+}

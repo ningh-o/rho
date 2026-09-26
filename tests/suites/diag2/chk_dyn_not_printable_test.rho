@@ -1,0 +1,19 @@
+// expect: dyn Has is not printable (its trait has no to_str)
+// spec: check — printf family
+// printing a dyn value dispatches through its trait's to_str; a
+// trait without one has no printable form
+trait Has {
+  fn tag(self) -> i32,
+}
+
+struct S { x: i32 }
+
+impl Has for S {
+  fn tag(self: *S) -> i32 { return 1; }
+}
+
+fn main() -> i32 {
+  let d: dyn Has = new S { x: 1 };
+  printf("{}\n", d);
+  return 0;
+}

@@ -1,0 +1,8 @@
+// expect: expected a declaration after 'pub'
+// spec: syntax.md — declarations
+// 'pub' is a modifier and must be followed by a declaration
+pub 5;
+
+fn main() -> i32 {
+  return 0;
+}

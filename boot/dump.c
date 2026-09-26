@@ -92,6 +92,12 @@ void dump_pattern(FILE *out, Node *p) {
     break;
   }
   default:
+  case NT_POR: {
+    fprintf(out, "(or");
+    dump_list(out, p->list);
+    fputc(')', out);
+    return;
+  }
     fprintf(out, "(?pattern %s)", node_kind_name(p->kind));
   }
 }
@@ -202,13 +208,21 @@ void dump_node(FILE *out, Node *n) {
     dump_opt_node(out, n->a);
     fputc(')', out);
     return;
+  case NT_TEST:
+    fprintf(out, "(test \"%s\" ", n->name);
+    dump_opt_node(out, n->d);
+    fputc(')', out);
+    return;
   case NT_USE: {
     static const char *forms[] = {"use", "pub-use-mod", "pub-use-item",
-                                  "pub-use-as", "pub-use-star"};
-    fprintf(out, "(%s", forms[n->op]);
+                                  "pub-use-as", "pub-use-star",
+                                  "use-brace"};
+    fprintf(out, "(%s", forms[n->op & 7]);
     dump_list(out, n->list);
     if (n->name2)
       fprintf(out, " as %s", n->name2);
+    if ((n->op & 7) == USE_BRACE && n->d)
+      dump_list(out, node_get(n->d)->list);
     fputc(')', out);
     return;
   }

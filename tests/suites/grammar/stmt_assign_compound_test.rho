@@ -1,0 +1,44 @@
+// out: ladder=0
+// out: bits=38
+// out: signs=-2 -2
+// out: lvalues=15 9 static=105
+// exit: 0
+// spec: syntax.md §5
+// Assignment is a statement with no value. Compound assignment is
+// defined for every arithmetic/bitwise operator including the shifts,
+// on mutable lvalues of matching type — here each operator is pinned
+// through a running ladder, plus field, index, and static targets.
+static mut STAT: i32 = 100;
+fn main() -> i32 {
+  let mut a: i32 = 100;
+  a += 10;
+  a -= 5;
+  a *= 2;
+  a /= 3;
+  a %= 7;
+  printf("ladder={}\n", a);
+  let mut b: u8 = 0xF0;
+  b &= 0x3C;
+  b |= 0x03;
+  b ^= 0xFF;
+  b <<= 1;
+  b >>= 2;
+  printf("bits={}\n", b);
+  let mut c: i64 = 0 - 8;
+  c /= 3;
+  printf("signs={} ", c);
+  c = 0 - 8;
+  c %= 3;
+  printf("{}\n", c);
+  let mut p = new Pt { x: 10, y: 3 };
+  p.x += 5;
+  let mut xs = make([]i32, 3);
+  xs[1] = 9;
+  STAT += 5;
+  printf("lvalues={} {} static={}\n", p.x, xs[1], STAT);
+  return 0;
+}
+struct Pt {
+  x: i32,
+  y: i32,
+}

@@ -1,0 +1,8 @@
+// expect: type i32 has no fields
+// spec: check — field access
+// field access needs a struct; numbers have none
+fn main() -> i32 {
+  let x = 5;
+  let a = x.f;
+  return 0;
+}

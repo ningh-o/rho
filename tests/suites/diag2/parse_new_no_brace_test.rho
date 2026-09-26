@@ -1,0 +1,9 @@
+// expect: after new S
+// spec: syntax.md — constructors
+// a struct value is built with the brace form 'new S { field: value }'
+struct S { x: i32 }
+
+fn main() -> i32 {
+  let s = new S(3);
+  return 0;
+}

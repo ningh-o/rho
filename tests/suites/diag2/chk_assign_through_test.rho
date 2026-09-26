@@ -1,0 +1,11 @@
+// expect: cannot assign through i32
+// spec: TODO.md §18
+// field stores land through the root binding's indirection; a bare
+// value binding offers none
+struct S { x: i32 }
+
+fn main() -> i32 {
+  let mut x = 5;
+  x.f = 1;
+  return 0;
+}

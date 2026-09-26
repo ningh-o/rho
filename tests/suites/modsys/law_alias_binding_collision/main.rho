@@ -1,0 +1,9 @@
+// spec: module-system.md §2
+// Two import bindings of one name collide even across kinds — here a
+// module binding and an item binding share an alias.
+use very.long.module.path as m;
+use math.add as m;
+fn main() -> i32 {
+  return m(1, 2);
+}
+// expect: two import bindings of 'm'

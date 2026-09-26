@@ -1,0 +1,8 @@
+// expect: to initialize the const
+// spec: syntax.md — consts
+// a const is initialized where it is declared: 'const X: T = ...;'
+const X: i32;
+
+fn main() -> i32 {
+  return 0;
+}

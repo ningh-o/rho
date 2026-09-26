@@ -1,0 +1,14 @@
+// expect: ambiguous type 'P' (visible from multiple modules)
+// spec: module-system.md §2
+// a bare type name visible from two imported modules is ambiguous:
+// the checker refuses to pick
+use m;
+use n;
+
+fn f(x: P) -> i32 {
+  return x.v;
+}
+
+fn main() -> i32 {
+  return 0;
+}

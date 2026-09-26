@@ -1,0 +1,8 @@
+// expect: format string has 1 {} hole(s) but 0 value(s) given
+// spec: spec.md §5
+// printf's {} placeholders are counted at compile time — a hole with
+// no value behind it is a check error, never a runtime artifact
+fn main() -> i32 {
+  printf("x={}\n");
+  return 0;
+}

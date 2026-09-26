@@ -1,0 +1,9 @@
+// expect: reachable only through its facade
+// spec: module-system.md §3
+// package items are not importable one by one: 'use pkg;' then
+// qualify
+use pkg.tool as t;
+
+fn main() -> i32 {
+  return t();
+}

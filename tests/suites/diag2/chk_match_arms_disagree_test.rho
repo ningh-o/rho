@@ -1,0 +1,15 @@
+// expect: match arms disagree: i32 vs string
+// spec: check — match
+// all arms of a match expression must produce the same type
+enum E { A(i32), B }
+
+fn g(e: E) -> i32 {
+  match e {
+    E.A(a) => a,
+    E.B => "s",
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}

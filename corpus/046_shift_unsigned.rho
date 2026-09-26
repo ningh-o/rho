@@ -1,4 +1,8 @@
 // exit: 0
+// unsigned shifts fill with zero; the count masks by the LEFT
+// OPERAND'S WIDTH (spec.md §4) — >> 32 on u32 is a no-op,
+// 1 << 64 on u64 is 1, and a u8 masks by 8 bits (255 >> 8 is 255)
+// exit: 0
 // unsigned shifts fill with zero; the same register-width masking
 // applies — >> 32 on u32 is a no-op, 1 << 64 on u64 is 1, and sub-word
 // widths shift in the 32-bit register and truncate afterwards

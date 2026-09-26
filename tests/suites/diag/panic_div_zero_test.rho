@@ -1,0 +1,11 @@
+// exit: 101
+// err: panic: division by zero
+// spec: spec.md §3
+// integer division by zero is a defined panic — one stderr line,
+// exit 101 (spec §4: /0 and %0 panic, never trap)
+fn main() -> i32 {
+  let z: i32 = 0;
+  let q: i32 = (5 / z);
+  printf("unreached {}\n", q);
+  return 0;
+}

@@ -1,0 +1,38 @@
+// exit: 0
+// spec: type-system.md §12 — ? propagates Err; the error type must match exactly
+// spec: spec.md §2 — Result[T, E] + ? is the error channel; match consumes it
+// out: ok 510
+// out: err [not a number]
+// out: err [unknown input]
+// ? chains the error up the call stack; the callsite match prints the
+// Err payload — the one way an error reaches the user
+fn parse_radix(s: string) -> Result[i32, string] {
+  if s == "ff" {
+    return Result.Ok(255);
+  }
+  if s == "zz" {
+    return Result.Err("not a number");
+  }
+  return Result.Err("unknown input");
+}
+
+fn doubled(s: string) -> Result[i32, string] {
+  let v: i32 = parse_radix(s)?;
+  return Result.Ok(v * 2);
+}
+
+fn main() -> i32 {
+  match doubled("ff") {
+    Result.Ok(v) => printf("ok {}\n", v),
+    Result.Err(e) => printf("err [{}]\n", e),
+  }
+  match doubled("zz") {
+    Result.Ok(v) => printf("ok {}\n", v),
+    Result.Err(e) => printf("err [{}]\n", e),
+  }
+  match doubled("qq") {
+    Result.Ok(v) => printf("ok {}\n", v),
+    Result.Err(e) => printf("err [{}]\n", e),
+  }
+  return 0;
+}

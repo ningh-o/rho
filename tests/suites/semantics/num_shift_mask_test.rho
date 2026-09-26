@@ -1,0 +1,27 @@
+// out: i32 1<<33=2 1<<32=1 1<<31=-2147483648
+// out: i64 1<<64=1 1<<63=-9223372036854775808
+// out: u32 max>>1=2147483647 max<<1=4294967294
+// out: signed -8>>1=-4 i64min>>1=-4611686018427387904 i8max>>1=63
+// out: i32 -1>>1=-1 (arithmetic, sign kept)
+// exit: 0
+// spec: spec.md §4
+// Shift counts mask by the LEFT operand's width: on i32 a shift of 33
+// shifts by 1 and a shift of 32 shifts by 0. Right shift is
+// arithmetic (sign-filling) for signed left operands and logical
+// (zero-filling) for unsigned ones — u32 max >> 1 clears the top bit,
+// while signed negatives keep it.
+fn main() -> i32 {
+  let one: i32 = 1;
+  printf("i32 1<<33={} 1<<32={} 1<<31={}\n", (one << 33), (one << 32), (one << 31));
+  let one64: i64 = 1;
+  printf("i64 1<<64={} 1<<63={}\n", (one64 << 64), (one64 << 63));
+  let umax: u32 = 4294967295;
+  printf("u32 max>>1={} max<<1={}\n", (umax >> 1), (umax << 1));
+  let neg: i32 = -8;
+  let min64: i64 = -9223372036854775808;
+  let i8max: i8 = 127;
+  printf("signed -8>>1={} i64min>>1={} i8max>>1={}\n", (neg >> 1), (min64 >> 1), (i8max >> 1));
+  let allones: i32 = -1;
+  printf("i32 -1>>1={} (arithmetic, sign kept)\n", (allones >> 1));
+  return 0;
+}

@@ -58,12 +58,12 @@ fn main() -> i32 {
   let p = new Pt { x: 1, y: 2 };
   let w = new Wd { s: "hey" };
   // static dispatch over the concrete slice
-  let ps: []*Pt = make([]*Pt, 2);
+  let mut ps: []*Pt = make([]*Pt, 2);
   ps[0] = p;
   ps[1] = new Pt { x: 3, y: 4 };
   let n1: i32 = render_all(ps);
   // dynamic dispatch over the same shapes plus one more
-  let ds: []dyn Show = make([]dyn Show, 3);
+  let mut ds: []dyn Show = make([]dyn Show, 3);
   ds[0] = p;
   ds[1] = ps[1];
   ds[2] = w;

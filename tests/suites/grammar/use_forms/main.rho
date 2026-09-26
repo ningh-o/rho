@@ -1,0 +1,19 @@
+// out: module=11 aliased=11 brace=22 77 77
+// out: deep=9 impl_elsewhere=8
+// exit: 0
+// spec: syntax.md §4.4, module-system.md §2
+// The plain `use` forms: a dotted path binds a module (access stays
+// qualified), `as` renames, the brace form is sugar expanding to one
+// plain use per item (trailing comma allowed), and multi-segment
+// paths descend through directories. Impls may live in any module —
+// calc implements helpers' Doubler for its own N.
+use helpers;
+use helpers.hello as hi;
+use helpers.{bye, num as n7,};
+use tools.calc;
+fn main() -> i32 {
+  printf("module={} aliased={} brace={} {} {}\n", helpers.hello(), hi(), bye(), n7(), helpers.num());
+  let c = calc.add(4, 5);
+  printf("deep={} impl_elsewhere={}\n", c, calc.doubled());
+  return 0;
+}

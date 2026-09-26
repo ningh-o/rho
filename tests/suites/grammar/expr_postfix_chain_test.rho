@@ -1,0 +1,48 @@
+// out: curried=8
+// out: method=16
+// out: index=20
+// out: byte=108
+// out: optq=true
+// exit: 0
+// spec: syntax.md §6.1, §6.2
+// Postfix chains compose at level 11: call of call `made(4)` (a fn
+// value bound first), method on call result, field and index after
+// calls, string byte reads, and `?` in the chain — `find(x)?.m()`
+// propagates before the method runs.
+fn make_adder(n: i32) -> fn(i32) -> i32 {
+  return fn(x: i32) -> i32 { return x + n; };
+}
+fn give() -> []i32 {
+  return [10, 20, 30];
+}
+struct Wrap {
+  inner: Inner,
+}
+struct Inner {
+  v: i32,
+}
+fn Wrap.doubled_get(self: *Wrap) -> i32 {
+  return self.inner.v * 2;
+}
+fn find(x: i32) -> ?i32 {
+  return Option.Some(x);
+}
+fn qmethod(x: i32) -> ?bool {
+  let s = find(x)?;
+  return Option.Some(s.to_str() == "6");
+}
+fn main() -> i32 {
+  let made = make_adder(5);
+  printf("curried={}\n", made(3));
+  let w = new Wrap { inner: new Inner { v: 8 } };
+  printf("method={}\n", w.doubled_get());
+  let xs = give();
+  printf("index={}\n", xs[1]);
+  let s = "hello";
+  printf("byte={}\n", s[2]);
+  match qmethod(6) {
+    Option.Some(b) => printf("optq={}\n", b),
+    Option.None => printf("optq=none\n"),
+  }
+  return 0;
+}

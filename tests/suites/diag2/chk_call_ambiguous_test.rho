@@ -1,0 +1,12 @@
+// expect: ambiguous call to f: 2 overloads match exactly
+// expect:   candidate: f
+// spec: check — overloads
+// two overloads with the same signature cannot both be candidates;
+// the checker names each one
+fn f(a: i32) -> i32 { return a; }
+fn f(a: i32) -> i32 { return a + 1; }
+
+fn main() -> i32 {
+  let x = f(1);
+  return 0;
+}

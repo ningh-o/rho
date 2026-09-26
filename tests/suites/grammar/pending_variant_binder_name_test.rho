@@ -1,0 +1,31 @@
+// out: h=3 w=7 wh=73
+// exit: 0
+// spec: syntax.md §7
+// Struct-variant pattern binders match BY FIELD NAME: `Sh.Rec { h }`
+// on Rec(w: 7, h: 3) must bind h=3. Today a subset binder binds
+// positionally (h picks up 7, the first field) while full binder sets
+// (`{ w, h }`, `{ w: a, h: b }`) extract correctly — so only the
+// subset form misbinds.
+enum Sh {
+  Rec { w: i32, h: i32 },
+}
+fn rec_h(s: Sh) -> i32 {
+  return match s {
+    Sh.Rec { h } => h,
+  };
+}
+fn rec_w(s: Sh) -> i32 {
+  return match s {
+    Sh.Rec { w } => w,
+  };
+}
+fn rec_wh(s: Sh) -> i32 {
+  return match s {
+    Sh.Rec { w, h } => w * 10 + h,
+  };
+}
+fn main() -> i32 {
+  let r = Sh.Rec(w: 7, h: 3);
+  printf("h={} w={} wh={}\n", rec_h(r), rec_w(r), rec_wh(r));
+  return 0;
+}

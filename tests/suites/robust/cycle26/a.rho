@@ -1,0 +1,2 @@
+use b.bstep;
+pub fn astep() -> i32 { return 1 + bstep(); }

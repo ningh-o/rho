@@ -48,7 +48,7 @@ fn Num.size(self: *Num) -> i32 {
 }
 
 fn main() -> i32 {
-  let items: []dyn Show = make([]dyn Show, 4);
+  let mut items: []dyn Show = make([]dyn Show, 4);
   items[0] = new Pt { x: 1, y: 2 };
   items[1] = new Bx { tag: "abc" };
   items[2] = new Num { v: 7 };
@@ -71,7 +71,7 @@ fn main() -> i32 {
     i += 1;
   }
   // a second trait over the same shapes
-  let sized: []dyn Size = make([]dyn Size, 3);
+  let mut sized: []dyn Size = make([]dyn Size, 3);
   sized[0] = new Pt { x: 2, y: 3 };
   sized[1] = new Bx { tag: "abcd" };
   sized[2] = new Num { v: 10 };

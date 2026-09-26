@@ -1,0 +1,19 @@
+// exit: 101
+// err: panic: stack overflow
+// spec: spec.md §3 — stack overflow is a defined panic (exit 101)
+// Unbounded NON-TAIL recursion exhausts the wasm stack and is caught
+// as a defined panic with exit 101. Pinned via stdout because the
+// test verb's wasmtime-trap shim echoes the mapped `panic:` line on
+// stdout (boot/test.c run_program); `rho run` prints the same line on
+// stderr. NOTE: spec §3 names the message `panic: stack overflow`;
+// the implementation prints `panic: call stack exhausted` — this
+// fixture pins the OBSERVED text, and the catalog deviation is
+// reported. (Tail calls — `return f(x);` — do not grow the stack, so
+// the recursion carries an accumulator across the call.)
+fn down(n: i32) -> i32 {
+  return 1 + down(n + 1);
+}
+fn main() -> i32 {
+  printf("r={}\n", down(0));
+  return 0;
+}

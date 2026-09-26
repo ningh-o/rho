@@ -1,0 +1,25 @@
+// out: usize max=4294967295
+// out: usize max+1=0 0-1=4294967295
+// out: len returns usize: slen=6
+// out: index reads usize: i=2 xs[i]=30
+// out: cast roundtrip u64->usize=4294967295 usize->u64=4294967295
+// exit: 0
+// spec: syntax.md §3, spec.md §4
+// usize is the wasm32 address width (u32): max = 4294967295, wrap at
+// +1 and -1 like any unsigned width. len results and index
+// expressions are usize; conversion to u64 is zero-extending, so a
+// usize max rides to u64 unchanged.
+fn main() -> i32 {
+  let max: usize = 4294967295;
+  let zero: usize = 0;
+  printf("usize max={}\n", max);
+  printf("usize max+1={} 0-1={}\n", (max + 1), (zero - 1));
+  let s: string = "héllo";
+  printf("len returns usize: slen={}\n", len(s));
+  let xs: []i32 = [10, 20, 30];
+  let i: usize = 2;
+  printf("index reads usize: i={} xs[i]={}\n", i, xs[i]);
+  let as64: u64 = max as u64;
+  printf("cast roundtrip u64->usize={} usize->u64={}\n", (as64 as usize), as64);
+  return 0;
+}

@@ -1,0 +1,7 @@
+// expect: type 'A' nests too deeply
+// expect: type 'B' nests too deeply
+// spec: type-system.md §11 — a mutual A↔B value cycle has no
+// finite layout either: both sides refused, both named
+struct A { b: B }
+struct B { a: A }
+fn main() -> i32 { return 0; }

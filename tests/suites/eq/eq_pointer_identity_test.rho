@@ -1,0 +1,27 @@
+// exit: 0
+// out: distinct allocs: eq=false ne=true
+// out: alias: eq=true ne=false
+// out: self: eq=true
+// out: mutated through the alias: eq=true
+// out: content alone is not identity: eq=false
+// spec: type-system.md §10 — `*T` compares by identity (same object)
+// pointer equality is allocation identity: two `new` allocations
+// carrying equal content are NOT ==, an alias of the same allocation
+// is ==, and a pointer equals itself regardless of the content it
+// currently holds
+struct Node {
+  v: i32,
+}
+
+fn main() -> i32 {
+  let a: *Node = new Node { v: 1 };
+  let b: *Node = new Node { v: 1 };
+  let mut alias: *Node = a;
+  printf("distinct allocs: eq={} ne={}\n", (a == b), (a != b));
+  printf("alias: eq={} ne={}\n", (a == alias), (a != alias));
+  printf("self: eq={}\n", (a == a));
+  alias.v = 7;
+  printf("mutated through the alias: eq={}\n", (a == alias));
+  printf("content alone is not identity: eq={}\n", (a == b));
+  return 0;
+}

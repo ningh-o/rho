@@ -1,0 +1,12 @@
+// expect: 'mut' marks a view parameter
+// spec: TODO.md §18
+// `mut` is permission on a view, never a value qualifier: only *T and
+// []T parameters may be declared `mut` (syntax.md §6.2). A value
+// parameter (i32 etc.) is a caller's copy — the callee can never
+// write through it, so marking one is a type error at declaration.
+fn f(mut x: i32) -> i32 {
+  return x;
+}
+fn main() -> i32 {
+  return 0;
+}

@@ -1,0 +1,10 @@
+// expect: type 'A' nests too deeply while checking layout
+// spec: module-system.md §5 — layout law
+// a self-cycle hidden behind a generic instantiation still has no
+// finite layout
+struct Box[T] { v: T }
+struct A { b: Box[A] }
+
+fn main() -> i32 {
+  return 0;
+}

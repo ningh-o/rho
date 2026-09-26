@@ -1,0 +1,50 @@
+// out: if-expr=10 match-expr=ten
+// out: arm block tail: 3 10
+// out: if-else-else chain: middle
+// out: match literal arms: c
+// exit: 0
+// spec: syntax.md §6.2
+// `if` and `match` are expressions: same-type arms, `if` requires
+// `else`, and an arm block's value is its TAIL expression. This pins
+// block value typing — the arm's block { v *= 3; v } yields the
+// mutated copy, and mixed arm shapes (expr vs block) share one type.
+fn classify(n: i32) -> string {
+  if n < 0 {
+    return "negative";
+  } else if n == 0 {
+    return "zero";
+  } else {
+    return "middle";
+  }
+}
+fn main() -> i32 {
+  let v: i32 = if 1 < 2 { 10 } else { 20 };
+  let w: string = match v {
+    10 => "ten",
+    _ => "other",
+  };
+  printf("if-expr={} match-expr={}\n", v, w);
+  let a: i32 = match v {
+    10 => {
+      let mut t = v;
+      t /= 3;
+      t
+    },
+    _ => 0,
+  };
+  let b: i32 = match v {
+    10 => v,
+    _ => {
+      let mut t = 1;
+      t
+    },
+  };
+  printf("arm block tail: {} {}\n", a, b);
+  printf("if-else-else chain: {}\n", classify(5));
+  printf("match literal arms: {}\n", match "c" {
+    "a" => "a",
+    "c" => "c",
+    _ => "?",
+  });
+  return 0;
+}

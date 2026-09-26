@@ -1,0 +1,16 @@
+// out: nested=8
+// exit: 0
+// spec: syntax.md §7
+// Variant patterns nest: `Option.Some(Option.Some(v))` must bind v to
+// the innermost payload (8). Today the nested binder picks up a tag
+// word instead of the payload (v=1); a two-stage match
+// (`Some(inner) => match inner { Some(v) => … }`) extracts 8
+// correctly, so only the nested-pattern compiler path misbinds.
+fn main() -> i32 {
+  let o = Option.Some(Option.Some(8));
+  match o {
+    Option.Some(Option.Some(v)) => printf("nested={}\n", v),
+    _ => printf("nested=miss\n"),
+  }
+  return 0;
+}

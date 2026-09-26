@@ -1,0 +1,3 @@
+pub use inner.a;
+pub use inner.b as bee;
+pub use inner.*;

@@ -1,0 +1,10 @@
+// expect: *S as i32 is not a conversion
+// spec: check — casts
+// pointers are not numbers: no as-cast exists between them
+struct S { x: i32 }
+
+fn main() -> i32 {
+  let p = new S { x: 1 };
+  let y = p as i32;
+  return 0;
+}

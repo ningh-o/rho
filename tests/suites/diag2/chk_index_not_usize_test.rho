@@ -1,0 +1,9 @@
+// expect: index is i32, want usize
+// spec: check — indexing
+// indices are usize; a signed i32 binding is refused
+fn main() -> i32 {
+  let xs = [1, 2];
+  let i: i32 = 0;
+  let a = xs[i];
+  return 0;
+}

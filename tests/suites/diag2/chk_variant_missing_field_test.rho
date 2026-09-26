@@ -1,0 +1,11 @@
+// expect: missing field 'x' in E.P
+// expect: unknown field 'z' in E.P
+// spec: check — enums
+// a struct-form variant is built by naming every payload field; a
+// renamed field is both missing and unknown
+enum E { P { x: i32 } }
+
+fn main() -> i32 {
+  let e = E.P(z: 1);
+  return 0;
+}

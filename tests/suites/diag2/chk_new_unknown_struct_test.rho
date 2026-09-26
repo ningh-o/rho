@@ -1,0 +1,7 @@
+// expect: unknown struct 'Nope' for new
+// spec: check — constructors
+// new needs a struct declared in scope
+fn main() -> i32 {
+  let s = new Nope { x: 1 };
+  return 0;
+}

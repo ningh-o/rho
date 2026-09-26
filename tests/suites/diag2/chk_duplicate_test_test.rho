@@ -1,0 +1,14 @@
+// expect: duplicate test 'a'
+// spec: check — test blocks
+// test names are unique per module: the harness keys cases by them
+test "a" {
+  assert(true);
+}
+
+test "a" {
+  assert(true);
+}
+
+fn main() -> i32 {
+  return 0;
+}

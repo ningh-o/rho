@@ -1,0 +1,7 @@
+// err: allocation too large
+// spec: spec.md §1 — make asks for 2e9 x i32 = 8GiB, past the
+// 1GiB guard: the defined panic fires before any allocation
+fn main() -> i32 {
+  let s: []i32 = make([]i32, 2000000000);
+  return 0;
+}

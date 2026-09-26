@@ -1,0 +1,8 @@
+// spec: module-system.md §4
+// A subpackage is closed: the outside may not descend past a package
+// facade to an interior file, even through legal intermediate levels.
+use geom.units.inner;
+fn main() -> i32 {
+  return 0;
+}
+// expect: interior to package 'units'

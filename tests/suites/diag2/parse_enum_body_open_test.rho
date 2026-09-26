@@ -1,0 +1,8 @@
+// expect: to open the enum body
+// spec: syntax.md — declarations
+// an enum declaration opens a brace body after its name
+enum E 5
+
+fn main() -> i32 {
+  return 0;
+}

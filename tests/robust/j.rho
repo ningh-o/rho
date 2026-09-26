@@ -1,0 +1,2 @@
+use k.kstep;
+pub fn jstep() -> i32 { return 10 + kstep(); }

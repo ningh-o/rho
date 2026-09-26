@@ -1,0 +1,9 @@
+// expect: while condition is i32, want bool
+// spec: check — conditions
+// a while condition must be bool
+fn main() -> i32 {
+  let x = 1;
+  while x {
+  }
+  return 0;
+}

@@ -1,0 +1,36 @@
+// out: ints=10 20 30 0
+// out: strings=1 2 3
+// out: bools=1 0
+// exit: 0
+// spec: syntax.md §7
+// Literal patterns: integers, bools, and single-line strings match by
+// value; `_` catches the rest. (Float literal patterns are pinned
+// separately — they compile but mis-match today, see
+// pending_float_pattern_test A-9.)
+fn ints(n: i32) -> i32 {
+  return match n {
+    1 => 10,
+    2 => 20,
+    3 => 30,
+    _ => 0,
+  };
+}
+fn strings(s: string) -> i32 {
+  return match s {
+    "hi" => 1,
+    "yo" => 2,
+    _ => 3,
+  };
+}
+fn bools(b: bool) -> i32 {
+  return match b {
+    true => 1,
+    false => 0,
+  };
+}
+fn main() -> i32 {
+  printf("ints={} {} {} {}\n", ints(1), ints(2), ints(3), ints(9));
+  printf("strings={} {} {}\n", strings("hi"), strings("yo"), strings("x"));
+  printf("bools={} {}\n", bools(true), bools(false));
+  return 0;
+}

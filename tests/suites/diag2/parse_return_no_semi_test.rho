@@ -1,0 +1,6 @@
+// expect: after return
+// spec: syntax.md — statements
+// a return statement ends with a semicolon
+fn main() -> i32 {
+  return 0
+}

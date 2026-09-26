@@ -8,6 +8,10 @@
 
 int emit_program(Program *p, bool debug, char **wat_out, size_t *wat_len);
 
+// the test verb sets this while compiling a test-block file: those
+// per-test programs have no main. Every other mode keeps the law.
+bool g_test_main_optional = false;
+
 // shared front half for build/run/check
 static Program *load_and_check(int argc, char **argv, const char **path_out) {
   if (argc < 1)
@@ -124,7 +128,7 @@ int cmd_run(int argc, char **argv) {
            "  if grep -q -e 'wasm trap' -e 'stack overflow' "
            "/tmp/rho-trap.$$.err 2>/dev/null; then "
            "    msg=$(sed -n 's/.*wasm trap: //p' /tmp/rho-trap.$$.err "
-           "| head -1); "
+           "| head -1 | sed 's/call stack exhausted/stack overflow/'); "
            "    [ -z \"$msg\" ] && msg='stack overflow'; "
            "    echo \"panic: $msg\" >&2; "
            "    rm -f /tmp/rho-trap.$$.err; exit 101; "
@@ -141,37 +145,7 @@ int cmd_run(int argc, char **argv) {
   return 1;
 }
 
-int cmd_test(int argc, char **argv) {
-  (void)argc;
-  (void)argv;
-  // delegates to the shell runners next to the source tree: the
-  // behavioral suites live as scripts (compile + run + golden
-  // compare); the in-binary form lands with the gate (T3.1)
-  const char *suites[] = {"tests/run-check-tests.sh",
-                          "tests/run-emit-tests.sh",
-                          "tests/run-fmt-tests.sh",
-                          "tests/run-set-tests.sh",
-                          "tests/run-selfhost.sh",
-                          "tests/run-diff.sh",
-                          "tests/run-corpus-repo.sh", NULL};
-  for (size_t i = 0; suites[i]; i++) {
-    if (access(suites[i], R_OK) != 0) {
-      fprintf(stderr, "rho test: %s not found (run from the repo root)\n",
-              suites[i]);
-      return EXIT_USAGE;
-    }
-  }
-  int bad = 0;
-  if (cmd_selftest() != 0)
-    bad++;
-  for (size_t i = 0; suites[i]; i++) {
-    char cmd[256];
-    snprintf(cmd, sizeof cmd, "zsh %s", suites[i]);
-    if (system(cmd) != 0)
-      bad++;
-  }
-  return bad ? 1 : 0;
-}
+// cmd_test lives in test.c — the §17 verb (T3.5).
 
 // canonical formatter (T1.9): prints the checked AST back in canonical
 // form; fmt(fmt(x)) == fmt(x) byte-for-byte
@@ -198,14 +172,20 @@ int cmd_check(int argc, char **argv) {
   const char *path = argv[0];
   Program *p = program_new();
   for (int i = 1; i < argc; i++) {
-    if (strncmp(argv[i], "--set ", 6) == 0) {
-      char *eq = strchr(argv[i] + 6, '=');
+    const char *nv = NULL;
+    if (strncmp(argv[i], "--set ", 6) == 0)
+      nv = argv[i] + 6; // one-token form: "--set name=value"
+    else if (strcmp(argv[i], "--set") == 0 && i + 1 < argc &&
+             strchr(argv[i + 1], '='))
+      nv = argv[++i]; // two-token form: --set name=value
+    if (nv) {
+      char *eq = strchr(nv, '=');
       if (!eq) {
         fprintf(stderr, "rho: --set needs name=value\n");
         return EXIT_USAGE;
       }
       SetOverride *so = vec_push(&p->sets);
-      so->name = intern(argv[i] + 6, (size_t)(eq - (argv[i] + 6)));
+      so->name = intern(nv, (size_t)(eq - nv));
       so->value = eq + 1;
     }
   }

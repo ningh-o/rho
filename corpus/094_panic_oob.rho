@@ -2,7 +2,7 @@
 // indexing past the end panics: every line printed before the trap stays on
 // stdout, the process exits 101, and the panic text itself goes to stderr.
 fn main() -> i32 {
-  let xs: []i32 = make([]i32, 3);
+  let mut xs: []i32 = make([]i32, 3);
   xs[0] = 30;
   xs[1] = 20;
   xs[2] = 10;

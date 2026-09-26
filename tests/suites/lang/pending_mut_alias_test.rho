@@ -1,0 +1,18 @@
+// expect: mut
+// spec: TODO.md §18
+// The mut view law (TODO.md §18, landed with T3.6): the view is
+// per-binding and shallow — a handle copied out of a non-mut
+// binding is governed by the new binding's own `mut`, so storing
+// through the plain alias `q` (`q.y = 7`) is refused while the same
+// store through `let mut q` would pass.
+struct P {
+  x: i32,
+  y: i32,
+}
+fn main() -> i32 {
+  let p = new P { x: 1, y: 2 };
+  let q = p;
+  q.y = 7;
+  printf("q.y={} p.y={}\n", q.y, p.y);
+  return 0;
+}

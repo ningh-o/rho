@@ -1,0 +1,9 @@
+// out: en ok
+// spec: syntax.md §4 — the fieldless struct is legal: declare,
+// construct, run
+struct En {}
+fn main() -> i32 {
+  let e = new En {};
+  printf("en ok\n");
+  return 0;
+}

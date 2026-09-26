@@ -1,0 +1,28 @@
+// out: i8=-13 i16=-13 i32=-13 i64=-13
+// out: u8=51 u16=51 u32=51 u64=51 usize=51
+// out: f32=0.75 f64=2.5 bool=true string=rho
+// exit: 0
+// spec: syntax.md §3
+// Every builtin type spelling carries a value: 19-32 lands on -13 in
+// every signed width, 200-149 = 51 on the unsigned lane (each literal
+// fits its consumer — a literal that cannot fit is a compile error),
+// and f32/f64/bool/string print through their own path.
+fn main() -> i32 {
+  let a: i8 = 19 - 32;
+  let b: i16 = 19 - 32;
+  let c: i32 = 19 - 32;
+  let d: i64 = 19 - 32;
+  printf("i8={} i16={} i32={} i64={}\n", a, b, c, d);
+  let e: u8 = 200 - 149;
+  let f: u16 = 200 - 149;
+  let g: u32 = 200 - 149;
+  let h: u64 = 200 - 149;
+  let i: usize = 200 - 149;
+  printf("u8={} u16={} u32={} u64={} usize={}\n", e, f, g, h, i);
+  let j: f32 = 0.5 + 0.25;
+  let k: f64 = 2.5;
+  let l: bool = 1 < 2;
+  let m: string = "rho";
+  printf("f32={} f64={} bool={} string={}\n", j, k, l, m);
+  return 0;
+}

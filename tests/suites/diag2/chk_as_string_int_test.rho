@@ -1,0 +1,7 @@
+// expect: as converts between numbers, or enum→i32 tag; string as i32 is not a conversion
+// spec: check — casts
+// the as-law: only number↔number and enum→tag conversions exist
+fn main() -> i32 {
+  let x = "abc" as i32;
+  return 0;
+}
