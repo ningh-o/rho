@@ -1,0 +1,7 @@
+// spec: module-system.md §2
+// expect: two import bindings of 'a1'
+use math.add as a1;
+use math.add as a1;
+fn main() -> i32 {
+  return a1(0, 0);
+}

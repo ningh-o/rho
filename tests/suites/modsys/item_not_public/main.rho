@@ -1,0 +1,7 @@
+// spec: module-system.md §2
+// expect: item 'priv_fn'
+// expect: is not public
+use math.priv_fn as p;
+fn main() -> i32 {
+  return p();
+}

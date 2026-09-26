@@ -215,11 +215,14 @@ void dump_node(FILE *out, Node *n) {
     return;
   case NT_USE: {
     static const char *forms[] = {"use", "pub-use-mod", "pub-use-item",
-                                  "pub-use-as", "pub-use-star"};
-    fprintf(out, "(%s", forms[n->op]);
+                                  "pub-use-as", "pub-use-star",
+                                  "use-brace"};
+    fprintf(out, "(%s", forms[n->op & 7]);
     dump_list(out, n->list);
     if (n->name2)
       fprintf(out, " as %s", n->name2);
+    if ((n->op & 7) == USE_BRACE && n->d)
+      dump_list(out, node_get(n->d)->list);
     fputc(')', out);
     return;
   }

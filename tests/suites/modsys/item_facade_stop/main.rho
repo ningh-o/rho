@@ -1,0 +1,6 @@
+// spec: module-system.md §4
+// expect: reachable only through its facade
+use pkg.tool as t;
+fn main() -> i32 {
+  return t();
+}

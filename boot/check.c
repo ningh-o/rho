@@ -452,6 +452,124 @@ static Module *resolve_use(Program *p, Module *importer, NodeRef use_r,
   return NULL;
 }
 
+// the last component of a directory path (a package's given name)
+static const char *path_stem(const char *dir) {
+  const char *s = strrchr(dir, '/');
+  return s ? s + 1 : dir;
+}
+
+// same directory: the importer is a sibling (inside the package)
+static bool importer_inside(Module *importer, Module *found) {
+  return strcmp(dir_of(g_arena, importer->path),
+                dir_of(g_arena, found->path)) == 0;
+}
+
+// the import-collision law (§2): one name, one binding — against the
+// module's own declarations and against earlier import bindings; the
+// error names the colliding name at the import's site
+static bool use_collides(Module *m, Node *u, const char *alias) {
+  Sym *there = m->syms ? symtab_get(m->syms, alias) : NULL;
+  if (there && there->imported) {
+    diag_at(DIAG_ERROR, m->path, u->line, u->col,
+            "two import bindings of '%s'", alias);
+    return true;
+  }
+  if (there) {
+    diag_at(DIAG_ERROR, m->path, u->line, u->col,
+            "the import '%s' collides with an existing '%s' in this "
+            "module",
+            alias, alias);
+    return true;
+  }
+  for (size_t k = 0; k < VLEN(m->uses); k++) {
+    UseBind *ub = VAT(m->uses, UseBind, k);
+    if (strcmp(ub->alias, alias) == 0) {
+      Node *u0 = ub->decl ? node_get(ub->decl) : NULL;
+      if (u0)
+        diag_at(DIAG_ERROR, m->path, u->line, u->col,
+                "two import bindings of '%s' (the other at line %zu)",
+                alias, u0->line);
+      else
+        diag_at(DIAG_ERROR, m->path, u->line, u->col,
+                "two import bindings of '%s'", alias);
+      return true;
+    }
+  }
+  return false;
+}
+
+// reasons a module probe can end with
+enum { PR_FOUND = 0, PR_UNKNOWN, PR_AMBIG, PR_REFUSED, PR_STD };
+
+// the two-base module probe behind resolve_use, callable quietly: the
+// caller owns every message. When loud is set the shape errors (std,
+// facade ambiguity, package interior) are diagnosed here — exactly
+// once per use, by whichever pass probes the path first.
+static int probe_module_path(Program *p, Module *importer, Node *u,
+                             RefList *segs, size_t nsegs, bool loud,
+                             Module **out) {
+  *out = NULL;
+  const char *first = node_get(reflist_at(segs, 0))->name;
+  if (strcmp(first, "std") == 0) {
+    if (loud)
+      diag_at(DIAG_ERROR, importer->path, u->line, u->col,
+              "'std' is reserved; std packages arrive with the std "
+              "library (Phase 4)");
+    return PR_STD;
+  }
+  const char *bases[2];
+  bases[0] = dir_of(g_arena, importer->path);
+  bases[1] = dir_of(g_arena, p->entry->path);
+  for (int b = 0; b < 2; b++) {
+    char *path = NULL;
+    int r = resolve_under_base(g_arena, bases[b], segs, nsegs, &path);
+    if (r == 0)
+      continue;
+    if (r == 3) {
+      if (loud)
+        diag_at(DIAG_ERROR, importer->path, u->line, u->col,
+                "ambiguous module: both %s and a sibling file module "
+                "provide '%s' (exactly one real body)",
+                path, first);
+      return PR_AMBIG;
+    }
+    Module *found = program_find(p, path);
+    if (!found) {
+      found = module_load(g_arena, path);
+      found->is_package = (r == 2);
+      program_add(p, found, importer);
+    }
+    // the package interior is closed from outside (§4): a file inside
+    // a package directory is importable only by the facade and its
+    // siblings; the facade itself (r == 2) crosses freely
+    if (!found->is_package && !importer_inside(importer, found)) {
+      char *dp = dir_of(g_arena, found->path);
+      char *facade = aprintf(g_arena, "%s/lib.rho", dp);
+      if (file_exists(facade)) {
+        if (loud)
+          diag_at(DIAG_ERROR, importer->path, u->line, u->col,
+                  "'%s' is interior to package '%s': import the "
+                  "facade (use %s;) and reach it qualified",
+                  found->path, path_stem(dp), path_stem(dp));
+        return PR_REFUSED;
+      }
+    }
+    *out = found;
+    return PR_FOUND;
+  }
+  return PR_UNKNOWN;
+}
+
+// a dotted seg-list for diagnostics ("lex.token")
+static char *segs_text(Arena *a, RefList *segs, size_t n) {
+  char *s = NULL;
+  for (size_t i = 0; i < n; i++) {
+    const char *seg = node_get(reflist_at(segs, i))->name;
+    s = s ? aprintf(a, "%s.%s", s, seg) : aprintf(a, "%s", seg);
+  }
+  return s ? s : (char *)"";
+}
+
 // load-time module preparation: collect symbols, resolve consts, fold
 // dead branches — so a use inside a comptime-dead branch never loads.
 // The unpruned variant stops before the fold (the load BFS applies
@@ -464,6 +582,8 @@ static Program *g_program_for_load;
 static bool load_one_use(Module *m, NodeRef d) {
   Node *n = node_get(d);
   int form = n->op & 7;
+  if (form == USE_BRACE)
+    return true; // §4.4 sugar — the item pass expands it after the BFS
   const char *alias =
       n->name2 ? n->name2
                : node_get(reflist_at(n->list, reflist_len(n->list) - 1))
@@ -498,9 +618,29 @@ static bool load_one_use(Module *m, NodeRef d) {
       }
     }
   }
-  Module *t = resolve_use(g_program_for_load, m, d, reflist_len(n->list));
+  size_t nsegs = reflist_len(n->list);
+  if (form == USE_PLAIN && nsegs >= 2) {
+    // module first (§2): a quiet probe — when no module matches, the
+    // item pass owns the final segment after the BFS. Shape errors
+    // (std, facade ambiguity, package interior) report right here.
+    Module *t = NULL;
+    probe_module_path(g_program_for_load, m, n, n->list, nsegs, true,
+                      &t);
+    if (!t)
+      return true; // an item candidate — or already reported
+    if (use_collides(m, n, alias))
+      return true;
+    UseBind *ub = vec_push(&m->uses);
+    ub->alias = alias;
+    ub->target = t;
+    ub->decl = d;
+    return true;
+  }
+  Module *t = resolve_use(g_program_for_load, m, d, nsegs);
   if (!t)
     return true; // reported; keep walking for more diagnostics
+  if (use_collides(m, n, alias))
+    return true;
   UseBind *ub = vec_push(&m->uses);
   ub->alias = alias;
   ub->target = t;
@@ -590,6 +730,176 @@ static void expand_pub_uses(Program *p) {
   }
 }
 
+// ==================================================== item imports
+
+// bind one imported item under `alias` in the importer's symbol table
+// (a copy sharing the owner's def); the collision law names both
+static void bind_imported_item(Module *m, Node *u, Module *owner,
+                               const char *item, const char *alias) {
+  Sym *s = owner->syms ? symtab_get(owner->syms, item) : NULL;
+  if (!s) {
+    diag_at(DIAG_ERROR, m->path, u->line, u->col,
+            "no item '%s' in %s", item, owner->path);
+    return;
+  }
+  if (!s->pub) {
+    diag_at(DIAG_ERROR, m->path, u->line, u->col,
+            "item '%s' of %s is not public", item, owner->path);
+    return;
+  }
+  if (use_collides(m, u, alias))
+    return;
+  Sym *c = symtab_add(m->syms, alias);
+  c->kind = s->kind;
+  c->pub = false;
+  c->imported = true;
+  c->u = s->u;
+}
+
+// a module loaded after the BFS (a brace prefix, a facade probed for
+// the ambiguity check) gets the turn the load loop would have given it
+static void late_load_turn(Program *p, Module *m) {
+  module_prepare_unpruned(p, m);
+  prune_dead_uses(m);
+  for_each_live_use(m, load_one_use);
+}
+
+// the final segment of one plain use (or one brace item): module
+// first, then a public item of the module the prefix names (§2)
+static void resolve_use_final(Program *p, Module *m, NodeRef use_r,
+                              RefList *segs, const char *alias,
+                              bool bfs_probed) {
+  Node *u = node_get(use_r);
+  size_t nsegs = reflist_len(segs);
+  const char *item = node_get(reflist_at(segs, nsegs - 1))->name;
+
+  // the module the full path names: the BFS binding for a plain use
+  // (its probe already reported every shape error for this path), or
+  // a loud probe for a brace item
+  Module *mod = NULL;
+  if (bfs_probed) {
+    for (size_t k = 0; k < VLEN(m->uses); k++)
+      if (VAT(m->uses, UseBind, k)->decl == use_r) {
+        mod = VAT(m->uses, UseBind, k)->target;
+        break;
+      }
+    if (!mod) {
+      // the BFS probe said no quietly OR reported a shape error;
+      // re-probe quietly to tell the two apart
+      Module *t = NULL;
+      int pr = probe_module_path(p, m, u, segs, nsegs, false, &t);
+      if (pr != PR_UNKNOWN)
+        return; // std / ambiguity / interior — reported at the BFS
+    }
+  } else {
+    Module *t = NULL;
+    int pr = probe_module_path(p, m, u, segs, nsegs, true, &t);
+    if (pr == PR_FOUND) {
+      mod = t;
+      if (!mod->prepared)
+        late_load_turn(p, mod);
+    } else if (pr != PR_UNKNOWN) {
+      return; // reported right here
+    }
+  }
+
+  // the module the prefix names — a binding this module already holds
+  // wins, then the filesystem (loud: shape errors surface here once)
+  Module *owner = NULL;
+  if (nsegs >= 2) {
+    size_t npfx = nsegs - 1;
+    if (npfx == 1) {
+      const char *p0 = node_get(reflist_at(segs, 0))->name;
+      for (size_t k = 0; k < VLEN(m->uses); k++)
+        if (strcmp(VAT(m->uses, UseBind, k)->alias, p0) == 0) {
+          owner = VAT(m->uses, UseBind, k)->target;
+          break;
+        }
+    }
+    if (!owner) {
+      Module *t = NULL;
+      int pr = probe_module_path(p, m, u, segs, npfx, true, &t);
+      if (pr == PR_FOUND) {
+        owner = t;
+        if (!owner->prepared)
+          late_load_turn(p, owner);
+      } else if (pr != PR_UNKNOWN) {
+        return; // reported right here
+      }
+    }
+  }
+
+  Sym *is = owner && owner->syms ? symtab_get(owner->syms, item) : NULL;
+  bool item_pub = is && is->pub;
+
+  // both bases match: the across-kinds ambiguity (§2/§3)
+  if (mod && item_pub) {
+    char *full = segs_text(g_arena, segs, nsegs);
+    diag_at(DIAG_ERROR, m->path, u->line, u->col,
+            "ambiguous use of '%s': both the module %s and the public "
+            "item '%s' of %s match",
+            full, mod->path, item, owner->path);
+    return;
+  }
+  if (mod)
+    return; // the module binding stands (made at the BFS)
+  if (owner && owner->is_package && !importer_inside(m, owner)) {
+    const char *dp = dir_of(g_arena, owner->path);
+    diag_at(DIAG_ERROR, m->path, u->line, u->col,
+            "items of package '%s' are reachable only through its "
+            "facade: use %s; then qualify",
+            path_stem(dp), path_stem(dp));
+    return;
+  }
+  if (owner) {
+    bind_imported_item(m, u, owner, item, alias);
+    return;
+  }
+  diag_at(DIAG_ERROR, m->path, u->line, u->col,
+          "unknown module or item '%s'", segs_text(g_arena, segs, nsegs));
+}
+
+// the item half of the module law (§2): plain uses whose final
+// segment names a public item, and the brace form's expansion — run
+// after the BFS so every possible owner is loaded and prepared
+static void bind_item_imports(Program *p) {
+  for (Module *m = p->modules; m; m = m->next) {
+    if (!m->decls)
+      continue;
+    for (size_t i = 0; i < reflist_len(m->decls); i++) {
+      NodeRef dr = reflist_at(m->decls, i);
+      Node *u = node_get(dr);
+      if (u->kind != NT_USE || (u->op & USE_DEAD))
+        continue;
+      int form = u->op & 7;
+      if (form == USE_PLAIN) {
+        size_t nsegs = reflist_len(u->list);
+        if (nsegs < 2)
+          continue;
+        const char *item =
+            node_get(reflist_at(u->list, nsegs - 1))->name;
+        resolve_use_final(p, m, dr, u->list,
+                          u->name2 ? u->name2 : item, true);
+      } else if (form == USE_BRACE) {
+        if (!u->d)
+          continue;
+        Node *items = node_get(u->d);
+        size_t nsegs = reflist_len(u->list);
+        for (size_t j = 0; j < reflist_len(items->list); j++) {
+          NodeRef it = reflist_at(items->list, j);
+          Node *in = node_get(it);
+          RefList *full = reflist();
+          for (size_t si = 0; si < nsegs; si++)
+            reflist_add(full, reflist_at(u->list, si));
+          reflist_add(full, it);
+          resolve_use_final(p, m, dr, full,
+                            in->name2 ? in->name2 : in->name, false);
+        }
+      }
+    }
+  }
+}
+
 bool program_load_graph(Program *p, const char *entry_path) {
   g_program_for_load = p;
   // the prelude exists before ANY collection (load-time preparation
@@ -633,6 +943,9 @@ bool program_load_graph(Program *p, const char *entry_path) {
   }
   // facades re-export now — every target is loaded and prepared
   expand_pub_uses(p);
+  // item imports bind last — every possible owner is prepared, so the
+  // module-first-then-item law can see both candidates (§2)
+  bind_item_imports(p);
   // deferred field types resolve against the complete graph
   for (size_t i = 0; i < VLEN(g_deferred_tys); i++) {
     DeferredTy *dt = VAT(g_deferred_tys, DeferredTy, i);

@@ -190,6 +190,7 @@ typedef struct Sym {
   SymKind kind;
   const char *name;
   bool pub;
+  bool imported; // bound by an item import (the collision law's voice)
   union {
     FnDef *fns;        // SYM_FN (overload chain)
     StructDef *sdef;

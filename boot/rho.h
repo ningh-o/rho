@@ -190,7 +190,7 @@ enum {
   // forms for NT_USE: plain use / pub use segs / pub use item / rename /
   // star
   USE_PLAIN = 0, USE_PUB_MOD = 1, USE_PUB_ITEM = 2, USE_PUB_AS = 3,
-  USE_PUB_STAR = 4,
+  USE_PUB_STAR = 4, USE_BRACE = 5, // use a.{b, c as d} — §4.4 sugar
   USE_DEAD = 8, // or-ed in when a comptime-folded branch kills the use
   // enum variant forms
   VAR_UNIT = 0, VAR_TUPLE = 1, VAR_STRUCT = 2,

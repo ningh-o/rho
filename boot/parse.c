@@ -1179,6 +1179,8 @@ static RefList *parse_use_segs(Parser *p) {
     reflist_add(segs, s);
     if (!accept(p, T_DOT))
       break;
+    if (is(p, T_LBRACE))
+      break; // the brace form leaves the items to the caller (§4.4)
   }
   return segs;
 }
@@ -1479,6 +1481,34 @@ static NodeRef parse_decl(Parser *p) {
     Node *n = node_get(r);
     n->op = USE_PLAIN;
     n->list = parse_use_segs(p);
+    // the brace form: use segs.{a, b as c,} — pure sugar for one
+    // plain use per item (§4.4); expansion happens at load time.
+    // parse_use_segs left the cursor on '{' (the dot is consumed)
+    if (accept(p, T_LBRACE)) {
+      NodeRef items_ref = nnew(p, NT_SEG);
+      Node *items = node_get(items_ref);
+      items->list = reflist();
+      if (!is(p, T_RBRACE)) {
+        for (;;) {
+          NodeRef it = nnew(p, NT_SEG);
+          Token *inm = expect(p, T_IDENT, "as an item name");
+          node_get(it)->name = intern(inm->text.p, inm->text.n);
+          if (accept(p, K_AS)) {
+            Token *al = expect(p, T_IDENT, "as the item alias");
+            node_get(it)->name2 = intern(al->text.p, al->text.n);
+          }
+          reflist_add(items->list, it);
+          if (!accept(p, T_COMMA))
+            break;
+        }
+      }
+      expect(p, T_RBRACE, "to close the item list");
+      n->op = USE_BRACE;
+      // the items ride a synthetic NT_SEG whose list carries them
+      n->d = items_ref;
+      expect(p, T_SEMI, "after the use items");
+      return r;
+    }
     if (accept(p, K_AS)) {
       Token *alias = expect(p, T_IDENT, "as the use alias");
       n->name2 = intern(alias->text.p, alias->text.n);

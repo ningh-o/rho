@@ -453,12 +453,22 @@ section — no placeholder stages. boot is the reference compiler.
       assign through a mut view; match — impl/trait receiver-mut
       mismatch, dual `mut self` overload ambiguity; fmt — the
       argument marker round-trips.
-- [ ] **T3.7** Module item imports (module-system.md §2/§4/§6,
+- [x] **T3.7** Module item imports (module-system.md §2/§4/§6,
       syntax.md §4.4): the final use-segment binds a public item
       unqualified (`use lex.a as b;`), the brace form expands one
       plain use per item, module-vs-item and name collisions are
       errors naming both, and item imports stop at package facades.
-      Implemented with the T3.4 modsys suite; the self-host mirrors.
+      Landed: parse (`use a.{b, c as d};` — parse_use_segs leaves the
+      cursor on `{`), a post-BFS item pass (bind_item_imports — every
+      owner prepared, so module-first-then-item sees both candidates;
+      the across-kinds ambiguity names module path and owner), copies
+      of pub Syms under the alias (Sym.imported gives the collision
+      law its voice: two-imports vs import-vs-local), the package
+      facade stop for item forms, and the §4 interior closure (a file
+      inside a package directory imports only from siblings — the
+      facade crosses freely). Seven modsys fixtures; suites 54/0/3;
+      corpus differential floor 91 untouched. The self-host mirrors
+      (floor per T3.4).
 - [ ] **T3.8** The in-tree wasm toolchain, sequenced after the corpus
       differential closes (108/108) so the mirror's climb is not
       disturbed mid-growth: `std.wasm` — an encoder/decoder package

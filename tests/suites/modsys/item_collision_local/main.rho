@@ -1,0 +1,9 @@
+// spec: module-system.md §2
+// expect: the import 'add' collides with an existing 'add' in this module
+use math.add as add;
+fn add(a: i32, b: i32) -> i32 {
+  return a - b;
+}
+fn main() -> i32 {
+  return add(9, 9);
+}

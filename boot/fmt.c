@@ -762,6 +762,28 @@ void fmt_program(FILE *out, Program *p) {
       case NT_USE: {
         static const char *forms[] = {"use", "pub use", "pub use",
                                       "pub use", "pub use"};
+        if ((d->op & 7) == USE_BRACE) {
+          // the brace form round-trips as the canonical one-line sugar
+          fp(&f, "use ");
+          for (size_t si = 0; si < reflist_len(d->list); si++) {
+            if (si)
+              fp(&f, ".");
+            fp(&f, "%s", NG(reflist_at(d->list, si))->name);
+          }
+          fp(&f, ".{");
+          Node *items = d->d ? NG(d->d) : NULL;
+          for (size_t j = 0; items && j < reflist_len(items->list);
+               j++) {
+            if (j)
+              fp(&f, ", ");
+            Node *in = NG(reflist_at(items->list, j));
+            fp(&f, "%s", in->name);
+            if (in->name2)
+              fp(&f, " as %s", in->name2);
+          }
+          fp(&f, "};\n\n");
+          break;
+        }
         fp(&f, "%s ", forms[d->op & 7]);
         for (size_t si = 0; si < reflist_len(d->list); si++) {
           if (si)

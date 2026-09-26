@@ -1,7 +1,6 @@
 // spec: module-system.md §2
-use math.add as add;
+// expect: ambiguous use of 'math.add'
+use math.add;
 fn main() -> i32 {
-  printf("{}\n", add(2, 3));
   return 0;
 }
-// out: 5
