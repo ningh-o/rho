@@ -465,15 +465,36 @@ section — no placeholder stages. boot is the reference compiler.
       on demand (a fixed cap was an out-of-bounds write the day a
       struct rode eleven fields). The index-first field store
       (base[i].f = e) parses and emits, and a loose file module owns
-      its parent directory. The mirror now runs its whole pipeline:
-      it loads lex, parse (75 fns), and check clean, then crashes
-      parsing emit.rho's own text — verbatim strings, static muts,
-      comments, and the fixed call-arg caps all ruled out; the crash
-      follows a shower of recovered statement fallbacks. Next tool:
-      a top-level fn-span stubber (fn header lines to their col-0
-      closing brace — the first attempt miscounted spans; verify the
-      span count against `grep -c '^fn \|^pub fn '` before trusting
-      it) to bisect emit.rho's 60 fns half by half.
+      its parent directory. RESOLVED 2026-09-26 (the consolidation
+      night): the parse crash was never a grammar — match_chain_m's
+      NINE-parameter header indexed past parse_params2's fixed cap of
+      eight; the tables scrambled and the parser collapsed behind it
+      (the fn-span stubber died unneeded). count_params pre-counts the
+      list (bracketed type commas never count) and every param table
+      sizes from it; the module merge now registers structs and enums
+      (mods_struct_add/mods_enum_add — module-local `new` and match
+      were unknown to the checker). Two corpus legs pin both (106 the
+      ten-param signature, 107 the in-package struct and enum; floor
+      108 → 110). The mirror now FORMATS its entire own source (320
+      KB through FMT=1, rc 0) and its emission runs to the 4 GiB
+      ceiling: the never-reusing concat allocator's quadratic —
+      `s = s + piece` at MB scale (a 1.2 MB build dies at ~30 K
+      concats through boot's own kernel too; measured).
+      THE APPEND LAW (designed, hazard mapped, not landed): blocks
+      already carry [rc][sz] headers and the carve is upward, so
+      `$rho_app(a, al, b, bl)` extends in place when a ≥ data_top,
+      rc(a)==1 (the counting law is complete for strings —
+      assignment/argument/field retains all emit), and al+bl ≤ sz;
+      fresh results take half-again headroom. The single-tail form
+      (`s = s + e`, `s += e`) passed the WHOLE gate once; the
+      flattened multi-tail chain corrupts exactly one piece when a
+      tail rides the to_str/format fusion (the fb two-phase assembly
+      interleaves with sequential apps — a `(if len>0` elision
+      swallowed adjacent literal pieces; gens3's child lost one
+      `(local.get N)` line). Landing it needs either the fusion
+      taught about app continuations or the interception restricted
+      to tails the fusion never touches. Until then the mirror's
+      self-emission stays behind the quadratic wall.
 - [ ] **T3.2 Pure-source trust root**: every gate run rebuilds the seed
       from boot's C source on the spot. The pinned `seed.wasm` stays in
       the repo **as a canary**: rebuild, compare byte-for-byte (D1 makes
