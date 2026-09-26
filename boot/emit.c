@@ -117,6 +117,26 @@ static Type *inst_ty(Type *inst, Type *raw) {
   return tsubst(raw, &b);
 }
 
+// a value cycle (struct S { s: S }, its A↔B mutual form, or hidden
+// behind a generic instantiation) has no finite layout: the depth
+// bound turns it into a clean fatal instead of a C stack smash —
+// legal by-value nesting is written in the source, so it stays far
+// below the cap
+#define SHAPE_DEPTH_CAP 1000
+static int g_shape_depth;
+
+static void shape_too_deep(Type *t) {
+  StructDef *sd = t->kind == TY_STRUCT ? t->sdef : NULL;
+  EnumDef *ed = t->kind == TY_ENUM ? t->edef : NULL;
+  Node *d = node_get(sd ? sd->decl : ed->decl);
+  fprintf(stderr,
+          "%s:%d:%d: error: type '%s' nests too deeply while computing "
+          "layout (a recursive type without indirection has no finite "
+          "layout)\n",
+          d->file, d->line, d->col, sd ? sd->name : ed->name);
+  exit(1);
+}
+
 static size_t shape_nlocals(Type *t) {
   switch (t->kind) {
   case TY_PTR: return 1;
@@ -125,12 +145,17 @@ static size_t shape_nlocals(Type *t) {
   case TY_SLICE: return 3;
   case TY_STRING: case TY_DYN: case TY_FN: return 2;
   case TY_STRUCT: {
+    if (++g_shape_depth > SHAPE_DEPTH_CAP)
+      shape_too_deep(t);
     size_t n = 0;
     for (size_t i = 0; i < t->sdef->nfields; i++)
       n += shape_nlocals(inst_ty(t, t->sdef->fields[i].ty));
+    g_shape_depth--;
     return n ? n : 1;
   }
   case TY_ENUM: {
+    if (++g_shape_depth > SHAPE_DEPTH_CAP)
+      shape_too_deep(t);
     size_t max = 0;
     for (size_t i = 0; i < t->edef->nvariants; i++) {
       size_t n = 0;
@@ -138,6 +163,7 @@ static size_t shape_nlocals(Type *t) {
         n += shape_nlocals(inst_ty(t, t->edef->variants[i].fields[k].ty));
       if (n > max) max = n;
     }
+    g_shape_depth--;
     return 1 + max;
   }
   default: return 1;
@@ -508,7 +534,15 @@ static const char *fn_wat_name(FnDef *f) {
       }
     if (!taken)
       break;
-    name = aprintf(g_arena, "%s.%zu", f->name, try);
+    // the retry candidate folds too: a raw f->name can carry
+    // non-idchars ("test:a b.1"), which wat2wasm would reject
+    char *cand = aprintf(g_arena, "%s.%zu", f->name, try);
+    for (char *q = cand; *q; q++)
+      if (!((*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') ||
+            (*q >= '0' && *q <= '9') ||
+            strchr("!#$%&'*+./:<=>?@^_`|~-", *q) != NULL))
+        *q = '_';
+    name = cand;
   }
   FnNameEnt *e = VPUSH(em->fnnames, FnNameEnt);
   e->f = f;

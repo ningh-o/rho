@@ -461,6 +461,25 @@ static bool collect_blocks(const char *path, const char *stem);
 
 static void collect_file(const char *path, const char *relname,
                          const char *relstem) {
+  // an expect:-pinned file is judged whole: its blocks never register
+  // as cases — a failed check fails the file once, not once per block
+  Headers h;
+  memset(&h, 0, sizeof h);
+  vec_init(&h.out, sizeof(const char *));
+  vec_init(&h.sets, sizeof(const char *));
+  vec_init(&h.expect, sizeof(const char *));
+  vec_init(&h.err, sizeof(const char *));
+  parse_headers(path, &h);
+  if (VLEN(h.expect) > 0) {
+    if (stem_ends_test(relname)) {
+      TestCase *tc = VPUSH(g_tests, TestCase);
+      tc->name = aprintf(g_arena, "%s", relstem);
+      tc->path = intern_c(path);
+      tc->block = NULL;
+      tc->kind = TK_FILE;
+    }
+    return;
+  }
   // one parse decides the shape: a file that fails to parse becomes
   // exactly ONE force case (a must-check-clean failure naming the
   // parse diagnostics) — never a file case and a force case under

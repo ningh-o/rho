@@ -1567,6 +1567,87 @@ static void module_prepare_unpruned(Program *p, Module *m) {
   m->prepared = true;
 }
 
+// §5 layout law: a by-value cycle (struct S { s: S }, its A↔B mutual
+// form) has no finite layout — reject at check, at the def. The walk
+// follows resolved field types through value edges; an instance's own
+// generics substitute into its fields and bare generic parameters are
+// leaves. Depth cap plus visit budget bound what the walk can spend;
+// a cycle hidden behind a generic instantiation still surfaces later
+// at layout (emit's own guard).
+#define SHAPE_WALK_CAP 1000
+#define SHAPE_WALK_BUDGET 2000000
+static size_t g_shape_visits;
+
+// layout-compatible with check2.c's TBind (tsubst takes void*)
+typedef struct ShapeBind {
+  const char **names;
+  Type **tys;
+  size_t n;
+} ShapeBind;
+
+static bool shape_walk(Type *t, int depth, Module *m, NodeRef decl,
+                       const char *name) {
+  if (++g_shape_visits > SHAPE_WALK_BUDGET || depth > SHAPE_WALK_CAP) {
+    Node *d = node_get(decl);
+    diag_at(DIAG_ERROR, m->path, d->line, d->col,
+            "type '%s' nests too deeply while checking layout (a "
+            "recursive type without indirection has no finite layout)",
+            name);
+    return true;
+  }
+  if (t->kind == TY_STRUCT) {
+    StructDef *sd = t->sdef;
+    for (size_t i = 0; i < sd->nfields; i++) {
+      Type *ft = sd->fields[i].ty;
+      if (t->nargs > 0) {
+        ShapeBind b = {sd->gparams, t->args,
+                       t->nargs < sd->ngparams ? t->nargs : sd->ngparams};
+        ft = tsubst(ft, &b);
+      }
+      if (shape_walk(ft, depth + 1, m, decl, name))
+        return true;
+    }
+  } else if (t->kind == TY_ENUM) {
+    EnumDef *ed = t->edef;
+    for (size_t i = 0; i < ed->nvariants; i++) {
+      for (size_t k = 0; k < ed->variants[i].nfields; k++) {
+        Type *ft = ed->variants[i].fields[k].ty;
+        if (t->nargs > 0) {
+          ShapeBind b = {ed->gparams, t->args,
+                         t->nargs < ed->ngparams ? t->nargs : ed->ngparams};
+          ft = tsubst(ft, &b);
+        }
+        if (shape_walk(ft, depth + 1, m, decl, name))
+          return true;
+      }
+    }
+  }
+  return false;
+}
+
+static void check_shape_cycles(Program *p) {
+  for (Module *m = p->modules; m; m = m->next) {
+    for (Sym *s = m->syms->order_head; s; s = s->order_next) {
+      Type *self = NULL;
+      const char *name = NULL;
+      NodeRef decl = NO_REF;
+      if (s->kind == SYM_STRUCT) {
+        self = type_struct(s->u.sdef, NULL, 0);
+        name = s->u.sdef->name;
+        decl = s->u.sdef->decl;
+      } else if (s->kind == SYM_ENUM) {
+        self = type_enum(s->u.edef, NULL, 0);
+        name = s->u.edef->name;
+        decl = s->u.edef->decl;
+      } else {
+        continue;
+      }
+      g_shape_visits = 0;
+      shape_walk(self, 0, m, decl, name);
+    }
+  }
+}
+
 bool check_program(Program *p) {
   g_program = p;
   g_program_ctx = p;
@@ -1696,6 +1777,10 @@ bool check_program(Program *p) {
       }
     }
   }
+
+  // the layout law before any body is checked: reject value cycles
+  // with the def's own location
+  check_shape_cycles(p);
 
   // bodies checked by check_bodies (T1.5/T1.6 drive it)
   {

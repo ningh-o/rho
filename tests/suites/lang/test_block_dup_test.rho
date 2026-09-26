@@ -1,0 +1,15 @@
+// spec: syntax.md §4.5 — two blocks with the same name make selection
+// ambiguous; check refuses the second
+// expect: duplicate test
+
+fn main() -> i32 {
+  return 0;
+}
+
+test "x" {
+  assert(true, "nope");
+}
+
+test "x" {
+  assert(true, "nope");
+}

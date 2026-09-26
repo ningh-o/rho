@@ -1,0 +1,25 @@
+// spec: syntax.md §4.5 — block names are arbitrary strings; the WAT
+// mapping must fold non-idchars AND disambiguate folded collisions
+// ("a b" and "a_b" both fold to test:a_b — the second gets a suffix)
+// out: names
+
+fn main() -> i32 {
+  printf("names\n");
+  return 0;
+}
+
+test "a b" {
+  assert(1 + 1 == 2, "math broke");
+}
+
+test "a_b" {
+  assert(2 + 2 == 4, "math broke again");
+}
+
+test "quote \" backslash \\" {
+  assert(true, "nope");
+}
+
+test "fold me 🎈" {
+  assert(true, "nope");
+}

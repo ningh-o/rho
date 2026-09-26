@@ -174,8 +174,20 @@ void *vec_at(const Vec *v, size_t i) {
 Vec g_diags;
 bool g_had_error;
 
+// one-error mode: a hostile input that trips a structural limit (a
+// depth bomb, say) would otherwise surface thousands of secondary
+// diagnostics from the same root cause
+static bool g_diag_gate;
+
+void diag_gate_set(void) { g_diag_gate = true; }
+
 void diag_at(DiagKind kind, const char *file, int line, int col,
              const char *fmt, ...) {
+  if (g_diag_gate) {
+    if (kind == DIAG_ERROR)
+      g_had_error = true;
+    return;
+  }
   va_list ap, ap2;
   va_start(ap, fmt);
   va_copy(ap2, ap);

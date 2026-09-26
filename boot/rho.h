@@ -75,6 +75,7 @@ extern bool g_had_error;
 
 void diag_at(DiagKind kind, const char *file, int line, int col,
              const char *fmt, ...);
+void diag_gate_set(void); // one-error mode after a structural limit trips
 void diags_print(FILE *out);
 size_t diags_count(void);
 

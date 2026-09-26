@@ -8,6 +8,7 @@
 typedef struct Parser {
   Module *m;
   size_t pos;
+  int depth; // guarded-recursion depth (PARSE_DEPTH_CAP)
 } Parser;
 
 static Token *cur(Parser *p) {
@@ -58,6 +59,25 @@ static Token *expect(Parser *p, TokKind k, const char *what) {
           "expected %s %s, found %s", tok_spell(k), what,
           tok_spell(kind(p)));
   return cur(p);
+}
+
+// deep nesting must fail with a diagnostic, never a C stack smash:
+// the guarded entries (expr/unary/type/pattern/block) bump a shared
+// depth; past the cap the parse reports one error, swallows the rest
+// of the file, and unwinds — the diag gate keeps the unwind silent
+#define PARSE_DEPTH_CAP 4000
+static NodeRef nnew(Parser *p, NodeKind k);
+static NodeRef parse_type_inner(Parser *p);
+static NodeRef parse_pattern_inner(Parser *p);
+static NodeRef parse_block_inner(Parser *p);
+static NodeRef parse_unary_inner(Parser *p);
+static NodeRef parse_depth_hole(Parser *p, const char *what) {
+  diag_at(DIAG_ERROR, p->m->path, cur(p)->line, cur(p)->col,
+          "%s nests too deeply (over %d levels)", what, PARSE_DEPTH_CAP);
+  diag_gate_set();
+  while (!is(p, T_EOF))
+    eat(p);
+  return nnew(p, NT_INT);
 }
 
 static NodeRef nnew(Parser *p, NodeKind k) {
@@ -112,6 +132,15 @@ static NodeRef parse_fn_type(Parser *p) {
 }
 
 static NodeRef parse_type(Parser *p) {
+  if (p->depth >= PARSE_DEPTH_CAP)
+    return parse_depth_hole(p, "a type");
+  p->depth++;
+  NodeRef r = parse_type_inner(p);
+  p->depth--;
+  return r;
+}
+
+static NodeRef parse_type_inner(Parser *p) {
   switch (kind(p)) {
   case T_STAR: {
     eat(p);
@@ -227,6 +256,15 @@ static void parse_variant_payload(Parser *p, Node *n) {
 }
 
 static NodeRef parse_pattern(Parser *p) {
+  if (p->depth >= PARSE_DEPTH_CAP)
+    return parse_depth_hole(p, "a pattern");
+  p->depth++;
+  NodeRef r = parse_pattern_inner(p);
+  p->depth--;
+  return r;
+}
+
+static NodeRef parse_pattern_inner(Parser *p) {
   switch (kind(p)) {
   case T_INT: {
     Token *t = eat(p);
@@ -785,6 +823,15 @@ static NodeRef parse_postfix(Parser *p) {
 }
 
 static NodeRef parse_unary(Parser *p) {
+  if (p->depth >= PARSE_DEPTH_CAP)
+    return parse_depth_hole(p, "an expression");
+  p->depth++;
+  NodeRef r = parse_unary_inner(p);
+  p->depth--;
+  return r;
+}
+
+static NodeRef parse_unary_inner(Parser *p) {
   if (is(p, T_DASH)) {
     NodeRef r = nnew(p, NT_UNARY);
     node_get(r)->op = OP_NEG;
@@ -850,7 +897,14 @@ static NodeRef parse_binary(Parser *p, int min_prec) {
   }
 }
 
-static NodeRef parse_expr(Parser *p) { return parse_binary(p, PREC_OR); }
+static NodeRef parse_expr(Parser *p) {
+  if (p->depth >= PARSE_DEPTH_CAP)
+    return parse_depth_hole(p, "an expression");
+  p->depth++;
+  NodeRef r = parse_binary(p, PREC_OR);
+  p->depth--;
+  return r;
+}
 
 // ============================================================ statements
 
@@ -940,6 +994,20 @@ static int assign_op_of(TokKind k) {
 static NodeRef parse_stmt(Parser *p);
 
 static NodeRef parse_block(Parser *p) {
+  if (p->depth >= PARSE_DEPTH_CAP) {
+    NodeRef hole = parse_depth_hole(p, "a block");
+    Node *hn = node_get(hole);
+    hn->list = reflist(); // block-shaped: safe for callers to iterate
+    hn->op = 3;
+    return hole;
+  }
+  p->depth++;
+  NodeRef r = parse_block_inner(p);
+  p->depth--;
+  return r;
+}
+
+static NodeRef parse_block_inner(Parser *p) {
   NodeRef r = nnew(p, NT_EXPRSTMT); // block = expr-stmt list wrapper
   Node *n = node_get(r);
   n->list = reflist();
@@ -1572,7 +1640,7 @@ Module *module_parse_src(const char *path, const char *src) {
   m->decls = reflist();
   vec_init(&m->uses, sizeof(UseBind));
 
-  Parser p = {m, 0};
+  Parser p = {m, 0, 0};
   while (!is(&p, T_EOF)) {
     if (accept(&p, T_SEMI))
       continue; // stray semicolons between decls
