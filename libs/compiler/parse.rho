@@ -740,6 +740,12 @@ fn parse_args_named(mut c: *PCur, mut anames: []string) -> []*Expr {
       anames = bign;
     }
     anames[na] = "";
+    // §18: the call-site 'mut' marker prefixes its argument —
+    // permission only, never layout; parse and drop it
+    if tk(c).text == "mut" &&
+        (tk(c).kind == lex.TK_IDENT || tk(c).kind == lex.TK_KEYWORD) {
+      tkadv(mut c);
+    }
     let t = tk(c);
     if t.kind == lex.TK_IDENT && c.pos + 1 < len(c.toks) &&
         is_punct(c.toks[c.pos + 1], 58) {
@@ -774,6 +780,12 @@ fn parse_args(mut c: *PCur) -> []*Expr {
         gi = gi + 1;
       }
       args = big;
+    }
+    // §18: the call-site 'mut' marker prefixes its argument —
+    // permission only, never layout; parse and drop it
+    if tk(c).text == "mut" &&
+        (tk(c).kind == lex.TK_IDENT || tk(c).kind == lex.TK_KEYWORD) {
+      tkadv(mut c);
     }
     args[na] = parse_bin(mut c, 0);
     // xs... — the spread marker rides the argument's lit slot
@@ -1916,6 +1928,13 @@ fn parse_params2(mut c: *PCur, mut pstr: []bool, mut pslc: []bool,
     if is_punct(tk(c), 41) {
       tkadv(mut c);
       break;
+    }
+    // §18: a mut-view param carries the 'mut' prefix — permission
+    // only, never layout, so the flag parses and rides no table
+    // ('mut' rides the ident lane in this lexer — match by text)
+    if tk(c).text == "mut" &&
+        (tk(c).kind == lex.TK_IDENT || tk(c).kind == lex.TK_KEYWORD) {
+      tkadv(mut c);
     }
     let pt = tk(c);
     if pt.kind == lex.TK_IDENT || pt.kind == lex.TK_KEYWORD {
