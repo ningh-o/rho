@@ -3372,6 +3372,45 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
       return "    (local.get " + env_str_len_slot(env, a0.name).to_str() +
              ")\n";
     }
+    // len(f(...)): a call returning a pair pushes (addr, len) —
+    // park the pair, read the length back
+    if a0.tag == parse.EX_CALL {
+      let rt5: string = call_fn_rtype(prog, a0, env);
+      if rtype_is_pair(rt5) && !is_fn_type(rt5) {
+        let la: i64 = nl.v;
+        let ll: i64 = nl.v + 1;
+        nl.v = nl.v + 2;
+        let mut out5: string = emit_expr(mut pool, a0, mut env,
+                                         mut prog, mut nl);
+        out5 = out5 + "    (local.set " + ll.to_str() + ")\n" +
+               "    (local.set " + la.to_str() + ")\n" +
+               "    (local.get " + ll.to_str() + ")\n";
+        return out5;
+      }
+    }
+    // len(xs[i]): an element of a slice-of-slices rides the pair at
+    // the computed element address — len loads at +8
+    if a0.tag == parse.EX_IDX {
+      let mut base6: *Expr = parse.lit(0);
+      match a0.lhs {
+        Option.Some(b6) => {
+          base6 = b6;
+        },
+        Option.None => {},
+      }
+      let et6: string = env_slice_elemtext(env, base6.name);
+      if base6.tag == parse.EX_VAR && len(et6) >= 2 && et6[0] == 91 &&
+          et6[1] == 93 {
+        let la6: i64 = nl.v;
+        nl.v = nl.v + 1;
+        let mut out6: string = emit_expr(mut pool, a0, mut env,
+                                         mut prog, mut nl);
+        out6 = out6 + "    (local.set " + la6.to_str() + ")\n" +
+               "    (i64.load (i32.add (i32.wrap_i64 (local.get " +
+               la6.to_str() + ")) (i32.const 8)))\n";
+        return out6;
+      }
+    }
     // len(p.field): a slice-typed struct field rides the pair
     // (addr, len) at consecutive slots — the len load is the read
     if a0.tag == parse.EX_FIELD && a0.lhs != Option.None {
