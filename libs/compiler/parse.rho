@@ -339,6 +339,7 @@ pub struct FnDef {
   rtype: string,    // the written return type ("" when absent)
   tparams: []string, // the [T]/[T: Bound] type parameters (names only)
   body: []*Stmt,
+  ispub: bool,      // `pub fn` — the module export surface
 }
 
 pub struct Prog {
@@ -358,6 +359,20 @@ pub struct Prog {
   traits: []*TraitDef,
   ntraits: usize,
   perrs: i64, // parse-fallback count (a silent zero is a lie)
+  // the module system: root uses (dotted paths, aliases, pub flags),
+  // the loaded module canons, and each module's export table (the
+  // item names the module's facade sells, with their qualified fn
+  // targets)
+  usepath: []string,
+  usealias: []string,
+  usepub: []bool,
+  nuses: usize,
+  modcan: []string,
+  nmods: usize,
+  xown: []string,
+  xitem: []string,
+  xtar: []string,
+  nx: usize,
 }
 
 pub fn make_expr(count: *Expr) -> *Expr {
@@ -1916,6 +1931,11 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
   let enums: []*EnumDef = make([]*EnumDef, 32);
   let mut ne: usize = 0;
   let traits: []*TraitDef = make([]*TraitDef, 16);
+  let uses: []string = make([]string, 32);
+  let ualias: []string = make([]string, 32);
+  let upub: []bool = make([]bool, 32);
+  let mut nu: usize = 0;
+  let mut pending_pub: bool = false;
   let mut ntr: usize = 0;
   let mut break_to_fn: bool = false;
   while tk(c).kind != lex.TK_EOF {
@@ -2247,6 +2267,54 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
       tkadv(c);
       continue;
     }
+    if t.kind == lex.TK_IDENT && t.text == "pub" &&
+        c.pos + 1 < len(c.toks) &&
+        ((c.toks[c.pos + 1].kind == lex.TK_KEYWORD &&
+          c.toks[c.pos + 1].text == "fn") ||
+         (c.toks[c.pos + 1].kind == lex.TK_IDENT &&
+          c.toks[c.pos + 1].text == "use")) {
+      // `pub` rides the next fn or use declaration
+      tkadv(c);
+      pending_pub = true;
+      continue;
+    }
+    if t.kind == lex.TK_IDENT && t.text == "use" &&
+        c.pos + 1 < len(c.toks) &&
+        c.toks[c.pos + 1].kind == lex.TK_IDENT {
+      // use a.b.c; / use a.b as x; — the module binding (private at
+      // the root; a facade's `pub use` re-exports through the tree)
+      tkadv(c);
+      let mut path: string = "";
+      let mut al: string = "";
+      let mut seg: usize = 0;
+      while tk(c).kind == lex.TK_IDENT || tk(c).kind == lex.TK_KEYWORD {
+        if seg > 0 {
+          path = path + ".";
+        }
+        path = path + tk(c).text;
+        seg = seg + 1;
+        tkadv(c);
+        if !eat_punct(c, 46) {
+          break;
+        }
+      }
+      if tk(c).kind == lex.TK_KEYWORD && tk(c).text == "as" {
+        tkadv(c);
+        if tk(c).kind == lex.TK_IDENT || tk(c).kind == lex.TK_KEYWORD {
+          al = tk(c).text;
+          tkadv(c);
+        }
+      }
+      eat_punct(c, 59);
+      if nu < len(uses) && seg > 0 {
+        uses[nu] = path;
+        ualias[nu] = al;
+        upub[nu] = pending_pub;
+        nu = nu + 1;
+      }
+      pending_pub = false;
+      continue;
+    }
     if t.kind == lex.TK_KEYWORD && t.text == "fn" {
       tkadv(c);
       let nm = tk(c);
@@ -2349,7 +2417,8 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
                            pvar: pvar[0..len(params)],
                            rtype: rtype,
                            tparams: tparams[0..ntp],
-                           body: body };
+                           body: body, ispub: pending_pub };
+      pending_pub = false;
       if nf == len(fns) {
         // the fn table grows on demand (the float cluster alone rides
         // 19 fns through this parser)
@@ -2380,6 +2449,623 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
                         nconsts: nc, structs: structs[0..ns],
                         nstructs: ns, enums: enums[0..ne],
                         nenums: ne, traits: traits[0..ntr],
-                        ntraits: ntr, perrs: c.perrs };
+                        ntraits: ntr, perrs: c.perrs,
+                        usepath: uses[0..nu], usealias: ualias[0..nu],
+                        usepub: upub[0..nu], nuses: nu,
+                        modcan: make([]string, 16), nmods: 0,
+                        xown: make([]string, 128),
+                        xitem: make([]string, 128),
+                        xtar: make([]string, 128), nx: 0 };
   return prog;
+}
+
+// ---- the module system: the tree rides the MODS build parameter ----
+// (one source string: "@MOD@ <path>\n<text>" blocks; boot reads the
+// same tree from disk — the self-host has no files, §14's kernel)
+
+// the first index of `needle` in `hay` at or after `from`, -1 absent
+fn mods_find_sub(hay: string, needle: string, from: usize) -> i64 {
+  let hl: usize = len(hay);
+  let nl: usize = len(needle);
+  if nl == 0 || hl < nl {
+    return 0 - 1;
+  }
+  let mut i: usize = from;
+  while i + nl <= hl {
+    let mut k: usize = 0;
+    let mut same: bool = true;
+    while k < nl {
+      if hay[i + k] != needle[k] {
+        same = false;
+      }
+      k = k + 1;
+    }
+    if same {
+      return i as i64;
+    }
+    i = i + 1;
+  }
+  return 0 - 1;
+}
+
+// one module's text by its path ("" when the tree carries no such
+// path)
+pub fn mods_find(mods: string, path: string) -> string {
+  if len(mods) == 0 {
+    return "";
+  }
+  let marker: string = "@MOD@ " + path + "\n";
+  let at: i64 = mods_find_sub(mods, marker, 0);
+  if at < 0 {
+    return "";
+  }
+  let start: usize = (at as usize) + len(marker);
+  let mut end: i64 = mods_find_sub(mods, "\n@MOD@ ", start);
+  if end < 0 {
+    end = len(mods) as i64;
+  }
+  return mods[start..(end as usize)];
+}
+
+// a slashed path with dots ("pk/inner" -> "pk.inner")
+fn mods_dotted(p: string) -> string {
+  let mut out: string = "";
+  let mut i: usize = 0;
+  while i < len(p) {
+    if p[i] == 47 {
+      out = out + ".";
+    } else {
+      out = out + p[i..(i + 1)];
+    }
+    i = i + 1;
+  }
+  return out;
+}
+
+// a dotted path with slashes ("geom.units" -> "geom/units")
+fn mods_slashes(p: string) -> string {
+  let mut out: string = "";
+  let mut i: usize = 0;
+  while i < len(p) {
+    if p[i] == 46 {
+      out = out + "/";
+    } else {
+      out = out + p[i..(i + 1)];
+    }
+    i = i + 1;
+  }
+  return out;
+}
+
+// an export row: (owner, item, target)
+fn mods_export_add(prog: *Prog, own: string, item: string,
+                   tar: string) {
+  if prog.nx >= len(prog.xown) {
+    return;
+  }
+  prog.xown[prog.nx] = own;
+  prog.xitem[prog.nx] = item;
+  prog.xtar[prog.nx] = tar;
+  prog.nx = prog.nx + 1;
+}
+
+// the module's export rows under a new owner (the pub-use flatten)
+fn mods_export_copy(prog: *Prog, from_own: string, to_own: string) {
+  let mut i: usize = 0;
+  while i < prog.nx {
+    if prog.xown[i] == from_own {
+      mods_export_add(prog, to_own, prog.xitem[i],
+                      prog.xtar[i]);
+    }
+    i = i + 1;
+  }
+}
+
+// a bare call inside a module resolves to the module's own fn first
+// (the qualification runs before the names move, so mp.fns still
+// carries the bare names)
+fn mods_fn_in(mp: *Prog, nm: string) -> bool {
+  let mut i: usize = 0;
+  while i < len(mp.fns) {
+    if mp.fns[i].name == nm {
+      return true;
+    }
+    i = i + 1;
+  }
+  return false;
+}
+
+fn mods_qualify_stmt(st: *Stmt, mp: *Prog, canon: string) {
+  let mut k: usize = 0;
+  while k < len(st.args) {
+    mods_qual_expr(st.args[k], mp, canon);
+    k = k + 1;
+  }
+  match st.val {
+    Option.Some(v6) => {
+      mods_qual_expr(v6, mp, canon);
+    },
+    Option.None => {},
+  }
+  match st.sub {
+    Option.Some(s6) => {
+      mods_qualify_stmt(s6, mp, canon);
+    },
+    Option.None => {},
+  }
+  let mut b: usize = 0;
+  while b < len(st.body) {
+    mods_qualify_stmt(st.body[b], mp, canon);
+    b = b + 1;
+  }
+  let mut b2: usize = 0;
+  while b2 < len(st.body2) {
+    mods_qualify_stmt(st.body2[b2], mp, canon);
+    b2 = b2 + 1;
+  }
+  let mut m3: usize = 0;
+  while m3 < len(st.marms) {
+    let arm3: *MatchArm = st.marms[m3];
+    match arm3.val {
+      Option.Some(av3) => {
+        mods_qual_expr(av3, mp, canon);
+      },
+      Option.None => {},
+    }
+    let mut sb3: usize = 0;
+    while sb3 < len(arm3.body) {
+      mods_qualify_stmt(arm3.body[sb3], mp, canon);
+      sb3 = sb3 + 1;
+    }
+    m3 = m3 + 1;
+  }
+}
+
+fn mods_qual_expr(e: *Expr, mp: *Prog, canon: string) {
+  if e.tag == EX_CALL && mods_fn_in(mp, e.name) {
+    e.name = canon + "." + e.name;
+  }
+  match e.lhs {
+    Option.Some(l7) => {
+      mods_qual_expr(l7, mp, canon);
+    },
+    Option.None => {},
+  }
+  match e.rhs {
+    Option.Some(r7) => {
+      mods_qual_expr(r7, mp, canon);
+    },
+    Option.None => {},
+  }
+  let mut k: usize = 0;
+  while k < len(e.args) {
+    mods_qual_expr(e.args[k], mp, canon);
+    k = k + 1;
+  }
+  let mut m4: usize = 0;
+  while m4 < len(e.marms) {
+    let arm4: *MatchArm = e.marms[m4];
+    match arm4.val {
+      Option.Some(av4) => {
+        mods_qual_expr(av4, mp, canon);
+      },
+      Option.None => {},
+    }
+    let mut sb4: usize = 0;
+    while sb4 < len(arm4.body) {
+      mods_qualify_stmt(arm4.body[sb4], mp, canon);
+      sb4 = sb4 + 1;
+    }
+    m4 = m4 + 1;
+  }
+}
+
+// append one fn under a qualified name (the table grows by one —
+// len() IS the count everywhere downstream)
+fn mods_fn_add(prog: *Prog, fd: *FnDef) {
+  let old: []*FnDef = prog.fns;
+  let bigger: []*FnDef = make([]*FnDef, len(old) + 1);
+  let mut i: usize = 0;
+  while i < len(old) {
+    bigger[i] = old[i];
+    i = i + 1;
+  }
+  bigger[len(old)] = fd;
+  prog.fns = bigger;
+}
+
+// load one module (recursively) and register it; the CANONICAL name
+// returns, "" when the tree cannot resolve the path
+fn mods_load(prog: *Prog, mods: string, path: string,
+             dir: string) -> string {
+  let mut base: string = dir;
+  if len(base) > 0 {
+    base = base + "/";
+  }
+  let slashes: string = mods_slashes(path);
+  let libtext: string = mods_find(mods, base + slashes + "/lib.rho");
+  let filetext: string = mods_find(mods, base + slashes + ".rho");
+  if len(libtext) > 0 && len(filetext) > 0 {
+    return ""; // lib.rho and x.rho coexisting is an ambiguity error
+  }
+  let mut text: string = libtext;
+  if len(text) == 0 {
+    text = filetext;
+  }
+  if len(text) == 0 {
+    return "";
+  }
+  // the canonical name is dotted ("pk.inner.core" — file or facade
+  // alike); the module's own directory stays slashed for its uses
+  let mut canon: string = path;
+  if len(dir) > 0 {
+    canon = mods_dotted(dir) + "." + path;
+  }
+  // already loaded: the canonical registration stands
+  let mut mi: usize = 0;
+  while mi < prog.nmods {
+    if prog.modcan[mi] == canon {
+      return canon;
+    }
+    mi = mi + 1;
+  }
+  let toks: []*Tok = lex.lex(text);
+  let mp: *Prog = parse(toks, text);
+  if mp.perrs > 0 {
+    prog.perrs = prog.perrs + mp.perrs;
+    return "";
+  }
+  if prog.nmods < len(prog.modcan) {
+    prog.modcan[prog.nmods] = canon;
+    prog.nmods = prog.nmods + 1;
+  }
+  // the module's own uses bind names (alias or last segment), loaded
+  // relative to the module's directory
+  let mdir: string = base + slashes;
+  let bnames: []string = make([]string, 16);
+  let bcans: []string = make([]string, 16);
+  let mut nb: usize = 0;
+  let mut ui: usize = 0;
+  while ui < mp.nuses {
+    let upath: string = mp.usepath[ui];
+    // `pub use X.item as Y;` — the last segment names an item of an
+    // already-bound module: not a module load (pass 2 below sells it)
+    let lastdot0: i64 = mods_find_sub(upath, ".", 0);
+    if mp.usepub[ui] && len(mp.usealias[ui]) > 0 && lastdot0 >= 0 {
+      ui = ui + 1;
+      continue;
+    }
+    // `pub use X;` where X names an earlier binding — the re-export
+    // of the bound module (no path to load)
+    if mp.usepub[ui] && lastdot0 < 0 {
+      let mut bsearch: usize = 0;
+      let mut hit: i64 = 0 - 1;
+      while bsearch < nb {
+        if bnames[bsearch] == upath {
+          hit = bsearch as i64;
+        }
+        bsearch = bsearch + 1;
+      }
+      if hit >= 0 {
+        mods_export_copy(prog, bcans[hit as usize], canon);
+        ui = ui + 1;
+        continue;
+      }
+    }
+    let subcan: string = mods_load(prog, mods, upath, mdir);
+    if len(subcan) == 0 {
+      prog.perrs = prog.perrs + 1;
+      return "";
+    }
+    let mut bname: string = mp.usealias[ui];
+    if len(bname) == 0 {
+      let mut li: usize = 0;
+      let mut last: string = "";
+      while li < len(upath) {
+        let mut j: usize = li;
+        while j < len(upath) && upath[j] != 46 {
+          j = j + 1;
+        }
+        last = upath[li..j];
+        li = j + 1;
+      }
+      bname = last;
+    }
+    if nb < len(bnames) {
+      bnames[nb] = bname;
+      bcans[nb] = subcan;
+      nb = nb + 1;
+    }
+    // a pub use of a module flattens its exports under THIS facade
+    if mp.usepub[ui] {
+      mods_export_copy(prog, subcan, canon);
+    }
+    ui = ui + 1;
+  }
+  // one renamed item: pub use X.item as Y; (the path's last segment
+  // names an item of the module the prefix resolves to)
+  let mut ui2: usize = 0;
+  while ui2 < mp.nuses {
+    if mp.usepub[ui2] && len(mp.usealias[ui2]) > 0 {
+      let upath2: string = mp.usepath[ui2];
+      let lastdot: i64 = mods_find_sub(upath2, ".", 0);
+      if lastdot >= 0 {
+        let modpart: string = upath2[0..(lastdot as usize)];
+        let itempart: string =
+            upath2[((lastdot as usize) + 1)..len(upath2)];
+        // which binding does modpart name? (alias or last segment)
+        let mut want: string = modpart;
+        let mut li2: usize = 0;
+        let mut last2: string = "";
+        while li2 < len(modpart) {
+          let mut j2: usize = li2;
+          while j2 < len(modpart) && modpart[j2] != 46 {
+            j2 = j2 + 1;
+          }
+          last2 = modpart[li2..j2];
+          li2 = j2 + 1;
+        }
+        let mut bi2: usize = 0;
+        while bi2 < nb {
+          if bnames[bi2] == want || bnames[bi2] == last2 {
+            want = bnames[bi2];
+            let srcmod: string = bcans[bi2];
+            let mut ei: usize = 0;
+            while ei < prog.nx {
+              if prog.xown[ei] == srcmod &&
+                  prog.xitem[ei] == itempart {
+                mods_export_add(prog, canon, mp.usealias[ui2],
+                                prog.xtar[ei]);
+              }
+              ei = ei + 1;
+            }
+          }
+          bi2 = bi2 + 1;
+        }
+      }
+    }
+    ui2 = ui2 + 1;
+  }
+  // the module's public fns export under its own name (and its fns
+  // register qualified — every fn, the private ones included: the
+  // interior is callable only through paths it never sells). A bare
+  // call inside the module resolves to the module's own fn first
+  let mut fi: usize = 0;
+  while fi < len(mp.fns) {
+    let fd2: *FnDef = mp.fns[fi];
+    if len(fd2.name) > 0 && fd2.name != "main" {
+      let mut si2: usize = 0;
+      while si2 < len(fd2.body) {
+        mods_qualify_stmt(fd2.body[si2], mp, canon);
+        si2 = si2 + 1;
+      }
+    }
+    fi = fi + 1;
+  }
+  let mut fi2: usize = 0;
+  while fi2 < len(mp.fns) {
+    let fd3: *FnDef = mp.fns[fi2];
+    if len(fd3.name) > 0 && fd3.name != "main" {
+      let qname: string = canon + "." + fd3.name;
+      if fd3.ispub {
+        mods_export_add(prog, canon, fd3.name, qname);
+      }
+      fd3.name = qname;
+      mods_fn_add(prog, fd3);
+    }
+    fi2 = fi2 + 1;
+  }
+  // module-local consts join the shared table (root consts are
+  // visible everywhere; a module's own consts ride its uses' closure)
+  let mut ci2: usize = 0;
+  while ci2 < mp.nconsts {
+    let mut dup: bool = false;
+    let mut di: usize = 0;
+    while di < prog.nconsts {
+      if prog.consts[di] == mp.consts[ci2] {
+        dup = true;
+      }
+      di = di + 1;
+    }
+    if !dup {
+      let n2: usize = prog.nconsts;
+      let c2: []string = make([]string, n2 + 1);
+      let v2: []i64 = make([]i64, n2 + 1);
+      let s2: []bool = make([]bool, n2 + 1);
+      let t2: []string = make([]string, n2 + 1);
+      let m2: []bool = make([]bool, n2 + 1);
+      let e2: []*Expr = make([]*Expr, n2 + 1);
+      let mut qi: usize = 0;
+      while qi < n2 {
+        c2[qi] = prog.consts[qi];
+        v2[qi] = prog.cvals[qi];
+        s2[qi] = prog.cstatic[qi];
+        t2[qi] = prog.ctypes[qi];
+        m2[qi] = prog.cmuts[qi];
+        e2[qi] = prog.cexprs[qi];
+        qi = qi + 1;
+      }
+      c2[n2] = mp.consts[ci2];
+      v2[n2] = mp.cvals[ci2];
+      s2[n2] = mp.cstatic[ci2];
+      t2[n2] = mp.ctypes[ci2];
+      m2[n2] = mp.cmuts[ci2];
+      e2[n2] = mp.cexprs[ci2];
+      prog.consts = c2;
+      prog.cvals = v2;
+      prog.cstatic = s2;
+      prog.ctypes = t2;
+      prog.cmuts = m2;
+      prog.cexprs = e2;
+      prog.nconsts = n2 + 1;
+    }
+    ci2 = ci2 + 1;
+  }
+  return canon;
+}
+
+// rewrite `binding.item(...)` method calls into plain calls of the
+// exported fn (check and emit then see one known name)
+fn mods_resolve_expr(e: *Expr, prog: *Prog, bnames: []string,
+                     bcans: []string, nb: usize) {
+  if e.tag == EX_MCALL {
+    match e.lhs {
+      Option.Some(r3) => {
+        if r3.tag == EX_VAR {
+          let mut bi: usize = 0;
+          while bi < nb {
+            if bnames[bi] == r3.name {
+              let mut ei: usize = 0;
+              while ei < prog.nx {
+                if prog.xown[ei] == bcans[bi] &&
+                    prog.xitem[ei] == e.name {
+                  e.tag = EX_CALL;
+                  e.name = prog.xtar[ei];
+                  e.lhs = Option.None;
+                }
+                ei = ei + 1;
+              }
+            }
+            bi = bi + 1;
+          }
+        }
+      },
+      Option.None => {},
+    }
+  }
+  match e.lhs {
+    Option.Some(l4) => {
+      mods_resolve_expr(l4, prog, bnames, bcans, nb);
+    },
+    Option.None => {},
+  }
+  match e.rhs {
+    Option.Some(r4) => {
+      mods_resolve_expr(r4, prog, bnames, bcans, nb);
+    },
+    Option.None => {},
+  }
+  let mut k: usize = 0;
+  while k < len(e.args) {
+    mods_resolve_expr(e.args[k], prog, bnames, bcans, nb);
+    k = k + 1;
+  }
+  let mut m: usize = 0;
+  while m < len(e.marms) {
+    let arm: *MatchArm = e.marms[m];
+    match arm.val {
+      Option.Some(av) => {
+        mods_resolve_expr(av, prog, bnames, bcans, nb);
+      },
+      Option.None => {},
+    }
+    let mut sb: usize = 0;
+    while sb < len(arm.body) {
+      mods_resolve_stmt(arm.body[sb], prog, bnames, bcans, nb);
+      sb = sb + 1;
+    }
+    m = m + 1;
+  }
+}
+
+fn mods_resolve_stmt(st: *Stmt, prog: *Prog, bnames: []string,
+                     bcans: []string, nb: usize) {
+  let mut k: usize = 0;
+  while k < len(st.args) {
+    mods_resolve_expr(st.args[k], prog, bnames, bcans, nb);
+    k = k + 1;
+  }
+  match st.val {
+    Option.Some(v5) => {
+      mods_resolve_expr(v5, prog, bnames, bcans, nb);
+    },
+    Option.None => {},
+  }
+  match st.sub {
+    Option.Some(s5) => {
+      mods_resolve_stmt(s5, prog, bnames, bcans, nb);
+    },
+    Option.None => {},
+  }
+  let mut b: usize = 0;
+  while b < len(st.body) {
+    mods_resolve_stmt(st.body[b], prog, bnames, bcans, nb);
+    b = b + 1;
+  }
+  let mut b2: usize = 0;
+  while b2 < len(st.body2) {
+    mods_resolve_stmt(st.body2[b2], prog, bnames, bcans, nb);
+    b2 = b2 + 1;
+  }
+  let mut m2: usize = 0;
+  while m2 < len(st.marms) {
+    let arm2: *MatchArm = st.marms[m2];
+    match arm2.val {
+      Option.Some(av2) => {
+        mods_resolve_expr(av2, prog, bnames, bcans, nb);
+      },
+      Option.None => {},
+    }
+    let mut sb2: usize = 0;
+    while sb2 < len(arm2.body) {
+      mods_resolve_stmt(arm2.body[sb2], prog, bnames, bcans, nb);
+      sb2 = sb2 + 1;
+    }
+    m2 = m2 + 1;
+  }
+}
+
+// load the root's uses against the MODS tree, then resolve every
+// binding.item() call in main and the fn bodies; perrs grows on any
+// unresolved path (the honest refusal)
+pub fn load_mods(prog: *Prog, mods: string) -> bool {
+  if prog.nuses == 0 {
+    return true;
+  }
+  let bnames: []string = make([]string, 32);
+  let bcans: []string = make([]string, 32);
+  let mut nb: usize = 0;
+  let mut ui: usize = 0;
+  while ui < prog.nuses {
+    let can: string = mods_load(prog, mods, prog.usepath[ui], "");
+    if len(can) == 0 {
+      prog.perrs = prog.perrs + 1;
+      return false;
+    }
+    let mut bname: string = prog.usealias[ui];
+    if len(bname) == 0 {
+      let up: string = prog.usepath[ui];
+      let mut li: usize = 0;
+      while li < len(up) {
+        let mut j: usize = li;
+        while j < len(up) && up[j] != 46 {
+          j = j + 1;
+        }
+        bname = up[li..j];
+        li = j + 1;
+      }
+    }
+    if nb < len(bnames) {
+      bnames[nb] = bname;
+      bcans[nb] = can;
+      nb = nb + 1;
+    }
+    ui = ui + 1;
+  }
+  let mut si: usize = 0;
+  while si < len(prog.main) {
+    mods_resolve_stmt(prog.main[si], prog, bnames, bcans, nb);
+    si = si + 1;
+  }
+  let mut fi: usize = 0;
+  while fi < len(prog.fns) {
+    let mut bi: usize = 0;
+    while bi < len(prog.fns[fi].body) {
+      mods_resolve_stmt(prog.fns[fi].body[bi], prog, bnames,
+                        bcans, nb);
+      bi = bi + 1;
+    }
+    fi = fi + 1;
+  }
+  return true;
 }

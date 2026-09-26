@@ -15,11 +15,20 @@ use emit;
 use fmt;
 
 const SRC: string = "fn main() -> i32 { printf(\"hello, self\\n\"); return 0; }";
+const MODS: string = ""; // the module tree: "@MOD@ <path>\n<text>" blocks
 const FMT: i64 = 0; // 1 = print the canonical formatting instead
 
 fn main() -> i32 {
   let toks: []*Tok = lex.lex(SRC);
   let prog: *Prog = parse.parse(toks, SRC);
+  if prog.perrs > 0 {
+    eprintf("parse: {} unresolved form(s)\n", prog.perrs);
+    return 1;
+  }
+  if !parse.load_mods(prog, MODS) {
+    eprintf("mods: unresolved module path(s)\n");
+    return 1;
+  }
   if prog.perrs > 0 {
     eprintf("parse: {} unresolved form(s)\n", prog.perrs);
     return 1;

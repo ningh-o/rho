@@ -416,8 +416,18 @@ section — no placeholder stages. boot is the reference compiler.
       instantiation. Plus 105's pointer-base slice-field store now
       writes BOTH pair words (it dropped the len). 030, 084, 086,
       087, 088, 089, and 105 land byte-exact: 106 of 108 behavioral,
-      floor 106. Remain: module loading (032/t09); the mut law and
-      usize lane (T3.6's mirror side)*
+      floor 106. The sixty-first cut (2026-09-26) lands module
+      loading and the corpus differential CLOSES at 108/108: the tree
+      rides the MODS build parameter ("@MOD@ <path>\n<text>" blocks
+      — boot reads the same tree from disk), parse grows
+      `use a.b as x;` / `pub fn` / `pub use` with the export law (a
+      facade sells its pub fns; `pub use X;` flattens the bound
+      module — binding or path — and `pub use X.item as Y;` renames
+      one), modules register under dotted canonical names with their
+      internal bare calls qualified, and every `binding.item(...)`
+      call in main and the fn bodies rewrites into the plain call of
+      the exported fn. 032 and t09 land byte-exact. The mut law and
+      usize lane remain (T3.6's mirror side)*
 - [ ] **T2.x** Optimizer in the mirror: constant folding, dead-code
       elimination, globals tree-shaking, tail-call→loop — with the
       language suites (opt/eq/params/modsys/strops/multiline) rebuilt

@@ -5,7 +5,7 @@
 # closing of this leg IS the corpus differential going green.
 set -u
 RHO=${RHO:-./build/rho}
-PINNED=106
+PINNED=108
 pass=0; fail=0; failed=""
 for f in corpus/*.rho; do
   name=$(basename "$f" .rho)
@@ -16,6 +16,16 @@ for f in corpus/*.rho; do
   # load-time fold, which is exactly the rewritten literal's meaning
   sets=()
   src=$(cat "$f")
+  # the module tree rides MODS for the self-host side (boot reads the
+  # same tree from disk): every rho file under the corpus's packages
+  mods=""
+  for mf in corpus/geom/*.rho(N) corpus/geom/*/*.rho(N) corpus/web/*.rho(N) corpus/pk/*.rho(N) corpus/pk/*/*.rho(N) corpus/pk/*/*/*.rho(N); do
+    if [ -f "$mf" ]; then
+      mods="$mods@MOD@ ${mf#corpus/}
+$(cat "$mf")
+"
+    fi
+  done
   for s in $(sed -n 's/^\/\/ set: //p' "$f"); do
     sets+=(--set "$s")
     kn=${s%%=*}
@@ -25,7 +35,7 @@ for f in corpus/*.rho; do
   done
   bgot=$("$RHO" run "$f" 2>/dev/null ${sets:+${sets[@]}}); brc=$?
   if ! "$RHO" build libs/compiler/main.rho -o /tmp/cdiff-c.wasm \
-      --set "SRC=$src" >/dev/null 2>&1; then
+      --set "SRC=$src" --set "MODS=$mods" >/dev/null 2>&1; then
     fail=$((fail+1)); failed="$failed $name:build"; continue
   fi
   wasmtime /tmp/cdiff-c.wasm >/tmp/cdiff.wat 2>/dev/null
