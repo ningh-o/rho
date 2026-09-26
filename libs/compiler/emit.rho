@@ -742,12 +742,19 @@ fn push_string(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
         let t0: i64 = nl.v;
         nl.v = nl.v + 1;
         let mut out: string = emit_expr(mut pool, base, mut env, mut prog, mut nl);
-        out = out + "    (local.set " + t0.to_str() + ")\n";
-        out = out + "    (i64.load (i32.add (i32.wrap_i64 (local.get " +
-               t0.to_str() + ")) (i32.const " + off.to_str() + ")))\n";
-        out = out + "    (i64.load (i32.add (i32.wrap_i64 (local.get " +
-               t0.to_str() + ")) (i32.const " + (off + 8).to_str() +
-               ")))\n";
+        out = out + "    (local.set ";
+        out = out + t0.to_str();
+        out = out + ")\n";
+        out = out + "    (i64.load (i32.add (i32.wrap_i64 (local.get ";
+        out = out + t0.to_str();
+        out = out + ")) (i32.const ";
+        out = out + off.to_str();
+        out = out + ")))\n";
+        out = out + "    (i64.load (i32.add (i32.wrap_i64 (local.get ";
+        out = out + t0.to_str();
+        out = out + ")) (i32.const ";
+        out = out + (off + 8).to_str();
+        out = out + ")))\n";
         return out;
       }
     }
@@ -1920,9 +1927,13 @@ fn struct_addr_of(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
            "    (local.set " + b.to_str() + ")\n";
     let mut j: i64 = 0;
     while j < vn {
-      out = out + "    (i64.store (i32.add (i32.wrap_i64 (local.get " +
-             b.to_str() + ")) (i32.const " + (j * 8).to_str() +
-             ")) (local.get " + (fb + j).to_str() + "))\n";
+      out = out + "    (i64.store (i32.add (i32.wrap_i64 (local.get ";
+      out = out + b.to_str();
+      out = out + ")) (i32.const ";
+      out = out + (j * 8).to_str();
+      out = out + ")) (local.get ";
+      out = out + (fb + j).to_str();
+      out = out + "))\n";
       j = j + 1;
     }
     return out + "    (local.get " + b.to_str() + ")\n";
@@ -2098,16 +2109,20 @@ fn rel_register(mut pool: *Pool, name: string, text: string) -> string {
 // the (then) — walk_text may be empty
 fn rel_body(p: string, walk_text: string) -> string {
   let mut out: string = "";
-  out = out + "  (func " + p + " (param $p i64)\n";
+  out = out + "  (func ";
+  out = out + p;
+  out = out + " (param $p i64)\n";
   out = out + "    (local $c i64)\n";
   out = out + "    (if (i64.ne (local.get $p) (i64.const 0))\n";
   out = out + "      (then\n";
-  out = out + "        (local.set $c (i64.sub (i64.load (i32.sub " +
-         "(i32.wrap_i64 (local.get $p)) (i32.const 8))) (i64.const 1)))\n";
-  out = out + "        (i64.store (i32.sub (i32.wrap_i64 (local.get $p))" +
-         " (i32.const 8)) (local.get $c))\n";
+  out = out + "        (local.set $c (i64.sub (i64.load (i32.sub ";
+  out = out + "(i32.wrap_i64 (local.get $p)) (i32.const 8))) (i64.const 1)))\n";
+  out = out + "        (i64.store (i32.sub (i32.wrap_i64 (local.get $p))";
+  out = out + " (i32.const 8)) (local.get $c))\n";
   out = out + "        (if (i64.eq (local.get $c) (i64.const 0))\n";
-  out = out + "          (then\n" + walk_text + "          )\n";
+  out = out + "          (then\n";
+  out = out + walk_text;
+  out = out + "          )\n";
   out = out + "        )\n";
   out = out + "      )\n";
   out = out + "    )\n";
@@ -2129,30 +2144,37 @@ fn rel_field_walk(mut pool: *Pool, mut prog: *Prog, si: i64) -> string {
       // slot (nmethods = the release thunk's index)
       let dtr: string = dyn_trait(fty);
       let dnm: i64 = trait_method_count(prog, dtr);
-      walk = walk +
-             "            (i64.load (i32.add (i32.wrap_i64 " +
-             "(local.get $p)) (i32.const " + (off + 8).to_str() +
-             ")))\n" +
-             "            (i64.load (i32.add (i32.wrap_i64 " +
-             "(i64.load (i32.add (i32.wrap_i64 (local.get $p)) " +
-             "(i32.const " + off.to_str() + ")))) (i32.const " +
-             (dnm * 8).to_str() + ")))\n" +
-             "            (i32.wrap_i64)\n" +
-             "            call_indirect (type $clv1)\n";
+      walk = walk + "            (i64.load (i32.add (i32.wrap_i64 ";
+      walk = walk + "(local.get $p)) (i32.const ";
+      walk = walk + (off + 8).to_str();
+      walk = walk + ")))\n";
+      walk = walk + "            (i64.load (i32.add (i32.wrap_i64 ";
+      walk = walk + "(i64.load (i32.add (i32.wrap_i64 (local.get $p)) ";
+      walk = walk + "(i32.const ";
+      walk = walk + off.to_str();
+      walk = walk + ")))) (i32.const ";
+      walk = walk + (dnm * 8).to_str();
+      walk = walk + ")))\n";
+      walk = walk + "            (i32.wrap_i64)\n";
+      walk = walk + "            call_indirect (type $clv1)\n";
       j = j + 1;
       continue;
     }
     let fc: string = rel_callee(mut pool, mut prog, fty);
     if len(fc) > 0 {
-      walk = walk + "            (i64.load (i32.add (i32.wrap_i64 " +
-             "(local.get $p)) (i32.const " + off.to_str() + ")))\n";
+      walk = walk + "            (i64.load (i32.add (i32.wrap_i64 ";
+      walk = walk + "(local.get $p)) (i32.const ";
+      walk = walk + off.to_str();
+      walk = walk + ")))\n";
       if len(fty) >= 2 && fty[0] == 91 && fty[1] == 93 {
         // a slice field: the walker takes the pair (addr, len)
         walk = walk + "            (i64.load (i32.add (i32.wrap_i64 " +
                "(local.get $p)) (i32.const " + (off + 8).to_str() +
                ")))\n";
       }
-      walk = walk + "            call " + fc + "\n";
+      walk = walk + "            call ";
+      walk = walk + fc;
+      walk = walk + "\n";
     }
     j = j + 1;
   }
@@ -2243,16 +2265,20 @@ fn rel_enum_thunk(mut pool: *Pool, mut prog: *Prog, ename: string) -> string {
           prog.enums[ei as usize].vtpool[v * 8 + p];
       let pc2: string = rel_callee(mut pool, mut prog, pty);
       if len(pc2) > 0 {
-        walk = walk + "            (if (i64.eq (i64.load (i32.wrap_i64 " +
-               "(local.get $p))) (i64.const " + (v as i64).to_str() +
-               "))\n" +
-               "              (then\n" +
-               "                (i64.load (i32.add (i32.wrap_i64 " +
-               "(local.get $p)) (i32.const " + (slot * 8).to_str() +
-               ")))\n" +
-               "                call " + pc2 + "\n" +
-               "              )\n" +
-               "            )\n";
+        walk = walk + "            (if (i64.eq (i64.load (i32.wrap_i64 ";
+        walk = walk + "(local.get $p))) (i64.const ";
+        walk = walk + (v as i64).to_str();
+        walk = walk + "))\n";
+        walk = walk + "              (then\n";
+        walk = walk + "                (i64.load (i32.add (i32.wrap_i64 ";
+        walk = walk + "(local.get $p)) (i32.const ";
+        walk = walk + (slot * 8).to_str();
+        walk = walk + ")))\n";
+        walk = walk + "                call ";
+        walk = walk + pc2;
+        walk = walk + "\n";
+        walk = walk + "              )\n";
+        walk = walk + "            )\n";
       }
       slot = slot + type_slots(mut prog, pty);
       p = p + 1;
@@ -2288,17 +2314,22 @@ fn rel_slice_thunk(mut pool: *Pool, mut prog: *Prog, elem: string) -> string {
     }
   }
   let mut out: string = "";
-  out = out + "  (func " + nm + " (param $a i64) (param $l i64)\n";
+  out = out + "  (func ";
+  out = out + nm;
+  out = out + " (param $a i64) (param $l i64)\n";
   out = out + "    (local $i i64)\n";
   out = out + "    (loop $w\n";
   out = out + "      (if (i64.lt_u (local.get $i) (local.get $l))\n";
   out = out + "        (then\n";
-  out = out + "          (i64.load (i32.add (i32.wrap_i64 (local.get $a))" +
-         " (i32.mul (i32.wrap_i64 (local.get $i)) (i32.const " +
-         (esz * 8).to_str() + "))))\n";
-  out = out + "          call " + ec + "\n";
-  out = out + "          (local.set $i (i64.add (local.get $i) " +
-         "(i64.const 1)))\n";
+  out = out + "          (i64.load (i32.add (i32.wrap_i64 (local.get $a))";
+  out = out + " (i32.mul (i32.wrap_i64 (local.get $i)) (i32.const ";
+  out = out + (esz * 8).to_str();
+  out = out + "))))\n";
+  out = out + "          call ";
+  out = out + ec;
+  out = out + "\n";
+  out = out + "          (local.set $i (i64.add (local.get $i) ";
+  out = out + "(i64.const 1)))\n";
   out = out + "          (br $w)\n";
   out = out + "        )\n";
   out = out + "      )\n";
@@ -2535,14 +2566,23 @@ fn dyn_hole_dispatch(arg: *Expr, mut pool: *Pool, mut env: *Env,
             let ta9: i64 = nl.v;
             let tl9: i64 = nl.v + 1;
             nl.v = nl.v + 2;
-            pre = pre + "    (local.get " + obj.to_str() + ")\n" +
-                   "    (i64.load (i32.add (i32.wrap_i64 " +
-                   "(local.get " + vbox.to_str() + ")) (i32.const " +
-                   (ord9 * 8).to_str() + ")))\n" +
-                   "    (i32.wrap_i64)\n" +
-                   "    call_indirect (type $clp1)\n" +
-                   "    (local.set " + tl9.to_str() + ")\n" +
-                   "    (local.set " + ta9.to_str() + ")\n";
+            pre = pre + "    (local.get ";
+            pre = pre + obj.to_str();
+            pre = pre + ")\n";
+            pre = pre + "    (i64.load (i32.add (i32.wrap_i64 ";
+            pre = pre + "(local.get ";
+            pre = pre + vbox.to_str();
+            pre = pre + ")) (i32.const ";
+            pre = pre + (ord9 * 8).to_str();
+            pre = pre + ")))\n";
+            pre = pre + "    (i32.wrap_i64)\n";
+            pre = pre + "    call_indirect (type $clp1)\n";
+            pre = pre + "    (local.set ";
+            pre = pre + tl9.to_str();
+            pre = pre + ")\n";
+            pre = pre + "    (local.set ";
+            pre = pre + ta9.to_str();
+            pre = pre + ")\n";
             DYN_TEXT = pre;
             DYN_A = ta9;
             DYN_L = tl9;
@@ -2553,25 +2593,42 @@ fn dyn_hole_dispatch(arg: *Expr, mut pool: *Pool, mut env: *Env,
           let ta9: i64 = nl.v;
           let tl9: i64 = nl.v + 1;
           nl.v = nl.v + 2;
-          pre = pre + "    (local.get " + obj.to_str() + ")\n" +
-                 "    (i64.load (i32.add (i32.wrap_i64 " +
-                 "(local.get " + vbox.to_str() + ")) (i32.const " +
-                 (ord9 * 8).to_str() + ")))\n" +
-                 "    (i32.wrap_i64)\n" +
-                 "    call_indirect (type $cl1)\n" +
-                 "    (local.set " + tb9.to_str() + ")\n" +
-                 "    (local.get " + tb9.to_str() + ")\n";
+          pre = pre + "    (local.get ";
+          pre = pre + obj.to_str();
+          pre = pre + ")\n";
+          pre = pre + "    (i64.load (i32.add (i32.wrap_i64 ";
+          pre = pre + "(local.get ";
+          pre = pre + vbox.to_str();
+          pre = pre + ")) (i32.const ";
+          pre = pre + (ord9 * 8).to_str();
+          pre = pre + ")))\n";
+          pre = pre + "    (i32.wrap_i64)\n";
+          pre = pre + "    call_indirect (type $cl1)\n";
+          pre = pre + "    (local.set ";
+          pre = pre + tb9.to_str();
+          pre = pre + ")\n";
+          pre = pre + "    (local.get ";
+          pre = pre + tb9.to_str();
+          pre = pre + ")\n";
           if rtype9 == "bool" {
-            pre = pre + "    call $w_bool\n" +
-                   "    (local.set $l)\n" +
-                   "    (i64.extend_i32_u)\n" +
-                   "    (local.set " + ta9.to_str() + ")\n" +
-                   "    (i64.extend_i32_u (local.get $l))\n" +
-                   "    (local.set " + tl9.to_str() + ")\n";
+            pre = pre + "    call $w_bool\n";
+            pre = pre + "    (local.set $l)\n";
+            pre = pre + "    (i64.extend_i32_u)\n";
+            pre = pre + "    (local.set ";
+            pre = pre + ta9.to_str();
+            pre = pre + ")\n";
+            pre = pre + "    (i64.extend_i32_u (local.get $l))\n";
+            pre = pre + "    (local.set ";
+            pre = pre + tl9.to_str();
+            pre = pre + ")\n";
           } else {
-            pre = pre + "    call $w_itoa\n" +
-                   "    (local.set " + tl9.to_str() + ")\n" +
-                   "    (local.set " + ta9.to_str() + ")\n";
+            pre = pre + "    call $w_itoa\n";
+            pre = pre + "    (local.set ";
+            pre = pre + tl9.to_str();
+            pre = pre + ")\n";
+            pre = pre + "    (local.set ";
+            pre = pre + ta9.to_str();
+            pre = pre + ")\n";
           }
           DYN_TEXT = pre;
           DYN_A = ta9;
@@ -2596,37 +2653,52 @@ fn dyn_hole_dispatch(arg: *Expr, mut pool: *Pool, mut env: *Env,
           let tl9: i64 = nl.v + 1;
           nl.v = nl.v + 2;
           let mut t9b: string = emit_expr(mut pool, arg, mut env, mut prog, mut nl);
-          t9b = t9b + "    (local.set " + tb9.to_str() + ")\n" +
-                "    (local.get " + tb9.to_str() + ")\n";
+          t9b = t9b + "    (local.set ";
+          t9b = t9b + tb9.to_str();
+          t9b = t9b + ")\n";
+          t9b = t9b + "    (local.get ";
+          t9b = t9b + tb9.to_str();
+          t9b = t9b + ")\n";
           if rtype9 == "bool" {
-            t9b = t9b + "    call $w_bool\n" +
-                   "    (local.set $l)\n" +
-                   "    (i64.extend_i32_u)\n" +
-                   "    (local.set " + ta9.to_str() + ")\n" +
-                   "    (i64.extend_i32_u (local.get $l))\n" +
-                   "    (local.set " + tl9.to_str() + ")\n";
+            t9b = t9b + "    call $w_bool\n";
+            t9b = t9b + "    (local.set $l)\n";
+            t9b = t9b + "    (i64.extend_i32_u)\n";
+            t9b = t9b + "    (local.set ";
+            t9b = t9b + ta9.to_str();
+            t9b = t9b + ")\n";
+            t9b = t9b + "    (i64.extend_i32_u (local.get $l))\n";
+            t9b = t9b + "    (local.set ";
+            t9b = t9b + tl9.to_str();
+            t9b = t9b + ")\n";
           } else {
             if rtype9 == "f64" || rtype9 == "f32" {
               FLOAT_WANTED = 1;
               if rtype9 == "f32" {
-                t9b = t9b + "    (f64.reinterpret_i64)\n" +
-                       "    (f32.demote_f64)\n" +
-                       "    (f64.promote_f32)\n" +
-                       "    (i64.reinterpret_f64)\n" +
-                       "    call $u___f32_text\n";
+                t9b = t9b + "    (f64.reinterpret_i64)\n";
+                t9b = t9b + "    (f32.demote_f64)\n";
+                t9b = t9b + "    (f64.promote_f32)\n";
+                t9b = t9b + "    (i64.reinterpret_f64)\n";
+                t9b = t9b + "    call $u___f32_text\n";
               } else {
                 t9b = t9b + "    call $u___f64_text\n";
               }
             } else {
-              t9b = t9b + "    call $w_itoa\n" +
-                     "    (local.set " + tl9.to_str() + ")\n" +
-                     "    (local.set " + ta9.to_str() + ")\n";
+              t9b = t9b + "    call $w_itoa\n";
+              t9b = t9b + "    (local.set ";
+              t9b = t9b + tl9.to_str();
+              t9b = t9b + ")\n";
+              t9b = t9b + "    (local.set ";
+              t9b = t9b + ta9.to_str();
+              t9b = t9b + ")\n";
             }
           }
           if rtype9 == "f64" || rtype9 == "f32" {
-            t9b = t9b + "    (local.set " + tl9.to_str() +
-                   ")\n" +
-                   "    (local.set " + ta9.to_str() + ")\n";
+            t9b = t9b + "    (local.set ";
+            t9b = t9b + tl9.to_str();
+            t9b = t9b + ")\n";
+            t9b = t9b + "    (local.set ";
+            t9b = t9b + ta9.to_str();
+            t9b = t9b + ")\n";
           }
           DYN_TEXT = t9b;
           DYN_A = ta9;
@@ -2663,14 +2735,22 @@ fn dyn_hole_dispatch(arg: *Expr, mut pool: *Pool, mut env: *Env,
   let ta: i64 = nl.v;
   let tl: i64 = nl.v + 1;
   nl.v = nl.v + 2;
-  pre = pre + "    (local.get " + obj.to_str() + ")\n" +
-         "    (i64.load (i32.add (i32.wrap_i64 (local.get " +
-         vbox.to_str() + ")) (i32.const " + (ord * 8).to_str() +
-         ")))\n" +
-         "    (i32.wrap_i64)\n" +
-         "    call_indirect (type $clp1)\n" +
-         "    (local.set " + tl.to_str() + ")\n" +
-         "    (local.set " + ta.to_str() + ")\n";
+  pre = pre + "    (local.get ";
+  pre = pre + obj.to_str();
+  pre = pre + ")\n";
+  pre = pre + "    (i64.load (i32.add (i32.wrap_i64 (local.get ";
+  pre = pre + vbox.to_str();
+  pre = pre + ")) (i32.const ";
+  pre = pre + (ord * 8).to_str();
+  pre = pre + ")))\n";
+  pre = pre + "    (i32.wrap_i64)\n";
+  pre = pre + "    call_indirect (type $clp1)\n";
+  pre = pre + "    (local.set ";
+  pre = pre + tl.to_str();
+  pre = pre + ")\n";
+  pre = pre + "    (local.set ";
+  pre = pre + ta.to_str();
+  pre = pre + ")\n";
   DYN_TEXT = pre;
   DYN_A = ta;
   DYN_L = tl;
@@ -2853,19 +2933,24 @@ fn dyn_vtable(mut pool: *Pool, mut prog: *Prog, trt: string,
     if midx < 0 {
       return "";
     }
-    text = text + "    (i64.store (i32.add (i32.wrap_i64 " +
-           "(local.get $r)) (i32.const " + (k * 8).to_str() +
-           ")) (i64.const " + midx.to_str() + "))\n";
+    text = text + "    (i64.store (i32.add (i32.wrap_i64 ";
+    text = text + "(local.get $r)) (i32.const ";
+    text = text + (k * 8).to_str();
+    text = text + ")) (i64.const ";
+    text = text + midx.to_str();
+    text = text + "))\n";
     k = k + 1;
   }
   // slot nmethods: the release walker — a dyn's death dispatches
   // through the vtable (the mirror of boot's header drop slot)
   let ridx: i64 = rel_table_idx(mut pool, mut prog, tname);
   if ridx >= 0 {
-    text = text + "    (i64.store (i32.add (i32.wrap_i64 " +
-           "(local.get $r)) (i32.const " +
-           ((td.nmethods as i64) * 8).to_str() +
-           ")) (i64.const " + ridx.to_str() + "))\n";
+    text = text + "    (i64.store (i32.add (i32.wrap_i64 ";
+    text = text + "(local.get $r)) (i32.const ";
+    text = text + ((td.nmethods as i64) * 8).to_str();
+    text = text + ")) (i64.const ";
+    text = text + ridx.to_str();
+    text = text + "))\n";
   }
   text = text + "    (local.get $r)\n";
   // cache: bases carries the key, keys carries the emitted text
@@ -3316,7 +3401,9 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
           if (a0.op / 2) % 2 == 1 && len(a0.args) > 1 {
             out = out + emit_expr(mut pool, a0.args[1], mut env, mut prog, mut nl);
           } else {
-            out = out + "    " + blen + "\n";
+            out = out + "    ";
+            out = out + blen;
+            out = out + "\n";
           }
           out = out + "    (local.set $t)\n";
           out = out + oob_check_at(mut pool, blen, false);
@@ -3364,20 +3451,24 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
             // copies load above it)
             let esz0: i64 =
                 st_nslots(mut prog, st_index(mut prog, et0));
-            out = out + "    (i64.add (local.get " + addr_slot.to_str() +
-                   ") (i64.mul (local.get $t) (i64.const " +
-                   (esz0 * 8).to_str() + ")))\n";
+            out = out + "    (i64.add (local.get ";
+            out = out + addr_slot.to_str();
+            out = out + ") (i64.mul (local.get $t) (i64.const ";
+            out = out + (esz0 * 8).to_str();
+            out = out + ")))\n";
             return out;
           }
-          out = out + "    (i64.load (i32.add (i32.wrap_i64 (local.get " +
-                 addr_slot.to_str() + "))\n" +
-                 "                     (i32.mul (i32.wrap_i64 " +
-                 "(local.get $t)) (i32.const 8))))\n";
+          out = out + "    (i64.load (i32.add (i32.wrap_i64 (local.get ";
+          out = out + addr_slot.to_str();
+          out = out + "))\n";
+          out = out + "                     (i32.mul (i32.wrap_i64 ";
+          out = out + "(local.get $t)) (i32.const 8))))\n";
         } else {
-          out = out + "    (i64.extend_i32_u (i32.load8_u " +
-                 "(i32.add (i32.wrap_i64 (local.get " +
-                 addr_slot.to_str() + "))\n" +
-                 "                     (i32.wrap_i64 (local.get $t)))))\n";
+          out = out + "    (i64.extend_i32_u (i32.load8_u ";
+          out = out + "(i32.add (i32.wrap_i64 (local.get ";
+          out = out + addr_slot.to_str();
+          out = out + "))\n";
+          out = out + "                     (i32.wrap_i64 (local.get $t)))))\n";
         }
         return out;
       }
@@ -3385,9 +3476,11 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
         // a folded string: const addr, const len
         let ln: i64 = env_str_len(env, base.name);
         out = out + oob_check(mut pool, "(i64.const " + ln.to_str() + ")");
-        out = out + "    (i64.extend_i32_u (i32.load8_u (i32.add " +
-               "(i32.const " + a.to_str() + ")\n" +
-               "                     (i32.wrap_i64 (local.get $t)))))\n";
+        out = out + "    (i64.extend_i32_u (i32.load8_u (i32.add ";
+        out = out + "(i32.const ";
+        out = out + a.to_str();
+        out = out + ")\n";
+        out = out + "                     (i32.wrap_i64 (local.get $t)))))\n";
         return out;
       }
     }
@@ -3395,9 +3488,11 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
       let saddr: i64 = pool_intern(mut pool, base.name);
       let ln: i64 = pool_len(pool, base.name);
       out = out + oob_check(mut pool, "(i64.const " + ln.to_str() + ")");
-      out = out + "    (i64.extend_i32_u (i32.load8_u (i32.add " +
-             "(i32.const " + saddr.to_str() + ")\n" +
-             "                     (i32.wrap_i64 (local.get $t)))))\n";
+      out = out + "    (i64.extend_i32_u (i32.load8_u (i32.add ";
+      out = out + "(i32.const ";
+      out = out + saddr.to_str();
+      out = out + ")\n";
+      out = out + "                     (i32.wrap_i64 (local.get $t)))))\n";
       return out;
     }
     if base.tag == parse.EX_FIELD {
@@ -3424,17 +3519,20 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
             let b0: i64 = env_val_base(env, vb.name);
             out = out + oob_check(mut pool, "(local.get " +
                    (b0 + off / 8 + 1).to_str() + ")");
-            out = out + "    (i64.load (i32.add (i32.wrap_i64 (local.get " +
-                   (b0 + off / 8).to_str() + "))\n" +
-                   "                     (i32.mul (i32.wrap_i64 " +
-                   "(local.get $t)) (i32.const 8))))\n";
+            out = out + "    (i64.load (i32.add (i32.wrap_i64 (local.get ";
+            out = out + (b0 + off / 8).to_str();
+            out = out + "))\n";
+            out = out + "                     (i32.mul (i32.wrap_i64 ";
+            out = out + "(local.get $t)) (i32.const 8))))\n";
             return out;
           }
           // the heap pair: the owner's address parks in a temp
           let t0: i64 = nl.v;
           nl.v = nl.v + 1;
           out = out + emit_expr(mut pool, vb, mut env, mut prog, mut nl);
-          out = out + "    (local.set " + t0.to_str() + ")\n";
+          out = out + "    (local.set ";
+          out = out + t0.to_str();
+          out = out + ")\n";
           out = out + oob_check(mut pool, "(i64.load (i32.add (i32.wrap_i64 " +
                  "(local.get " + t0.to_str() + ")) (i32.const " +
                  (off + 8).to_str() + ")))");
@@ -3517,14 +3615,17 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
       // a by-value struct field over an address base: expose the
       // sub-struct's ADDRESS (leaf fields load above it)
       let mut out: string = emit_expr(mut pool, base, mut env, mut prog, mut nl);
-      out = out + "    (i32.wrap_i64)\n" +
-             "    (i32.add (i32.const " + (off * 8).to_str() + "))\n" +
-             "    (i64.extend_i32_u)\n";
+      out = out + "    (i32.wrap_i64)\n";
+      out = out + "    (i32.add (i32.const ";
+      out = out + (off * 8).to_str();
+      out = out + "))\n";
+      out = out + "    (i64.extend_i32_u)\n";
       return out;
     }
     let mut out: string = emit_expr(mut pool, base, mut env, mut prog, mut nl);
-    out = out + "    (i32.add (i32.wrap_i64) (i32.const " + (off * 8).to_str() +
-           "))\n";
+    out = out + "    (i32.add (i32.wrap_i64) (i32.const ";
+    out = out + (off * 8).to_str();
+    out = out + "))\n";
     out = out + "    (i64.load)\n";
     out = out + wrap_snippet(type_width(fty));
     return out;
@@ -3586,11 +3687,15 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
           out8 = out8 + emit_arg(mut pool, e.args[ai8], mut env, mut prog, mut nl);
           ai8 = ai8 + 1;
         }
-        out8 = out8 + "    (local.get " + obj8.to_str() + ")\n" +
-               "    (i64.load (i32.add (i32.wrap_i64 (local.get " +
-               vbox8.to_str() + ")) (i32.const " +
-               (ord8 * 8).to_str() + ")))\n" +
-               "    (i32.wrap_i64)\n";
+        out8 = out8 + "    (local.get ";
+        out8 = out8 + obj8.to_str();
+        out8 = out8 + ")\n";
+        out8 = out8 + "    (i64.load (i32.add (i32.wrap_i64 (local.get ";
+        out8 = out8 + vbox8.to_str();
+        out8 = out8 + ")) (i32.const ";
+        out8 = out8 + (ord8 * 8).to_str();
+        out8 = out8 + ")))\n";
+        out8 = out8 + "    (i32.wrap_i64)\n";
         if rtype8 == "string" {
           // a pair result parks into the reserved slots; the address
           // rides the scalar lane (the stringy pattern). The calling
@@ -3600,19 +3705,27 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
             ari8 = 3;
           }
           clo_ty_need(mut pool.gi, ari8, 2);
-          out8 = out8 + "    call_indirect (type $clp" +
-                 ari8.to_str() + ")\n" +
-                 "    (local.set " + (pa8 + 1).to_str() + ")\n" +
-                 "    (local.set " + pa8.to_str() + ")\n" +
-                 "    (local.get " + pa8.to_str() + ")\n";
+          out8 = out8 + "    call_indirect (type $clp";
+          out8 = out8 + ari8.to_str();
+          out8 = out8 + ")\n";
+          out8 = out8 + "    (local.set ";
+          out8 = out8 + (pa8 + 1).to_str();
+          out8 = out8 + ")\n";
+          out8 = out8 + "    (local.set ";
+          out8 = out8 + pa8.to_str();
+          out8 = out8 + ")\n";
+          out8 = out8 + "    (local.get ";
+          out8 = out8 + pa8.to_str();
+          out8 = out8 + ")\n";
         } else {
           let mut ari9: i64 = 1 + (len(e.args) as i64);
           if ari9 > 3 {
             ari9 = 3;
           }
           clo_ty_need(mut pool.gi, ari9, 1);
-          out8 = out8 + "    call_indirect (type $cl" +
-                 ari9.to_str() + ")\n";
+          out8 = out8 + "    call_indirect (type $cl";
+          out8 = out8 + ari9.to_str();
+          out8 = out8 + ")\n";
         }
         return out8;
       }
@@ -3655,32 +3768,43 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
                                      mut prog, mut nl);
             ai10 = ai10 + 1;
           }
-          out10 = out10 + "    (local.get " + obj10.to_str() +
-                  ")\n" +
-                  "    (i64.load (i32.add (i32.wrap_i64 " +
-                  "(local.get " + vbox10.to_str() + ")) (i32.const " +
-                  (ord10 * 8).to_str() + ")))\n" +
-                  "    (i32.wrap_i64)\n";
+          out10 = out10 + "    (local.get ";
+          out10 = out10 + obj10.to_str();
+          out10 = out10 + ")\n";
+          out10 = out10 + "    (i64.load (i32.add (i32.wrap_i64 ";
+          out10 = out10 + "(local.get ";
+          out10 = out10 + vbox10.to_str();
+          out10 = out10 + ")) (i32.const ";
+          out10 = out10 + (ord10 * 8).to_str();
+          out10 = out10 + ")))\n";
+          out10 = out10 + "    (i32.wrap_i64)\n";
           if rtype10 == "string" {
             let mut ari10: i64 = 1 + (len(e.args) as i64);
             if ari10 > 3 {
               ari10 = 3;
             }
             clo_ty_need(mut pool.gi, ari10, 2);
-            out10 = out10 + "    call_indirect (type $clp" +
-                    ari10.to_str() + ")\n" +
-                    "    (local.set " + (pa10 + 1).to_str() +
-                    ")\n" +
-                    "    (local.set " + pa10.to_str() + ")\n" +
-                    "    (local.get " + pa10.to_str() + ")\n";
+            out10 = out10 + "    call_indirect (type $clp";
+            out10 = out10 + ari10.to_str();
+            out10 = out10 + ")\n";
+            out10 = out10 + "    (local.set ";
+            out10 = out10 + (pa10 + 1).to_str();
+            out10 = out10 + ")\n";
+            out10 = out10 + "    (local.set ";
+            out10 = out10 + pa10.to_str();
+            out10 = out10 + ")\n";
+            out10 = out10 + "    (local.get ";
+            out10 = out10 + pa10.to_str();
+            out10 = out10 + ")\n";
           } else {
             let mut ari11: i64 = 1 + (len(e.args) as i64);
             if ari11 > 3 {
               ari11 = 3;
             }
             clo_ty_need(mut pool.gi, ari11, 1);
-            out10 = out10 + "    call_indirect (type $cl" +
-                    ari11.to_str() + ")\n";
+            out10 = out10 + "    call_indirect (type $cl";
+            out10 = out10 + ari11.to_str();
+            out10 = out10 + ")\n";
           }
           return out10;
         }
@@ -3700,21 +3824,30 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
       let wb: i64 = nl.v;
       nl.v = nl.v + 1;
       let mut out: string = emit_expr(mut pool, recv, mut env, mut prog, mut nl);
-      out = out + "    (local.set " + wg.to_str() + ")\n";
-      out = out + "    (i64.extend_i32_u (call $w_alloc (i32.const 2)))\n" +
-             "    (local.set " + wb.to_str() + ")\n";
+      out = out + "    (local.set ";
+      out = out + wg.to_str();
+      out = out + ")\n";
+      out = out + "    (i64.extend_i32_u (call $w_alloc (i32.const 2)))\n";
+      out = out + "    (local.set ";
+      out = out + wb.to_str();
+      out = out + ")\n";
       let wtg3: string = weak_target(env_ptr_of(env, recv.name));
-      out = out + "    (if (i64.ne (local.get " + wg.to_str() +
-             ") (i64.const 0))\n" +
-             "      (then (if (i64.gt_s (i64.load (i32.sub " +
-             "(i32.wrap_i64 (local.get " + wg.to_str() +
-             ")) (i32.const 8))) (i64.const 0))\n" +
-             "        (then\n" +
-             "          (i64.store (i32.wrap_i64 (local.get " +
-             wb.to_str() + ")) (i64.const 1))\n" +
-             "          (i64.store (i32.add (i32.wrap_i64 (local.get " +
-             wb.to_str() + ")) (i32.const 8)) (local.get " +
-             wg.to_str() + "))\n";
+      out = out + "    (if (i64.ne (local.get ";
+      out = out + wg.to_str();
+      out = out + ") (i64.const 0))\n";
+      out = out + "      (then (if (i64.gt_s (i64.load (i32.sub ";
+      out = out + "(i32.wrap_i64 (local.get ";
+      out = out + wg.to_str();
+      out = out + ")) (i32.const 8))) (i64.const 0))\n";
+      out = out + "        (then\n";
+      out = out + "          (i64.store (i32.wrap_i64 (local.get ";
+      out = out + wb.to_str();
+      out = out + ")) (i64.const 1))\n";
+      out = out + "          (i64.store (i32.add (i32.wrap_i64 (local.get ";
+      out = out + wb.to_str();
+      out = out + ")) (i32.const 8)) (local.get ";
+      out = out + wg.to_str();
+      out = out + "))\n";
       if st_index(mut prog, wtg3) >= 0 {
         // the fresh box owns its payload: the count pairs with the
         // box's own death walk — INSIDE the live branch (a dead
@@ -3723,7 +3856,9 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
                "          call $w_retain\n";
       }
       out = out + "        ))))\n";
-      out = out + "    (local.get " + wb.to_str() + ")\n";
+      out = out + "    (local.get ";
+      out = out + wb.to_str();
+      out = out + ")\n";
       return out;
     }
     // an enum constructor: Enum.Var / Enum.Var(args) / Option.* /
@@ -3806,36 +3941,49 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
         if k < 8 && sflag[k] {
           let spv = build_string_pair(e.args[k], mut pool, mut env, mut prog,mut 
                                       nl);
-          out = out + spv.text +
-                 "    (i64.store (i32.add (i32.wrap_i64 (local.get " +
-                 a_slot.to_str() + ")) (i32.const " +
-                 (sl * 8).to_str() + ")) (local.get " +
-                 spv.a.to_str() + "))\n" +
-                 "    (i64.store (i32.add (i32.wrap_i64 (local.get " +
-                 a_slot.to_str() + ")) (i32.const " +
-                 ((sl + 1) * 8).to_str() + ")) (local.get " +
-                 spv.l.to_str() + "))\n";
+          out = out + spv.text;
+          out = out + "    (i64.store (i32.add (i32.wrap_i64 (local.get ";
+          out = out + a_slot.to_str();
+          out = out + ")) (i32.const ";
+          out = out + (sl * 8).to_str();
+          out = out + ")) (local.get ";
+          out = out + spv.a.to_str();
+          out = out + "))\n";
+          out = out + "    (i64.store (i32.add (i32.wrap_i64 (local.get ";
+          out = out + a_slot.to_str();
+          out = out + ")) (i32.const ";
+          out = out + ((sl + 1) * 8).to_str();
+          out = out + ")) (local.get ";
+          out = out + spv.l.to_str();
+          out = out + "))\n";
           sl = sl + 2;
         } else {
           let tv: i64 = nl.v;
           nl.v = nl.v + 1;
           out = out + emit_expr(mut pool, e.args[k], mut env, mut prog, mut nl);
-          out = out + "    (local.set " + tv.to_str() + ")\n";
+          out = out + "    (local.set ";
+          out = out + tv.to_str();
+          out = out + ")\n";
           // a pointer payload the box owns: the count pairs with the
           // box's death walk
           let argt: string = expr_ptr_type(e.args[k], env, mut prog);
           if len(argt) > 0 && st_index(mut prog, argt) >= 0 {
             out = out + retain_if_shared(e.args[k], tv);
           }
-          out = out + "    (i64.store (i32.add (i32.wrap_i64 (local.get " +
-                 a_slot.to_str() + ")) (i32.const " +
-                 (sl * 8).to_str() + ")) (local.get " + tv.to_str() +
-                 "))\n";
+          out = out + "    (i64.store (i32.add (i32.wrap_i64 (local.get ";
+          out = out + a_slot.to_str();
+          out = out + ")) (i32.const ";
+          out = out + (sl * 8).to_str();
+          out = out + ")) (local.get ";
+          out = out + tv.to_str();
+          out = out + "))\n";
           sl = sl + 1;
         }
         k = k + 1;
       }
-      out = out + "    (local.get " + a_slot.to_str() + ")\n";
+      out = out + "    (local.get ";
+      out = out + a_slot.to_str();
+      out = out + ")\n";
       return out;
     }
     let mut target: string = "";
@@ -3874,7 +4022,9 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
       out = out + emit_arg(mut pool, e.args[k], mut env, mut prog, mut nl);
       k = k + 1;
     }
-    out = out + "    call $u_" + target + "\n";
+    out = out + "    call $u_";
+    out = out + target;
+    out = out + "\n";
     return out;
   }
   if e.tag == parse.EX_NEW {
@@ -3906,16 +4056,26 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
           let tv0: i64 = nl.v;
           nl.v = nl.v + 1;
           out = out + struct_addr_of(mut pool, e.args[k], mut env, mut prog, mut nl);
-          out = out + "    (local.set " + tsrc.to_str() + ")\n";
+          out = out + "    (local.set ";
+          out = out + tsrc.to_str();
+          out = out + ")\n";
           let mut vj: i64 = 0;
           while vj < nsn {
-            out = out + "    (i64.load (i32.add (i32.wrap_i64 (local.get " +
-                   tsrc.to_str() + ")) (i32.const " + (vj * 8).to_str() +
-                   ")))\n" +
-                   "    (local.set " + tv0.to_str() + ")\n" +
-                   "    (i64.store (i32.add (i32.wrap_i64 (local.get " +
-                   a_slot.to_str() + ")) (i32.const " + (off + vj * 8).to_str() +
-                   ")) (local.get " + tv0.to_str() + "))\n";
+            out = out + "    (i64.load (i32.add (i32.wrap_i64 (local.get ";
+            out = out + tsrc.to_str();
+            out = out + ")) (i32.const ";
+            out = out + (vj * 8).to_str();
+            out = out + ")))\n";
+            out = out + "    (local.set ";
+            out = out + tv0.to_str();
+            out = out + ")\n";
+            out = out + "    (i64.store (i32.add (i32.wrap_i64 (local.get ";
+            out = out + a_slot.to_str();
+            out = out + ")) (i32.const ";
+            out = out + (off + vj * 8).to_str();
+            out = out + ")) (local.get ";
+            out = out + tv0.to_str();
+            out = out + "))\n";
             vj = vj + 1;
           }
         } else if is_dyn_type(fty) {
@@ -3929,18 +4089,30 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
             let fob: i64 = nl.v + 1;
             nl.v = nl.v + 2;
             out = out + fvt;
-            out = out + "    (local.set " + fvb.to_str() + ")\n";
+            out = out + "    (local.set ";
+            out = out + fvb.to_str();
+            out = out + ")\n";
             out = out + emit_expr(mut pool, e.args[k], mut env, mut prog, mut nl);
-            out = out + "    (local.set " + fob.to_str() + ")\n";
+            out = out + "    (local.set ";
+            out = out + fob.to_str();
+            out = out + ")\n";
             out = out + retain_if_shared(e.args[k], fob);
-            out = out + "    (i64.store (i32.add (i32.wrap_i64 " +
-                   "(local.get " + a_slot.to_str() + ")) (i32.const " +
-                   off.to_str() + ")) (local.get " + fvb.to_str() +
-                   "))\n";
-            out = out + "    (i64.store (i32.add (i32.wrap_i64 " +
-                   "(local.get " + a_slot.to_str() + ")) (i32.const " +
-                   (off + 8).to_str() + ")) (local.get " +
-                   fob.to_str() + "))\n";
+            out = out + "    (i64.store (i32.add (i32.wrap_i64 ";
+            out = out + "(local.get ";
+            out = out + a_slot.to_str();
+            out = out + ")) (i32.const ";
+            out = out + off.to_str();
+            out = out + ")) (local.get ";
+            out = out + fvb.to_str();
+            out = out + "))\n";
+            out = out + "    (i64.store (i32.add (i32.wrap_i64 ";
+            out = out + "(local.get ";
+            out = out + a_slot.to_str();
+            out = out + ")) (i32.const ";
+            out = out + (off + 8).to_str();
+            out = out + ")) (local.get ";
+            out = out + fob.to_str();
+            out = out + "))\n";
           }
         } else if kind == 1 || kind == 2 {
           let ta: i64 = nl.v;
@@ -3954,38 +4126,58 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
             }
             out = out + emit_expr(mut pool, cnt0, mut env, mut prog, mut nl);
             out = out + "    (local.set $t)\n";
-            out = out + "    (i64.extend_i32_u (call $w_alloc " +
-                   "(i32.wrap_i64 (local.get $t))))\n";
+            out = out + "    (i64.extend_i32_u (call $w_alloc ";
+            out = out + "(i32.wrap_i64 (local.get $t))))\n";
             out = out + "    (local.get $t)\n";
           } else {
             out = out + push_string(mut pool, e.args[k], mut env, mut prog, mut nl);
           }
-          out = out + "    (local.set " + tl.to_str() + ")\n" +
-                 "    (local.set " + ta.to_str() + ")\n" +
-                 "    (i64.store (i32.add (i32.wrap_i64 (local.get " +
-                 a_slot.to_str() + ")) (i32.const " + off.to_str() +
-                 ")) (local.get " + ta.to_str() + "))\n" +
-                 "    (i64.store (i32.add (i32.wrap_i64 (local.get " +
-                 a_slot.to_str() + ")) (i32.const " + (off + 8).to_str() +
-                 ")) (local.get " + tl.to_str() + "))\n";
+          out = out + "    (local.set ";
+          out = out + tl.to_str();
+          out = out + ")\n";
+          out = out + "    (local.set ";
+          out = out + ta.to_str();
+          out = out + ")\n";
+          out = out + "    (i64.store (i32.add (i32.wrap_i64 (local.get ";
+          out = out + a_slot.to_str();
+          out = out + ")) (i32.const ";
+          out = out + off.to_str();
+          out = out + ")) (local.get ";
+          out = out + ta.to_str();
+          out = out + "))\n";
+          out = out + "    (i64.store (i32.add (i32.wrap_i64 (local.get ";
+          out = out + a_slot.to_str();
+          out = out + ")) (i32.const ";
+          out = out + (off + 8).to_str();
+          out = out + ")) (local.get ";
+          out = out + tl.to_str();
+          out = out + "))\n";
         } else {
           let tv: i64 = nl.v;
           nl.v = nl.v + 1;
           out = out + emit_expr(mut pool, e.args[k], mut env, mut prog, mut nl);
           out = out + wrap_snippet(type_width(fty));
-          out = out + "    (local.set " + tv.to_str() + ")\n";
+          out = out + "    (local.set ";
+          out = out + tv.to_str();
+          out = out + ")\n";
           // a counted field (pointer, option, enum): the box owns it
           if len(rel_callee(mut pool, mut prog, fty)) > 0 {
             out = out + retain_if_shared(e.args[k], tv);
           }
-          out = out + "    (i64.store (i32.add (i32.wrap_i64 (local.get " +
-                 a_slot.to_str() + ")) (i32.const " + off.to_str() +
-                 ")) (local.get " + tv.to_str() + "))\n";
+          out = out + "    (i64.store (i32.add (i32.wrap_i64 (local.get ";
+          out = out + a_slot.to_str();
+          out = out + ")) (i32.const ";
+          out = out + off.to_str();
+          out = out + ")) (local.get ";
+          out = out + tv.to_str();
+          out = out + "))\n";
         }
       }
       k = k + 1;
     }
-    out = out + "    (local.get " + a_slot.to_str() + ")\n";
+    out = out + "    (local.get ";
+    out = out + a_slot.to_str();
+    out = out + ")\n";
     return out;
   }
   if e.tag == parse.EX_DEREF {
@@ -4014,16 +4206,23 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
     let bx: i64 = nl.v;
     nl.v = nl.v + 1;
     let mut out: string = emit_expr(mut pool, inner, mut env, mut prog, mut nl);
-    out = out + "    (local.set " + bx.to_str() + ")\n" +
-           "    (if (result i64) (i64.eq (i64.load (i32.wrap_i64 " +
-           "(local.get " + bx.to_str() + "))) (i64.const 1))\n" +
-           "      (then (i64.load (i32.add (i32.wrap_i64 (local.get " +
-           bx.to_str() + ")) (i32.const 8))))\n" +
-           "      (else\n" +
-           dunwind_emit(mut env.dstack) +
-           "        (local.get " + bx.to_str() + ")\n" +
-           "        return\n" +
-           "      ))\n";
+    out = out + "    (local.set ";
+    out = out + bx.to_str();
+    out = out + ")\n";
+    out = out + "    (if (result i64) (i64.eq (i64.load (i32.wrap_i64 ";
+    out = out + "(local.get ";
+    out = out + bx.to_str();
+    out = out + "))) (i64.const 1))\n";
+    out = out + "      (then (i64.load (i32.add (i32.wrap_i64 (local.get ";
+    out = out + bx.to_str();
+    out = out + ")) (i32.const 8))))\n";
+    out = out + "      (else\n";
+    out = out + dunwind_emit(mut env.dstack);
+    out = out + "        (local.get ";
+    out = out + bx.to_str();
+    out = out + ")\n";
+    out = out + "        return\n";
+    out = out + "      ))\n";
     return out;
   }
   if e.tag == parse.EX_MATCH {
@@ -4040,13 +4239,18 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
     let bx: i64 = nl.v;
     nl.v = nl.v + 1;
     let mut out: string = emit_expr(mut pool, sc, mut env, mut prog, mut nl);
-    out = out + "    (local.set " + bx.to_str() + ")\n";
+    out = out + "    (local.set ";
+    out = out + bx.to_str();
+    out = out + ")\n";
     let et: string = expr_enum_type(sc, env, mut prog);
     if len(et) > 0 {
-      out = out + "    (i64.load (i32.wrap_i64 (local.get " + bx.to_str() +
-             ")))\n";
+      out = out + "    (i64.load (i32.wrap_i64 (local.get ";
+      out = out + bx.to_str();
+      out = out + ")))\n";
     } else {
-      out = out + "    (local.get " + bx.to_str() + ")\n";
+      out = out + "    (local.get ";
+      out = out + bx.to_str();
+      out = out + ")\n";
     }
     out = out + "    (local.set $d)\n";
     let mut optpt: string = optpt_of_scrutinee(sc, mut env, mut prog);
@@ -4093,8 +4297,12 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
           srel = rel_callee(mut pool, mut prog, scet);
         }
         if len(srel) > 0 {
-          out = out + "    (local.get " + bx.to_str() + ")\n" +
-                 "    call " + srel + "\n";
+          out = out + "    (local.get ";
+          out = out + bx.to_str();
+          out = out + ")\n";
+          out = out + "    call ";
+          out = out + srel;
+          out = out + "\n";
         }
       }
     }
@@ -4122,8 +4330,8 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
         out = out + "    (i64.const 0)\n";
       },
     }
-    out = out + "    (i32.wrap_i64)\n    (if (result i64)\n" +
-           "      (then\n";
+    out = out + "    (i32.wrap_i64)\n    (if (result i64)\n";
+    out = out + "      (then\n";
     if len(e.args) > 0 {
       out = out + emit_expr(mut pool, e.args[0], mut env, mut prog, mut nl);
     } else {
@@ -4189,8 +4397,10 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
       cops[8] = "f64.ge";
       cops[9] = "f64.eq";
       cops[10] = "f64.ne";
-      out = out + "    (" + cops[e.op as usize] + ")\n" +
-             "    (i64.extend_i32_s)\n";
+      out = out + "    (";
+      out = out + cops[e.op as usize];
+      out = out + ")\n";
+      out = out + "    (i64.extend_i32_s)\n";
       return out;
     }
     let mut fops: []string = make([]string, 5);
@@ -4198,7 +4408,9 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
     fops[1] = "f64.sub";
     fops[2] = "f64.mul";
     fops[3] = "f64.div";
-    out = out + "    (" + fops[e.op as usize] + ")\n";
+    out = out + "    (";
+    out = out + fops[e.op as usize];
+    out = out + ")\n";
     if fk == 2 {
       out = out + "    (f64.promote_f32 (f32.demote_f64))\n";
     }
@@ -4305,10 +4517,12 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
         out2 = out2 + emit_arg(mut pool, e.args[k2], mut env, mut prog, mut nl);
         k2 = k2 + 1;
       }
-      out2 = out2 + "    (i32.wrap_i64 (local.get " +
-             idx_slot.to_str() + "))\n" +
-             "    call_indirect (type $cl" +
-             ((len(e.args) as i64) + 1).to_str() + ")\n";
+      out2 = out2 + "    (i32.wrap_i64 (local.get ";
+      out2 = out2 + idx_slot.to_str();
+      out2 = out2 + "))\n";
+      out2 = out2 + "    call_indirect (type $cl";
+      out2 = out2 + ((len(e.args) as i64) + 1).to_str();
+      out2 = out2 + ")\n";
       return out2;
     }
     if e.name == "panic" && !user_fn_exists(prog, "panic") {
@@ -4320,8 +4534,9 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
     let fd7: *FnDef = resolve_call_fd(prog, e, env);
     let mut out: string = "";
     out = out + emit_call_args(mut pool, mut prog, fd7, e, mut env, mut nl);
-    out = out + "    call " + ginst_call_name(mut pool, prog, e, env) +
-           "\n";
+    out = out + "    call ";
+    out = out + ginst_call_name(mut pool, prog, e, env);
+    out = out + "\n";
     return out;
   }
   // enum equality: tag then payload, element-wise over the boxes
@@ -4359,8 +4574,10 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
       if ei2 >= 0 {
         nbox2 = en_nslots(mut prog, ei2);
       }
-      out = out + "    (i64.const " + nbox2.to_str() + ")\n" +
-             "    call $w_enuq\n";
+      out = out + "    (i64.const ";
+      out = out + nbox2.to_str();
+      out = out + ")\n";
+      out = out + "    call $w_enuq\n";
       if e.op == 10 {
         out = out + "    (i64.eqz)\n    (i64.extend_i32_s)\n";
       }
@@ -4469,11 +4686,11 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
       out = out + "    (local.set $t)\n";
       if bits0 >= 64 {
         if w0 < 0 {
-          out = out + "    (i64.trunc_sat_f64_u (f64.reinterpret_i64 " +
-                 "(local.get $t)))\n";
+          out = out + "    (i64.trunc_sat_f64_u (f64.reinterpret_i64 ";
+          out = out + "(local.get $t)))\n";
         } else {
-          out = out + "    (i64.trunc_sat_f64_s (f64.reinterpret_i64 " +
-                 "(local.get $t)))\n";
+          out = out + "    (i64.trunc_sat_f64_s (f64.reinterpret_i64 ";
+          out = out + "(local.get $t)))\n";
         }
         return out;
       }
@@ -4491,15 +4708,22 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
         hi = (mx + 1).to_str();
         lo = (mn - 1).to_str();
       }
-      out = out + "    (if (result i64) (f64.ge (f64.reinterpret_i64 " +
-             "(local.get $t)) (f64.const " + hi + "))\n" +
-             "      (then (i64.const " + mx.to_str() + "))\n" +
-             "      (else (if (result i64) (f64.le " +
-             "(f64.reinterpret_i64 (local.get $t)) (f64.const " + lo +
-             "))\n" +
-             "        (then (i64.const " + mn.to_str() + "))\n" +
-             "        (else (i64.extend_i32_s (i32.trunc_sat_f64_s " +
-             "(f64.reinterpret_i64 (local.get $t))))))))\n";
+      out = out + "    (if (result i64) (f64.ge (f64.reinterpret_i64 ";
+      out = out + "(local.get $t)) (f64.const ";
+      out = out + hi;
+      out = out + "))\n";
+      out = out + "      (then (i64.const ";
+      out = out + mx.to_str();
+      out = out + "))\n";
+      out = out + "      (else (if (result i64) (f64.le ";
+      out = out + "(f64.reinterpret_i64 (local.get $t)) (f64.const ";
+      out = out + lo;
+      out = out + "))\n";
+      out = out + "        (then (i64.const ";
+      out = out + mn.to_str();
+      out = out + "))\n";
+      out = out + "        (else (i64.extend_i32_s (i32.trunc_sat_f64_s ";
+      out = out + "(f64.reinterpret_i64 (local.get $t))))))))\n";
       return out;
     }
     if e.name == "f64" || e.name == "f32" {
@@ -4543,19 +4767,22 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
     // rides the if-select instead of the native op
     let msg_addr: i64 = pool_intern(mut pool, "division by zero");
     out = out + "    (local.set $t)\n";
-    out = out + "    (if (i64.eqz (local.get $t))\n" +
-           "      (then (call $w_panic (i32.const " +
-           msg_addr.to_str() + ") (i32.const 16))))\n";
-    out = out + "    (if (result i64) (i64.eq (local.get $t)" +
-           " (i64.const -1))\n";
+    out = out + "    (if (i64.eqz (local.get $t))\n";
+    out = out + "      (then (call $w_panic (i32.const ";
+    out = out + msg_addr.to_str();
+    out = out + ") (i32.const 16))))\n";
+    out = out + "    (if (result i64) (i64.eq (local.get $t)";
+    out = out + " (i64.const -1))\n";
     if e.op == 3 {
-      out = out + "      (then (i64.sub (i64.const 0) " +
-             "(local.get $r)))\n";
+      out = out + "      (then (i64.sub (i64.const 0) ";
+      out = out + "(local.get $r)))\n";
     } else {
       out = out + "      (then (i64.const 0))\n";
     }
-    out = out + "      (else (" + wat_op(e.op) + " (local.get $r)" +
-           " (local.get $t))))\n";
+    out = out + "      (else (";
+    out = out + wat_op(e.op);
+    out = out + " (local.get $r)";
+    out = out + " (local.get $t))))\n";
     // the width wrap still applies below
     let mut w0: i64 = 0;
     match e.lhs {
@@ -4591,8 +4818,9 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
       mbits = 64;
     }
     out = out + "    (local.set $t)\n";
-    out = out + "    (i64.and (local.get $t) (i64.const " +
-           (mbits - 1).to_str() + "))\n";
+    out = out + "    (i64.and (local.get $t) (i64.const ";
+    out = out + (mbits - 1).to_str();
+    out = out + "))\n";
     out = out + "    (local.set $t)\n";
     out = out + "    (local.get $t)\n";
     let mut sop: string = "i64.shl";
@@ -4603,13 +4831,17 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
         sop = "i64.shr_s";
       }
     }
-    out = out + "    (" + sop + ")\n";
+    out = out + "    (";
+    out = out + sop;
+    out = out + ")\n";
     if w != 0 && w != 64 && w != 0 - 64 {
       out = out + wrap_snippet(w);
     }
     return out;
   }
-  out = out + "    (" + wat_op(e.op) + ")\n";
+  out = out + "    (";
+  out = out + wat_op(e.op);
+  out = out + ")\n";
   // comparisons yield i32 in wasm: extend back to the i64 lane
   if e.op >= 5 && e.op <= 10 {
     out = out + "    (i64.extend_i32_s)\n";
@@ -4681,14 +4913,24 @@ fn match_chain_m(mut pool: *Pool, arms: []*MatchArm, i: usize, bx: i64,
       let ba: i64 = nl.v;
       let bl: i64 = nl.v + 1;
       nl.v = nl.v + 2;
-      armcode = armcode + "    (i64.load (i32.add (i32.wrap_i64 " +
-                "(local.get " + bx.to_str() + ")) (i32.const " +
-                (sl * 8).to_str() + ")))\n" +
-                "    (local.set " + ba.to_str() + ")\n" +
-                "    (i64.load (i32.add (i32.wrap_i64 " +
-                "(local.get " + bx.to_str() + ")) (i32.const " +
-                ((sl + 1) * 8).to_str() + ")))\n" +
-                "    (local.set " + bl.to_str() + ")\n";
+      armcode = armcode + "    (i64.load (i32.add (i32.wrap_i64 ";
+      armcode = armcode + "(local.get ";
+      armcode = armcode + bx.to_str();
+      armcode = armcode + ")) (i32.const ";
+      armcode = armcode + (sl * 8).to_str();
+      armcode = armcode + ")))\n";
+      armcode = armcode + "    (local.set ";
+      armcode = armcode + ba.to_str();
+      armcode = armcode + ")\n";
+      armcode = armcode + "    (i64.load (i32.add (i32.wrap_i64 ";
+      armcode = armcode + "(local.get ";
+      armcode = armcode + bx.to_str();
+      armcode = armcode + ")) (i32.const ";
+      armcode = armcode + ((sl + 1) * 8).to_str();
+      armcode = armcode + ")))\n";
+      armcode = armcode + "    (local.set ";
+      armcode = armcode + bl.to_str();
+      armcode = armcode + ")\n";
       env_str_bind_runtime(mut env, a.pat.binders[k], ba, bl, 1);
       sl = sl + 2;
       k = k + 1;
@@ -4696,10 +4938,15 @@ fn match_chain_m(mut pool: *Pool, arms: []*MatchArm, i: usize, bx: i64,
     }
     let bslot: i64 = nl.v;
     nl.v = nl.v + 1;
-    armcode = armcode + "    (i64.load (i32.add (i32.wrap_i64 " +
-              "(local.get " + bx.to_str() + ")) (i32.const " +
-              (sl * 8).to_str() + ")))\n" +
-              "    (local.set " + bslot.to_str() + ")\n";
+    armcode = armcode + "    (i64.load (i32.add (i32.wrap_i64 ";
+    armcode = armcode + "(local.get ";
+    armcode = armcode + bx.to_str();
+    armcode = armcode + ")) (i32.const ";
+    armcode = armcode + (sl * 8).to_str();
+    armcode = armcode + ")))\n";
+    armcode = armcode + "    (local.set ";
+    armcode = armcode + bslot.to_str();
+    armcode = armcode + ")\n";
     sl = sl + 1;
     let ptgt: string = type_ptr_target(pty);
     if len(ptgt) > 0 && st_index(mut prog, ptgt) >= 0 {
@@ -4835,14 +5082,24 @@ fn emit_array(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
     let tv: i64 = nl.v;
     nl.v = nl.v + 1;
     out = out + emit_expr(mut pool, e.args[k], mut env, mut prog, mut nl);
-    out = out + "    (local.set " + tv.to_str() + ")\n" +
-           "    (i64.store (i32.add (i32.wrap_i64 (local.get " +
-           a_slot.to_str() + ")) (i32.const " + (k * 8).to_str() +
-           ")) (local.get " + tv.to_str() + "))\n";
+    out = out + "    (local.set ";
+    out = out + tv.to_str();
+    out = out + ")\n";
+    out = out + "    (i64.store (i32.add (i32.wrap_i64 (local.get ";
+    out = out + a_slot.to_str();
+    out = out + ")) (i32.const ";
+    out = out + (k * 8).to_str();
+    out = out + ")) (local.get ";
+    out = out + tv.to_str();
+    out = out + "))\n";
     k = k + 1;
   }
-  out = out + "    (local.get " + a_slot.to_str() + ")\n" +
-         "    (local.get " + l_slot.to_str() + ")\n";
+  out = out + "    (local.get ";
+  out = out + a_slot.to_str();
+  out = out + ")\n";
+  out = out + "    (local.get ";
+  out = out + l_slot.to_str();
+  out = out + ")\n";
   return out;
 }
 
@@ -5189,12 +5446,18 @@ fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
     while pi < len(pieces) {
       if len(pieces[pi]) > 0 {
         let pa: i64 = pool_intern(mut pool, pieces[pi]);
-        text = text + "    (i64.const " + pa.to_str() + ")\n" +
-               "    (local.set " + nl.v.to_str() + ")\n" +
-               "    (i64.const " + decoded_len(pieces[pi]).to_str() +
-               ")\n" +
-               "    (local.set " + (nl.v + 1).to_str() +
-               ")\n";
+        text = text + "    (i64.const ";
+        text = text + pa.to_str();
+        text = text + ")\n";
+        text = text + "    (local.set ";
+        text = text + nl.v.to_str();
+        text = text + ")\n";
+        text = text + "    (i64.const ";
+        text = text + decoded_len(pieces[pi]).to_str();
+        text = text + ")\n";
+        text = text + "    (local.set ";
+        text = text + (nl.v + 1).to_str();
+        text = text + ")\n";
         chain_a[na] = nl.v;
         chain_l[na] = nl.v + 1;
         na = na + 1;
@@ -5206,13 +5469,18 @@ fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
         match fold_string(arg, env) {
           Option.Some(raw) => {
             let ha: i64 = pool_intern(mut pool, raw);
-            text = text + "    (i64.const " + ha.to_str() + ")\n" +
-                   "    (local.set " + nl.v.to_str() +
-                   ")\n" +
-                   "    (i64.const " + pool_len(pool, raw).to_str() +
-                   ")\n" +
-                   "    (local.set " + (nl.v + 1).to_str() +
-                   ")\n";
+            text = text + "    (i64.const ";
+            text = text + ha.to_str();
+            text = text + ")\n";
+            text = text + "    (local.set ";
+            text = text + nl.v.to_str();
+            text = text + ")\n";
+            text = text + "    (i64.const ";
+            text = text + pool_len(pool, raw).to_str();
+            text = text + ")\n";
+            text = text + "    (local.set ";
+            text = text + (nl.v + 1).to_str();
+            text = text + ")\n";
             chain_a[na] = nl.v;
             chain_l[na] = nl.v + 1;
             na = na + 1;
@@ -5233,15 +5501,18 @@ fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
             }
             if akind == 1 {
               let ba: i64 = env_str_look(env, arg.name);
-              text = text + "    (local.get " +
-                     ((0 - ba) - 1).to_str() + ")\n" +
-                     "    (local.set " + nl.v.to_str() +
-                     ")\n" +
-                     "    (local.get " +
-                     env_str_len_slot(env, arg.name).to_str() +
-                     ")\n" +
-                     "    (local.set " + (nl.v + 1).to_str() +
-                     ")\n";
+              text = text + "    (local.get ";
+              text = text + ((0 - ba) - 1).to_str();
+              text = text + ")\n";
+              text = text + "    (local.set ";
+              text = text + nl.v.to_str();
+              text = text + ")\n";
+              text = text + "    (local.get ";
+              text = text + env_str_len_slot(env, arg.name).to_str();
+              text = text + ")\n";
+              text = text + "    (local.set ";
+              text = text + (nl.v + 1).to_str();
+              text = text + ")\n";
               chain_a[na] = nl.v;
               chain_l[na] = nl.v + 1;
               na = na + 1;
@@ -5260,36 +5531,45 @@ fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
                 // a float hole rides the exact-decimal text
                 FLOAT_WANTED = 1;
                 let fk: i64 = expr_fkind(arg, env, mut prog);
-                text = text + emit_expr(mut pool, arg, mut env, mut prog, mut nl) +
-                       "    (local.set " + nl.v.to_str() + ")\n" +
-                       "    (local.get " + nl.v.to_str() + ")\n";
+                text = text + emit_expr(mut pool, arg, mut env, mut prog, mut nl);
+                text = text + "    (local.set ";
+                text = text + nl.v.to_str();
+                text = text + ")\n";
+                text = text + "    (local.get ";
+                text = text + nl.v.to_str();
+                text = text + ")\n";
                 if fk == 2 {
-                  text = text + "    (f64.reinterpret_i64)\n" +
-                         "    (f32.demote_f64)\n" +
-                         "    (f64.promote_f32)\n" +
-                         "    (i64.reinterpret_f64)\n" +
-                         "    call $u___f32_text\n";
+                  text = text + "    (f64.reinterpret_i64)\n";
+                  text = text + "    (f32.demote_f64)\n";
+                  text = text + "    (f64.promote_f32)\n";
+                  text = text + "    (i64.reinterpret_f64)\n";
+                  text = text + "    call $u___f32_text\n";
                 } else {
                   text = text + "    call $u___f64_text\n";
                 }
-                text = text + "    (local.set " + (nl.v + 1).to_str() +
-                       ")\n" +
-                       "    (local.set " + nl.v.to_str() + ")\n";
+                text = text + "    (local.set ";
+                text = text + (nl.v + 1).to_str();
+                text = text + ")\n";
+                text = text + "    (local.set ";
+                text = text + nl.v.to_str();
+                text = text + ")\n";
                 chain_a[na] = nl.v;
                 chain_l[na] = nl.v + 1;
                 na = na + 1;
                 nl.v = nl.v + 2;
               } else {
               if hole_boolish(arg, env, prog) {
-                text = text + emit_expr(mut pool, arg, mut env, mut prog, mut nl) +
-                       "    call $w_bool\n" +
-                       "    (local.set $l)\n" +
-                       "    (i64.extend_i32_u)\n" +
-                       "    (local.set " + nl.v.to_str() +
-                       ")\n" +
-                       "    (i64.extend_i32_u (local.get $l))\n" +
-                       "    (local.set " + (nl.v + 1).to_str() +
-                       ")\n";
+                text = text + emit_expr(mut pool, arg, mut env, mut prog, mut nl);
+                text = text + "    call $w_bool\n";
+                text = text + "    (local.set $l)\n";
+                text = text + "    (i64.extend_i32_u)\n";
+                text = text + "    (local.set ";
+                text = text + nl.v.to_str();
+                text = text + ")\n";
+                text = text + "    (i64.extend_i32_u (local.get $l))\n";
+                text = text + "    (local.set ";
+                text = text + (nl.v + 1).to_str();
+                text = text + ")\n";
                 chain_a[na] = nl.v;
                 chain_l[na] = nl.v + 1;
                 na = na + 1;
@@ -5337,13 +5617,25 @@ fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
         let nxa: i64 = nl.v;
         let nxl: i64 = nl.v + 1;
         nl.v = nl.v + 2;
-        text = text + "    (local.get " + acc_a.to_str() + ")\n" +
-               "    (local.get " + acc_l.to_str() + ")\n" +
-               "    (local.get " + chain_a[ci].to_str() + ")\n" +
-               "    (local.get " + chain_l[ci].to_str() + ")\n" +
-               "    call $w_cat\n" +
-               "    (local.set " + nxl.to_str() + ")\n" +
-               "    (local.set " + nxa.to_str() + ")\n";
+        text = text + "    (local.get ";
+        text = text + acc_a.to_str();
+        text = text + ")\n";
+        text = text + "    (local.get ";
+        text = text + acc_l.to_str();
+        text = text + ")\n";
+        text = text + "    (local.get ";
+        text = text + chain_a[ci].to_str();
+        text = text + ")\n";
+        text = text + "    (local.get ";
+        text = text + chain_l[ci].to_str();
+        text = text + ")\n";
+        text = text + "    call $w_cat\n";
+        text = text + "    (local.set ";
+        text = text + nxl.to_str();
+        text = text + ")\n";
+        text = text + "    (local.set ";
+        text = text + nxa.to_str();
+        text = text + ")\n";
         acc_a = nxa;
         acc_l = nxl;
         ci = ci + 1;
@@ -5396,9 +5688,9 @@ fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
         },
         Option.None => {},
       }
-      text2 = text2 + "    (i32.wrap_i64)\n" +
-              "    (if (result i64) (result i64)\n" +
-              "      (then\n";
+      text2 = text2 + "    (i32.wrap_i64)\n";
+      text2 = text2 + "    (if (result i64) (result i64)\n";
+      text2 = text2 + "      (then\n";
       if len(e.args) > 0 {
         text2 = text2 + push_string(mut pool, e.args[0], mut env, mut prog, mut nl);
       } else {
@@ -5410,9 +5702,13 @@ fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
       } else {
         text2 = text2 + "    (i64.const 0)\n    (i64.const 0)\n";
       }
-      text2 = text2 + "      ))\n" +
-              "    (local.set " + t_l2.to_str() + ")\n" +
-              "    (local.set " + t_a2.to_str() + ")\n";
+      text2 = text2 + "      ))\n";
+      text2 = text2 + "    (local.set ";
+      text2 = text2 + t_l2.to_str();
+      text2 = text2 + ")\n";
+      text2 = text2 + "    (local.set ";
+      text2 = text2 + t_a2.to_str();
+      text2 = text2 + ")\n";
       let spi = new SPair { ok: true, text: text2, a: t_a2, l: t_l2 };
       return spi;
     }
@@ -5455,13 +5751,18 @@ fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
       let bx: i64 = nl.v;
       nl.v = nl.v + 1;
       let mut text: string = emit_expr(mut pool, sc, mut env, mut prog, mut nl);
-      text = text + "    (local.set " + bx.to_str() + ")\n";
+      text = text + "    (local.set ";
+      text = text + bx.to_str();
+      text = text + ")\n";
       let et: string = expr_enum_type(sc, env, mut prog);
       if len(et) > 0 {
-        text = text + "    (i64.load (i32.wrap_i64 (local.get " +
-               bx.to_str() + ")))\n";
+        text = text + "    (i64.load (i32.wrap_i64 (local.get ";
+        text = text + bx.to_str();
+        text = text + ")))\n";
       } else {
-        text = text + "    (local.get " + bx.to_str() + ")\n";
+        text = text + "    (local.get ";
+        text = text + bx.to_str();
+        text = text + ")\n";
       }
       text = text + "    (local.set $d)\n";
       let mut t_a: i64 = nl.v;
@@ -5485,8 +5786,12 @@ fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
       }
       text = text + match_chain_m(mut pool, e.marms, 0, bx, mut env, mut prog,
                                   mut nl, true, true, optpt5);
-      text = text + "    (local.set " + t_l.to_str() + ")\n" +
-             "    (local.set " + t_a.to_str() + ")\n";
+      text = text + "    (local.set ";
+      text = text + t_l.to_str();
+      text = text + ")\n";
+      text = text + "    (local.set ";
+      text = text + t_a.to_str();
+      text = text + ")\n";
       let spm = new SPair { ok: true, text: text, a: t_a, l: t_l };
       return spm;
     }
@@ -5543,44 +5848,67 @@ fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
     } else {
       text = text + "    (i64.const 0)\n";
     }
-    text = text + "    (local.set " + a_slot.to_str() + ")\n";
+    text = text + "    (local.set ";
+    text = text + a_slot.to_str();
+    text = text + ")\n";
     if (e.op / 2) % 2 == 1 && len(e.args) > 1 {
       text = text + emit_expr(mut pool, e.args[1], mut env, mut prog, mut nl);
     } else {
       if bkind == 0 {
-        text = text + "    (i64.const " +
-               env_str_len(env, base.name).to_str() + ")\n";
+        text = text + "    (i64.const ";
+        text = text + env_str_len(env, base.name).to_str();
+        text = text + ")\n";
       } else {
-        text = text + "    (local.get " + base_l.to_str() + ")\n";
+        text = text + "    (local.get ";
+        text = text + base_l.to_str();
+        text = text + ")\n";
       }
     }
-    text = text + "    (local.set " + l_slot.to_str() + ")\n";
+    text = text + "    (local.set ";
+    text = text + l_slot.to_str();
+    text = text + ")\n";
     let mut blen: string = "";
     if bkind == 0 {
       blen = "(i64.const " + env_str_len(env, base.name).to_str() + ")";
     } else {
       blen = "(local.get " + base_l.to_str() + ")";
     }
-    text = text + "    (local.set $t (local.get " + a_slot.to_str() +
-           "))\n";
+    text = text + "    (local.set $t (local.get ";
+    text = text + a_slot.to_str();
+    text = text + "))\n";
     text = text + oob_check_at(mut pool, blen, false);
-    text = text + "    (local.set $t (local.get " + l_slot.to_str() +
-           "))\n";
+    text = text + "    (local.set $t (local.get ";
+    text = text + l_slot.to_str();
+    text = text + "))\n";
     text = text + oob_check_at(mut pool, blen, false);
-    text = text + "    (i64.sub (local.get " + l_slot.to_str() +
-           ") (local.get " + a_slot.to_str() + "))\n";
-    text = text + "    (local.set " + l_slot.to_str() + ")\n";
+    text = text + "    (i64.sub (local.get ";
+    text = text + l_slot.to_str();
+    text = text + ") (local.get ";
+    text = text + a_slot.to_str();
+    text = text + "))\n";
+    text = text + "    (local.set ";
+    text = text + l_slot.to_str();
+    text = text + ")\n";
     if bkind == 0 {
-      text = text + "    (i64.add (i64.const " +
-             env_str_look(env, base.name).to_str() +
-             ") (i64.mul (local.get " + a_slot.to_str() +
-             ") (i64.const " + esz.to_str() + ")))\n";
+      text = text + "    (i64.add (i64.const ";
+      text = text + env_str_look(env, base.name).to_str();
+      text = text + ") (i64.mul (local.get ";
+      text = text + a_slot.to_str();
+      text = text + ") (i64.const ";
+      text = text + esz.to_str();
+      text = text + ")))\n";
     } else {
-      text = text + "    (i64.add (local.get " + base_a.to_str() +
-             ") (i64.mul (local.get " + a_slot.to_str() +
-             ") (i64.const " + esz.to_str() + ")))\n";
+      text = text + "    (i64.add (local.get ";
+      text = text + base_a.to_str();
+      text = text + ") (i64.mul (local.get ";
+      text = text + a_slot.to_str();
+      text = text + ") (i64.const ";
+      text = text + esz.to_str();
+      text = text + ")))\n";
     }
-    text = text + "    (local.set " + a_slot.to_str() + ")\n";
+    text = text + "    (local.set ";
+    text = text + a_slot.to_str();
+    text = text + ")\n";
     let sps = new SPair { ok: true, text: text, a: a_slot, l: l_slot };
     return sps;
   }
@@ -5589,10 +5917,15 @@ fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
     let mut text: string = "";
     let fd8: *FnDef = resolve_call_fd(prog, e, env);
     text = text + emit_call_args(mut pool, mut prog, fd8, e, mut env, mut nl);
-    text = text + "    call " + ginst_call_name(mut pool, prog, e, env) +
-           "\n" +
-           "    (local.set " + (nl.v + 1).to_str() + ")\n" +
-           "    (local.set " + nl.v.to_str() + ")\n";
+    text = text + "    call ";
+    text = text + ginst_call_name(mut pool, prog, e, env);
+    text = text + "\n";
+    text = text + "    (local.set ";
+    text = text + (nl.v + 1).to_str();
+    text = text + ")\n";
+    text = text + "    (local.set ";
+    text = text + nl.v.to_str();
+    text = text + ")\n";
     let sp = new SPair { ok: true, text: text, a: nl.v,
                          l: nl.v + 1 };
     nl.v = nl.v + 2;
@@ -5736,47 +6069,67 @@ fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
              "    (local.get " + ta9.to_str() + ")\n";
       if fk9 == 1 {
         FLOAT_WANTED = 1;
-        t9 = t9 + "    call $u___f64_text\n" +
-               "    (local.set " + tl9.to_str() + ")\n" +
-               "    (local.set " + ta9.to_str() + ")\n";
+        t9 = t9 + "    call $u___f64_text\n";
+        t9 = t9 + "    (local.set ";
+        t9 = t9 + tl9.to_str();
+        t9 = t9 + ")\n";
+        t9 = t9 + "    (local.set ";
+        t9 = t9 + ta9.to_str();
+        t9 = t9 + ")\n";
       } else {
         if fk9 == 2 {
           FLOAT_WANTED = 1;
-          t9 = t9 + "    (f64.reinterpret_i64)\n" +
-                 "    (f32.demote_f64)\n    (f64.promote_f32)\n" +
-                 "    (i64.reinterpret_f64)\n" +
-                 "    call $u___f32_text\n" +
-                 "    (local.set " + tl9.to_str() + ")\n" +
-                 "    (local.set " + ta9.to_str() + ")\n";
+          t9 = t9 + "    (f64.reinterpret_i64)\n";
+          t9 = t9 + "    (f32.demote_f64)\n    (f64.promote_f32)\n";
+          t9 = t9 + "    (i64.reinterpret_f64)\n";
+          t9 = t9 + "    call $u___f32_text\n";
+          t9 = t9 + "    (local.set ";
+          t9 = t9 + tl9.to_str();
+          t9 = t9 + ")\n";
+          t9 = t9 + "    (local.set ";
+          t9 = t9 + ta9.to_str();
+          t9 = t9 + ")\n";
         } else {
           if bl9 {
-            t9 = t9 + "    call $w_bool\n" +
-                   "    (local.set $l)\n" +
-                   "    (i64.extend_i32_u)\n" +
-                   "    (local.set " + ta9.to_str() + ")\n" +
-                   "    (i64.extend_i32_u (local.get $l))\n" +
-                   "    (local.set " + tl9.to_str() + ")\n";
+            t9 = t9 + "    call $w_bool\n";
+            t9 = t9 + "    (local.set $l)\n";
+            t9 = t9 + "    (i64.extend_i32_u)\n";
+            t9 = t9 + "    (local.set ";
+            t9 = t9 + ta9.to_str();
+            t9 = t9 + ")\n";
+            t9 = t9 + "    (i64.extend_i32_u (local.get $l))\n";
+            t9 = t9 + "    (local.set ";
+            t9 = t9 + tl9.to_str();
+            t9 = t9 + ")\n";
             let spb9 = new SPair { ok: true, text: t9, a: ta9,
                                    l: tl9 };
             return spb9;
           }
           if expr_width(recv9, env, mut prog) < 0 {
-            t9 = t9 + "    call $w_u64\n" +
-                   "    (local.set $l)\n" +
-                   "    (i64.extend_i32_u)\n" +
-                   "    (local.set " + ta9.to_str() + ")\n" +
-                   "    (i64.extend_i32_u (local.get $l))\n" +
-                   "    (local.set " + tl9.to_str() + ")\n";
+            t9 = t9 + "    call $w_u64\n";
+            t9 = t9 + "    (local.set $l)\n";
+            t9 = t9 + "    (i64.extend_i32_u)\n";
+            t9 = t9 + "    (local.set ";
+            t9 = t9 + ta9.to_str();
+            t9 = t9 + ")\n";
+            t9 = t9 + "    (i64.extend_i32_u (local.get $l))\n";
+            t9 = t9 + "    (local.set ";
+            t9 = t9 + tl9.to_str();
+            t9 = t9 + ")\n";
             let spu9 = new SPair { ok: true, text: t9, a: ta9,
                                    l: tl9 };
             return spu9;
           }
-          t9 = t9 + "    call $w_i64\n" +
-                 "    (local.set $l)\n" +
-                 "    (i64.extend_i32_u)\n" +
-                 "    (local.set " + ta9.to_str() + ")\n" +
-                 "    (i64.extend_i32_u (local.get $l))\n" +
-                 "    (local.set " + tl9.to_str() + ")\n";
+          t9 = t9 + "    call $w_i64\n";
+          t9 = t9 + "    (local.set $l)\n";
+          t9 = t9 + "    (i64.extend_i32_u)\n";
+          t9 = t9 + "    (local.set ";
+          t9 = t9 + ta9.to_str();
+          t9 = t9 + ")\n";
+          t9 = t9 + "    (i64.extend_i32_u (local.get $l))\n";
+          t9 = t9 + "    (local.set ";
+          t9 = t9 + tl9.to_str();
+          t9 = t9 + ")\n";
         }
       }
       let sp9 = new SPair { ok: true, text: t9, a: ta9, l: tl9 };
@@ -5819,9 +6172,17 @@ fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
       text = text + emit_arg(mut pool, e.args[k], mut env, mut prog, mut nl);
       k = k + 1;
     }
-    text = text + "    call $u_" + tname + "_" + e.name + "\n" +
-           "    (local.set " + (nl.v + 1).to_str() + ")\n" +
-           "    (local.set " + nl.v.to_str() + ")\n";
+    text = text + "    call $u_";
+    text = text + tname;
+    text = text + "_";
+    text = text + e.name;
+    text = text + "\n";
+    text = text + "    (local.set ";
+    text = text + (nl.v + 1).to_str();
+    text = text + ")\n";
+    text = text + "    (local.set ";
+    text = text + nl.v.to_str();
+    text = text + ")\n";
     let spm2 = new SPair { ok: true, text: text, a: nl.v,
                            l: nl.v + 1 };
     nl.v = nl.v + 2;
@@ -5849,11 +6210,19 @@ fn emit_assert_eq(mut pool: *Pool, call: *Expr, mut env: *Env,
   let pb = build_string_pair(b, mut pool, mut env, mut prog, mut nl);
   if pa.ok && pb.ok {
     out = out + pa.text;
-    out = out + "    (local.get " + pa.a.to_str() + ")\n" +
-           "    (local.get " + pa.l.to_str() + ")\n";
+    out = out + "    (local.get ";
+    out = out + pa.a.to_str();
+    out = out + ")\n";
+    out = out + "    (local.get ";
+    out = out + pa.l.to_str();
+    out = out + ")\n";
     out = out + pb.text;
-    out = out + "    (local.get " + pb.a.to_str() + ")\n" +
-           "    (local.get " + pb.l.to_str() + ")\n";
+    out = out + "    (local.get ";
+    out = out + pb.a.to_str();
+    out = out + ")\n";
+    out = out + "    (local.get ";
+    out = out + pb.l.to_str();
+    out = out + ")\n";
     out = out + "    call $w_streq\n";
     out = out + "    (i32.wrap_i64)\n";
   } else {
@@ -5862,10 +6231,11 @@ fn emit_assert_eq(mut pool: *Pool, call: *Expr, mut env: *Env,
     out = out + "    (i64.eq)\n";
   }
   let msg_addr: i64 = pool_intern(mut pool, "assert_eq failed");
-  out = out + "    (i32.eqz)\n    if\n" +
-         "      (call $w_panic (i32.const " + msg_addr.to_str() +
-         ") (i32.const 16))\n" +
-         "    end\n";
+  out = out + "    (i32.eqz)\n    if\n";
+  out = out + "      (call $w_panic (i32.const ";
+  out = out + msg_addr.to_str();
+  out = out + ") (i32.const 16))\n";
+  out = out + "    end\n";
   return out;
 }
 
@@ -5898,8 +6268,11 @@ fn emit_assert(mut pool: *Pool, call: *Expr, mut env: *Env,
   match fold_string(msg, env) {
     Option.Some(raw) => {
       let addr: i64 = pool_intern(mut pool, raw);
-      out = out + "      (call $w_panic (i32.const " + addr.to_str() +
-             ") (i32.const " + pool_len(pool, raw).to_str() + "))\n";
+      out = out + "      (call $w_panic (i32.const ";
+      out = out + addr.to_str();
+      out = out + ") (i32.const ";
+      out = out + pool_len(pool, raw).to_str();
+      out = out + "))\n";
     },
     Option.None => {
       out = out + "      (call $w_panic (i32.const 0) (i32.const 0))\n";
@@ -6570,7 +6943,8 @@ fn ginst_call_name(mut pool: *Pool, prog: *Prog, e: *Expr,
   let mut key: string = "";
   let mut ki: usize = 0;
   while ki < nt {
-    key = key + "_" + mangle_type(tys[ki]);
+    key = key + "_";
+    key = key + mangle_type(tys[ki]);
     ki = ki + 1;
   }
   let mut i: usize = 0;
@@ -6651,7 +7025,8 @@ fn ginst_method_target(mut pool: *Pool, mut prog: *Prog, rtype: string,
   let mut key: string = "";
   let mut ki: usize = 0;
   while ki < len(gtps) {
-    key = key + "_" + mangle_type(tys[ki]);
+    key = key + "_";
+    key = key + mangle_type(tys[ki]);
     ki = ki + 1;
   }
   let mut i: usize = 0;
@@ -6836,42 +7211,65 @@ fn emit_call_args(mut pool: *Pool, mut prog: *Prog, fd: *FnDef, e: *Expr,
   let a_slot: i64 = nl.v;
   let l_slot: i64 = nl.v + 1;
   nl.v = nl.v + 2;
-  out = out + "    (i64.extend_i32_u (call $w_alloc (i32.const " +
-         (rest * esz).to_str() + ")))\n" +
-         "    (local.set " + a_slot.to_str() + ")\n" +
-         "    (i64.const " + rest.to_str() + ")\n" +
-         "    (local.set " + l_slot.to_str() + ")\n";
+  out = out + "    (i64.extend_i32_u (call $w_alloc (i32.const ";
+  out = out + (rest * esz).to_str();
+  out = out + ")))\n";
+  out = out + "    (local.set ";
+  out = out + a_slot.to_str();
+  out = out + ")\n";
+  out = out + "    (i64.const ";
+  out = out + rest.to_str();
+  out = out + ")\n";
+  out = out + "    (local.set ";
+  out = out + l_slot.to_str();
+  out = out + ")\n";
   let mut j: usize = vp as usize;
   let mut sl: i64 = 0;
   while j < len(e.args) {
     let av: *Expr = e.args[j];
     if sstr {
       let spv2 = build_string_pair(av, mut pool, mut env, mut prog, mut nl);
-      out = out + spv2.text +
-             "    (i64.store (i32.add (i32.wrap_i64 (local.get " +
-             a_slot.to_str() + ")) (i32.mul (i32.const " +
-             sl.to_str() + ") (i32.const 8))) (local.get " +
-             spv2.a.to_str() + "))\n" +
-             "    (i64.store (i32.add (i32.add (i32.wrap_i64 (local.get " +
-             a_slot.to_str() + ")) (i32.mul (i32.const " +
-             sl.to_str() + ") (i32.const 8))) (i32.const 8)) " +
-             "(local.get " + spv2.l.to_str() + "))\n";
+      out = out + spv2.text;
+      out = out + "    (i64.store (i32.add (i32.wrap_i64 (local.get ";
+      out = out + a_slot.to_str();
+      out = out + ")) (i32.mul (i32.const ";
+      out = out + sl.to_str();
+      out = out + ") (i32.const 8))) (local.get ";
+      out = out + spv2.a.to_str();
+      out = out + "))\n";
+      out = out + "    (i64.store (i32.add (i32.add (i32.wrap_i64 (local.get ";
+      out = out + a_slot.to_str();
+      out = out + ")) (i32.mul (i32.const ";
+      out = out + sl.to_str();
+      out = out + ") (i32.const 8))) (i32.const 8)) ";
+      out = out + "(local.get ";
+      out = out + spv2.l.to_str();
+      out = out + "))\n";
       sl = sl + 2;
     } else {
       let tv2: i64 = nl.v;
       nl.v = nl.v + 1;
       out = out + emit_expr(mut pool, av, mut env, mut prog, mut nl);
-      out = out + "    (local.set " + tv2.to_str() + ")\n" +
-             "    (i64.store (i32.add (i32.wrap_i64 (local.get " +
-             a_slot.to_str() + ")) (i32.mul (i32.const " +
-             sl.to_str() + ") (i32.const 8))) (local.get " +
-             tv2.to_str() + "))\n";
+      out = out + "    (local.set ";
+      out = out + tv2.to_str();
+      out = out + ")\n";
+      out = out + "    (i64.store (i32.add (i32.wrap_i64 (local.get ";
+      out = out + a_slot.to_str();
+      out = out + ")) (i32.mul (i32.const ";
+      out = out + sl.to_str();
+      out = out + ") (i32.const 8))) (local.get ";
+      out = out + tv2.to_str();
+      out = out + "))\n";
       sl = sl + 1;
     }
     j = j + 1;
   }
-  out = out + "    (local.get " + a_slot.to_str() + ")\n" +
-         "    (local.get " + l_slot.to_str() + ")\n";
+  out = out + "    (local.get ";
+  out = out + a_slot.to_str();
+  out = out + ")\n";
+  out = out + "    (local.get ";
+  out = out + l_slot.to_str();
+  out = out + ")\n";
   return out;
 }
 
@@ -6993,10 +7391,13 @@ fn emit_closure_value(e: *Expr, mut pool: *Pool, env: *Env,
   let mut ci: usize = 0;
   while ci < caps.n {
     let cslot: i64 = env_look(env, caps.names[ci]);
-    out = out + "    (i64.store (i32.add (i32.wrap_i64 (local.get " +
-           b_slot.to_str() + ")) (i32.const " +
-           ((ci + 1) * 8).to_str() + ")) (local.get " +
-           cslot.to_str() + "))\n";
+    out = out + "    (i64.store (i32.add (i32.wrap_i64 (local.get ";
+    out = out + b_slot.to_str();
+    out = out + ")) (i32.const ";
+    out = out + ((ci + 1) * 8).to_str();
+    out = out + ")) (local.get ";
+    out = out + cslot.to_str();
+    out = out + "))\n";
     ci = ci + 1;
   }
   // register the body + its table slot
@@ -7034,8 +7435,12 @@ fn emit_closure_value(e: *Expr, mut pool: *Pool, env: *Env,
   // the arity the body's calls will use (box + params)
   let ari: i64 = 1 + (len(e.fnames) as i64);
   clo_ty_need(mut pool.gi, ari, 1);
-  out = out + "    (i64.const " + idx.to_str() + ")\n" +
-         "    (local.get " + b_slot.to_str() + ")\n";
+  out = out + "    (i64.const ";
+  out = out + idx.to_str();
+  out = out + ")\n";
+  out = out + "    (local.get ";
+  out = out + b_slot.to_str();
+  out = out + ")\n";
   return out;
 }
 
@@ -7056,10 +7461,13 @@ fn emit_closure_fn(wat: string, caps: []string,
   while ci < ncaps {
     let cslot: i64 = nl.v;
     nl.v = nl.v + 1;
-    text = text + "    (i64.load (i32.add (i32.wrap_i64 " +
-           "(local.get 0)) (i32.const " + ((ci + 1) * 8).to_str() +
-           ")))\n" +
-           "    (local.set " + cslot.to_str() + ")\n";
+    text = text + "    (i64.load (i32.add (i32.wrap_i64 ";
+    text = text + "(local.get 0)) (i32.const ";
+    text = text + ((ci + 1) * 8).to_str();
+    text = text + ")))\n";
+    text = text + "    (local.set ";
+    text = text + cslot.to_str();
+    text = text + ")\n";
     let mut cty2: string = "";
     if ci < len(captypes) {
       cty2 = captypes[ci];
@@ -7085,8 +7493,8 @@ fn emit_closure_fn(wat: string, caps: []string,
     q = q + 1;
   }
   out = out + " (result i64)\n";
-  out = out + "    (local $a i32) (local $l i32) (local $t i64)" +
-         " (local $r i64) (local $d i64)\n";
+  out = out + "    (local $a i32) (local $l i32) (local $t i64)";
+  out = out + " (local $r i64) (local $d i64)\n";
   q = nparams + 5;
   while q < nl.v {
     out = out + "    (local i64)\n";
@@ -7162,21 +7570,29 @@ fn emit_print_fd(mut pool: *Pool, fmt: string, args: []*Expr, mut env: *Env,
           pre = pre + emit_expr(mut pool, arg, mut env, mut prog, mut nl);
           let tb: i64 = nl.v;
           nl.v = nl.v + 1;
-          pre = pre + "    (local.set " + tb.to_str() + ")\n" +
-                "    (local.get " + tb.to_str() + ")\n";
+          pre = pre + "    (local.set ";
+          pre = pre + tb.to_str();
+          pre = pre + ")\n";
+          pre = pre + "    (local.get ";
+          pre = pre + tb.to_str();
+          pre = pre + ")\n";
           if fk == 2 {
-            pre = pre + "    (f64.reinterpret_i64)\n" +
-                  "    (f32.demote_f64)\n    (f64.promote_f32)\n" +
-                  "    (i64.reinterpret_f64)\n" +
-                  "    call $u___f32_text\n";
+            pre = pre + "    (f64.reinterpret_i64)\n";
+            pre = pre + "    (f32.demote_f64)\n    (f64.promote_f32)\n";
+            pre = pre + "    (i64.reinterpret_f64)\n";
+            pre = pre + "    call $u___f32_text\n";
           } else {
             pre = pre + "    call $u___f64_text\n";
           }
           t_a[q] = nl.v;
           t_l[q] = nl.v + 1;
           nl.v = nl.v + 2;
-          pre = pre + "    (local.set " + t_l[q].to_str() + ")\n" +
-                "    (local.set " + t_a[q].to_str() + ")\n";
+          pre = pre + "    (local.set ";
+          pre = pre + t_l[q].to_str();
+          pre = pre + ")\n";
+          pre = pre + "    (local.set ";
+          pre = pre + t_a[q].to_str();
+          pre = pre + ")\n";
           kinds[q] = 4;
         } else {
         let dyn_pair: bool =
@@ -7210,7 +7626,9 @@ fn emit_print_fd(mut pool: *Pool, fmt: string, args: []*Expr, mut env: *Env,
             pre = pre + emit_expr(mut pool, arg, mut env, mut prog, mut nl);
             t_a[q] = nl.v;
             nl.v = nl.v + 1;
-            pre = pre + "    (local.set " + t_a[q].to_str() + ")\n";
+            pre = pre + "    (local.set ";
+            pre = pre + t_a[q].to_str();
+            pre = pre + ")\n";
             kinds[q] = 2;
           } else {
             let mut boolish: bool = false;
@@ -7233,7 +7651,9 @@ fn emit_print_fd(mut pool: *Pool, fmt: string, args: []*Expr, mut env: *Env,
             pre = pre + emit_expr(mut pool, arg, mut env, mut prog, mut nl);
             t_a[q] = nl.v;
             nl.v = nl.v + 1;
-            pre = pre + "    (local.set " + t_a[q].to_str() + ")\n";
+            pre = pre + "    (local.set ";
+            pre = pre + t_a[q].to_str();
+            pre = pre + ")\n";
             if boolish {
               kinds[q] = 2;
             } else {
@@ -7266,38 +7686,46 @@ fn emit_print_fd(mut pool: *Pool, fmt: string, args: []*Expr, mut env: *Env,
         out = out + write_fd(t_a[h], t_l[h], fd);
       } else {
         if kinds[h] == 4 {
-          out = out + "    (local.get " + t_a[h].to_str() +
-                 ")\n    (i32.wrap_i64)\n    (local.set $a)\n" +
-                 "    (local.get " + t_l[h].to_str() +
-                 ")\n    (i32.wrap_i64)\n    (local.set $l)\n" +
-                 "    (i32.store (i32.const 64) (local.get $a))\n" +
-                 "    (i32.store (i32.const 68) (local.get $l))\n" +
-                 "    (drop (call $fd_write (i32.const " + fd.to_str() +
-                 ") " +
-                 "(i32.const 64) (i32.const 1) (i32.const 96)))\n";
+          out = out + "    (local.get ";
+          out = out + t_a[h].to_str();
+          out = out + ")\n    (i32.wrap_i64)\n    (local.set $a)\n";
+          out = out + "    (local.get ";
+          out = out + t_l[h].to_str();
+          out = out + ")\n    (i32.wrap_i64)\n    (local.set $l)\n";
+          out = out + "    (i32.store (i32.const 64) (local.get $a))\n";
+          out = out + "    (i32.store (i32.const 68) (local.get $l))\n";
+          out = out + "    (drop (call $fd_write (i32.const ";
+          out = out + fd.to_str();
+          out = out + ") ";
+          out = out + "(i32.const 64) (i32.const 1) (i32.const 96)))\n";
         } else {
           if kinds[h] == 2 {
-            out = out + "    (local.get " + t_a[h].to_str() +
-                   ")\n    call $w_bool\n" +
-                   "    (local.set $l)\n    (local.set $a)\n" +
-                   "    (i32.store (i32.const 64) (local.get $a))\n" +
-                   "    (i32.store (i32.const 68) (local.get $l))\n" +
-                   "    (drop (call $fd_write (i32.const " +
-                   fd.to_str() + ") " +
-                   "(i32.const 64) (i32.const 1) (i32.const 96)))\n";
+            out = out + "    (local.get ";
+            out = out + t_a[h].to_str();
+            out = out + ")\n    call $w_bool\n";
+            out = out + "    (local.set $l)\n    (local.set $a)\n";
+            out = out + "    (i32.store (i32.const 64) (local.get $a))\n";
+            out = out + "    (i32.store (i32.const 68) (local.get $l))\n";
+            out = out + "    (drop (call $fd_write (i32.const ";
+            out = out + fd.to_str();
+            out = out + ") ";
+            out = out + "(i32.const 64) (i32.const 1) (i32.const 96)))\n";
           } else {
-            out = out + "    (local.get " + t_a[h].to_str() + ")\n";
+            out = out + "    (local.get ";
+            out = out + t_a[h].to_str();
+            out = out + ")\n";
             if kinds[h] == 1 {
               out = out + "    call $w_u64\n";
             } else {
               out = out + "    call $w_i64\n";
             }
-            out = out + "    (local.set $l)\n    (local.set $a)\n" +
-                   "    (i32.store (i32.const 64) (local.get $a))\n" +
-                   "    (i32.store (i32.const 68) (local.get $l))\n" +
-                   "    (drop (call $fd_write (i32.const " +
-                   fd.to_str() + ") " +
-                   "(i32.const 64) (i32.const 1) (i32.const 96)))\n";
+            out = out + "    (local.set $l)\n    (local.set $a)\n";
+            out = out + "    (i32.store (i32.const 64) (local.get $a))\n";
+            out = out + "    (i32.store (i32.const 68) (local.get $l))\n";
+            out = out + "    (drop (call $fd_write (i32.const ";
+            out = out + fd.to_str();
+            out = out + ") ";
+            out = out + "(i32.const 64) (i32.const 1) (i32.const 96)))\n";
           }
         }
       }
@@ -7363,9 +7791,11 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
             if sp.ok {
               body = body + sp.text;
               body = body + dunwind_emit(mut dstack);
-              body = body + "    (local.get " + sp.a.to_str() +
-                     ")\n    (local.get " + sp.l.to_str() +
-                     ")\n    return\n";
+              body = body + "    (local.get ";
+              body = body + sp.a.to_str();
+              body = body + ")\n    (local.get ";
+              body = body + sp.l.to_str();
+              body = body + ")\n    return\n";
               sret_done = true;
             }
           },
@@ -7389,11 +7819,16 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                 while j > 0 {
                   let q: i64 = (j as i64) - 1;
                   if j - 1 < len(fdef.pstr) && fdef.pstr[j - 1] {
-                    body = body + "    (local.set " + (q + 1).to_str() +
-                           ")\n";
-                    body = body + "    (local.set " + q.to_str() + ")\n";
+                    body = body + "    (local.set ";
+                    body = body + (q + 1).to_str();
+                    body = body + ")\n";
+                    body = body + "    (local.set ";
+                    body = body + q.to_str();
+                    body = body + ")\n";
                   } else {
-                    body = body + "    (local.set " + q.to_str() + ")\n";
+                    body = body + "    (local.set ";
+                    body = body + q.to_str();
+                    body = body + ")\n";
                   }
                   j = j - 1;
                 }
@@ -7433,7 +7868,9 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
         Option.Some(rv) => {
           body = body + emit_expr(mut pool, rv, mut env, mut prog, mut nl);
           body = body + "    (i32.wrap_i64)\n";
-          body = body + "    (local.set " + ret_slot.to_str() + ")\n";
+          body = body + "    (local.set ";
+          body = body + ret_slot.to_str();
+          body = body + ")\n";
         },
         Option.None => {},
       }
@@ -7460,11 +7897,13 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
               let ob7: i64 = nl.v + 1;
               nl.v = nl.v + 2;
               body = body + vt_text;
-              body = body + "    (local.set " + vb7.to_str() +
-                     ")\n";
+              body = body + "    (local.set ";
+              body = body + vb7.to_str();
+              body = body + ")\n";
               body = body + emit_expr(mut pool, e, mut env, mut prog, mut nl);
-              body = body + "    (local.set " + ob7.to_str() +
-                     ")\n";
+              body = body + "    (local.set ";
+              body = body + ob7.to_str();
+              body = body + ")\n";
               body = body + retain_if_shared(e, ob7);
               env_str_bind_runtime(mut env, st.name, vb7, ob7, 3);
               env_bind_sliceelem(mut env, st.name, st.fmt);
@@ -7481,8 +7920,9 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                         "    call_indirect (type $clv1)\n");
             } else {
               body = body + emit_expr(mut pool, e, mut env, mut prog, mut nl);
-              body = body + "    (local.set " + nl.v.to_str() +
-                     ")\n";
+              body = body + "    (local.set ";
+              body = body + nl.v.to_str();
+              body = body + ")\n";
               env_bind(mut env, st.name, nl.v);
               nl.v = nl.v + 1;
             }
@@ -7493,7 +7933,9 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
             // a weak handle rides the pointer lane (never counted:
             // weak.get() probes the header's rc, equality is identity)
             body = body + emit_expr(mut pool, e, mut env, mut prog, mut nl);
-            body = body + "    (local.set " + nl.v.to_str() + ")\n";
+            body = body + "    (local.set ";
+            body = body + nl.v.to_str();
+            body = body + ")\n";
             let mut wt: string = weak_target(st.fmt);
             if len(wt) == 0 && e.tag == parse.EX_VAR {
               wt = weak_target(env_ptr_of(env, e.name));
@@ -7509,9 +7951,12 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
             let fb_slot: i64 = nl.v + 1;
             nl.v = nl.v + 2;
             body = body + emit_expr(mut pool, e, mut env, mut prog, mut nl);
-            body = body + "    (local.set " + fb_slot.to_str() +
-                   ")\n" +
-                   "    (local.set " + fi_slot.to_str() + ")\n";
+            body = body + "    (local.set ";
+            body = body + fb_slot.to_str();
+            body = body + ")\n";
+            body = body + "    (local.set ";
+            body = body + fi_slot.to_str();
+            body = body + ")\n";
             env_str_bind_runtime(mut env, st.name, fi_slot, fb_slot, 3);
           } else if e.tag == parse.EX_MAKE {
             // make([]T, n): the count rides $t once, the allocation
@@ -7540,39 +7985,55 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
             body = body + emit_expr(mut pool, cnt, mut env, mut prog, mut nl);
             body = body + "    (local.set $t)\n";
             if esz != 1 {
-              body = body + "    (i64.extend_i32_u (call $w_alloc " +
-                     "(i32.wrap_i64 (i64.mul (local.get $t) (i64.const " +
-                     esz.to_str() + ")))))\n";
+              body = body + "    (i64.extend_i32_u (call $w_alloc ";
+              body = body + "(i32.wrap_i64 (i64.mul (local.get $t) (i64.const ";
+              body = body + esz.to_str();
+              body = body + ")))))\n";
             } else {
-              body = body + "    (i64.extend_i32_u (call $w_alloc " +
-                     "(i32.wrap_i64 (local.get $t))))\n";
+              body = body + "    (i64.extend_i32_u (call $w_alloc ";
+              body = body + "(i32.wrap_i64 (local.get $t))))\n";
             }
-            body = body + "    (local.set " + nl.v.to_str() +
-                   ")\n";
+            body = body + "    (local.set ";
+            body = body + nl.v.to_str();
+            body = body + ")\n";
             let a_slot: i64 = nl.v;
             nl.v = nl.v + 1;
             body = body + "    (local.get $t)\n";
-            body = body + "    (local.set " + nl.v.to_str() +
-                   ")\n";
+            body = body + "    (local.set ";
+            body = body + nl.v.to_str();
+            body = body + ")\n";
             let l_slot: i64 = nl.v;
             nl.v = nl.v + 1;
             if optelem {
               let fi: i64 = nl.v;
               nl.v = nl.v + 1;
-              body = body + "    (i64.const 0)\n" +
-                     "    (local.set " + fi.to_str() + ")\n" +
-                     "    (loop $mo" + fi.to_str() + "\n" +
-                     "    (if (i64.lt_u (local.get " + fi.to_str() +
-                     ") (local.get $t))\n" +
-                     "      (then (i64.store (i32.add (i32.wrap_i64 " +
-                     "(local.get " + a_slot.to_str() + "))\n" +
-                     "                     (i32.mul (i32.wrap_i64 " +
-                     "(local.get " + fi.to_str() + ")) (i32.const 8)))\n" +
-                     "                     (global.get $w_none_box))\n" +
-                     "            (local.set " + fi.to_str() +
-                     " (i64.add (local.get " + fi.to_str() +
-                     ") (i64.const 1)))\n" +
-                     "            (br $mo" + fi.to_str() + "))))\n";
+              body = body + "    (i64.const 0)\n";
+              body = body + "    (local.set ";
+              body = body + fi.to_str();
+              body = body + ")\n";
+              body = body + "    (loop $mo";
+              body = body + fi.to_str();
+              body = body + "\n";
+              body = body + "    (if (i64.lt_u (local.get ";
+              body = body + fi.to_str();
+              body = body + ") (local.get $t))\n";
+              body = body + "      (then (i64.store (i32.add (i32.wrap_i64 ";
+              body = body + "(local.get ";
+              body = body + a_slot.to_str();
+              body = body + "))\n";
+              body = body + "                     (i32.mul (i32.wrap_i64 ";
+              body = body + "(local.get ";
+              body = body + fi.to_str();
+              body = body + ")) (i32.const 8)))\n";
+              body = body + "                     (global.get $w_none_box))\n";
+              body = body + "            (local.set ";
+              body = body + fi.to_str();
+              body = body + " (i64.add (local.get ";
+              body = body + fi.to_str();
+              body = body + ") (i64.const 1)))\n";
+              body = body + "            (br $mo";
+              body = body + fi.to_str();
+              body = body + "))))\n";
             }
             env_str_bind_runtime(mut env, st.name, a_slot, l_slot, 2);
             env_bind_sliceelem(mut env, st.name, e.name);
@@ -7631,20 +8092,26 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
               } else {
                 body = body + "    (i64.const 0)\n";
               }
-              body = body + "    (local.set " + a_slot.to_str() + ")\n";
+              body = body + "    (local.set ";
+              body = body + a_slot.to_str();
+              body = body + ")\n";
               // hi: explicit or the base's len
               if (e.op / 2) % 2 == 1 && len(e.args) > 1 {
                 body = body + emit_expr(mut pool, e.args[1], mut env, mut prog, mut nl);
               } else {
                 if bkind == 0 {
-                  body = body + "    (i64.const " +
-                         env_str_len(env, bname).to_str() + ")\n";
+                  body = body + "    (i64.const ";
+                  body = body + env_str_len(env, bname).to_str();
+                  body = body + ")\n";
                 } else {
-                  body = body + "    (local.get " +
-                         env_str_len_slot(env, bname).to_str() + ")\n";
+                  body = body + "    (local.get ";
+                  body = body + env_str_len_slot(env, bname).to_str();
+                  body = body + ")\n";
                 }
               }
-              body = body + "    (local.set " + l_slot.to_str() + ")\n";
+              body = body + "    (local.set ";
+              body = body + l_slot.to_str();
+              body = body + ")\n";
               // bounds both ends against the base's len (lo first,
               // then hi — each rides $t for the check)
               let mut blen: string = "";
@@ -7655,33 +8122,44 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                 blen = "(local.get " +
                        env_str_len_slot(env, bname).to_str() + ")";
               }
-              body = body + "    (local.set $t (local.get " +
-                     a_slot.to_str() + "))\n";
+              body = body + "    (local.set $t (local.get ";
+              body = body + a_slot.to_str();
+              body = body + "))\n";
               body = body + oob_check_at(mut pool, blen, false);
-              body = body + "    (local.set $t (local.get " +
-                     l_slot.to_str() + "))\n";
+              body = body + "    (local.set $t (local.get ";
+              body = body + l_slot.to_str();
+              body = body + "))\n";
               body = body + oob_check_at(mut pool, blen, false);
               // len' = hi - lo
               body = body + "    (i64.sub (local.get " +
                      l_slot.to_str() + ") (local.get " +
                      a_slot.to_str() + "))\n";
-              body = body + "    (local.set " + l_slot.to_str() +
-                     ")\n";
+              body = body + "    (local.set ";
+              body = body + l_slot.to_str();
+              body = body + ")\n";
               // addr' = base + lo*esz
               if bkind == 0 {
-                body = body + "    (i64.add (i64.const " +
-                       env_str_look(env, bname).to_str() +
-                       ") (i64.mul (local.get " + a_slot.to_str() +
-                       ") (i64.const " + esz.to_str() + ")))\n";
+                body = body + "    (i64.add (i64.const ";
+                body = body + env_str_look(env, bname).to_str();
+                body = body + ") (i64.mul (local.get ";
+                body = body + a_slot.to_str();
+                body = body + ") (i64.const ";
+                body = body + esz.to_str();
+                body = body + ")))\n";
               } else {
                 let ba: i64 = env_str_look(env, bname);
-                body = body + "    (i64.add (local.get " +
-                       ((0 - ba) - 1).to_str() + ") (i64.mul " +
-                       "(local.get " + a_slot.to_str() +
-                       ") (i64.const " + esz.to_str() + ")))\n";
+                body = body + "    (i64.add (local.get ";
+                body = body + ((0 - ba) - 1).to_str();
+                body = body + ") (i64.mul ";
+                body = body + "(local.get ";
+                body = body + a_slot.to_str();
+                body = body + ") (i64.const ";
+                body = body + esz.to_str();
+                body = body + ")))\n";
               }
-              body = body + "    (local.set " + a_slot.to_str() +
-                     ")\n";
+              body = body + "    (local.set ";
+              body = body + a_slot.to_str();
+              body = body + ")\n";
               env_str_bind_runtime(mut env, st.name, a_slot, l_slot, kind);
               // the view carries the base's element text (element
               // reads and stores key on it)
@@ -7702,13 +8180,16 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                     nl.v = nl.v + 1;
                     let l1: i64 = nl.v;
                     nl.v = nl.v + 1;
-                    body = body + "    (i64.const " + saddr.to_str() +
-                           ")\n    (local.set " + a1.to_str() +
-                           ")\n" +
-                           "    (i64.const " +
-                           pool_len(pool, raw).to_str() +
-                           ")\n    (local.set " + l1.to_str() +
-                           ")\n";
+                    body = body + "    (i64.const ";
+                    body = body + saddr.to_str();
+                    body = body + ")\n    (local.set ";
+                    body = body + a1.to_str();
+                    body = body + ")\n";
+                    body = body + "    (i64.const ";
+                    body = body + pool_len(pool, raw).to_str();
+                    body = body + ")\n    (local.set ";
+                    body = body + l1.to_str();
+                    body = body + ")\n";
                     env_str_bind_runtime(mut env, st.name, a1, l1, 1);
                   } else {
                     env_str_bind(mut env, st.name, saddr,
@@ -7731,9 +8212,12 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                     let al: i64 = nl.v + 1;
                     nl.v = nl.v + 2;
                     body = body + emit_array(mut pool, e, mut env, mut prog, mut nl);
-                    body = body + "    (local.set " + al.to_str() +
-                           ")\n" +
-                           "    (local.set " + aa.to_str() + ")\n";
+                    body = body + "    (local.set ";
+                    body = body + al.to_str();
+                    body = body + ")\n";
+                    body = body + "    (local.set ";
+                    body = body + aa.to_str();
+                    body = body + ")\n";
                     env_str_bind_runtime(mut env, st.name, aa, al, 2);
                     env_bind_sliceelem(mut env, st.name, "i64");
                   } else {
@@ -7754,14 +8238,20 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                     let tsrc: i64 = nl.v;
                     nl.v = nl.v + 1;
                     body = body + struct_addr_of(mut pool, e, mut env, mut prog, mut nl);
-                    body = body + "    (local.set " + tsrc.to_str() + ")\n";
+                    body = body + "    (local.set ";
+                    body = body + tsrc.to_str();
+                    body = body + ")\n";
                     let mut vj: i64 = 0;
                     while vj < vn {
-                      body = body + "    (i64.load (i32.add (i32.wrap_i64 " +
-                             "(local.get " + tsrc.to_str() +
-                             ")) (i32.const " + (vj * 8).to_str() + ")))\n" +
-                             "    (local.set " + (vbase + vj).to_str() +
-                             ")\n";
+                      body = body + "    (i64.load (i32.add (i32.wrap_i64 ";
+                      body = body + "(local.get ";
+                      body = body + tsrc.to_str();
+                      body = body + ")) (i32.const ";
+                      body = body + (vj * 8).to_str();
+                      body = body + ")))\n";
+                      body = body + "    (local.set ";
+                      body = body + (vbase + vj).to_str();
+                      body = body + ")\n";
                       vj = vj + 1;
                     }
                     env_bind_val(mut env, st.name, vbase, st.fmt);
@@ -7781,20 +8271,21 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                     body = body + emit_expr(mut pool, e, mut env, mut prog, mut nl);
                     if expr_fkind(e, env, mut prog) == 0 {
                       if expr_width(e, env, mut prog) < 0 {
-                        body = body + "    (i64.reinterpret_f64 " +
-                               "(f64.convert_i64_u))\n";
+                        body = body + "    (i64.reinterpret_f64 ";
+                        body = body + "(f64.convert_i64_u))\n";
                       } else {
-                        body = body + "    (i64.reinterpret_f64 " +
-                               "(f64.convert_i64_s))\n";
+                        body = body + "    (i64.reinterpret_f64 ";
+                        body = body + "(f64.convert_i64_s))\n";
                       }
                     }
                     if fk0 == 2 {
-                      body = body + "    (i64.reinterpret_f64 " +
-                             "(f64.promote_f32 (f32.demote_f64 " +
-                             "(f64.reinterpret_i64))))\n";
+                      body = body + "    (i64.reinterpret_f64 ";
+                      body = body + "(f64.promote_f32 (f32.demote_f64 ";
+                      body = body + "(f64.reinterpret_i64))))\n";
                     }
-                    body = body + "    (local.set " + nl.v.to_str() +
-                           ")\n";
+                    body = body + "    (local.set ";
+                    body = body + nl.v.to_str();
+                    body = body + ")\n";
                     env_bind_f(mut env, st.name, nl.v, fk0);
                     nl.v = nl.v + 1;
                   } else {
@@ -7806,8 +8297,9 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                   if len(es) > 0 && (en_index(mut prog, es) >= 0 ||
                       es == "Option" || es == "Result") {
                     body = body + emit_expr(mut pool, e, mut env, mut prog, mut nl);
-                    body = body + "    (local.set " + nl.v.to_str() +
-                           ")\n";
+                    body = body + "    (local.set ";
+                    body = body + nl.v.to_str();
+                    body = body + ")\n";
                     body = body + retain_if_shared(e, nl.v);
                     // the scope-exit release walks the box (an
                     // option's payload by its recorded text)
@@ -7866,30 +8358,43 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                       if fbase.tag == parse.EX_VAR &&
                           len(env_val_of(env, fbase.name)) > 0 {
                         let fb0: i64 = env_val_base(env, fbase.name);
-                        body = body + "    (local.get " +
-                               (fb0 + foff).to_str() + ")\n" +
-                               "    (local.set " + pa.to_str() + ")\n" +
-                               "    (local.get " +
-                               (fb0 + foff + 1).to_str() + ")\n" +
-                               "    (local.set " + pl.to_str() + ")\n";
+                        body = body + "    (local.get ";
+                        body = body + (fb0 + foff).to_str();
+                        body = body + ")\n";
+                        body = body + "    (local.set ";
+                        body = body + pa.to_str();
+                        body = body + ")\n";
+                        body = body + "    (local.get ";
+                        body = body + (fb0 + foff + 1).to_str();
+                        body = body + ")\n";
+                        body = body + "    (local.set ";
+                        body = body + pl.to_str();
+                        body = body + ")\n";
                       } else {
                         let ft0: i64 = nl.v;
                         nl.v = nl.v + 1;
                         body = body + emit_expr(mut pool, fbase, mut env, mut prog, mut nl);
-                        body = body + "    (local.set " + ft0.to_str() +
-                               ")\n";
-                        body = body + "    (i64.load (i32.add " +
-                               "(i32.wrap_i64 (local.get " + ft0.to_str() +
-                               ")) (i32.const " + (foff * 8).to_str() +
-                               ")))\n";
-                        body = body + "    (local.set " + pa.to_str() +
-                               ")\n";
-                        body = body + "    (i64.load (i32.add " +
-                               "(i32.wrap_i64 (local.get " + ft0.to_str() +
-                               ")) (i32.const " + (foff * 8 + 8).to_str() +
-                               ")))\n";
-                        body = body + "    (local.set " + pl.to_str() +
-                               ")\n";
+                        body = body + "    (local.set ";
+                        body = body + ft0.to_str();
+                        body = body + ")\n";
+                        body = body + "    (i64.load (i32.add ";
+                        body = body + "(i32.wrap_i64 (local.get ";
+                        body = body + ft0.to_str();
+                        body = body + ")) (i32.const ";
+                        body = body + (foff * 8).to_str();
+                        body = body + ")))\n";
+                        body = body + "    (local.set ";
+                        body = body + pa.to_str();
+                        body = body + ")\n";
+                        body = body + "    (i64.load (i32.add ";
+                        body = body + "(i32.wrap_i64 (local.get ";
+                        body = body + ft0.to_str();
+                        body = body + ")) (i32.const ";
+                        body = body + (foff * 8 + 8).to_str();
+                        body = body + ")))\n";
+                        body = body + "    (local.set ";
+                        body = body + pl.to_str();
+                        body = body + ")\n";
                       }
                       env_str_bind_runtime(mut env, st.name, pa, pl, fki);
                       if len(st.fmt) >= 2 && st.fmt[0] == 91 &&
@@ -7906,8 +8411,9 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                   }
                   if len(ps) > 0 && st_index(mut prog, ps) >= 0 {
                     body = body + emit_expr(mut pool, e, mut env, mut prog, mut nl);
-                    body = body + "    (local.set " + nl.v.to_str() +
-                           ")\n";
+                    body = body + "    (local.set ";
+                    body = body + nl.v.to_str();
+                    body = body + ")\n";
                     body = body + retain_if_shared(e, nl.v);
                     let relp: string = rel_callee(mut pool, mut prog,
                                                   "*" + ps);
@@ -7930,8 +8436,9 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                   } else {
                     body = body + emit_expr(mut pool, e, mut env, mut prog, mut nl);
                     body = body + wrap_snippet(type_width(st.fmt));
-                    body = body + "    (local.set " +
-                           nl.v.to_str() + ")\n";
+                    body = body + "    (local.set ";
+                    body = body + nl.v.to_str();
+                    body = body + ")\n";
                     env_bind_w(mut env, st.name, nl.v,
                                type_width(st.fmt));
                     if st.fmt == "bool" ||
@@ -7978,18 +8485,22 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
             Option.Some(sv) => {
               let spsv = build_string_pair(sv, mut pool, mut env, mut prog, mut nl);
               if spsv.ok {
-                body = body + spsv.text +
-                       "    (i64.store (i32.add (i32.wrap_i64 " +
-                       "(local.get " + addr_slot.to_str() +
-                       ")) (i32.mul (i32.wrap_i64 (local.get $t)) " +
-                       "(i32.const 16))) (local.get " +
-                       spsv.a.to_str() + "))\n" +
-                       "    (i64.store (i32.add (i32.add " +
-                       "(i32.wrap_i64 (local.get " +
-                       addr_slot.to_str() + ")) (i32.mul " +
-                       "(i32.wrap_i64 (local.get $t)) (i32.const 16))) " +
-                       "(i32.const 8)) (local.get " +
-                       spsv.l.to_str() + "))\n";
+                body = body + spsv.text;
+                body = body + "    (i64.store (i32.add (i32.wrap_i64 ";
+                body = body + "(local.get ";
+                body = body + addr_slot.to_str();
+                body = body + ")) (i32.mul (i32.wrap_i64 (local.get $t)) ";
+                body = body + "(i32.const 16))) (local.get ";
+                body = body + spsv.a.to_str();
+                body = body + "))\n";
+                body = body + "    (i64.store (i32.add (i32.add ";
+                body = body + "(i32.wrap_i64 (local.get ";
+                body = body + addr_slot.to_str();
+                body = body + ")) (i32.mul ";
+                body = body + "(i32.wrap_i64 (local.get $t)) (i32.const 16))) ";
+                body = body + "(i32.const 8)) (local.get ";
+                body = body + spsv.l.to_str();
+                body = body + "))\n";
               }
             },
             Option.None => {},
@@ -8017,40 +8528,54 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
             let vb5: i64 = nl.v;
             let ob5: i64 = nl.v + 1;
             nl.v = nl.v + 2;
-            body = body + "    (i32.add (i32.wrap_i64 (local.get " +
-                   addr_slot.to_str() + ")) (i32.mul (i32.wrap_i64 " +
-                   "(local.get $t)) (i32.const 16)))\n" +
-                   "    (local.set $a)\n";
+            body = body + "    (i32.add (i32.wrap_i64 (local.get ";
+            body = body + addr_slot.to_str();
+            body = body + ")) (i32.mul (i32.wrap_i64 ";
+            body = body + "(local.get $t)) (i32.const 16)))\n";
+            body = body + "    (local.set $a)\n";
             body = body + vt5;
-            body = body + "    (local.set " + vb5.to_str() + ")\n";
+            body = body + "    (local.set ";
+            body = body + vb5.to_str();
+            body = body + ")\n";
             body = body + emit_expr(mut pool, e5, mut env, mut prog, mut nl);
-            body = body + "    (local.set " + ob5.to_str() + ")\n";
+            body = body + "    (local.set ";
+            body = body + ob5.to_str();
+            body = body + ")\n";
             body = body + retain_if_shared(e5, ob5);
             // the old element's obj releases through ITS vtable's
             // release slot — guarded: a fresh zeroed element carries
             // no vtable (a null obj must not dispatch)
             let oe5: i64 = nl.v;
             nl.v = nl.v + 1;
-            body = body + "    (i64.load (i32.add (local.get $a)" +
-                   " (i32.const 8)))\n" +
-                   "    (local.set " + oe5.to_str() + ")\n" +
-                   "    (if (i64.ne (local.get " + oe5.to_str() +
-                   ") (i64.const 0))\n" +
-                   "      (then\n" +
-                   "    (local.get " + oe5.to_str() + ")\n" +
-                   "    (i64.load (i32.add\n" +
-                   "      (i32.wrap_i64 (i64.load (i32.add " +
-                   "(local.get $a) (i32.const 0))))\n" +
-                   "      (i32.const " + (dnm5 * 8).to_str() +
-                   ")))\n" +
-                   "    (i32.wrap_i64)\n" +
-                   "    call_indirect (type $clv1)\n" +
-                   "      ))\n";
-            body = body + "    (i64.store (local.get $a) " +
-                   "(local.get " + vb5.to_str() + "))\n" +
-                   "    (i64.store (i32.add (local.get $a) " +
-                   "(i32.const 8)) (local.get " + ob5.to_str() +
-                   "))\n";
+            body = body + "    (i64.load (i32.add (local.get $a)";
+            body = body + " (i32.const 8)))\n";
+            body = body + "    (local.set ";
+            body = body + oe5.to_str();
+            body = body + ")\n";
+            body = body + "    (if (i64.ne (local.get ";
+            body = body + oe5.to_str();
+            body = body + ") (i64.const 0))\n";
+            body = body + "      (then\n";
+            body = body + "    (local.get ";
+            body = body + oe5.to_str();
+            body = body + ")\n";
+            body = body + "    (i64.load (i32.add\n";
+            body = body + "      (i32.wrap_i64 (i64.load (i32.add ";
+            body = body + "(local.get $a) (i32.const 0))))\n";
+            body = body + "      (i32.const ";
+            body = body + (dnm5 * 8).to_str();
+            body = body + ")))\n";
+            body = body + "    (i32.wrap_i64)\n";
+            body = body + "    call_indirect (type $clv1)\n";
+            body = body + "      ))\n";
+            body = body + "    (i64.store (local.get $a) ";
+            body = body + "(local.get ";
+            body = body + vb5.to_str();
+            body = body + "))\n";
+            body = body + "    (i64.store (i32.add (local.get $a) ";
+            body = body + "(i32.const 8)) (local.get ";
+            body = body + ob5.to_str();
+            body = body + "))\n";
           }
         } else {
         if stelem2 >= 0 {
@@ -8058,10 +8583,12 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
           // value's address (a frame-resident chain materializes a
           // box first — struct_addr_of)
           let ssn: i64 = st_nslots(mut prog, stelem2);
-          body = body + "    (i32.add (i32.wrap_i64 (local.get " +
-                 addr_slot.to_str() + ")) (i32.mul (i32.wrap_i64 " +
-                 "(local.get $t)) (i32.const " + (ssn * 8).to_str() +
-                 ")))\n";
+          body = body + "    (i32.add (i32.wrap_i64 (local.get ";
+          body = body + addr_slot.to_str();
+          body = body + ")) (i32.mul (i32.wrap_i64 ";
+          body = body + "(local.get $t)) (i32.const ";
+          body = body + (ssn * 8).to_str();
+          body = body + ")))\n";
           body = body + "    (local.set $a)\n";
           match st.val {
             Option.Some(e13) => {
@@ -8072,12 +8599,14 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
           body = body + "    (local.set $t)\n";
           let mut sj: i64 = 0;
           while sj < ssn {
-            body = body + "    (i64.load (i32.add (i32.wrap_i64 " +
-                   "(local.get $t)) (i32.const " + (sj * 8).to_str() +
-                   ")))\n" +
-                   "    (local.set $r)\n" +
-                   "    (i64.store (i32.add (local.get $a) (i32.const " +
-                   (sj * 8).to_str() + ")) (local.get $r))\n";
+            body = body + "    (i64.load (i32.add (i32.wrap_i64 ";
+            body = body + "(local.get $t)) (i32.const ";
+            body = body + (sj * 8).to_str();
+            body = body + ")))\n";
+            body = body + "    (local.set $r)\n";
+            body = body + "    (i64.store (i32.add (local.get $a) (i32.const ";
+            body = body + (sj * 8).to_str();
+            body = body + ")) (local.get $r))\n";
             sj = sj + 1;
           }
         } else {
@@ -8107,13 +8636,16 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
           body = body + "    (local.set $t)\n";
           body = body + retain_t(ivr);
           body = body + "    (i64.load (local.get $a))\n";
-          body = body + "    call " + irel + "\n";
+          body = body + "    call ";
+          body = body + irel;
+          body = body + "\n";
           body = body + "    (i64.store (local.get $a) (local.get $t))\n";
         } else {
-        body = body + "    (i32.add (i32.wrap_i64 (local.get " +
-               addr_slot.to_str() + "))\n" +
-               "                     (i32.mul (i32.wrap_i64 " +
-               "(local.get $t)) (i32.const 8)))\n";
+        body = body + "    (i32.add (i32.wrap_i64 (local.get ";
+        body = body + addr_slot.to_str();
+        body = body + "))\n";
+        body = body + "                     (i32.mul (i32.wrap_i64 ";
+        body = body + "(local.get $t)) (i32.const 8)))\n";
         body = body + "    (local.set $a)\n";
         match st.val {
           Option.Some(e) => {
@@ -8151,10 +8683,11 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
           body = body + "    (local.set $t)\n";
           body = body + oob_check(mut pool, "(local.get " +
                  slen9.to_str() + ")");
-          body = body + "    (i64.load (i32.add (i32.wrap_i64 " +
-                 "(local.get " + saddr9.to_str() +
-                 ")) (i32.mul (i32.wrap_i64 (local.get $t))" +
-                 " (i32.const 8))))\n";
+          body = body + "    (i64.load (i32.add (i32.wrap_i64 ";
+          body = body + "(local.get ";
+          body = body + saddr9.to_str();
+          body = body + ")) (i32.mul (i32.wrap_i64 (local.get $t))";
+          body = body + " (i32.const 8))))\n";
           body = body + "    (local.set $r)\n";
           match st.val {
             Option.Some(ev9) => {
@@ -8164,9 +8697,10 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
           }
           body = body + wrap_snippet(type_width(fty9));
           body = body + "    (local.set $d)\n";
-          body = body + "    (i64.store (i32.add (i32.wrap_i64 " +
-                 "(local.get $r)) (i32.const " + foff9.to_str() +
-                 ")) (local.get $d))\n";
+          body = body + "    (i64.store (i32.add (i32.wrap_i64 ";
+          body = body + "(local.get $r)) (i32.const ";
+          body = body + foff9.to_str();
+          body = body + ")) (local.get $d))\n";
         }
       } else {
       let vbt: string = env_val_of(env, st.name);
@@ -8188,16 +8722,22 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
             }
             let off: i64 = st_field_off(mut prog, csi, fi) * 8;
             if inframe {
-              body = body + "    (local.get " +
-                     (b0 + off / 8).to_str() + ")\n" +
-                     "    (local.set " + a_slot.to_str() + ")\n";
+              body = body + "    (local.get ";
+              body = body + (b0 + off / 8).to_str();
+              body = body + ")\n";
+              body = body + "    (local.set ";
+              body = body + a_slot.to_str();
+              body = body + ")\n";
               inframe = false;
             } else {
-              body = body + "    (i32.add (i32.wrap_i64 (local.get " +
-                     a_slot.to_str() + ")) (i32.const " + off.to_str() +
-                     "))\n";
-              body = body + "    (i64.load)\n    (local.set " +
-                     a_slot.to_str() + ")\n";
+              body = body + "    (i32.add (i32.wrap_i64 (local.get ";
+              body = body + a_slot.to_str();
+              body = body + ")) (i32.const ";
+              body = body + off.to_str();
+              body = body + "))\n";
+              body = body + "    (i64.load)\n    (local.set ";
+              body = body + a_slot.to_str();
+              body = body + ")\n";
             }
             csi = st_index(mut prog, type_ptr_target(
                    prog.structs[csi as usize].types[fi as usize]));
@@ -8216,8 +8756,9 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                 },
                 Option.None => {},
               }
-              body = body + "    (local.set " + (b0 + foff).to_str() +
-                     ")\n";
+              body = body + "    (local.set ";
+              body = body + (b0 + foff).to_str();
+              body = body + ")\n";
             } else {
               if inframe {
                 // indexed through a frame pair
@@ -8226,10 +8767,11 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                 body = body + "    (local.set $t)\n";
                 body = body + oob_check(mut pool, "(local.get " +
                        (b0 + foff + 1).to_str() + ")");
-                body = body + "    (i32.add (i32.wrap_i64 (local.get " +
-                       (b0 + foff).to_str() + "))\n" +
-                       "                     (i32.mul (i32.wrap_i64 " +
-                       "(local.get $t)) (i32.const 8)))\n";
+                body = body + "    (i32.add (i32.wrap_i64 (local.get ";
+                body = body + (b0 + foff).to_str();
+                body = body + "))\n";
+                body = body + "                     (i32.mul (i32.wrap_i64 ";
+                body = body + "(local.get $t)) (i32.const 8)))\n";
                 body = body + "    (local.set $a)\n";
               } else {
                 let off: i64 = foff * 8;
@@ -8238,21 +8780,29 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                   let idx0: *Expr = st.args[0];
                   body = body + emit_expr(mut pool, idx0, mut env, mut prog, mut nl);
                   body = body + "    (local.set $t)\n";
-                  body = body + "    (i64.load (i32.add (i32.wrap_i64 " +
-                         "(local.get " + a_slot.to_str() + ")) (i32.const " +
-                         (off + 8).to_str() + ")))\n";
+                  body = body + "    (i64.load (i32.add (i32.wrap_i64 ";
+                  body = body + "(local.get ";
+                  body = body + a_slot.to_str();
+                  body = body + ")) (i32.const ";
+                  body = body + (off + 8).to_str();
+                  body = body + ")))\n";
                   body = body + "    (local.set $r)\n";
                   body = body + oob_check(mut pool, "(local.get $r)");
-                  body = body + "    (i64.load (i32.add (i32.wrap_i64 " +
-                         "(local.get " + a_slot.to_str() + ")) (i32.const " +
-                         off.to_str() + ")))\n";
-                  body = body + "    (i32.add (i32.wrap_i64) (i32.mul " +
-                         "(i32.wrap_i64 (local.get $t)) (i32.const 8)))\n";
+                  body = body + "    (i64.load (i32.add (i32.wrap_i64 ";
+                  body = body + "(local.get ";
+                  body = body + a_slot.to_str();
+                  body = body + ")) (i32.const ";
+                  body = body + off.to_str();
+                  body = body + ")))\n";
+                  body = body + "    (i32.add (i32.wrap_i64) (i32.mul ";
+                  body = body + "(i32.wrap_i64 (local.get $t)) (i32.const 8)))\n";
                   body = body + "    (local.set $a)\n";
                 } else {
-                  body = body + "    (i32.add (i32.wrap_i64 (local.get " +
-                         a_slot.to_str() + ")) (i32.const " + off.to_str() +
-                         "))\n";
+                  body = body + "    (i32.add (i32.wrap_i64 (local.get ";
+                  body = body + a_slot.to_str();
+                  body = body + ")) (i32.const ";
+                  body = body + off.to_str();
+                  body = body + "))\n";
                   body = body + "    (local.set $a)\n";
                 }
               }
@@ -8275,7 +8825,9 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                   Option.None => {},
                 }
                 body = body + "    (i64.load (local.get $a))\n";
-                body = body + "    call " + frel + "\n";
+                body = body + "    call ";
+                body = body + frel;
+                body = body + "\n";
               }
               body = body + "    (i64.store (local.get $a) (local.get $t))\n";
             }
@@ -8288,9 +8840,12 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
         if si >= 0 && len(st.path) > 0 {
           let a_slot: i64 = nl.v;
           nl.v = nl.v + 1;
-          body = body + "    (local.get " + env_look(env, st.name).to_str() +
-                 ")\n";
-          body = body + "    (local.set " + a_slot.to_str() + ")\n";
+          body = body + "    (local.get ";
+          body = body + env_look(env, st.name).to_str();
+          body = body + ")\n";
+          body = body + "    (local.set ";
+          body = body + a_slot.to_str();
+          body = body + ")\n";
           let mut j: usize = 0;
           // every intermediate field is itself a pointer: load it
           while j + 1 < len(st.path) {
@@ -8299,11 +8854,14 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
               break;
             }
             let off: i64 = st_field_off(mut prog, si, fi) * 8;
-            body = body + "    (i32.add (i32.wrap_i64 (local.get " +
-                   a_slot.to_str() + ")) (i32.const " + off.to_str() +
-                   "))\n";
-            body = body + "    (i64.load)\n    (local.set " +
-                   a_slot.to_str() + ")\n";
+            body = body + "    (i32.add (i32.wrap_i64 (local.get ";
+            body = body + a_slot.to_str();
+            body = body + ")) (i32.const ";
+            body = body + off.to_str();
+            body = body + "))\n";
+            body = body + "    (i64.load)\n    (local.set ";
+            body = body + a_slot.to_str();
+            body = body + ")\n";
             si = st_index(mut prog, type_ptr_target(
                    prog.structs[si as usize].types[fi as usize]));
             j = j + 1;
@@ -8319,16 +8877,22 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
               let idx: *Expr = st.args[0];
               body = body + emit_expr(mut pool, idx, mut env, mut prog, mut nl);
               body = body + "    (local.set $t)\n";
-              body = body + "    (i64.load (i32.add (i32.wrap_i64 " +
-                     "(local.get " + a_slot.to_str() + ")) (i32.const " +
-                     (off + 8).to_str() + ")))\n";
+              body = body + "    (i64.load (i32.add (i32.wrap_i64 ";
+              body = body + "(local.get ";
+              body = body + a_slot.to_str();
+              body = body + ")) (i32.const ";
+              body = body + (off + 8).to_str();
+              body = body + ")))\n";
               body = body + "    (local.set $r)\n";
               body = body + oob_check(mut pool, "(local.get $r)");
-              body = body + "    (i64.load (i32.add (i32.wrap_i64 " +
-                     "(local.get " + a_slot.to_str() + ")) (i32.const " +
-                     off.to_str() + ")))\n";
-              body = body + "    (i32.add (i32.wrap_i64) (i32.mul " +
-                     "(i32.wrap_i64 (local.get $t)) (i32.const 8)))\n";
+              body = body + "    (i64.load (i32.add (i32.wrap_i64 ";
+              body = body + "(local.get ";
+              body = body + a_slot.to_str();
+              body = body + ")) (i32.const ";
+              body = body + off.to_str();
+              body = body + ")))\n";
+              body = body + "    (i32.add (i32.wrap_i64) (i32.mul ";
+              body = body + "(i32.wrap_i64 (local.get $t)) (i32.const 8)))\n";
               body = body + "    (local.set $a)\n";
               match st.val {
                 Option.Some(e) => {
@@ -8339,9 +8903,11 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
               body = body + "    (local.set $t)\n";
               body = body + "    (i64.store (local.get $a) (local.get $t))\n";
             } else {
-              body = body + "    (i32.add (i32.wrap_i64 (local.get " +
-                     a_slot.to_str() + ")) (i32.const " + off.to_str() +
-                     "))\n";
+              body = body + "    (i32.add (i32.wrap_i64 (local.get ";
+              body = body + a_slot.to_str();
+              body = body + ")) (i32.const ";
+              body = body + off.to_str();
+              body = body + "))\n";
               body = body + "    (local.set $a)\n";
               if type_kind(fty) == 2 || fty == "string" {
                 // a pair field stores BOTH words: the rhs's own pair
@@ -8360,24 +8926,27 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                   let ra0: i64 = env_str_look(env, rhv.name);
                   let ral: i64 = env_str_len_slot(env, rhv.name);
                   if ra0 < 0 {
-                    body = body + "    (local.get " +
-                           ((0 - ra0) - 1).to_str() +
-                           ")\n    (local.set $t)\n" +
-                           "    (local.get " + ral.to_str() +
-                           ")\n    (local.set $r)\n";
-                    body = body + "    (i64.store (local.get $a)" +
-                           " (local.get $t))\n" +
-                           "    (i64.store (i32.add (local.get $a)" +
-                           " (i32.const 8)) (local.get $r))\n";
+                    body = body + "    (local.get ";
+                    body = body + ((0 - ra0) - 1).to_str();
+                    body = body + ")\n    (local.set $t)\n";
+                    body = body + "    (local.get ";
+                    body = body + ral.to_str();
+                    body = body + ")\n    (local.set $r)\n";
+                    body = body + "    (i64.store (local.get $a)";
+                    body = body + " (local.get $t))\n";
+                    body = body + "    (i64.store (i32.add (local.get $a)";
+                    body = body + " (i32.const 8)) (local.get $r))\n";
                   } else {
-                    body = body + "    (i64.const " + ra0.to_str() +
-                           ")\n    (local.set $t)\n" +
-                           "    (i64.const " + ral.to_str() +
-                           ")\n    (local.set $r)\n";
-                    body = body + "    (i64.store (local.get $a)" +
-                           " (local.get $t))\n" +
-                           "    (i64.store (i32.add (local.get $a)" +
-                           " (i32.const 8)) (local.get $r))\n";
+                    body = body + "    (i64.const ";
+                    body = body + ra0.to_str();
+                    body = body + ")\n    (local.set $t)\n";
+                    body = body + "    (i64.const ";
+                    body = body + ral.to_str();
+                    body = body + ")\n    (local.set $r)\n";
+                    body = body + "    (i64.store (local.get $a)";
+                    body = body + " (local.get $t))\n";
+                    body = body + "    (i64.store (i32.add (local.get $a)";
+                    body = body + " (i32.const 8)) (local.get $r))\n";
                   }
                 } else {
                   match st.val {
@@ -8388,8 +8957,8 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                     Option.None => {},
                   }
                   body = body + "    (local.set $t)\n";
-                  body = body + "    (i64.store (local.get $a)" +
-                         " (local.get $t))\n";
+                  body = body + "    (i64.store (local.get $a)";
+                  body = body + " (local.get $t))\n";
                 }
               } else {
               match st.val {
@@ -8420,13 +8989,16 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                                        nl);
             if sp.ok {
               body = body + sp.text;
-              body = body + "    (local.get " + sp.a.to_str() +
-                     ")\n    (local.set " +
-                     ((0 - env_str_look(env, st.name)) - 1).to_str() +
-                     ")\n";
-              body = body + "    (local.get " + sp.l.to_str() +
-                     ")\n    (local.set " +
-                     env_str_len_slot(env, st.name).to_str() + ")\n";
+              body = body + "    (local.get ";
+              body = body + sp.a.to_str();
+              body = body + ")\n    (local.set ";
+              body = body + ((0 - env_str_look(env, st.name)) - 1).to_str();
+              body = body + ")\n";
+              body = body + "    (local.get ";
+              body = body + sp.l.to_str();
+              body = body + ")\n    (local.set ";
+              body = body + env_str_len_slot(env, st.name).to_str();
+              body = body + ")\n";
             } else {
               body = body + emit_expr(mut pool, e, mut env, mut prog, mut nl);
             }
@@ -8447,25 +9019,37 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
               let ob6: i64 = nl.v + 1;
               nl.v = nl.v + 2;
               body = body + vt6;
-              body = body + "    (local.set " + vb6.to_str() +
-                     ")\n";
+              body = body + "    (local.set ";
+              body = body + vb6.to_str();
+              body = body + ")\n";
               body = body + emit_expr(mut pool, e, mut env, mut prog, mut nl);
-              body = body + "    (local.set " + ob6.to_str() +
-                     ")\n";
+              body = body + "    (local.set ";
+              body = body + ob6.to_str();
+              body = body + ")\n";
               body = body + retain_if_shared(e, ob6);
               // the old pair's release: slot nmethods of its vtable
               let nm6: i64 = trait_method_count(prog, trt6);
-              body = body + "    (local.get " + dst_l.to_str() +
-                     ")\n" +
-                     "    (i64.load (i32.add (i32.wrap_i64 " +
-                     "(local.get " + dst_a.to_str() + ")) (i32.const " +
-                     (nm6 * 8).to_str() + ")))\n" +
-                     "    (i32.wrap_i64)\n" +
-                     "    call_indirect (type $clv1)\n";
-              body = body + "    (local.get " + vb6.to_str() +
-                     ")\n    (local.set " + dst_a.to_str() + ")\n";
-              body = body + "    (local.get " + ob6.to_str() +
-                     ")\n    (local.set " + dst_l.to_str() + ")\n";
+              body = body + "    (local.get ";
+              body = body + dst_l.to_str();
+              body = body + ")\n";
+              body = body + "    (i64.load (i32.add (i32.wrap_i64 ";
+              body = body + "(local.get ";
+              body = body + dst_a.to_str();
+              body = body + ")) (i32.const ";
+              body = body + (nm6 * 8).to_str();
+              body = body + ")))\n";
+              body = body + "    (i32.wrap_i64)\n";
+              body = body + "    call_indirect (type $clv1)\n";
+              body = body + "    (local.get ";
+              body = body + vb6.to_str();
+              body = body + ")\n    (local.set ";
+              body = body + dst_a.to_str();
+              body = body + ")\n";
+              body = body + "    (local.get ";
+              body = body + ob6.to_str();
+              body = body + ")\n    (local.set ";
+              body = body + dst_l.to_str();
+              body = body + ")\n";
             } else {
               body = body + emit_expr(mut pool, e, mut env, mut prog, mut nl);
               body = body + "    drop\n";
@@ -8486,10 +9070,16 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                                        nl);
             if sp.ok {
               body = body + sp.text;
-              body = body + "    (local.get " + sp.a.to_str() +
-                     ")\n    (local.set " + s1.to_str() + ")\n" +
-                     "    (local.get " + sp.l.to_str() +
-                     ")\n    (local.set " + s2.to_str() + ")\n";
+              body = body + "    (local.get ";
+              body = body + sp.a.to_str();
+              body = body + ")\n    (local.set ";
+              body = body + s1.to_str();
+              body = body + ")\n";
+              body = body + "    (local.get ";
+              body = body + sp.l.to_str();
+              body = body + ")\n    (local.set ";
+              body = body + s2.to_str();
+              body = body + ")\n";
             } else {
               body = body + emit_expr(mut pool, e, mut env, mut prog, mut nl);
             }
@@ -8499,13 +9089,21 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
             let sps2 = build_string_pair(e, mut pool, mut env, mut prog, mut nl);
             if sps2.ok {
               body = body + sps2.text;
-              body = body + "    (local.get " + sps2.a.to_str() +
-                     ")\n    (global.set $g_" + st.name + ")\n" +
-                     "    (local.get " + sps2.l.to_str() +
-                     ")\n    (global.set $g_" + st.name + "_l)\n";
+              body = body + "    (local.get ";
+              body = body + sps2.a.to_str();
+              body = body + ")\n    (global.set $g_";
+              body = body + st.name;
+              body = body + ")\n";
+              body = body + "    (local.get ";
+              body = body + sps2.l.to_str();
+              body = body + ")\n    (global.set $g_";
+              body = body + st.name;
+              body = body + "_l)\n";
             } else {
               body = body + emit_expr(mut pool, e, mut env, mut prog, mut nl);
-              body = body + "    (global.set $g_" + st.name + ")\n";
+              body = body + "    (global.set $g_";
+              body = body + st.name;
+              body = body + ")\n";
             }
           } else {
           let bty: string = managed_type_of_binding(env, st.name);
@@ -8518,25 +9116,40 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
               let tslot: i64 = nl.v;
               nl.v = nl.v + 1;
               body = body + emit_expr(mut pool, e, mut env, mut prog, mut nl);
-              body = body + "    (local.set " + tslot.to_str() + ")\n";
+              body = body + "    (local.set ";
+              body = body + tslot.to_str();
+              body = body + ")\n";
               body = body + retain_if_shared(e, tslot);
-              body = body + "    (local.get " + slot.to_str() + ")\n";
-              body = body + "    call " + relc + "\n";
-              body = body + "    (local.set " + slot.to_str() +
-                     " (local.get " + tslot.to_str() + "))\n";
+              body = body + "    (local.get ";
+              body = body + slot.to_str();
+              body = body + ")\n";
+              body = body + "    call ";
+              body = body + relc;
+              body = body + "\n";
+              body = body + "    (local.set ";
+              body = body + slot.to_str();
+              body = body + " (local.get ";
+              body = body + tslot.to_str();
+              body = body + "))\n";
             } else {
               body = body + emit_expr(mut pool, e, mut env, mut prog, mut nl);
-              body = body + "    (local.set " + slot.to_str() + ")\n";
+              body = body + "    (local.set ";
+              body = body + slot.to_str();
+              body = body + ")\n";
             }
           } else {
           body = body + emit_expr(mut pool, e, mut env, mut prog, mut nl);
           if slot >= 0 {
             body = body + wrap_snippet(env_width_of(env, st.name));
-            body = body + "    (local.set " + slot.to_str() + ")\n";
+            body = body + "    (local.set ";
+            body = body + slot.to_str();
+            body = body + ")\n";
           } else {
             let g: string = static_global(prog, st.name);
             if len(g) > 0 {
-              body = body + "    (global.set " + g + ")\n";
+              body = body + "    (global.set ";
+              body = body + g;
+              body = body + ")\n";
             }
           }
           }
@@ -8578,13 +9191,18 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
           let bx: i64 = nl.v;
           nl.v = nl.v + 1;
           body = body + emit_expr(mut pool, sc, mut env, mut prog, mut nl);
-          body = body + "    (local.set " + bx.to_str() + ")\n";
+          body = body + "    (local.set ";
+          body = body + bx.to_str();
+          body = body + ")\n";
           let et: string = expr_enum_type(sc, env, mut prog);
           if len(et) > 0 {
-            body = body + "    (i64.load (i32.wrap_i64 (local.get " +
-                   bx.to_str() + ")))\n";
+            body = body + "    (i64.load (i32.wrap_i64 (local.get ";
+            body = body + bx.to_str();
+            body = body + ")))\n";
           } else {
-            body = body + "    (local.get " + bx.to_str() + ")\n";
+            body = body + "    (local.get ";
+            body = body + bx.to_str();
+            body = body + ")\n";
           }
           body = body + "    (local.set $d)\n";
           let mut optpt: string = optpt_of_scrutinee(sc, mut env, mut prog);
@@ -8631,8 +9249,12 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                 srel2 = rel_callee(mut pool, mut prog, scet2);
               }
               if len(srel2) > 0 {
-                body = body + "    (local.get " + bx.to_str() +
-                       ")\n" + "    call " + srel2 + "\n";
+                body = body + "    (local.get ";
+                body = body + bx.to_str();
+                body = body + ")\n";
+                body = body + "    call ";
+                body = body + srel2;
+                body = body + "\n";
               }
             }
           }
@@ -8684,7 +9306,9 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
       if idx < loops.n {
         body = body + dpeek_emit_to(dstack, loops.ddepths[idx]);
       }
-      body = body + "    (br " + loops_break(loops, st.name) + ")\n";
+      body = body + "    (br ";
+      body = body + loops_break(loops, st.name);
+      body = body + ")\n";
     }
     if st.tag == parse.ST_CONT {
       // a continue exits the body frame: its defers run, then the
@@ -8693,17 +9317,25 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
       if idx < loops.n {
         body = body + dpeek_emit_to(dstack, loops.ddepths[idx]);
       }
-      body = body + "    (br " + loops_cont(loops, st.name) + ")\n";
+      body = body + "    (br ";
+      body = body + loops_cont(loops, st.name);
+      body = body + ")\n";
     }
     if st.tag == parse.ST_LOOP {
       let bk: string = "$b" + loops.next_id.to_str();
       let w: string = "$w" + loops.next_id.to_str();
       loops.next_id = loops.next_id + 1;
       loops_push_with(mut loops, st.name, bk, w, dstack);
-      body = body + "    (block " + bk + "\n";
-      body = body + "    (loop " + w + "\n";
+      body = body + "    (block ";
+      body = body + bk;
+      body = body + "\n";
+      body = body + "    (loop ";
+      body = body + w;
+      body = body + "\n";
       body = body + emit_stmts(st.body, mut pool, mut env, mut nl, in_fn, ret_slot, mut prog, mut loops, mut dstack, tfd);
-      body = body + "      (br " + w + ")\n";
+      body = body + "      (br ";
+      body = body + w;
+      body = body + ")\n";
       body = body + "    )\n";
       body = body + "    )\n";
       loops_pop(mut loops);
@@ -8715,12 +9347,18 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
           let w: string = "$w" + loops.next_id.to_str();
           loops.next_id = loops.next_id + 1;
           loops_push_with(mut loops, st.name, bk, w, dstack);
-          body = body + "    (block " + bk + "\n";
-          body = body + "    (loop " + w + "\n";
+          body = body + "    (block ";
+          body = body + bk;
+          body = body + "\n";
+          body = body + "    (loop ";
+          body = body + w;
+          body = body + "\n";
           body = body + emit_expr(mut pool, cond, mut env, mut prog, mut nl);
           body = body + "    (i32.wrap_i64)\n    if\n";
           body = body + emit_stmts(st.body, mut pool, mut env, mut nl, in_fn, ret_slot, mut prog, mut loops, mut dstack, tfd);
-          body = body + "      (br " + w + ")\n";
+          body = body + "      (br ";
+          body = body + w;
+          body = body + ")\n";
           body = body + "    end\n";
           body = body + "    )\n";
           body = body + "    )\n";
@@ -8884,10 +9522,14 @@ fn emit_fn(fd: *FnDef, mut pool: *Pool, mut prog: *Prog,
     nl.v = nl.v + pn;
     let mut pj: i64 = 0;
     while pj < pn {
-      pre = pre + "    (i64.load (i32.add (i32.wrap_i64 (local.get " +
-             psrc.to_str() + ")) (i32.const " + (pj * 8).to_str() +
-             ")))\n" +
-             "    (local.set " + (vbase + pj).to_str() + ")\n";
+      pre = pre + "    (i64.load (i32.add (i32.wrap_i64 (local.get ";
+      pre = pre + psrc.to_str();
+      pre = pre + ")) (i32.const ";
+      pre = pre + (pj * 8).to_str();
+      pre = pre + ")))\n";
+      pre = pre + "    (local.set ";
+      pre = pre + (vbase + pj).to_str();
+      pre = pre + ")\n";
       pj = pj + 1;
     }
     env_bind_val(mut env, svp_names[svp_i], vbase, svp_types[svp_i]);
@@ -9411,8 +10053,8 @@ pub fn emit(mut prog: *Prog) -> string {
   let mut out: string = "";
   out = out + "(module\n";
   out = out + "  (import \"wasi_snapshot_preview1\" \"fd_write\"\n";
-  out = out + "    (func $fd_write (param i32 i32 i32 i32) " +
-              "(result i32)))\n";
+  out = out + "    (func $fd_write (param i32 i32 i32 i32) ";
+  out = out + "(result i32)))\n";
   out = out + "  (import \"wasi_snapshot_preview1\" \"proc_exit\"\n";
   out = out + "    (func $proc_exit (param i32)))\n";
   // memory: enough pages for the data segments (the pool interned the
@@ -9425,7 +10067,9 @@ pub fn emit(mut prog: *Prog) -> string {
   if mpages < 1 {
     mpages = 1;
   }
-  out = out + "  (memory " + mpages.to_str() + ")\n";
+  out = out + "  (memory ";
+  out = out + mpages.to_str();
+  out = out + ")\n";
   out = out + "  (export \"memory\" (memory 0))\n";
   let mut gi: usize = 0;
   while gi < prog.nconsts {
@@ -9440,23 +10084,33 @@ pub fn emit(mut prog: *Prog) -> string {
         if ie.tag == parse.EX_STR {
           let sa: i64 = pool_intern(mut pool, ie.name);
           ginit = sa.to_str();
-          out = out + "  (global $g_" + prog.consts[gi] +
-                 " (mut i64) (i64.const " + ginit + "))\n";
-          out = out + "  (global $g_" + prog.consts[gi] +
-                 "_l (mut i64) (i64.const " +
-                 pool_len(pool, ie.name).to_str() + "))\n";
+          out = out + "  (global $g_";
+          out = out + prog.consts[gi];
+          out = out + " (mut i64) (i64.const ";
+          out = out + ginit;
+          out = out + "))\n";
+          out = out + "  (global $g_";
+          out = out + prog.consts[gi];
+          out = out + "_l (mut i64) (i64.const ";
+          out = out + pool_len(pool, ie.name).to_str();
+          out = out + "))\n";
           gi = gi + 1;
           continue;
         }
-        out = out + "  (global $g_" + prog.consts[gi] +
-               " (mut i64) (i64.const 0))\n";
-        out = out + "  (global $g_" + prog.consts[gi] +
-               "_l (mut i64) (i64.const 0))\n";
+        out = out + "  (global $g_";
+        out = out + prog.consts[gi];
+        out = out + " (mut i64) (i64.const 0))\n";
+        out = out + "  (global $g_";
+        out = out + prog.consts[gi];
+        out = out + "_l (mut i64) (i64.const 0))\n";
         gi = gi + 1;
         continue;
       }
-      out = out + "  (global $g_" + prog.consts[gi] +
-             " (mut i64) (i64.const " + ginit + "))\n";
+      out = out + "  (global $g_";
+      out = out + prog.consts[gi];
+      out = out + " (mut i64) (i64.const ";
+      out = out + ginit;
+      out = out + "))\n";
     }
     gi = gi + 1;
   }
@@ -9475,14 +10129,16 @@ pub fn emit(mut prog: *Prog) -> string {
     // types for the arities the calls used (flag 1 = scalar result,
     // 2 = pair result; a slot needing both kinds declares both)
     let cty1: []i64 = pool.gi.clo_ty;
-    out = out + "  (type $clp1 (func (param i64) (result i64)" +
-                " (result i64)))\n";
+    out = out + "  (type $clp1 (func (param i64) (result i64)";
+    out = out + " (result i64)))\n";
     out = out + "  (type $clv1 (func (param i64)))\n";
     let mut ari: i64 = 1;
     while ari <= 3 {
       if cty1[ari as usize] == 1 || cty1[ari as usize] == 3 ||
           ari == 1 {
-        out = out + "  (type $cl" + ari.to_str() + " (func";
+        out = out + "  (type $cl";
+        out = out + ari.to_str();
+        out = out + " (func";
         let mut pk: i64 = 0;
         while pk < ari {
           out = out + " (param i64)";
@@ -9491,7 +10147,9 @@ pub fn emit(mut prog: *Prog) -> string {
         out = out + " (result i64)))\n";
       }
       if cty1[ari as usize] >= 2 && ari > 1 {
-        out = out + "  (type $clp" + ari.to_str() + " (func";
+        out = out + "  (type $clp";
+        out = out + ari.to_str();
+        out = out + " (func";
         let mut pk2: i64 = 0;
         while pk2 < ari {
           out = out + " (param i64)";
@@ -9501,11 +10159,14 @@ pub fn emit(mut prog: *Prog) -> string {
       }
       ari = ari + 1;
     }
-    out = out + "  (table " + pool.gi.cfn.to_str() + " funcref)\n";
+    out = out + "  (table ";
+    out = out + pool.gi.cfn.to_str();
+    out = out + " funcref)\n";
     out = out + "  (elem (i32.const 0)";
     let mut ti: usize = 0;
     while ti < pool.gi.cfn {
-      out = out + " " + pool.gi.clo_wasms[ti];
+      out = out + " ";
+      out = out + pool.gi.clo_wasms[ti];
       ti = ti + 1;
     }
     out = out + ")\n";
@@ -9527,11 +10188,13 @@ pub fn emit(mut prog: *Prog) -> string {
   out = out + "  (func $_start (local $a i32) (local $l i32) (local $rc i32) (local $t i64) (local $r i64) (local $d i64)\n";
   let mut li: i64 = 6;
   while li < nl_n {
-    out = out + "    (local $v" + li.to_str() + " i64)\n";
+    out = out + "    (local $v";
+    out = out + li.to_str();
+    out = out + " i64)\n";
     li = li + 1;
   }
-  out = out + "    (global.set $w_none_box (i64.extend_i32_u " +
-              "(call $w_alloc (i32.const 2))))\n";
+  out = out + "    (global.set $w_none_box (i64.extend_i32_u ";
+  out = out + "(call $w_alloc (i32.const 2))))\n";
   // a float-typed static's bits cannot ride a wasm global initializer
   // (reinterpret is no const expr) — the value lands at _start
   let mut fsi: usize = 0;
@@ -9540,22 +10203,27 @@ pub fn emit(mut prog: *Prog) -> string {
         (prog.ctypes[fsi] == "f64" || prog.ctypes[fsi] == "f32") {
       let ie: *Expr = prog.cexprs[fsi];
       if ie.tag == parse.EX_FLIT {
-        out = out + "    (global.set $g_" + prog.consts[fsi] +
-               " (i64.reinterpret_f64 (f64.const " + ie.name +
-               ")))\n";
+        out = out + "    (global.set $g_";
+        out = out + prog.consts[fsi];
+        out = out + " (i64.reinterpret_f64 (f64.const ";
+        out = out + ie.name;
+        out = out + ")))\n";
       }
     }
     fsi = fsi + 1;
   }
   out = out + body;
-  out = out + "    (call $proc_exit (i32.and (local.get 2) " +
-              "(i32.const 255)))\n";
+  out = out + "    (call $proc_exit (i32.and (local.get 2) ";
+  out = out + "(i32.const 255)))\n";
   out = out + "  )\n";
   out = out + "  (data (i32.const 4030) \"truefalse\")\n";
   let mut d: usize = 0;
   while d < pool.n {
-    out = out + "  (data (i32.const " + pool.addrs[d].to_str() +
-                ") \"" + wat_data_body(pool.segs[d]) + "\")\n";
+    out = out + "  (data (i32.const ";
+    out = out + pool.addrs[d].to_str();
+    out = out + ") \"";
+    out = out + wat_data_body(pool.segs[d]);
+    out = out + "\")\n";
     d = d + 1;
   }
   out = out + ")\n";

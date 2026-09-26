@@ -330,7 +330,9 @@ pub fn fmt_expr(e: *Expr) -> string {
     },
     Option.None => {},
   }
-  out = out + " " + op_spell(e.op) + " ";
+  out = out + " ";
+  out = out + op_spell(e.op);
+  out = out + " ";
   match e.rhs {
     Option.Some(r) => {
       out = out + fmt_expr(r);
@@ -359,7 +361,8 @@ pub fn fmt_line(st: *Stmt, depth: usize) -> string {
     }
     out = out + st.name;
     if len(st.fmt) > 0 {
-      out = out + ": " + st.fmt;
+      out = out + ": ";
+      out = out + st.fmt;
     }
     out = out + " = ";
     match st.val {
@@ -374,7 +377,8 @@ pub fn fmt_line(st: *Stmt, depth: usize) -> string {
     let mut out: string = ind + "printf(" + canon_string(st.fmt);
     let mut k: usize = 0;
     while k < len(st.args) {
-      out = out + ", " + fmt_expr(st.args[k]);
+      out = out + ", ";
+      out = out + fmt_expr(st.args[k]);
       k = k + 1;
     }
     return out + ");\n";
@@ -383,7 +387,8 @@ pub fn fmt_line(st: *Stmt, depth: usize) -> string {
     let mut out: string = ind + "return";
     match st.val {
       Option.Some(e) => {
-        out = out + " " + fmt_expr(e);
+        out = out + " ";
+        out = out + fmt_expr(e);
       },
       Option.None => {},
     }
@@ -454,7 +459,8 @@ pub fn fmt_line(st: *Stmt, depth: usize) -> string {
     }
     out = out + " {\n";
     out = out + fmt_block(st.body, depth + 1);
-    out = out + ind + "}";
+    out = out + ind;
+    out = out + "}";
     // else-if chains ride inline; a plain else takes two spaces
     let mut tail: []*Stmt = st.body2;
     let mut d: usize = depth;
@@ -469,20 +475,23 @@ pub fn fmt_line(st: *Stmt, depth: usize) -> string {
       }
       out = out + " {\n";
       out = out + fmt_block(nx.body, d + 1);
-      out = out + ind_of(d) + "}";
+      out = out + ind_of(d);
+      out = out + "}";
       tail = nx.body2;
     }
     if len(tail) > 0 {
       out = out + " else  {\n";
       out = out + fmt_block(tail, depth + 1);
-      out = out + ind + "}";
+      out = out + ind;
+      out = out + "}";
     }
     return out + "\n";
   }
   if st.tag == parse.ST_WHILE {
     let mut out: string = ind;
     if len(st.name) > 0 {
-      out = out + st.name + ": ";
+      out = out + st.name;
+      out = out + ": ";
     }
     out = out + "while ";
     match st.val {
@@ -498,7 +507,8 @@ pub fn fmt_line(st: *Stmt, depth: usize) -> string {
   if st.tag == parse.ST_LOOP {
     let mut out: string = ind;
     if len(st.name) > 0 {
-      out = out + st.name + ": ";
+      out = out + st.name;
+      out = out + ": ";
     }
     out = out + "loop {\n";
     out = out + fmt_block(st.body, depth + 1);
@@ -555,13 +565,15 @@ fn fmt_fn(fd: *FnDef) -> string {
     }
     out = out + fd.params[k];
     if k < len(fd.ptypes) && len(fd.ptypes[k]) > 0 {
-      out = out + ": " + fd.ptypes[k];
+      out = out + ": ";
+      out = out + fd.ptypes[k];
     }
     k = k + 1;
   }
   out = out + ")";
   if len(fd.rtype) > 0 {
-    out = out + " -> " + fd.rtype;
+    out = out + " -> ";
+    out = out + fd.rtype;
   }
   out = out + " {\n";
   out = out + fmt_block(fd.body, 1);
@@ -579,10 +591,12 @@ pub fn fmt_prog(prog: *Prog) -> string {
       }
       out = out + prog.consts[c];
     } else {
-      out = out + "const " + prog.consts[c];
+      out = out + "const ";
+      out = out + prog.consts[c];
     }
     if len(prog.ctypes[c]) > 0 {
-      out = out + ": " + prog.ctypes[c];
+      out = out + ": ";
+      out = out + prog.ctypes[c];
     }
     out = out + " = " + fmt_expr(prog.cexprs[c]) + ";\n\n";
     c = c + 1;

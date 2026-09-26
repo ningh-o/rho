@@ -125,7 +125,8 @@ fn verbatim_text(s: string, start: usize, end: usize) -> string {
   let mut run: usize = start;
   while i < end {
     if s[i] == 92 {
-      out = out + s[run..i] + "\\\\";
+      out = out + s[run..i];
+      out = out + "\\\\";
       i = i + 1;
       run = i;
     } else {
