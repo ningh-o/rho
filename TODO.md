@@ -781,6 +781,13 @@ section — no placeholder stages. boot is the reference compiler.
       mirror keeps its original sequencing: `std.wasm`, the
       encoder/decoder package written in rho, still lands with the
       differential closed, byte-pinned against boot's assembler.
+      Two riders land before the byte-pin freezes (ruled
+      2026-09-27): the per-function `$tco` loop wrapper is emitted
+      only for functions with a direct self tail call — today every
+      body gets one, and the wholesale re-pin would freeze the wart
+      into the goldens; and the T3.2 re-pin ships with a reseed tool
+      (the archive's tools/reseed.sh shape) so re-pinning the canary
+      stays a repeatable operation, not a one-off.
 - [ ] **T3.10** The bug-fix-wave mirror re-adaptation (opened
       2026-09-26): boot grew six real fixes (value-struct field
       stores, float compound assignment, the narrow-width shift mask,
@@ -939,7 +946,12 @@ section — no placeholder stages. boot is the reference compiler.
       environment reference leg (ruling 2026-09-27), retired behind
       an explicit opt-in flag once the interpreter has carried the
       full self-chain plus one full gate cycle green. Production and
-      site paths never reference it.
+      site paths never reference it. Boot's own C stays portable
+      enough to compile to wasm again — the archive's `__wasm__`
+      build returns and the site embeds the real compiler — and boot
+      exposes a capability face (which kernel imports and mechanisms
+      it supports) so hosts and the course can feature-detect and
+      flag what boot does not support.
 - [ ] **T3.14** The mirror source split (opened 2026-09-27): the
       self-hosted compiler is 15.9k lines across six files with
       emit.rho alone at 10.9k — restructure it into the module
@@ -964,6 +976,13 @@ section — no placeholder stages. boot is the reference compiler.
       itself, it fetches, pins, and lays out trees that `rho build`
       already consumes. Unblocks T4.3/T4.5 — the std packages become
       real, installable packages the compiler can consume.
+- [ ] **T3.16** The language server (ruled needed 2026-09-27): the
+      archive's tools/lsp is the reference shape — the compiler runs
+      as a worker, the LSP wraps its diagnostics and answers, a VS
+      Code extension rides the same worker. Lands after the
+      diagnostics context upgrade (anchor notes, candidate naming)
+      so the server surfaces the checker's real face, not the bare
+      one-liners.
 
 ## Phase 4 — kernel boundary and the std library
 
@@ -997,7 +1016,11 @@ section — no placeholder stages. boot is the reference compiler.
       asset = one generation past the seed + `wasm-opt -Oz
       --enable-bulk-memory` — wasm-opt stays the site-asset shrinker
       until the in-compiler optimizer (§13) demonstrably matches its
-      effect, then retires.
+      effect, then retires. Rulings 2026-09-27: the archive site
+      (tour, real-compiler playground, spec reader) is the floor to
+      EXCEED, not a template to trace; tutorials may run either
+      compiler — boot or the self-hosted one — and anything boot does
+      not support is surfaced as a hint from T3.13's capability face.
 - [ ] **T5.2** Course (the bilingual app): all live blocks re-pinned to
       the new language; the honest-limitation notes rewrite (aggregate
       let-position now legal; `?T` non-null taught as the one true
