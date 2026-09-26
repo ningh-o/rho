@@ -4,14 +4,21 @@
 (module
   (import "wasi_snapshot_preview1" "fd_write"
     (func $fd_write (param i32 i32 i32 i32) (result i32)))
+  (import "wasi_snapshot_preview1" "fd_read"
+    (func $fd_read (param i32 i32 i32 i32) (result i32)))
+  (import "wasi_snapshot_preview1" "fd_close"
+    (func $fd_close (param i32) (result i32)))
+  (import "wasi_snapshot_preview1" "path_open"
+    (func $path_open
+      (param i32 i32 i32 i32 i32 i64 i64 i32 i32) (result i32)))
   (import "wasi_snapshot_preview1" "proc_exit"
     (func $proc_exit (param i32)))
-
   ;; memory layout: [0,64) scratch/iov, [64, 64+FMT_CAP) fmt buffer,
-  ;; data literals follow, then the bump heap.
-  (memory (export "memory") 1)
-  (global $heap (mut i32) (i32.const 65536))
-
+  ;; data literals follow, then the bump heap. The memory line
+  ;; itself is emitted at assembly with the data top known (a
+  ;; program-sized string pool must fit at instantiation).
+  (global $data_top i32 (i32.const HEAPBASE))
+  (global $heap (mut i32) (i32.const HEAPBASE))
   ;; bump allocation, zeroed, with the 24-byte header
   ;; {rc,sz,wrc,drop} at block start; payload at +24
   (func $rho_alloc (param $sz i32) (result i32)
@@ -47,20 +54,22 @@
     (i32.store (i32.add (local.get $p) (i32.const 8)) (i32.const 0)) ;; wrc
     (i32.store (i32.add (local.get $p) (i32.const 12)) (i32.const -1)) ;; drop
     (local.get $p))
-
   ;; rc glue
   (func $rho_retain (param $p i32)
-    ;; statics (data literals below the heap) are immortal
-    (if (i32.lt_u (local.get $p) (i32.const 65536)) (then (return)))
+    ;; statics (data literals below the heap) are immortal —
+    ;; the data region spans megabytes when the program is large
+    (if (i32.lt_u (local.get $p) (global.get $data_top)) (then (return)))
     (if (i32.eqz (local.get $p)) (then (return)))
     (i32.store (i32.sub (local.get $p) (i32.const 24))
       (i32.add (i32.load (i32.sub (local.get $p) (i32.const 24)))
                (i32.const 1))))
-
   (func $rho_release (param $p i32)
     (local $rc i32) (local $drop i32)
-    ;; statics (data literals below the heap) are immortal
-    (if (i32.lt_u (local.get $p) (i32.const 65536)) (then (return)))
+    ;; statics (data literals below the heap) are immortal —
+    ;; the data region spans megabytes when the program is large
+    ;; (retain reads data_top; release owed it the same law — a
+    ;; 64K cutoff decrements pool bytes on large programs)
+    (if (i32.lt_u (local.get $p) (global.get $data_top)) (then (return)))
     (if (i32.eqz (local.get $p)) (then (return)))
     (local.set $rc (i32.load (i32.sub (local.get $p) (i32.const 24))))
     (local.set $rc (i32.sub (local.get $rc) (i32.const 1)))
@@ -75,21 +84,14 @@
         (if (i32.ge_s (local.get $drop) (i32.const 0))
           (then (call_indirect (type $dropfn) (local.get $p)
                                (local.get $drop)))))))
-
   (type $dropfn (func (param i32)))
-  ;; EMITTER-OWNS-BEGIN (standalone-test table; stripped from the embed)
-  (table 4 funcref)
-  (elem (i32.const 0) $rho_nodrop $rho_nodrop $rho_nodrop $rho_nodrop)
-  ;; EMITTER-OWNS-END
   (func $rho_nodrop (param $p i32))
-
   ;; raw write to fd 1 with the scratch iov at 0
   (func $print_mem (param $p i32) (param $n i32)
     (i32.store (i32.const 0) (local.get $p))
     (i32.store (i32.const 4) (local.get $n))
     (drop (call $fd_write (i32.const 1) (i32.const 0)
                           (i32.const 1) (i32.const 16))))
-
   ;; write to stderr
   (func $eprint_mem (param $p i32) (param $n i32)
     (i32.store (i32.const 0) (local.get $p))
@@ -97,6 +99,78 @@
     (drop (call $fd_write (i32.const 2) (i32.const 0)
                           (i32.const 1) (i32.const 16))))
 
+  ;; ---- the wasi raw tail grows for std.io (T4.4) ----------------
+  ;; One wrapper per syscall the std.io package needs, nothing more.
+  ;; Convention: a count (nread/nwritten/fd) comes back >= 0 and a
+  ;; failure comes back as -errno (wasi errnos are small positives),
+  ;; so the rho side maps one compare onto Result. Scratch: the iov
+  ;; sits at [0,8) and the count/out-fd slot at [8,12) — sequential
+  ;; use only, like every other scratch window here.
+  ;;
+  ;; fd 3 is the preopen directory the host hands the module (wasmtime
+  ;; --dir .); path_open(mode 0) opens read-only, path_open(mode 1)
+  ;; creates-or-truncates for writing. Anything else is std.io's job
+  ;; to layer, not the kernel's.
+  ;;
+  ;; The byte-window law: these wrappers treat a caller buffer as a
+  ;; raw byte window — packed, one byte per address — exactly the view
+  ;; every string payload and the fmt scratch already use. It is NOT
+  ;; the []u8 element view (slice elements ride 4-byte slots), so a
+  ;; buffer handed here must never be read back by element indexing;
+  ;; consume it through the packed mirror (__string_from), which reads
+  ;; the same bytes back.
+
+  ;; raw read, byte-packed fill: nread, or -errno
+  (func $rho_fd_read_packed (param $fd i32) (param $buf i32)
+    (param $cap i32)
+    (result i32)
+    (local $err i32)
+    (i32.store (i32.const 0) (local.get $buf))
+    (i32.store (i32.const 4) (local.get $cap))
+    (local.set $err (call $fd_read (local.get $fd) (i32.const 0)
+                                   (i32.const 1) (i32.const 8)))
+    (if (i32.ne (local.get $err) (i32.const 0))
+      (then (return (i32.sub (i32.const 0) (local.get $err)))))
+    (i32.load (i32.const 8)))
+
+  ;; raw write to an opened fd: nwritten, or -errno
+  (func $rho_fd_write (param $fd i32) (param $buf i32) (param $n i32)
+    (result i32)
+    (local $err i32)
+    (i32.store (i32.const 0) (local.get $buf))
+    (i32.store (i32.const 4) (local.get $n))
+    (local.set $err (call $fd_write (local.get $fd) (i32.const 0)
+                                    (i32.const 1) (i32.const 8)))
+    (if (i32.ne (local.get $err) (i32.const 0))
+      (then (return (i32.sub (i32.const 0) (local.get $err)))))
+    (i32.load (i32.const 8)))
+
+  ;; raw close: 0, or -errno
+  (func $rho_fd_close (param $fd i32) (result i32)
+    (i32.sub (i32.const 0) (call $fd_close (local.get $fd))))
+
+  ;; open under the preopen: the new fd, or -errno. mode 0 = read,
+  ;; mode 1 = write (create + truncate). Rights ride the mode: READ
+  ;; (bit 1) or WRITE (bit 6); oflags CREAT|TRUNC (9) on the write side.
+  (func $rho_path_open (param $pp i32) (param $pl i32) (param $mode i32)
+    (result i32)
+    (local $err i32) (local $oflags i32) (local $rights i64)
+    (if (i32.eqz (local.get $mode))
+      (then
+        (local.set $oflags (i32.const 0))
+        (local.set $rights (i64.const 2)))
+      (else
+        (local.set $oflags (i32.const 9))
+        (local.set $rights (i64.const 64))))
+    (local.set $err (call $path_open
+      (i32.const 3) (i32.const 0)
+      (local.get $pp) (local.get $pl)
+      (local.get $oflags)
+      (local.get $rights) (local.get $rights)
+      (i32.const 0) (i32.const 8)))
+    (if (i32.ne (local.get $err) (i32.const 0))
+      (then (return (i32.sub (i32.const 0) (local.get $err)))))
+    (i32.load (i32.const 8)))
   ;; format-build scratch: [64, 4096); overflow = defined panic
   ;; (grew from 2048: the self-hosted compiler prints program-sized
   ;; WAT through it — the data literals start at 4096, so the scratch
@@ -142,7 +216,6 @@
         (call $fb_push (i32.const 1024) (i32.const 1))
         (call $fb_u64 (i64.sub (i64.const 0) (local.get $v))))
       (else (call $fb_u64 (local.get $v)))))
-
   ;; copy the current scratch contents to a block payload
   (func $fb_copy_to (param $dst i32)
     (local $i i32)
@@ -154,7 +227,6 @@
         (i32.load8_u (i32.add (i32.const 64) (local.get $i))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $c))))
-
   ;; weak handle: block stores the target's header ptr; wrc tracks
   (func $rho_weak_from (param $payload i32) (result i32)
     (local $p i32)
@@ -166,7 +238,6 @@
     (i32.store (local.get $p)
                (i32.sub (local.get $payload) (i32.const 24)))
     (local.get $p))
-
   ;; weak.get: ?*T — the target payload when alive, None when dead
   (func $rho_weak_alive (param $wp i32) (result i32)
     (i32.gt_s
@@ -174,7 +245,6 @@
       (i32.const 0)))
   (func $rho_weak_payload (param $wp i32) (result i32)
     (i32.add (i32.load (local.get $wp)) (i32.const 24)))
-
   ;; decimal u64 into the fmt buffer end [fmt_lo, fmt_hi)
   (func $fmt_u64 (param $v i64)
     (local $i i32)
@@ -195,10 +265,8 @@
         (br $d)))
     (call $print_mem (i32.sub (i32.const 1024) (local.get $i))
                      (local.get $i)))
-
   (func $print_u64 (param $v i64)
     (call $fmt_u64 (local.get $v)))
-
   (func $print_i64 (param $v i64)
     (if (i64.lt_s (local.get $v) (i64.const 0))
       (then
@@ -207,21 +275,28 @@
         ;; careful: MIN/-1 wraps; magnitude via u64 arithmetic is exact
         (call $fmt_u64 (i64.sub (i64.const 0) (local.get $v))))
       (else (call $fmt_u64 (local.get $v)))))
-
-  ;; panic: "panic: <msg>\n" to stderr, exit 101
+  ;; panic: "panic: <msg>\n" to stderr, exit 101 — one write per
+  ;; piece (wasmtime 40 drops trailing iovs in multi-iov writes)
   (func $rho_panic (param $p i32) (param $n i32)
     (i32.store (i32.const 0) (i32.const 2048))
     (i32.store (i32.const 4) (i32.const 7))
-    (i32.store (i32.const 8) (local.get $p))
-    (i32.store (i32.const 12) (local.get $n))
-    (i32.store8 (i32.const 2056) (i32.const 10))
-    (i32.store (i32.const 16) (i32.const 2056))
-    (i32.store (i32.const 20) (i32.const 1))
     (drop (call $fd_write (i32.const 2) (i32.const 0)
-                          (i32.const 3) (i32.const 24)))
+                          (i32.const 1) (i32.const 24)))
+    (i32.store (i32.const 0) (local.get $p))
+    (i32.store (i32.const 4) (local.get $n))
+    (drop (call $fd_write (i32.const 2) (i32.const 0)
+                          (i32.const 1) (i32.const 24)))
+    (i32.store8 (i32.const 2056) (i32.const 10))
+    (i32.store (i32.const 0) (i32.const 2056))
+    (i32.store (i32.const 4) (i32.const 1))
+    (drop (call $fd_write (i32.const 2) (i32.const 0)
+                          (i32.const 1) (i32.const 24)))
     (call $proc_exit (i32.const 101)))
-
   (data (i32.const 2048) "panic: ")
+  ;; EMITTER-OWNS-BEGIN (standalone-test table; stripped from the embed)
+  (table 4 funcref)
+  (elem (i32.const 0) $rho_nodrop $rho_nodrop $rho_nodrop $rho_nodrop)
+  ;; EMITTER-OWNS-END
 
   ;; smoke: _start prints a few values (kept out of production builds
   ;; by the emitter — this text is embedded piecewise, not wholesale)

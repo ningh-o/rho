@@ -1,0 +1,37 @@
+// out: empty ok
+// spec: TODO T4.4 + design §4 (error channel)
+// The zero-byte boundary through the pub face: write_file("") makes a
+// 0-byte file, read_file hands back "".
+use std.io;
+
+fn main() -> i32 {
+  let path: string = "tmp/t44-io-fixtures/bb-empty.txt";
+  let w: Result[usize, IoError] = io.write_file(path, "");
+  match w {
+    Result.Ok(n) => {
+      if n != 0 as usize {
+        printf("write count {}\n", n);
+        return 1;
+      }
+    },
+    Result.Err(e) => {
+      printf("write failed: {}\n", e.to_str());
+      return 1;
+    },
+  }
+  let r: Result[string, IoError] = io.read_file(path);
+  match r {
+    Result.Ok(s) => {
+      if s == "" && len(s) == 0 as usize {
+        printf("empty ok\n");
+        return 0;
+      }
+      printf("unexpected contents: {}\n", s);
+      return 1;
+    },
+    Result.Err(e) => {
+      printf("read failed: {}\n", e.to_str());
+      return 1;
+    },
+  }
+}

@@ -1,0 +1,235 @@
+// std/io.rho — T4.4: stdin lines and whole-file read/write.
+//
+// The kernel's raw wasi tail (fd_read_packed / fd_write / fd_close /
+// path_open, prelude-declared as the __ face) is exactly the mechanism
+// this package needs; everything user-facing is layered here. Errors
+// ride Result/IoError and Option per §4 — panic is a programmer bug,
+// never an io outcome.
+//
+// The byte-window law: fd_read_packed's []u8 is a raw byte window —
+// the kernel fills it packed (one byte per address, the view every
+// string payload uses), never the []u8 element view. The window is
+// therefore never element-indexed here; bytes cross into string land
+// only through __string_from, which reads the same packed view back,
+// and through string indexing after that.
+//
+// Environment law: fd 3 is the host's preopen directory (wasmtime
+// --dir .), so paths are relative to the compiler process's working
+// directory. read_line consumes one byte at a time (stateless: no
+// buffer of pending bytes lives between calls); read_file reads in
+// 8 KB chunks.
+//
+// Assembly cost, by design for now (spec §5 names the per-character
+// form an anti-pattern the optimizer may fix later): read_line's
+// per-byte `acc = acc + ch` is the statelessness law's price — a
+// chunked read would need a buffer of pending bytes living between
+// calls. read_file assembles per 8 KB chunk (O(N²/8192) byte copies,
+// not per-character); an O(N) fill needs a byte-addressed mutable
+// accumulator, which today's immutable-string `+` cannot express —
+// the mechanism ask is ledgered in WORKTREE-NOTES.md.
+//
+// spec: TODO T4.4 + design §4 (error channel), §14 (kernel and std)
+
+// What went wrong, in the granularity the raw tail can name. NotFound
+// and Access are the two lanes a caller can act on (wasi ENOENT 44 /
+// ENOTCAPABLE 63); everything else keeps the raw errno verbatim.
+pub enum IoError {
+  NotFound,
+  Access,
+  Other(i32),
+}
+
+fn IoError.to_str(self: IoError) -> string {
+  return match self {
+    IoError.NotFound => "not-found",
+    IoError.Access => "access",
+    IoError.Other(e) => "errno-" + e.to_str(),
+  };
+}
+
+// -errno from the raw face -> the named lanes
+fn map_err(neg: i32) -> IoError {
+  let e: i32 = 0 - neg;
+  if e == 44 {
+    return IoError.NotFound;
+  }
+  if e == 63 {
+    return IoError.Access;
+  }
+  return IoError.Other(e);
+}
+
+// open under the preopen: mode 0 = read, mode 1 = write (create +
+// truncate); the kernel pins fd 3 as the preopen
+fn open_fd(path: string, mode: i32) -> Result[i32, IoError] {
+  let fd: i32 = __path_open(path, mode);
+  if fd < 0 {
+    return Result.Err(map_err(fd));
+  }
+  return Result.Ok(fd);
+}
+
+// One line from stdin, the newline consumed. Ok(None) at clean end of
+// input; a final line without a trailing newline still comes back as
+// Ok(Some). Errors (read failures) are Err, never silent EOF.
+pub fn read_line() -> Result[?string, IoError] {
+  let mut one: []u8 = make([]u8, 1);
+  let mut acc: string = "";
+  loop {
+    let n: i32 = __fd_read_packed(0, mut one);
+    if n < 0 {
+      return Result.Err(map_err(n));
+    }
+    if n == 0 {
+      if len(acc) == 0 {
+        return Result.Ok(Option.None);
+      }
+      return Result.Ok(Option.Some(acc));
+    }
+    // the byte crosses into string land packed-side: the window is
+    // never element-indexed (byte-window law, file header)
+    let ch: string = __string_from(one, n as usize);
+    if ch[0] == 10 {
+      return Result.Ok(Option.Some(acc));
+    }
+    acc = acc + ch;
+  }
+}
+
+// The whole file as one string (bytes verbatim; UTF-8 is not this
+// package's job). An empty file reads as "".
+pub fn read_file(path: string) -> Result[string, IoError] {
+  let fd: i32 = open_fd(path, 0)?;
+  let mut acc: string = "";
+  let mut buf: []u8 = make([]u8, 8192);
+  loop {
+    let n: i32 = __fd_read_packed(fd, mut buf);
+    if n < 0 {
+      __fd_close(fd);
+      return Result.Err(map_err(n));
+    }
+    if n == 0 {
+      break;
+    }
+    acc = acc + __string_from(buf, n as usize);
+  }
+  let c: i32 = __fd_close(fd);
+  if c < 0 {
+    return Result.Err(map_err(c));
+  }
+  return Result.Ok(acc);
+}
+
+// Write the whole contents: creates the file, truncates an existing
+// one. Ok carries the byte count the kernel reports written — the raw
+// face's fd_write may legally write short, so a caller wanting a
+// whole-file guarantee compares it against len(contents) (for regular
+// files under wasmtime the count is always the full length today).
+pub fn write_file(path: string, contents: string) -> Result[usize, IoError] {
+  let fd: i32 = open_fd(path, 1)?;
+  let n: i32 = __fd_write(fd, contents);
+  if n < 0 {
+    __fd_close(fd);
+    return Result.Err(map_err(n));
+  }
+  let c: i32 = __fd_close(fd);
+  if c < 0 {
+    return Result.Err(map_err(c));
+  }
+  return Result.Ok(n as usize);
+}
+
+// ---------------------------------------------------------- white-box
+// The package's own blocks: they see the module interior (the §17
+// verb rebuilds this file per test). The // in: header feeds
+// read_line's stdin; the write-side fixtures live under
+// tmp/t44-io-fixtures/ and every write truncates, so the blocks are
+// order-independent and repeatable.
+//
+// in: tmp/t44-io-fixtures/stdin.txt
+
+test "map_err picks the named lanes" {
+  assert_eq(map_err(-44), IoError.NotFound);
+  assert_eq(map_err(-63), IoError.Access);
+  assert_eq(map_err(-8), IoError.Other(8));
+  assert_eq(map_err(-1), IoError.Other(1));
+}
+
+test "write then read roundtrips" {
+  let w = write_file("tmp/t44-io-fixtures/wb-roundtrip.txt",
+                     "roundtrip payload");
+  match w {
+    Result.Ok(n) => assert_eq(n, 17 as usize),
+    Result.Err(e) => panic("write failed: " + e.to_str()),
+  }
+  let r = read_file("tmp/t44-io-fixtures/wb-roundtrip.txt");
+  match r {
+    Result.Ok(s) => assert_eq(s, "roundtrip payload"),
+    Result.Err(e) => panic("read failed: " + e.to_str()),
+  }
+}
+
+test "write_file truncates an existing file" {
+  let a = write_file("tmp/t44-io-fixtures/wb-truncate.txt",
+                     "a much longer first payload");
+  match a {
+    Result.Ok(_) => {},
+    Result.Err(e) => panic("first write failed: " + e.to_str()),
+  }
+  let b = write_file("tmp/t44-io-fixtures/wb-truncate.txt", "short");
+  match b {
+    Result.Ok(n) => assert_eq(n, 5 as usize),
+    Result.Err(e) => panic("second write failed: " + e.to_str()),
+  }
+  let r = read_file("tmp/t44-io-fixtures/wb-truncate.txt");
+  match r {
+    Result.Ok(s) => assert_eq(s, "short"),
+    Result.Err(e) => panic("read failed: " + e.to_str()),
+  }
+}
+
+test "empty write and empty read" {
+  let w = write_file("tmp/t44-io-fixtures/wb-empty.txt", "");
+  match w {
+    Result.Ok(n) => assert_eq(n, 0 as usize),
+    Result.Err(e) => panic("write failed: " + e.to_str()),
+  }
+  let r = read_file("tmp/t44-io-fixtures/wb-empty.txt");
+  match r {
+    Result.Ok(s) => assert_eq(s, ""),
+    Result.Err(e) => panic("read failed: " + e.to_str()),
+  }
+}
+
+test "missing file is NotFound" {
+  let r = read_file("tmp/t44-io-fixtures/definitely-not-there.txt");
+  match r {
+    Result.Err(e) => assert_eq(e, IoError.NotFound),
+    Result.Ok(_) => panic("a missing file read as Ok"),
+  }
+}
+
+test "traversal above the preopen is Access" {
+  let r = read_file("../outside-the-worktree.txt");
+  match r {
+    Result.Err(e) => assert_eq(e, IoError.Access),
+    Result.Ok(_) => panic("a path above the preopen read as Ok"),
+  }
+}
+
+test "read_line returns lines, the partial tail, then None" {
+  let mut seen: string = "";
+  loop {
+    let r = read_line();
+    let mut line: ?string = Option.None;
+    match r {
+      Result.Ok(o) => { line = o; },
+      Result.Err(e) => panic("read_line failed: " + e.to_str()),
+    }
+    match line {
+      Option.None => { break; },
+      Option.Some(s) => { seen = seen + "[" + s + "]"; },
+    }
+  }
+  assert_eq(seen, "[first line][second line][no-newline-tail]");
+}

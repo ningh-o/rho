@@ -1773,6 +1773,110 @@ static void emit_expr(FnCx *cx, NodeRef er, size_t dst) {
       op(cx, "(call $proc_exit %s)\n", L(cx, v));
       return;
     }
+    // ---- the raw wasi tail (T4.4): std.io's private window. Counts
+    // come back >= 0, failures as -errno; the kernel wrappers hide the
+    // iov and the count slot. The buf argument is a raw byte window —
+    // the kernel fills it byte-packed (never the []u8 element view),
+    // so callers consume it only through __string_from below, which
+    // reads the same packed view back.
+    if (is_pre && strcmp(callee->name, "__fd_read_packed") == 0) {
+      Node *aw0 = reflist_len(e->list) ? node_get(reflist_at(e->list, 0))
+                                       : NULL;
+      Node *aw1 = reflist_len(e->list) > 1
+                      ? node_get(reflist_at(e->list, 1))
+                      : NULL;
+      size_t fd = cx_fresh(cx, ty_i32);
+      if (aw0 && aw0->kind == NT_POSARG)
+        emit_expr(cx, aw0->a, fd);
+      // the slice temp rides its own type: {owner, data, len} is
+      // three vregs, and one short here corrupts every later temp
+      size_t buf = 0;
+      if (aw1 && aw1->kind == NT_POSARG) {
+        Type *at = (Type *)node_get(aw1->a)->sem;
+        buf = cx_fresh(cx, at ? at : ty_i32);
+        emit_expr(cx, aw1->a, buf);
+      }
+      op(cx, "(local.set %zu (call $rho_fd_read_packed %s %s %s))\n", dst,
+         L(cx, fd), L(cx, buf + 1), L(cx, buf + 2));
+      return;
+    }
+    if (is_pre && strcmp(callee->name, "__fd_write") == 0) {
+      Node *aw0 = reflist_len(e->list) ? node_get(reflist_at(e->list, 0))
+                                       : NULL;
+      Node *aw1 = reflist_len(e->list) > 1
+                      ? node_get(reflist_at(e->list, 1))
+                      : NULL;
+      size_t fd = cx_fresh(cx, ty_i32);
+      if (aw0 && aw0->kind == NT_POSARG)
+        emit_expr(cx, aw0->a, fd);
+      size_t s = cx_fresh(cx, ty_string); // string: {addr, len}
+      if (aw1 && aw1->kind == NT_POSARG)
+        emit_expr(cx, aw1->a, s);
+      op(cx, "(local.set %zu (call $rho_fd_write %s %s %s))\n", dst,
+         L(cx, fd), L(cx, s), L(cx, s + 1));
+      return;
+    }
+    if (is_pre && strcmp(callee->name, "__fd_close") == 0) {
+      Node *aw0 = reflist_len(e->list) ? node_get(reflist_at(e->list, 0))
+                                       : NULL;
+      size_t fd = cx_fresh(cx, ty_i32);
+      if (aw0 && aw0->kind == NT_POSARG)
+        emit_expr(cx, aw0->a, fd);
+      op(cx, "(local.set %zu (call $rho_fd_close %s))\n", dst, L(cx, fd));
+      return;
+    }
+    if (is_pre && strcmp(callee->name, "__path_open") == 0) {
+      Node *aw0 = reflist_len(e->list) ? node_get(reflist_at(e->list, 0))
+                                       : NULL;
+      Node *aw1 = reflist_len(e->list) > 1
+                      ? node_get(reflist_at(e->list, 1))
+                      : NULL;
+      size_t p = cx_fresh(cx, ty_string);
+      if (aw0 && aw0->kind == NT_POSARG)
+        emit_expr(cx, aw0->a, p);
+      size_t mode = cx_fresh(cx, ty_i32);
+      if (aw1 && aw1->kind == NT_POSARG)
+        emit_expr(cx, aw1->a, mode);
+      op(cx, "(local.set %zu (call $rho_path_open %s %s %s))\n", dst,
+         L(cx, p), L(cx, p + 1), L(cx, mode));
+      return;
+    }
+    if (is_pre && strcmp(callee->name, "__string_from") == 0) {
+      // materialize the first n bytes of the buffer's byte window as
+      // a fresh string: one allocation plus a byte copy (the read
+      // side of the format build-then-copy, and the packed mirror of
+      // fd_read_packed's fill — load8_u/store8 both sides)
+      Node *aw0 = reflist_len(e->list) ? node_get(reflist_at(e->list, 0))
+                                       : NULL;
+      Node *aw1 = reflist_len(e->list) > 1
+                      ? node_get(reflist_at(e->list, 1))
+                      : NULL;
+      size_t buf = 0;
+      if (aw0 && aw0->kind == NT_POSARG) {
+        Type *at = (Type *)node_get(aw0->a)->sem;
+        buf = cx_fresh(cx, at ? at : ty_i32); // {owner, data, len}
+        emit_expr(cx, aw0->a, buf);
+      }
+      size_t n = cx_fresh(cx, ty_usize);
+      if (aw1 && aw1->kind == NT_POSARG)
+        emit_expr(cx, aw1->a, n);
+      size_t blk = cx_fresh(cx, ty_i32);
+      size_t i = cx_fresh(cx, ty_i32);
+      op(cx, "(local.set %zu (call $rho_alloc %s))\n", blk, L(cx, n));
+      op(cx, "(local.set %zu (i32.const 0))\n", i);
+      op(cx, "(block $sf_d (loop $sf_c\n");
+      op(cx, "  (br_if $sf_d (i32.ge_u %s %s))\n", L(cx, i), L(cx, n));
+      op(cx, "  (i32.store8 (i32.add (i32.add %s (i32.const 24)) %s)\n",
+         L(cx, blk), L(cx, i));
+      op(cx, "    (i32.load8_u (i32.add %s %s)))\n", L(cx, buf + 1),
+         L(cx, i));
+      op(cx, "  (local.set %zu (i32.add %s (i32.const 1)))\n", i, L(cx, i));
+      op(cx, "  (br $sf_c)))\n");
+      op(cx, "(local.set %zu (i32.add %s (i32.const 24)))\n", dst,
+         L(cx, blk));
+      op(cx, "(local.set %zu %s)\n", dst + 1, L(cx, n));
+      return;
+    }
     // fn value held in a local: call through the table
     VarInfo *fvv = cx_var(cx, callee->name);
     if (fvv && fvv->ty && fvv->ty->kind == TY_FN) {
@@ -3173,6 +3277,11 @@ static void emit_match(FnCx *cx, NodeRef er, size_t dst) {
         opened = false;
         continue;
       }
+      // the arm body runs inside the test's (if (then — structured
+      // nesting that br's relative depth must count, or a break inside
+      // an arm exits the wrong label (hangs the enclosing loop)
+      if (opened)
+        cx->depth++;
       // bind pattern locals: a variant pattern skips the tag slot; a
       // top-level binder binds the whole subject
       cx->scope++;
@@ -3196,7 +3305,10 @@ static void emit_match(FnCx *cx, NodeRef er, size_t dst) {
         emit_expr(cx, arm->c, gv);
         op(cx, "(if (local.get %zu) (then\n", gv);
         guard_open = true;
+        cx->depth++;
       }
+      if (payload_opens > 0)
+        cx->depth += (int)payload_opens;
       // arm value
       if (dst != SIZE_MAX) {
         Node *ab0 = node_get(arm->b);
@@ -3225,17 +3337,23 @@ static void emit_match(FnCx *cx, NodeRef er, size_t dst) {
       // the matched flag rides inside every opened test (payload
       // literals and guards): an arm only latches when its body ran
       op(cx, "(local.set %zu (i32.const 1))\n", matched);
+      if (payload_opens > 0)
+        cx->depth -= (int)payload_opens;
       for (size_t o = 0; o < payload_opens; o++)
         op(cx, "))\n");
-      if (guard_open)
+      if (guard_open) {
+        cx->depth--;
         op(cx, "))\n");
+      }
       cx->scope--;
       // the binder ENTRIES stay until the block-end walk releases them
       // (rc timing unchanged); cx_var skips entries whose scope has
       // exited, so a stale binder can no longer shadow the outer
       // binding after the arm
-      if (opened)
+      if (opened) {
+        cx->depth--;
         op(cx, "))\n");
+      }
     }
   }
 }

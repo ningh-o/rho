@@ -1,0 +1,27 @@
+// out: eof
+// in: tmp/t44-io-fixtures/empty.txt
+// spec: TODO T4.4 + design §4 (error channel)
+// read_line on empty input: Ok(None) at once, no line, no error.
+// (the Option unwraps in a second stage — nested variant patterns are
+// the pending_nested ledger's law, not this package's)
+use std.io;
+
+fn main() -> i32 {
+  let r: Result[?string, IoError] = io.read_line();
+  let mut line: ?string = Option.None;
+  match r {
+    Result.Ok(o) => { line = o; },
+    Result.Err(e) => {
+      printf("read failed: {}\n", e.to_str());
+      return 1;
+    },
+  }
+  match line {
+    Option.None => { printf("eof\n"); },
+    Option.Some(s) => {
+      printf("unexpected line: {}\n", s);
+      return 1;
+    },
+  }
+  return 0;
+}

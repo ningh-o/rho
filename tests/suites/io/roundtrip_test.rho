@@ -1,0 +1,34 @@
+// out: roundtrip ok: 16
+// spec: TODO T4.4 + design §4 (error channel), §14 (kernel and std)
+// write_file then read_file through the pub face, byte-exact. The
+// target lives under tmp/t44-io-fixtures/ and every write truncates,
+// so the case is order-independent.
+use std.io;
+
+fn main() -> i32 {
+  let path: string = "tmp/t44-io-fixtures/bb-roundtrip.txt";
+  let w: Result[usize, IoError] = io.write_file(path, "roundtrip bytes!");
+  let mut n: usize = 0 as usize;
+  match w {
+    Result.Ok(k) => { n = k; },
+    Result.Err(e) => {
+      printf("write failed: {}\n", e.to_str());
+      return 1;
+    },
+  }
+  let r: Result[string, IoError] = io.read_file(path);
+  match r {
+    Result.Ok(s) => {
+      if s == "roundtrip bytes!" && n == 16 as usize {
+        printf("roundtrip ok: {}\n", n);
+        return 0;
+      }
+      printf("content mismatch: {} / {}\n", n, s);
+      return 1;
+    },
+    Result.Err(e) => {
+      printf("read failed: {}\n", e.to_str());
+      return 1;
+    },
+  }
+}

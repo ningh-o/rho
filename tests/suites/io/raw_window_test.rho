@@ -1,0 +1,25 @@
+// out: raw window: [abcdefgh]
+// in: tmp/t44-io-fixtures/raw-window.txt
+// spec: TODO T4.4 + design §14 (kernel and std)
+// The byte-window law through the raw face (T4.4 polish): the kernel
+// fills fd_read_packed's buffer byte-packed and __string_from reads
+// the same packed view back — 8 of the fixture's 12 bytes in, the
+// same 8 bytes out, cap-clipped. This is the shape of the probe that
+// exposed the packed/element mismatch (a window read back through
+// []u8 element indexing — 4-byte slots — would garble the payload:
+// the first element alone loads 'abcd' as one i32).
+fn main() -> i32 {
+  let mut win: []u8 = make([]u8, 8);
+  let n: i32 = __fd_read_packed(0, mut win);
+  if n != 8 {
+    printf("short read: {}\n", n);
+    return 1;
+  }
+  let s: string = __string_from(win, n as usize);
+  if s == "abcdefgh" {
+    printf("raw window: [{}]\n", s);
+    return 0;
+  }
+  printf("window garbled: [{}]\n", s);
+  return 1;
+}

@@ -1,0 +1,53 @@
+// out: large ok: 26000
+// spec: TODO T4.4 + design §4 (error channel), §14 (kernel and std)
+// A 26,000-byte file spans four of read_file's 8 KB chunks: the
+// payload carries position markers (byte i holds 97 + i % 26) and the
+// read back verifies length, last, and both 8 KB-boundary bytes.
+use std.io;
+
+fn main() -> i32 {
+  let path: string = "tmp/t44-io-fixtures/bb-large.txt";
+  let unit: string = "abcdefghijklmnopqrstuvwxyz";
+  let mut payload: string = "";
+  let mut i: usize = 0;
+  while i < 1000 {
+    payload = payload + unit;
+    i = i + 1;
+  }
+  let w: Result[usize, IoError] = io.write_file(path, payload);
+  match w {
+    Result.Ok(n) => {
+      if n != 26000 as usize {
+        printf("write count {}\n", n);
+        return 1;
+      }
+    },
+    Result.Err(e) => {
+      printf("write failed: {}\n", e.to_str());
+      return 1;
+    },
+  }
+  let r: Result[string, IoError] = io.read_file(path);
+  match r {
+    Result.Ok(s) => {
+      if len(s) != 26000 as usize {
+        printf("read length {}\n", len(s));
+        return 1;
+      }
+      if s[0] != 97 || s[8191] != 97 + (8191 % 26) as u8 {
+        printf("boundary bytes wrong: {} {}\n", s[0], s[8191]);
+        return 1;
+      }
+      if s[8192] != 97 + (8192 % 26) as u8 || s[25999] != 122 {
+        printf("far bytes wrong: {} {}\n", s[8192], s[25999]);
+        return 1;
+      }
+      printf("large ok: {}\n", len(s));
+      return 0;
+    },
+    Result.Err(e) => {
+      printf("read failed: {}\n", e.to_str());
+      return 1;
+    },
+  }
+}

@@ -1,0 +1,15 @@
+// expect: needs a mut root binding
+// spec: TODO T4.4 + type-system.md §14 (the mut view)
+// The mut view guards the raw window (T4.4 polish), direction 2: the
+// call-site marker pairs with the mut-view parameter, but the marker
+// requires the argument's own binding to be mut — a read-only []u8
+// binding cannot be handed to the kernel to write through. This is
+// the exact hole the polish round closed: before it, a plain (non
+// mut) binding reached the raw face and the kernel wrote into it.
+// The program never compiles, so it never runs.
+fn main() -> i32 {
+  let ro: []u8 = make([]u8, 4);
+  let n: i32 = __fd_read_packed(0, mut ro);
+  printf("{}\n", n);
+  return 0;
+}

@@ -1,0 +1,34 @@
+// out: item import ok
+// spec: TODO T4.4 + module-system.md §7 (std) + §2 (item imports)
+// Item imports through the reserved directory: `use std.io.read_file;`
+// resolves std.io by the §7 rule, then binds one public item (types
+// ride inference — only the named items are imported).
+use std.io.read_file as rf;
+use std.io.write_file as wf;
+
+fn main() -> i32 {
+  let path: string = "tmp/t44-io-fixtures/bb-item.txt";
+  let w = wf(path, "item payload");
+  match w {
+    Result.Err(e) => {
+      printf("write failed: {}\n", e.to_str());
+      return 1;
+    },
+    Result.Ok(_) => {},
+  }
+  let r = rf(path);
+  match r {
+    Result.Ok(s) => {
+      if s == "item payload" {
+        printf("item import ok\n");
+        return 0;
+      }
+      printf("mismatch: {}\n", s);
+      return 1;
+    },
+    Result.Err(e) => {
+      printf("read failed: {}\n", e.to_str());
+      return 1;
+    },
+  }
+}

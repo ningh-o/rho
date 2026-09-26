@@ -119,12 +119,14 @@ int cmd_run(int argc, char **argv) {
   fclose(wf);
   char cmd[2048];
   // run through wasmtime; map traps to the panic catalog (stack
-  // overflow = defined panic, exit 101 — spec §3)
+  // overflow = defined panic, exit 101 — spec §3). --dir . preopens
+  // the working directory at fd 3: the std.io raw tail's file face
+  // (T4.4); programs that never touch files don't see it.
   // wasmtime's trap backtrace goes to a file: a trap maps to the
   // panic catalog (stack overflow = defined panic, exit 101)
   snprintf(cmd, sizeof cmd,
            "wat2wasm %s -o %s 2>/dev/null && "
-           "{ wasmtime run %s 2>/tmp/rho-trap.$$.err; rc=$?; "
+           "{ wasmtime run --dir . %s 2>/tmp/rho-trap.$$.err; rc=$?; "
            "  if grep -q -e 'wasm trap' -e 'stack overflow' "
            "/tmp/rho-trap.$$.err 2>/dev/null; then "
            "    msg=$(sed -n 's/.*wasm trap: //p' /tmp/rho-trap.$$.err "

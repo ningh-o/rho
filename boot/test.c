@@ -5,11 +5,12 @@
 //                 exit 0 passes; `// out:` / `// exit:` / `// set:`
 //                 headers pin behavior, `// expect:` demands a check
 //                 diagnostic naming every substring, `// err:` pins
-//                 stderr substrings (the panic catalog), `// pending:`
-//                 marks the expected-fail ledger for ratified law not
-//                 yet implemented (a pending case that passes prints
-//                 PROMOTE and counts as a failure until the marker
-//                 comes off).
+//                 stderr substrings (the panic catalog), `// in:`
+//                 feeds the program's stdin from a file (T4.4),
+//                 `// pending:` marks the expected-fail ledger for
+//                 ratified law not yet implemented (a pending case
+//                 that passes prints PROMOTE and counts as a failure
+//                 until the marker comes off).
 //   block tests   a top-level `test "name" { ... }` is one test: the
 //                 program is rebuilt per test with only that block
 //                 emitted (the selection rides the emission side),
@@ -80,6 +81,7 @@ typedef struct {
   Vec sets;   // of const char* — "name=value"
   Vec expect; // of const char* — check must fail naming each
   Vec err;    // of const char* — stderr must contain each
+  const char *in_file; // stdin source, or NULL (// in: — T4.4)
   const char *pending; // task id, or NULL
 } Headers;
 
@@ -115,6 +117,16 @@ static void parse_headers(const char *path, Headers *h) {
         *VPUSH(h->sets, const char *) = xstrdup(rest + 5);
       } else if (rlen > 8 && strncmp(rest, "expect: ", 8) == 0) {
         *VPUSH(h->expect, const char *) = xstrdup(rest + 8);
+      } else if (rlen > 4 && strncmp(rest, "in: ", 4) == 0) {
+        // stdin source for the run (T4.4): the program reads it
+        // through fd 0; the path is relative to the verb's cwd
+        const char *p = rest + 4;
+        size_t pl = strlen(p);
+        while (pl > 0 && (p[pl - 1] == ' ' || p[pl - 1] == '\r'))
+          pl--;
+        char *t = xstrdup(p);
+        t[pl] = 0;
+        h->in_file = t;
       } else if (rlen > 5 && strncmp(rest, "err: ", 5) == 0) {
         *VPUSH(h->err, const char *) = xstrdup(rest + 5);
       } else if (rlen >= 9 && strncmp(rest, "pending: ", 9) == 0) {
@@ -239,9 +251,11 @@ static int run_capped(const char *cmd, const char *outp, const char *errp,
 
 // emit + assemble + execute the program; returns the exit status and
 // fills the stdout/stderr captures (malloc'd, NUL-terminated).
+// `stdin_file` (may be NULL) is redirected into the program's fd 0 —
+// read_line's test leg (T4.4).
 static int run_program(const char *wat, size_t wat_len, char **out_s,
                        size_t *out_n, char **err_s, size_t *err_n,
-                       bool *timed_out) {
+                       bool *timed_out, const char *stdin_file) {
   char watp[] = "/tmp/rho-test-XXXXXX.wat";
   char wasmp[] = "/tmp/rho-test-XXXXXX.wasm";
   char outp[] = "/tmp/rho-test-XXXXXX.out";
@@ -257,11 +271,17 @@ static int run_program(const char *wat, size_t wat_len, char **out_s,
     return -1;
   }
   // wasmtime traps map to the panic catalog exactly as rho run does:
-  // "wasm trap" / stack overflow -> "panic: <msg>" on stderr, exit 101
+  // "wasm trap" / stack overflow -> "panic: <msg>" on stderr, exit 101.
+  // The run carries --dir . (the preopened directory the std.io raw
+  // tail opens files under — T4.4) and, when the case pins a stdin
+  // source, that file rides in as fd 0.
+  char stdin_redirect[1024] = "";
+  if (stdin_file)
+    snprintf(stdin_redirect, sizeof stdin_redirect, "< '%s' ", stdin_file);
   char cmd[4096];
   snprintf(cmd, sizeof cmd,
            "wat2wasm '%s' -o '%s' 2>/dev/null && "
-           "{ wasmtime run '%s' 2>/tmp/rho-trap.$$.err; rc=$?; "
+           "{ %s wasmtime run --dir . '%s' 2>/tmp/rho-trap.$$.err; rc=$?; "
            "  if grep -q -e 'wasm trap' -e 'stack overflow' "
            "/tmp/rho-trap.$$.err 2>/dev/null; then "
            "    msg=$(sed -n 's/.*wasm trap: //p' /tmp/rho-trap.$$.err "
@@ -272,7 +292,7 @@ static int run_program(const char *wat, size_t wat_len, char **out_s,
            "  fi; "
            "  cat /tmp/rho-trap.$$.err >&2 2>/dev/null; "
            "  rm -f /tmp/rho-trap.$$.err; exit $rc; }; exit 1",
-           watp, wasmp, wasmp);
+           watp, wasmp, stdin_file ? stdin_redirect : "", wasmp);
   int rc = run_capped(cmd, outp, errp, timed_out);
   unlink(watp);
   unlink(wasmp);
@@ -331,7 +351,7 @@ static bool judge_case(const TestCase *tc, const Headers *h, char **reason,
     size_t out_n = 0, err_n = 0;
     bool timed_out = false;
     int rc = run_program(wat, wat_len, &out_s, &out_n, &err_s, &err_n,
-                         &timed_out);
+                         &timed_out, h->in_file);
     if (timed_out) {
       *reason = xstrdup("timed out under the cap");
       return false;
@@ -375,7 +395,7 @@ static bool judge_case(const TestCase *tc, const Headers *h, char **reason,
   size_t out_n = 0, err_n = 0;
   bool timed_out = false;
   int rc = run_program(wat, wat_len, &out_s, &out_n, &err_s, &err_n,
-                       &timed_out);
+                       &timed_out, h->in_file);
   if (timed_out) {
     *reason = xstrdup("timed out under the cap");
     return false;

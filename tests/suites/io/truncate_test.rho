@@ -1,0 +1,46 @@
+// out: truncate ok: 5
+// spec: TODO T4.4 + design §4 (error channel)
+// write_file replaces: a shorter second write truncates, and the read
+// back sees exactly the new contents.
+use std.io;
+
+fn main() -> i32 {
+  let path: string = "tmp/t44-io-fixtures/bb-truncate.txt";
+  let a: Result[usize, IoError] =
+      io.write_file(path, "a much longer first payload");
+  match a {
+    Result.Ok(_) => {},
+    Result.Err(e) => {
+      printf("first write failed: {}\n", e.to_str());
+      return 1;
+    },
+  }
+  let b: Result[usize, IoError] = io.write_file(path, "short");
+  match b {
+    Result.Ok(n) => {
+      if n != 5 as usize {
+        printf("second write count: {}\n", n);
+        return 1;
+      }
+    },
+    Result.Err(e) => {
+      printf("second write failed: {}\n", e.to_str());
+      return 1;
+    },
+  }
+  let r: Result[string, IoError] = io.read_file(path);
+  match r {
+    Result.Ok(s) => {
+      if s == "short" {
+        printf("truncate ok: {}\n", len(s));
+        return 0;
+      }
+      printf("leftover contents: {}\n", s);
+      return 1;
+    },
+    Result.Err(e) => {
+      printf("read failed: {}\n", e.to_str());
+      return 1;
+    },
+  }
+}

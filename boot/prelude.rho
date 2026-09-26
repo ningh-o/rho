@@ -119,6 +119,48 @@ pub fn assert_eq[T: Show](a: T, b: T) {
 
 pub fn exit(code: i32) {}
 
+// ------------------------------------------------------- the raw tail
+//
+// std.io's private window onto the kernel's wasi wrappers (T4.4;
+// declared here like printf/len — the signature anchors checking, the
+// emitter lowers the call). The __ face is std.io's raw window —
+// pub only because the prelude's public names are the whole prelude
+// (§14); never for user code: counts come back >= 0 and failures
+// as -errno; fd 3 is the preopen directory; std.io wraps all of it
+// into Result/Option per §4.
+//
+// The byte-window law: fd_read_packed's buffer is a raw byte window —
+// the kernel fills it packed, one byte per address, the same view
+// every string payload and the fmt scratch use. It is NOT the []u8
+// element view (elements ride 4-byte slots), so the window must never
+// be element-indexed; consume it only through __string_from, which
+// reads the same packed view back. The parameter is a mut view (§14):
+// the kernel writes through it, so only a mut binding can be handed
+// in — the type system refuses a read-only one.
+pub fn __fd_read_packed(fd: i32, mut buf: []u8) -> i32 {
+  return 0;
+}
+
+pub fn __fd_write(fd: i32, s: string) -> i32 {
+  return 0;
+}
+
+pub fn __fd_close(fd: i32) -> i32 {
+  return 0;
+}
+
+pub fn __path_open(path: string, mode: i32) -> i32 {
+  return 0;
+}
+
+// materialize the first n bytes of buf's byte window as a fresh
+// string (the read side of the format build-then-copy: reads come
+// back as bytes, strings are immutable; packed view in, packed view
+// out — the packed mirror of fd_read_packed's fill)
+pub fn __string_from(buf: []u8, n: usize) -> string {
+  return "";
+}
+
 // ------------------------------------------------------------ floats
 //
 // Exact decimal text for f32/f64 (the to_str family, kernel-private):

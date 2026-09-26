@@ -1024,6 +1024,24 @@ bool program_load_graph(Program *p, const char *entry_path) {
     extern const char *prelude_src(void);
     g_prelude_mod = module_parse_src("<prelude>", prelude_src());
     module_prepare(p, g_prelude_mod);
+  } else {
+    // the prelude is a process-global singleton, but generic
+    // instances off its fns (assert_eq[T] and friends) checked their
+    // bodies against the module graph of the program that first
+    // instantiated them — FnDef pointers of that program's user
+    // modules. A later program re-parses its modules (module_load
+    // never caches), so those pointers dangle: its emitter would call
+    // a to_str nobody defines. Reset the chains; each program
+    // re-instantiates against its own graph (determinism holds: the
+    // chain restarts from empty every program).
+    for (Sym *s = g_prelude_mod->syms ? g_prelude_mod->syms->order_head
+                                      : NULL;
+         s; s = s->order_next) {
+      if (s->kind != SYM_FN)
+        continue;
+      for (FnDef *f = s->u.fns; f; f = f->next_overload)
+        f->instances = NULL;
+    }
   }
   program_add(p, g_prelude_mod, NULL);
   p->entry = module_load(g_arena, entry_path);

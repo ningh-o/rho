@@ -1,0 +1,28 @@
+// out: got: [first line]
+// out: got: [second line]
+// out: got: [no-newline-tail]
+// out: eof
+// in: tmp/t44-io-fixtures/stdin.txt
+// spec: TODO T4.4 + design §4 (error channel), §14 (kernel and std)
+// read_line through the pub face: three lines (the last without a
+// trailing newline), then Ok(None) at end of input.
+use std.io;
+
+fn main() -> i32 {
+  loop {
+    let r: Result[?string, IoError] = io.read_line();
+    let mut line: ?string = Option.None;
+    match r {
+      Result.Ok(o) => { line = o; },
+      Result.Err(e) => {
+        printf("read failed: {}\n", e.to_str());
+        return 1;
+      },
+    }
+    match line {
+      Option.None => { printf("eof\n"); break; },
+      Option.Some(s) => { printf("got: [{}]\n", s); },
+    }
+  }
+  return 0;
+}

@@ -1,0 +1,13 @@
+// expect: must be marked 'mut'
+// spec: TODO T4.4 + type-system.md §14 (the mut view)
+// The mut view guards the raw window (T4.4 polish), direction 1:
+// fd_read_packed's buf is a mut-view parameter (the kernel writes
+// through it), so an unmarked argument is refused — the §18 pairing
+// diagnoses the marker, not a generic overload miss. The program
+// never compiles, so it never runs.
+fn main() -> i32 {
+  let ro: []u8 = make([]u8, 4);
+  let n: i32 = __fd_read_packed(0, ro);
+  printf("{}\n", n);
+  return 0;
+}

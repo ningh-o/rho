@@ -1,0 +1,28 @@
+// out: missing -> not-found
+// out: outside -> access
+// spec: TODO T4.4 + design §4 (error channel), §14 (kernel and std)
+// The two actionable IoError lanes through the pub face: a missing
+// path reads as NotFound (wasi ENOENT 44); a path above the preopen
+// reads as Access (wasi ENOTCAPABLE 63).
+use std.io;
+
+fn main() -> i32 {
+  let m: Result[string, IoError] =
+      io.read_file("tmp/t44-io-fixtures/definitely-not-there.txt");
+  match m {
+    Result.Err(e) => { printf("missing -> {}\n", e.to_str()); },
+    Result.Ok(_) => {
+      printf("missing file read as Ok\n");
+      return 1;
+    },
+  }
+  let a: Result[string, IoError] = io.read_file("../outside-the-worktree.txt");
+  match a {
+    Result.Err(e) => { printf("outside -> {}\n", e.to_str()); },
+    Result.Ok(_) => {
+      printf("traversal read as Ok\n");
+      return 1;
+    },
+  }
+  return 0;
+}
