@@ -8129,6 +8129,43 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
     if st.tag == parse.ST_FSTORE {
       // base.f... = e — walk the field path to the slot, then store
       // (an indexed final field stores through the slice's pair)
+      if st.ret == 1 && len(st.args) > 0 {
+        // base[i].f = e — the index-first form: the element pointer
+        // loads (bounds-checked), the field stores through it at the
+        // field's own offset in the element's struct
+        let et9: string = env_slice_elemtext(env, st.name);
+        let eti9: i64 = st_index(prog, type_ptr_target(et9));
+        let fi9: i64 = st_field_index(prog, eti9, st.path[0]);
+        if eti9 >= 0 && fi9 >= 0 {
+          let a9: i64 = env_str_look(env, st.name);
+          let saddr9: i64 = (0 - a9) - 1;
+          let slen9: i64 = env_str_len_slot(env, st.name);
+          let fty9: string =
+              prog.structs[eti9 as usize].types[fi9 as usize];
+          let foff9: i64 = st_field_off(prog, eti9, fi9) * 8;
+          body = body + emit_expr(pool, st.args[0], env, prog,
+                                  nl);
+          body = body + "    (local.set $t)\n";
+          body = body + oob_check(pool, "(local.get " +
+                 slen9.to_str() + ")");
+          body = body + "    (i64.load (i32.add (i32.wrap_i64 " +
+                 "(local.get " + saddr9.to_str() +
+                 ")) (i32.mul (i32.wrap_i64 (local.get $t))" +
+                 " (i32.const 8))))\n";
+          body = body + "    (local.set $r)\n";
+          match st.val {
+            Option.Some(ev9) => {
+              body = body + emit_expr(pool, ev9, env, prog, nl);
+            },
+            Option.None => {},
+          }
+          body = body + wrap_snippet(type_width(fty9));
+          body = body + "    (local.set $d)\n";
+          body = body + "    (i64.store (i32.add (i32.wrap_i64 " +
+                 "(local.get $r)) (i32.const " + foff9.to_str() +
+                 ")) (local.get $d))\n";
+        }
+      } else {
       let vbt: string = env_val_of(env, st.name);
       if len(vbt) > 0 && len(st.path) > 0 {
         // a value base: the walk starts in the local frame and steps
@@ -8365,6 +8402,7 @@ fn emit_stmts(nodes: []*Stmt, pool: *Pool, env: *Env,
             }
           }
         }
+      }
       }
       }
     }

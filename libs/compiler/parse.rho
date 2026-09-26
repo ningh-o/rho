@@ -576,6 +576,13 @@ fn tk(c: *PCur) -> *Tok {
   return c.toks[c.pos];
 }
 
+fn tk2(c: *PCur, k: usize) -> *Tok {
+  if c.pos + k < len(c.toks) {
+    return c.toks[c.pos + k];
+  }
+  return c.toks[len(c.toks) - 1];
+}
+
 fn tkadv(c: *PCur) {
   c.pos = c.pos + 1;
 }
@@ -1505,7 +1512,28 @@ fn parse_stmt(c: *PCur) -> *Stmt {
   }
   if t.kind == lex.TK_IDENT && c.pos + 1 < len(c.toks) &&
       is_punct(c.toks[c.pos + 1], 91) {
-    // xs[i] = e; — an indexed store into a slice element
+    // xs[i] = e; — an indexed store into a slice element. The guard
+    // skips the index-first field store (xs[i].f = e) — a lookahead
+    // scan to the matching ']' must find '=' or a compound next,
+    // never '.'
+    let mut depth: usize = 1;
+    let mut look: usize = c.pos + 2;
+    let mut dot_next: bool = false;
+    while look < len(c.toks) {
+      if is_punct(c.toks[look], 91) {
+        depth = depth + 1;
+      }
+      if is_punct(c.toks[look], 93) {
+        depth = depth - 1;
+        if depth == 0 {
+          dot_next = look + 1 < len(c.toks) &&
+              is_punct(c.toks[look + 1], 46);
+          break;
+        }
+      }
+      look = look + 1;
+    }
+    if !dot_next {
     tkadv(c); // the base name
     eat_punct(c, 91); // [
     let idx = parse_bin(c, 0);
@@ -1520,6 +1548,7 @@ fn parse_stmt(c: *PCur) -> *Stmt {
     st.args = a;
     st.val = Option.Some(e);
     return st;
+    }
   }
   if t.kind == lex.TK_IDENT && c.pos + 1 < len(c.toks) &&
       is_punct(c.toks[c.pos + 1], 40) {
@@ -1606,13 +1635,46 @@ fn parse_stmt(c: *PCur) -> *Stmt {
     eat_punct(c, 59);
     return st;
   }
+  let mut index_first: bool = false;
+  let mut idx0: *Expr = lit(0);
+  let mut elem_store: bool = false;
   if t.kind == lex.TK_IDENT && c.pos + 1 < len(c.toks) &&
-      is_punct(c.toks[c.pos + 1], 46) {
-    // a dotted statement: base.f.g = e / OP= e / base.f[i] = e, or a
+      is_punct(c.toks[c.pos + 1], 91) {
+    // base[i].f = e — scan to the matching ']' and look for '.'
+    let mut d2: usize = 1;
+    let mut l2: usize = c.pos + 2;
+    while l2 < len(c.toks) {
+      if is_punct(c.toks[l2], 91) {
+        d2 = d2 + 1;
+      }
+      if is_punct(c.toks[l2], 93) {
+        d2 = d2 - 1;
+        if d2 == 0 {
+          elem_store = l2 + 1 < len(c.toks) &&
+              is_punct(c.toks[l2 + 1], 46);
+          break;
+        }
+      }
+      l2 = l2 + 1;
+    }
+  }
+  if t.kind == lex.TK_IDENT && c.pos + 1 < len(c.toks) &&
+      (is_punct(c.toks[c.pos + 1], 46) || elem_store) {
+    // a dotted statement: base.f.g = e / OP= e / base.f[i] = e /
+    // base[i].f = e (the index-first form rides st.ret = 1), or a
     // method-call statement base.m(args);
     let base: string = t.text;
     tkadv(c); // the base
-    tkadv(c); // .
+    if elem_store {
+      // base[i].f... — the element's field
+      tkadv(c); // [
+      idx0 = parse_bin(c, 0);
+      eat_punct(c, 93); // ]
+      index_first = true;
+      eat_punct(c, 46); // .
+    } else {
+      tkadv(c); // .
+    }
     let names: []string = make([]string, 8);
     let mut nn: usize = 1;
     names[0] = tk(c).text;
@@ -1686,6 +1748,12 @@ fn parse_stmt(c: *PCur) -> *Stmt {
     let st = mk_stmt(ST_FSTORE);
     st.name = base;
     st.path = names[0..nn];
+    if index_first {
+      st.ret = 1;
+      let a0: []*Expr = make([]*Expr, 1);
+      a0[0] = idx0;
+      st.args = a0;
+    }
     if indexed {
       let a: []*Expr = make([]*Expr, 1);
       a[0] = idx;
@@ -2813,10 +2881,8 @@ fn mods_load(prog: *Prog, mods: string, path: string,
     }
     mi = mi + 1;
   }
-  eprintf("ML {}\n", canon);
   let toks: []*Tok = lex.lex(text);
   let mp: *Prog = parse(toks, text);
-  eprintf("MLD {} perrs={} nf={}\n", canon, mp.perrs, len(mp.fns));
   if mp.perrs > 0 {
     prog.perrs = prog.perrs + mp.perrs;
     return "";
@@ -2826,8 +2892,12 @@ fn mods_load(prog: *Prog, mods: string, path: string,
     prog.nmods = prog.nmods + 1;
   }
   // the module's own uses bind names (alias or last segment), loaded
-  // relative to the module's directory
-  let mdir: string = base + slashes;
+  // relative to the module's directory: a facade X/lib.rho owns the
+  // directory X; a loose file X.rho owns its parent (the root here)
+  let mut mdir: string = base + slashes;
+  if len(filetext) > 0 {
+    mdir = base;
+  }
   let bnames: []string = make([]string, 16);
   let bcans: []string = make([]string, 16);
   let mut nb: usize = 0;
