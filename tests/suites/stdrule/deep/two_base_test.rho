@@ -1,0 +1,11 @@
+// out: 7
+// spec: TODO T4.2 + spec/module-system.md §2
+// The rule's other half: a non-std first segment keeps the two
+// relative bases untouched — the user's base still resolves a plain
+// sibling module, exactly as before T4.2.
+use sibling;
+
+fn main() -> i32 {
+  printf("{}\n", sibling.tag());
+  return 0;
+}

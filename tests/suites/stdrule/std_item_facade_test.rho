@@ -1,0 +1,10 @@
+// expect: items of package 'probe' are reachable only through its facade: use std.probe; then qualify
+// spec: TODO T4.2 + spec/module-system.md §2 + §4 + §7
+// The module-then-item law keeps its turn inside std/: an item import
+// through a std package stops at the facade, and the hint carries the
+// `std.` selector — the qualified form is the only way on.
+use std.probe.ping;
+
+fn main() -> i32 {
+  return 0;
+}

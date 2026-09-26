@@ -1,0 +1,7 @@
+// std.probe.inner — an interior file of the probe package (§4):
+// package-private by law, present so the stdrule suite can pin the
+// interior refusal and its facade hint against a real std package.
+// No legal import from outside the package can reach it.
+pub fn tag() -> i32 {
+  return 1;
+}

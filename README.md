@@ -18,7 +18,8 @@ language design that binds every implementation decision — lives in
 | `boot/`   | the C seed compiler (reference compiler)    |
 | `spec/`   | the language law: syntax, types, modules    |
 | `corpus/` | behavioral golden corpus (stdout + exit)    |
-| `libs/`   | the self-hosted compiler + std packages     |
+| `std/`    | the reserved std packages (`use std.*;`)    |
+| `libs/`   | the self-hosted compiler (written in rho)   |
 | `tests/`  | language suites (lang/modsys/opt/eq/…)      |
 
 ## License

@@ -1,0 +1,4 @@
+// The facade's pub-use prefix probe owns the `unknown std package`
+// message: re-exporting from a std package that does not exist is
+// refused while the facade loads, naming the full dotted path (§6/§7).
+pub use std.nope.ping;

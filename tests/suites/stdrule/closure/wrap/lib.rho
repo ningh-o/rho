@@ -1,0 +1,4 @@
+// the facade: privately imports the interior module, then re-exports
+// the std-using function under the package name (§6, the item form)
+use inner;
+pub use inner.call;

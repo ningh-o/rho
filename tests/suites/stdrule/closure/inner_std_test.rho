@@ -1,0 +1,11 @@
+// out: 42
+// spec: TODO T4.2 + spec/module-system.md §7 + §4
+// The inner closure: a file inside a user package itself uses std.*
+// by the same single rule — the reserved-directory lookup does not
+// care where the importer sits — and the value rides the facade out.
+use wrap;
+
+fn main() -> i32 {
+  printf("{}\n", wrap.call());
+  return 0;
+}

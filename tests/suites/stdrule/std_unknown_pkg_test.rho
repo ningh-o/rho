@@ -1,0 +1,10 @@
+// expect: unknown module or item 'std.nope'
+// spec: TODO T4.2 + spec/module-system.md §7
+// `std` routes to the reserved directory, and a package that does not
+// exist inside it is a compile diagnostic — the miss is reported, not
+// silently swallowed back into the relative bases.
+use std.nope;
+
+fn main() -> i32 {
+  return 0;
+}

@@ -1,0 +1,11 @@
+// expect: unknown std package 'std.nope'
+// spec: TODO T4.2 + spec/module-system.md §6 + §7
+// A facade re-exporting through the reserved directory probes its
+// std prefix loudly: a package that does not resolve inside std/ is
+// refused with the std-specific message — never silently folded back
+// into the two relative bases.
+use pubpkg;
+
+fn main() -> i32 {
+  return 0;
+}

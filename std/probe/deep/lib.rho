@@ -1,0 +1,8 @@
+// std.probe.deep — a subpackage one level under the probe facade,
+// pinning the descent shape: intermediate std segments are plain
+// directories (§2), the deepest resolves as a §4 package. The real
+// std packages arrive with T4.3+; this one only proves the rule
+// reaches past the first level of the reserved directory.
+pub fn depth() -> i32 {
+  return 43;
+}

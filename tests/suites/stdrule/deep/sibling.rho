@@ -1,0 +1,5 @@
+// sibling — a plain file module at the user's base, for the two-base
+// half of the stdrule suite.
+pub fn tag() -> i32 {
+  return 7;
+}

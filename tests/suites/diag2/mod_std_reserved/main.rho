@@ -1,6 +1,7 @@
-// expect: 'std' is reserved
-// spec: module-system.md §2
-// the 'std' package name is reserved for the standard library
+// expect: 'std' names the reserved std/ directory
+// spec: module-system.md §7
+// the first segment `std` routes to the reserved in-repo std/
+// directory (T4.2): a bare `use std;` names no package inside it
 use std;
 
 fn main() -> i32 {

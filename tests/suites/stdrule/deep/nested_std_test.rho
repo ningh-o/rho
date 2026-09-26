@@ -1,0 +1,11 @@
+// out: 42
+// spec: TODO T4.2 + spec/module-system.md §7
+// The single rule: a use whose first segment is `std` resolves
+// against the reserved in-repo std/ directory — from any nesting
+// depth, with both relative bases out of the way.
+use std.probe;
+
+fn main() -> i32 {
+  printf("{}\n", probe.ping());
+  return 0;
+}

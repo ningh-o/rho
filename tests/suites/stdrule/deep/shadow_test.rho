@@ -1,0 +1,13 @@
+// out: 7 42
+// spec: TODO T4.2 + spec/module-system.md §7 + §2
+// Same name, two homes: the user's probe.rho resolves by the
+// two-base law, std.probe resolves inside the reserved directory —
+// neither shadows the other, and the std rule never falls back to a
+// user base that happens to hold the name.
+use probe;
+use std.probe as sprobe;
+
+fn main() -> i32 {
+  printf("{} {}\n", probe.ping(), sprobe.ping());
+  return 0;
+}

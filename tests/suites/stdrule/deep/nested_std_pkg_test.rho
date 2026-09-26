@@ -1,0 +1,12 @@
+// out: 43
+// spec: TODO T4.2 + spec/module-system.md §7 + §2 + §4
+// The single rule reaches past the first level: intermediate std
+// segments descend as plain directories, the deepest resolves as a
+// §4 package — a package nested two levels into the reserved
+// directory, with the two relative bases out of the story entirely.
+use std.probe.deep;
+
+fn main() -> i32 {
+  printf("{}\n", deep.depth());
+  return 0;
+}

@@ -1,0 +1,6 @@
+// std.probe — the std/ skeleton's smallest package (TODO T4.2). One
+// public function, enough to pin the reserved-directory rule end to
+// end; the real packages arrive with T4.3+ and keep this one's shape.
+pub fn ping() -> i32 {
+  return 42;
+}

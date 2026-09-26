@@ -1,0 +1,10 @@
+// expect: unknown module 'probe'
+// spec: TODO T4.2 + spec/module-system.md §2 + §7
+// The single rule cuts both ways: a non-std first segment never
+// reaches the reserved std/ directory, even when a package of that
+// name exists there — the two bases stay the whole story.
+use probe;
+
+fn main() -> i32 {
+  return 0;
+}

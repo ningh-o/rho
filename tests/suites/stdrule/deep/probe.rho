@@ -1,0 +1,7 @@
+// A user module deliberately named like the reserved std package:
+// the two live in disjoint namespaces (§7) — `use probe;` resolves
+// here by the two-base law, `use std.probe;` resolves inside std/
+// and never sees this file.
+pub fn ping() -> i32 {
+  return 7;
+}

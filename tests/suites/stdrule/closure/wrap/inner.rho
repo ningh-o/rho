@@ -1,0 +1,10 @@
+// An interior file of a user package: its own `use std.probe;` must
+// resolve by the single rule from inside the package — the std rule
+// is importer-independent (§7) — while §4's interior law is untouched
+// by it (the facade and siblings reach this file; the outside may
+// not).
+use std.probe;
+
+pub fn call() -> i32 {
+  return probe.ping();
+}

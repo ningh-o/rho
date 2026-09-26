@@ -4,6 +4,7 @@
 
 #include <dirent.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 static Program *g_program; // the program under check
 Program *g_program_ctx;    // alias visible to check2
@@ -314,16 +315,18 @@ static bool dir_exists(const char *path) {
   return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
-// Resolve one segment chain under a base directory. Returns:
+// Resolve one segment chain under a base directory, starting at
+// segment `from` (0 for the two-base lookup, 1 under the std/ rule,
+// which consumes its first segment as the base's selector). Returns:
 //   0  not found under this base
 //   1  file module  (out: path to .rho file)
 //   2  package      (out: path to lib.rho)
 // Ambiguity (dir has lib.rho AND sibling file module could match at a
 // later base) is handled by the caller comparing bases.
 static int resolve_under_base(Arena *a, const char *base, RefList *segs,
-                              size_t nsegs, char **out) {
+                              size_t from, size_t nsegs, char **out) {
   char *cur = astrdup(a, base);
-  for (size_t i = 0; i < nsegs; i++) {
+  for (size_t i = from; i < nsegs; i++) {
     const char *seg = node_get(reflist_at(segs, i))->name;
     char *as_dir = aprintf(a, "%s/%s", cur, seg);
     char *as_file = aprintf(a, "%s/%s.rho", cur, seg);
@@ -356,7 +359,40 @@ static int resolve_under_base(Arena *a, const char *base, RefList *segs,
   return 0;
 }
 
+// T4.2's mechanical anchor for "the repository root": the first
+// ancestor directory of the entry file that contains a boot/
+// directory. TODO.md's T4.2 sentence fixes the rule (first segment
+// `std` resolves against the reserved in-repo std/ directory) but not
+// this anchor; the boot/-marker climb is the provisional ruling,
+// recorded for the owner in WORKTREE-NOTES.md. A relative entry path
+// is made absolute against the process cwd first, so the climb — and
+// every std/ path built on it — does not depend on where the compiler
+// was invoked from.
+static char *find_repo_root(Arena *a, const char *entry_path) {
+  char *dir;
+  if (entry_path[0] == '/') {
+    dir = dir_of(a, entry_path);
+  } else {
+    char cwd[4096];
+    if (!getcwd(cwd, sizeof cwd))
+      return NULL;
+    dir = dir_of(a, aprintf(a, "%s/%s", cwd, entry_path));
+  }
+  while (dir && dir[0]) {
+    if (dir_exists(aprintf(a, "%s/boot", dir)))
+      return dir;
+    if (strcmp(dir, "/") == 0)
+      return NULL;
+    char *slash = strrchr(dir, '/');
+    if (!slash || slash == dir)
+      return NULL;
+    *slash = 0; // climb one level (dir is an owned arena string)
+  }
+  return NULL;
+}
+
 static Type *resolve_type(Module *m, NodeRef tr, GScope *g);
+static char *segs_text(Arena *a, RefList *segs, size_t n);
 
 static bool gscope_has(GScope *g, const char *name);
 static Program *g_program_for_load;
@@ -406,37 +442,56 @@ typedef struct DeferredTy {
 } DeferredTy;
 static Vec g_deferred_tys; // of DeferredTy
 
-// Load (or find) the module a use-declaration names. Applies the two
-// lookup bases in order, then std, and enforces the facade law.
+// Load (or find) the module a use-declaration names. Applies the
+// T4.2 single rule first — first segment `std` resolves against the
+// reserved in-repo std/ directory — then the two lookup bases in
+// order, and enforces the facade law.
 static Module *resolve_use(Program *p, Module *importer, NodeRef use_r,
                            size_t nsegs) {
   Node *u = node_get(use_r);
   RefList *segs = u->list;
 
-  // std/ is the reserved directory (Phase 4 wires the real packages;
-  // until then the name is reserved)
   const char *first = node_get(reflist_at(segs, 0))->name;
-  (void)nsegs;
-  if (strcmp(first, "std") == 0) {
-    diag_at(DIAG_ERROR, importer->path, u->line, u->col,
-            "'std' is reserved; std packages arrive with the std library "
-            "(Phase 4)");
-    return NULL;
-  }
-
   const char *bases[2];
-  bases[0] = dir_of(g_arena, importer->path);
-  bases[1] = dir_of(g_arena, p->entry->path);
-  for (int b = 0; b < 2; b++) {
+  size_t seg_from = 0;
+  int nbases = 2;
+  if (strcmp(first, "std") == 0) {
+    // module-system.md §7: std is the reserved in-repo directory; the
+    // remaining segments resolve inside it as §2–§4, never against
+    // the two bases
+    char *root = find_repo_root(g_arena, p->entry->path);
+    if (!root) {
+      diag_at(DIAG_ERROR, importer->path, u->line, u->col,
+              "'std' resolves against the reserved std/ directory at "
+              "the repository root, but no repository root (a "
+              "directory containing boot/) was found above %s",
+              p->entry->path);
+      return NULL;
+    }
+    if (nsegs == 1) {
+      diag_at(DIAG_ERROR, importer->path, u->line, u->col,
+              "'std' names the reserved std/ directory; name a package "
+              "inside it (use std.<package>;)");
+      return NULL;
+    }
+    bases[0] = aprintf(g_arena, "%s/std", root);
+    nbases = 1;
+    seg_from = 1;
+  } else {
+    bases[0] = dir_of(g_arena, importer->path);
+    bases[1] = dir_of(g_arena, p->entry->path);
+  }
+  for (int b = 0; b < nbases; b++) {
     char *path = NULL;
-    int r = resolve_under_base(g_arena, bases[b], segs, nsegs, &path);
+    int r =
+        resolve_under_base(g_arena, bases[b], segs, seg_from, nsegs, &path);
     if (r == 0)
       continue;
     if (r == 3) {
       diag_at(DIAG_ERROR, importer->path, u->line, u->col,
               "ambiguous module: both %s and a sibling file module "
               "provide '%s' (exactly one real body)",
-              path, first);
+              path, segs_text(g_arena, segs, nsegs));
       return NULL;
     }
     Module *found = program_find(p, path);
@@ -447,8 +502,12 @@ static Module *resolve_use(Program *p, Module *importer, NodeRef use_r,
     }
     return found;
   }
-  diag_at(DIAG_ERROR, importer->path, u->line, u->col,
-          "unknown module '%s'", first);
+  if (nbases == 1)
+    diag_at(DIAG_ERROR, importer->path, u->line, u->col,
+            "unknown std package '%s'", segs_text(g_arena, segs, nsegs));
+  else
+    diag_at(DIAG_ERROR, importer->path, u->line, u->col,
+            "unknown module '%s'", first);
   return NULL;
 }
 
@@ -456,6 +515,27 @@ static Module *resolve_use(Program *p, Module *importer, NodeRef use_r,
 static const char *path_stem(const char *dir) {
   const char *s = strrchr(dir, '/');
   return s ? s + 1 : dir;
+}
+
+// the facade spelling a diagnostic hint must show for a package
+// directory: packages under the reserved std/ directory are reached
+// only through the `std` selector (module-system.md §7), so the hint
+// has to read `use std.<name>;` — a bare `use <name>;` would route to
+// the two relative bases and can never resolve a std package.
+// Two-base packages keep the bare name; the base supplies the rest.
+// The prefix test is byte-exact by construction: std-resolved paths
+// are built from the same `<root>/std` spelling this helper compares
+// against.
+static char *facade_hint(Arena *a, const char *pkg_dir,
+                         const char *entry_path) {
+  char *root = find_repo_root(a, entry_path);
+  if (root) {
+    char *std_base = aprintf(a, "%s/std", root);
+    size_t n = strlen(std_base);
+    if (strncmp(pkg_dir, std_base, n) == 0 && pkg_dir[n] == '/')
+      return aprintf(a, "std.%s", path_stem(pkg_dir));
+  }
+  return astrdup(a, path_stem(pkg_dir));
 }
 
 // same directory: the importer is a sibling (inside the package)
@@ -502,27 +582,51 @@ static bool use_collides(Module *m, Node *u, const char *alias) {
 enum { PR_FOUND = 0, PR_UNKNOWN, PR_AMBIG, PR_REFUSED, PR_STD };
 
 // the two-base module probe behind resolve_use, callable quietly: the
-// caller owns every message. When loud is set the shape errors (std,
-// facade ambiguity, package interior) are diagnosed here — exactly
-// once per use, by whichever pass probes the path first.
+// caller owns every message. When loud is set the shape errors (std
+// without a repository root, facade ambiguity, package interior) are
+// diagnosed here — exactly once per use, by whichever pass probes the
+// path first.
 static int probe_module_path(Program *p, Module *importer, Node *u,
                              RefList *segs, size_t nsegs, bool loud,
                              Module **out) {
   *out = NULL;
   const char *first = node_get(reflist_at(segs, 0))->name;
-  if (strcmp(first, "std") == 0) {
-    if (loud)
-      diag_at(DIAG_ERROR, importer->path, u->line, u->col,
-              "'std' is reserved; std packages arrive with the std "
-              "library (Phase 4)");
-    return PR_STD;
-  }
   const char *bases[2];
-  bases[0] = dir_of(g_arena, importer->path);
-  bases[1] = dir_of(g_arena, p->entry->path);
-  for (int b = 0; b < 2; b++) {
+  size_t seg_from = 0;
+  int nbases = 2;
+  if (strcmp(first, "std") == 0) {
+    // module-system.md §7: the single rule — first segment `std`
+    // resolves against the reserved in-repo std/ directory, never
+    // against the two bases. A missing repository root is the one std
+    // shape error (PR_STD); a name that does not resolve inside std/
+    // is an ordinary miss (PR_UNKNOWN) so the module-then-item law
+    // keeps its turn (`use std.probe.ping;` is an item import, and
+    // the full-path probe must not pre-empt it).
+    char *root = find_repo_root(g_arena, p->entry->path);
+    if (!root) {
+      if (loud)
+        diag_at(DIAG_ERROR, importer->path, u->line, u->col,
+                "'std' resolves against the reserved std/ directory at "
+                "the repository root, but no repository root (a "
+                "directory containing boot/) was found above %s",
+                p->entry->path);
+      return PR_STD;
+    }
+    // nsegs == 1 is the bare-`std` owner probe behind a deeper use
+    // (`use std.probe.ping;` probes prefix `std`): a quiet miss — a
+    // bare `use std;` itself is refused by resolve_use, which owns
+    // the single-segment forms
+    bases[0] = aprintf(g_arena, "%s/std", root);
+    nbases = 1;
+    seg_from = 1;
+  } else {
+    bases[0] = dir_of(g_arena, importer->path);
+    bases[1] = dir_of(g_arena, p->entry->path);
+  }
+  for (int b = 0; b < nbases; b++) {
     char *path = NULL;
-    int r = resolve_under_base(g_arena, bases[b], segs, nsegs, &path);
+    int r =
+        resolve_under_base(g_arena, bases[b], segs, seg_from, nsegs, &path);
     if (r == 0)
       continue;
     if (r == 3) {
@@ -530,7 +634,7 @@ static int probe_module_path(Program *p, Module *importer, Node *u,
         diag_at(DIAG_ERROR, importer->path, u->line, u->col,
                 "ambiguous module: both %s and a sibling file module "
                 "provide '%s' (exactly one real body)",
-                path, first);
+                path, segs_text(g_arena, segs, nsegs));
       return PR_AMBIG;
     }
     Module *found = program_find(p, path);
@@ -550,7 +654,8 @@ static int probe_module_path(Program *p, Module *importer, Node *u,
           diag_at(DIAG_ERROR, importer->path, u->line, u->col,
                   "'%s' is interior to package '%s': import the "
                   "facade (use %s;) and reach it qualified",
-                  found->path, path_stem(dp), path_stem(dp));
+                  found->path, path_stem(dp),
+                  facade_hint(g_arena, dp, p->entry->path));
         return PR_REFUSED;
       }
     }
@@ -856,7 +961,7 @@ static void resolve_use_final(Program *p, Module *m, NodeRef use_r,
     diag_at(DIAG_ERROR, m->path, u->line, u->col,
             "items of package '%s' are reachable only through its "
             "facade: use %s; then qualify",
-            path_stem(dp), path_stem(dp));
+            path_stem(dp), facade_hint(g_arena, dp, p->entry->path));
     return;
   }
   if (owner) {

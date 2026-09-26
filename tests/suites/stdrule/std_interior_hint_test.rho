@@ -1,0 +1,10 @@
+// expect: is interior to package 'probe': import the facade (use std.probe;) and reach it qualified
+// spec: TODO T4.2 + spec/module-system.md §4 + §7
+// §4 rides into the reserved directory: an interior file of a std
+// package is refused from outside, and the hint spells the facade
+// with the `std.` selector — the only spelling that resolves.
+use std.probe.inner;
+
+fn main() -> i32 {
+  return 0;
+}
