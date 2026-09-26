@@ -1,0 +1,7 @@
+// spec: syntax.md §4.4
+use math.{add, mul,};
+fn main() -> i32 {
+  printf("{}\n", add(1, 2) + mul(2, 3));
+  return 0;
+}
+// out: 9

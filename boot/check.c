@@ -710,6 +710,14 @@ static void expand_pub_uses(Program *p) {
             if (strcmp(ub->alias, mod0) == 0)
               owner = ub->target;
           }
+          if (!owner) {
+            // a bare item re-export (no `use inner;` beside it): the
+            // prefix was loaded at load_one_use — find it quietly
+            Module *t2 = NULL;
+            probe_module_path(p, m, u, u->list,
+                              reflist_len(u->list) - 1, false, &t2);
+            owner = t2;
+          }
         } else
           owner = tgt; // one seg: item of the same path
         if (owner && owner->syms)

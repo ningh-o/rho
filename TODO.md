@@ -492,7 +492,15 @@ section — no placeholder stages. boot is the reference compiler.
       inside a package directory imports only from siblings — the
       facade crosses freely). Seven modsys fixtures; suites 54/0/3;
       corpus differential floor 91 untouched. The self-host mirrors
-      (floor per T3.4).
+      (floor per T3.4). Follow-ups landed with the law fixtures: the
+      bare `pub use inner.tool;` re-export (the owner resolves even
+      without a sibling `use inner;`), the grammar's trailing comma
+      in the brace form, and the empty-brace refusal. Ledgered
+      divergence: `pub use inner;` (the module re-export form)
+      flattens inner's public items instead of binding the submodule
+      under the facade — the consumer's `pkg.inner` needs nested
+      module-qualified access, machinery the checker does not have
+      yet; until then the §6 module form behaves star-like.
 - [ ] **T3.8** The in-tree wasm toolchain, sequenced after the corpus
       differential closes (108/108) so the mirror's climb is not
       disturbed mid-growth: `std.wasm` — an encoder/decoder package

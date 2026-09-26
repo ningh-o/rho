@@ -1,0 +1,7 @@
+// spec: module-system.md §6
+use pkg;
+fn main() -> i32 {
+  printf("{}\n", pkg.tool());
+  return 0;
+}
+// out: 4

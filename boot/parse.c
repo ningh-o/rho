@@ -1492,7 +1492,10 @@ static NodeRef parse_decl(Parser *p) {
       NodeRef items_ref = nnew(p, NT_SEG);
       Node *items = node_get(items_ref);
       items->list = reflist();
-      if (!is(p, T_RBRACE)) {
+      if (is(p, T_RBRACE)) {
+        diag_at(DIAG_ERROR, p->m->path, cur(p)->line, cur(p)->col,
+                "the brace form needs at least one item");
+      } else {
         for (;;) {
           NodeRef it = nnew(p, NT_SEG);
           Token *inm = expect(p, T_IDENT, "as an item name");
@@ -1504,6 +1507,8 @@ static NodeRef parse_decl(Parser *p) {
           reflist_add(items->list, it);
           if (!accept(p, T_COMMA))
             break;
+          if (is(p, T_RBRACE))
+            break; // the grammar's trailing comma (§4.4)
         }
       }
       expect(p, T_RBRACE, "to close the item list");
