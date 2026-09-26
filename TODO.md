@@ -495,12 +495,18 @@ section — no placeholder stages. boot is the reference compiler.
       MIRROR still quakes: mechanically splitting its 283 chains
       into single-tail statements breaks at emit.rho's chain 91
       (push_string's i64.const push) with a check-stage
-      `index out of bounds` INSIDE the mirror — app-independent
-      (fires with in-place disabled and the release removed), so
-      the split source itself shifts the mirror's checker into a
-      bug; bisect limit=90 green / 91 red. The self-chain unblocks
-      behind either that mirror-checker bug or the fusion taught
-      about app continuations.
+      `index out of bounds` INSIDE the mirror — SOLVED: the mirror's
+      MATCH ARM bodies rode a fixed cap of 16 (the fourth holdout of
+      the fixed-cap class — fn bodies 64, bare blocks 64, closure
+      bodies 16, arms 16; stmt_grow doubles them all on demand).
+      With the 283 chains split (single-tail statements, indentation
+      preserved) and the append law live, THE MIRROR COMPILES
+      ITSELF: rc 0, 148,607 lines of child WAT in 0.43 s, FMT self
+      338 KB clean. The self-CHAIN's open gap: the child calls
+      \$u_len 292 times but never defines it — the prelude fn bodies
+      the mirror embeds for corpus programs go missing at
+      self-scale; close that and gate.sh leg 4 (child/grandchild
+      byte-identity + the probe) is the 0.1.0 heart beating.
 - [ ] **T3.2 Pure-source trust root**: every gate run rebuilds the seed
       from boot's C source on the spot. The pinned `seed.wasm` stays in
       the repo **as a canary**: rebuild, compare byte-for-byte (D1 makes
