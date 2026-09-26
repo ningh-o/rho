@@ -719,13 +719,26 @@ fn eat_type(c: *PCur) -> string {
 
 // ( args… ) with optional 'name:' prefixes riding anames ("" when
 // positional) — constructors take named payload fields
-fn parse_args_named(c: *PCur, anames: []string) -> []*Expr {
-  let args: []*Expr = make([]*Expr, 8);
+fn parse_args_named(c: *PCur, anames0: []string) -> []*Expr {
+  let mut anames: []string = anames0;
+  let mut args: []*Expr = make([]*Expr, 8);
   let mut na: usize = 0;
   while true {
     if is_punct(tk(c), 41) {
       tkadv(c);
       break;
+    }
+    if na >= len(args) {
+      let big: []*Expr = make([]*Expr, len(args) * 2);
+      let bign: []string = make([]string, len(anames) * 2);
+      let mut gi: usize = 0;
+      while gi < len(args) {
+        big[gi] = args[gi];
+        bign[gi] = anames[gi];
+        gi = gi + 1;
+      }
+      args = big;
+      anames = bign;
     }
     anames[na] = "";
     let t = tk(c);
@@ -747,12 +760,21 @@ fn parse_args_named(c: *PCur, anames: []string) -> []*Expr {
 
 // ( args… ) — the shared call-argument list
 fn parse_args(c: *PCur) -> []*Expr {
-  let args: []*Expr = make([]*Expr, 8);
+  let mut args: []*Expr = make([]*Expr, 8);
   let mut na: usize = 0;
   while true {
     if is_punct(tk(c), 41) {
       tkadv(c);
       break;
+    }
+    if na >= len(args) {
+      let big: []*Expr = make([]*Expr, len(args) * 2);
+      let mut gi: usize = 0;
+      while gi < len(args) {
+        big[gi] = args[gi];
+        gi = gi + 1;
+      }
+      args = big;
     }
     args[na] = parse_bin(c, 0);
     // xs... — the spread marker rides the argument's lit slot
@@ -1007,9 +1029,18 @@ fn parse_atom(c: *PCur) -> *Expr {
   if is_punct(t, 91) {
     // [a, b, c] — a fresh slice literal
     tkadv(c);
-    let args: []*Expr = make([]*Expr, 8);
+    let mut args: []*Expr = make([]*Expr, 8);
     let mut na: usize = 0;
     while tk(c).kind != lex.TK_EOF && !is_punct(tk(c), 93) {
+      if na >= len(args) {
+        let big: []*Expr = make([]*Expr, len(args) * 2);
+        let mut gi: usize = 0;
+        while gi < len(args) {
+          big[gi] = args[gi];
+          gi = gi + 1;
+        }
+        args = big;
+      }
       args[na] = parse_bin(c, 0);
       na = na + 1;
       if !eat_punct(c, 44) {
