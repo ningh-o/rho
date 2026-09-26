@@ -6,12 +6,12 @@
 struct P { x: i32 }
 struct R { y: i32 }
 impl Eq for P {
-  fn eq(self, other: *Self) -> bool {
+  fn eq(self, other: Self) -> bool {
     return self.x == other.x;
   }
 }
 impl Eq for R {
-  fn eq(self, other: *Self) -> bool {
+  fn eq(self, other: Self) -> bool {
     return self.y == other.y;
   }
 }

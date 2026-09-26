@@ -1496,11 +1496,14 @@ static void hash_fold_struct_at(FnCx *cx, Type *st, size_t h, size_t v,
     Type *ft = inst_ty(st, sd->fields[f].ty);
     size_t fo = boff + field_offset(st, f);
     if (ft->kind == TY_STRING) {
+      // the pair packs 8 bytes: addr at fo, len at fo+4 (i32 halves)
       size_t ba = cx_fresh(cx, ty_i64), bl = cx_fresh(cx, ty_i64);
-      op(cx, "(local.set %zu (i64.load (i32.add (i32.wrap_i64 "
-             "(local.get %zu)) (i32.const %zu))))\n", ba, v, fo);
-      op(cx, "(local.set %zu (i64.load (i32.add (i32.wrap_i64 "
-             "(local.get %zu)) (i32.const %zu))))\n", bl, v, fo + 8);
+      op(cx, "(local.set %zu (i64.extend_i32_u (i32.load (i32.add "
+             "(i32.wrap_i64 (local.get %zu)) (i32.const %zu)))))\n", ba,
+         v, fo);
+      op(cx, "(local.set %zu (i64.extend_i32_u (i32.load (i32.add "
+             "(i32.wrap_i64 (local.get %zu)) (i32.const %zu)))))\n", bl,
+         v, fo + 4);
       hash_fold_string(cx, h, ba, bl);
     } else if (ft->kind == TY_STRUCT) {
       hash_fold_struct_at(cx, ft, h, v, fo);
@@ -1511,12 +1514,19 @@ static void hash_fold_struct_at(FnCx *cx, Type *st, size_t h, size_t v,
              "(local.get %zu)) (i32.const %zu))))\n", ev, v, fo);
       hash_fold_enum(cx, ft, h, ev);
     } else {
+      // scalars fold their own WIDTH's bytes (§11: bool one byte,
+      // integers/floats their little-endian bit pattern — not the
+      // slot's padding)
       size_t fv = cx_fresh(cx, ty_i64);
-      const char *ld = type_is_float(ft) ? "reinterpret-load" : NULL;
-      (void)ld;
       op(cx, "(local.set %zu (i64.load (i32.add (i32.wrap_i64 "
              "(local.get %zu)) (i32.const %zu))))\n", fv, v, fo);
-      hash_fold_lane(cx, h, fv, (int)(type_size(ft) * 8) / 8);
+      int nb = ft->kind == TY_I8 || ft->kind == TY_U8 ||
+                       ft->kind == TY_BOOL
+                   ? 1
+                   : ft->kind == TY_I16 || ft->kind == TY_U16
+                         ? 2
+                         : (int)type_size(ft);
+      hash_fold_lane(cx, h, fv, nb);
     }
   }
 }
@@ -1536,9 +1546,10 @@ static void hash_fold_enum(FnCx *cx, Type *et, size_t h, size_t v) {
     op(cx, "(if (i32.eq (i32.wrap_i64 (local.get %zu)) (i32.const %d))\n",
        tv, var->tag);
     op(cx, "  (then\n");
-    size_t off = 8; // payload slots start past the tag
+    size_t off = 8; // payload slots start past the tag (slot-sized)
     for (size_t q = 0; q < var->nfields; q++) {
       Type *ft = inst_ty(et, var->fields[q].ty);
+      (void)0;
       if (ft->kind == TY_STRING) {
         size_t ba = cx_fresh(cx, ty_i64), bl = cx_fresh(cx, ty_i64);
         op(cx, "(local.set %zu (i64.load (i32.add (i32.wrap_i64 "
@@ -1558,7 +1569,7 @@ static void hash_fold_enum(FnCx *cx, Type *et, size_t h, size_t v) {
                "(local.get %zu)) (i32.const %zu))))\n", fv, v, off);
         hash_fold_lane(cx, h, fv, (int)(type_size(ft) * 8) / 8);
       }
-      off += type_size(ft);
+      off += shape_nlocals(ft) * 8;
     }
     op(cx, "  ))\n");
   }

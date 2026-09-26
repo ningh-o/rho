@@ -302,9 +302,20 @@ static Type *check_expr(FnCtx *c, NodeRef er, Type *expected);
 static bool op_trait_rewrite(FnCtx *c, NodeRef er, Type *lt,
                              const char *mname, bool swap, bool negate) {
   size_t n = 0;
-  method_candidates(c, lt, mname, &n);
+  FnDef **cands = method_candidates(c, lt, mname, &n);
   if (n == 0)
     return false;
+  // the law's canonical sig is `other: Self` (a VALUE): a *T operand
+  // derefs explicitly into the value param (the receiver's own
+  // auto-deref does not extend to arguments)
+  // lt arrives DEREFED (the == gate unwraps *T): a value-Self param
+  // matches it directly — the operator's pointer operands then ride
+  // explicit derefs into the call
+  bool deref_arg = false;
+  if (cands[0]->sig->nparams > 1) {
+    Type *pt = cands[0]->sig->params[1].ty;
+    deref_arg = pt && type_eq(pt, lt);
+  }
   // every node_new may grow (and move) g_nodes: no raw Node* survives
   // an allocation — fetch positions first, pointers last
   Node *e0 = node_get(er);
@@ -317,7 +328,16 @@ static bool op_trait_rewrite(FnCtx *c, NodeRef er, Type *lt,
   Node *pa = node_get(pos);
   mn->a = swap ? e->b : e->a;
   mn->name = mname;
-  pa->a = swap ? e->a : e->b;
+  if (deref_arg) {
+    // wrap the argument operand in an explicit (*x) deref node
+    NodeRef dr = node_new(NT_UNARY, e->file, e->line, e->col);
+    Node *dn = node_get(dr);
+    dn->op = OP_DEREF;
+    dn->a = swap ? e->a : e->b;
+    pa->a = dr;
+  } else {
+    pa->a = swap ? e->a : e->b;
+  }
   mn->list = lst;
   if (!negate) {
     // the binary node becomes the method (its ref stays in the tree);

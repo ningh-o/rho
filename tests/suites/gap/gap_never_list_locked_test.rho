@@ -6,6 +6,7 @@
 // impl. TODAY boot fails at the impl line ("unknown trait Eq"), so
 // the line pin deliberately misses — it only passes when the law's
 // shape exists AND the lock still holds.
+// pending: gap/never-list-locked
 struct Bad { xs: []i32 }
 impl Eq for Bad {
   fn eq(self, other: Self) -> bool { return false; }

@@ -1,6 +1,5 @@
 // out: override: true false
 // exit: 0
-// pending: gap/t312-operator-traits
 // spec: type-system.md §15 — until an `impl Eq for T` exists the
 // slotwise default holds; the impl's eq then REPLACES the default
 // entirely (never merges). Here eq deliberately ignores y, so

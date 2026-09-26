@@ -5,7 +5,7 @@
 // never promised, §10): the impl dereferences and recurses
 struct N { v: i32, next: ?*N }
 impl Eq for N {
-  fn eq(self, other: *Self) -> bool {
+  fn eq(self, other: Self) -> bool {
     let on: ?*N = other.next;
     let sn: ?*N = self.next;
     match sn {

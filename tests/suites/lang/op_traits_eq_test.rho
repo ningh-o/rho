@@ -8,7 +8,7 @@
 struct Pt { x: i32, y: i32 }
 struct Q { a: i32, b: i32 }
 impl Eq for Pt {
-  fn eq(self, other: *Self) -> bool {
+  fn eq(self, other: Self) -> bool {
     return self.x == other.x;
   }
 }

@@ -20,10 +20,10 @@ pub trait Show {
 // values under FNV-1a and an impl replaces it. Builtins never consult
 // the traits (direct emission); fn/dyn/slice/Result are locked out.
 pub trait Eq {
-  fn eq(self, other: *Self) -> bool,
+  fn eq(self, other: Self) -> bool,
 }
 pub trait Ord {
-  fn lt(self, other: *Self) -> bool,
+  fn lt(self, other: Self) -> bool,
 }
 pub trait Hash {
   fn hash(self) -> u64,

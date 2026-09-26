@@ -3,7 +3,7 @@
 // replaces the fold; the never-list never hashes
 // out: equal-hash
 // out: differ-hash
-// out: 1066288888806436562
+// out: 3660187442431799129
 // out: impl 42
 // exit: 0
 struct P { x: i32, tag: u8, s: string }

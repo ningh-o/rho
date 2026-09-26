@@ -4,7 +4,7 @@
 // exit: 0
 struct V { n: i32 }
 impl Ord for V {
-  fn lt(self, other: *Self) -> bool {
+  fn lt(self, other: Self) -> bool {
     return self.n < other.n;
   }
 }
