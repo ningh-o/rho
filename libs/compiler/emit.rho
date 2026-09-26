@@ -1255,7 +1255,7 @@ fn type_width(tyname: string) -> i64 {
   if tyname == "u16" { return 0 - 16; }
   if tyname == "u32" { return 0 - 32; }
   if tyname == "u64" { return 0 - 64; }
-  if tyname == "usize" { return 0 - 64; }
+  if tyname == "usize" { return 0 - 32; } // §3: the address width (wasm32), T3.6's lane
   return 0;
 }
 
@@ -4575,22 +4575,20 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
   // adapt to their consumer)
   let mut w: i64 = bin_width(e, env, mut prog);
   if e.op == 18 || e.op == 19 {
-    // shifts mask the count by the left width (§11); sub-32 widths
-    // live in the 32-bit lane so their mask is 31 (boot's iron), and
+    // shifts mask the count by the LEFT OPERAND'S DECLARED width
+    // (spec §4, the bug-fix wave's law): 1i8 << 8 masks 8&7=0 and
+    // stays 1 — the count masks by the storage width, not the lane;
     // unsigned widths shift logically (shr_u)
     let mw: i64 = w;
     let mut mbits: i64 = mw;
     if mbits < 0 {
       mbits = 0 - mbits;
     }
-    if mbits >= 64 {
+    if mbits == 0 {
+      mbits = 32;
+    }
+    if mbits > 64 {
       mbits = 64;
-    } else {
-      if mbits == 0 {
-        mbits = 32;
-      } else {
-        mbits = 32; // sub-32 ints ride the 32-bit lane
-      }
     }
     out = out + "    (local.set $t)\n";
     out = out + "    (i64.and (local.get $t) (i64.const " +

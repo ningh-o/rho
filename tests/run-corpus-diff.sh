@@ -11,20 +11,15 @@
 # both times; the pin keeps its teeth.
 set -u
 RHO=${RHO:-./build/rho}
-# Floor re-pinned 108 → 98 at the t35 consolidation merge (2026-09-26):
-# the language-law line (T3.5–T3.11: test verb, match ergonomics, the
-# §18 mut view law, item imports, the grammar campaign, the hygiene
-# wave) joins the mirror line (T2.2 dyn/modules/scale growth). The
-# corpus now speaks the mut law (`mut self` receivers, call-site
-# markers) and the u32 usize lane; the self-host parses neither yet —
-# 086/088 :diff (a `mut self` fn's body silently drops to empty), and
-# 092/098/105 :refuse on markers. The mirror's usize still rides the
-# 64-bit lane: 005 :w2w, 041/045/046/048 :diff. These ten legs close
-# when the self-host grows the matching surface (the T3.6/T3.10 mirror
-# notes in TODO.md); until then the floor holds the merged line's
-# honest state — master's 108 was measured against a corpus that
-# predated the law.
-PINNED=98
+# The consolidation merge (2026-09-26) dipped the floor 108 → 98: the
+# corpus now speaks the mut law and the u32 usize lane, and the
+# self-host parsed neither. Both surfaces landed the same night —
+# the mirror parses `mut self`/param prefixes and call-site markers
+# (permission only, never layout) and rides usize at the wasm32
+# address width with the declared-width shift-count mask — closing
+# all ten legs (086/088/092/098/105 mut surface; 005/041/045/046/048
+# the lane and the mask). 108 again, on the merged law.
+PINNED=108
 
 # one file's differential; echoes "pass" or the failure label
 check_one() {
