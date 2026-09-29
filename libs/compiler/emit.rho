@@ -784,6 +784,65 @@ fn push_string(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
   }
 }
 
+// a fresh make: count in $t, zeroed alloc sized by the element width
+// (string and dyn elements ride 16-byte pairs, a struct its slot
+// block), the shared None box fills a ?T element; the value is the
+// {addr,count} pair. Hosted here so BOTH call sites share it — the
+// bare node used to fall through emit_expr into the BIN template and
+// render as a lone (i64.add) — make's op is 0, the add opcode
+fn emit_make(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
+             mut nl: *NextLocal) -> string {
+  let mut cnt0: *Expr = parse.lit(0);
+  if len(e.args) > 0 {
+    cnt0 = e.args[0];
+  }
+  let optelem: bool = len(e.name) >= 1 &&
+      (e.name[0] == 63 || e.name[0] == 79);
+  let stelem: i64 = st_index(mut prog, e.name);
+  let mut esz: i64 = 1;
+  if stelem >= 0 {
+    esz = st_nslots(mut prog, stelem);
+  } else {
+    if e.name == "string" || is_dyn_type(e.name) {
+      esz = 2;
+    }
+  }
+  let aslot: i64 = nl.v;
+  nl.v = nl.v + 1;
+  let mut out: string = emit_expr(mut pool, cnt0, mut env, mut prog,
+                                  mut nl);
+  out = out + "    (local.set $t)\n";
+  if esz != 1 {
+    out = out + "    (i64.extend_i32_u (call $w_alloc " +
+        "(i32.wrap_i64 (i64.mul (local.get $t) (i64.const " +
+        esz.to_str() + ")))))\n";
+  } else {
+    out = out + "    (i64.extend_i32_u (call $w_alloc " +
+        "(i32.wrap_i64 (local.get $t))))\n";
+  }
+  out = out + "    (local.set " + aslot.to_str() + ")\n";
+  if optelem {
+    let fi: i64 = nl.v;
+    nl.v = nl.v + 1;
+    out = out + "    (i64.const 0)\n";
+    out = out + "    (local.set " + fi.to_str() + ")\n";
+    out = out + "    (loop $ma" + fi.to_str() + "\n";
+    out = out + "    (if (i64.lt_u (local.get " + fi.to_str() +
+        ") (local.get $t))\n";
+    out = out + "      (then (i64.store (i32.add (i32.wrap_i64 " +
+        "(local.get " + aslot.to_str() + "))\n";
+    out = out + "                     (i32.mul (i32.wrap_i64 " +
+        "(local.get " + fi.to_str() + ")) (i32.const 8)))\n";
+    out = out + "                     (global.get $w_none_box))\n";
+    out = out + "            (local.set " + fi.to_str() +
+        " (i64.add (local.get " + fi.to_str() + ") (i64.const 1)))\n";
+    out = out + "            (br $ma" + fi.to_str() + "))))\n";
+  }
+  out = out + "    (local.get " + aslot.to_str() + ")\n";
+  out = out + "    (local.get $t)\n";
+  return out;
+}
+
 // one call argument: a string/slice-valued expression takes the
 // {addr,len} pair; everything else is the plain i64 expression (an
 // integer variable or an int + must NOT ride the pair path — the
@@ -795,61 +854,7 @@ fn emit_arg(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
     return emit_array(mut pool, e, mut env, mut prog, mut nl);
   }
   if e.tag == parse.EX_MAKE {
-    // a fresh make rides its pair straight into the param's slots —
-    // count in $t, zeroed alloc sized by the element width (string
-    // and dyn elements ride 16-byte pairs, a struct its slot block),
-    // the shared None box fills a ?T element; the bare node used to
-    // fall through emit_expr into the BIN template and render as a
-    // lone (i64.add) — make's op is 0, the add opcode
-    let mut cnt0: *Expr = parse.lit(0);
-    if len(e.args) > 0 {
-      cnt0 = e.args[0];
-    }
-    let optelem: bool = len(e.name) >= 1 &&
-        (e.name[0] == 63 || e.name[0] == 79);
-    let stelem: i64 = st_index(mut prog, e.name);
-    let mut esz: i64 = 1;
-    if stelem >= 0 {
-      esz = st_nslots(mut prog, stelem);
-    } else {
-      if e.name == "string" || is_dyn_type(e.name) {
-        esz = 2;
-      }
-    }
-    let aslot: i64 = nl.v;
-    nl.v = nl.v + 1;
-    let mut out: string = emit_expr(mut pool, cnt0, mut env, mut prog,
-                                    mut nl);
-    out = out + "    (local.set $t)\n";
-    if esz != 1 {
-      out = out + "    (i64.extend_i32_u (call $w_alloc " +
-          "(i32.wrap_i64 (i64.mul (local.get $t) (i64.const " +
-          esz.to_str() + ")))))\n";
-    } else {
-      out = out + "    (i64.extend_i32_u (call $w_alloc " +
-          "(i32.wrap_i64 (local.get $t))))\n";
-    }
-    out = out + "    (local.set " + aslot.to_str() + ")\n";
-    if optelem {
-      let fi: i64 = nl.v;
-      nl.v = nl.v + 1;
-      out = out + "    (i64.const 0)\n";
-      out = out + "    (local.set " + fi.to_str() + ")\n";
-      out = out + "    (loop $ma" + fi.to_str() + "\n";
-      out = out + "    (if (i64.lt_u (local.get " + fi.to_str() +
-          ") (local.get $t))\n";
-      out = out + "      (then (i64.store (i32.add (i32.wrap_i64 " +
-          "(local.get " + aslot.to_str() + "))\n";
-      out = out + "                     (i32.mul (i32.wrap_i64 " +
-          "(local.get " + fi.to_str() + ")) (i32.const 8)))\n";
-      out = out + "                     (global.get $w_none_box))\n";
-      out = out + "            (local.set " + fi.to_str() +
-          " (i64.add (local.get " + fi.to_str() + ") (i64.const 1)))\n";
-      out = out + "            (br $ma" + fi.to_str() + "))))\n";
-    }
-    out = out + "    (local.get " + aslot.to_str() + ")\n";
-    out = out + "    (local.get $t)\n";
-    return out;
+    return emit_make(mut pool, e, mut env, mut prog, mut nl);
   }
   if e.tag == parse.EX_VAR && env_kind_of(env, e.name) < 0 &&
       env_look(env, e.name) < 0 && !name_is_const(prog, e.name) &&
@@ -3514,6 +3519,20 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
   if e.tag == parse.EX_LIT {
     return "    (i64.const " + e.lit.to_str() + ")\n";
   }
+  if e.tag == parse.EX_MAKE {
+    // a make in a scalar lane parks its {addr, count} pair and rides
+    // the address (the EX_SLICE2 convention); pair-shaped consumers
+    // go through build_string_pair / emit_arg, which park the whole
+    // pair — the bare node used to fall through into the BIN
+    // template and render as a lone (i64.add)
+    return emit_make(mut pool, e, mut env, mut prog, mut nl) +
+           "    (local.set $t)\n";
+  }
+  if e.tag == parse.EX_ARR {
+    // a slice literal in a scalar lane parks and rides the same way
+    return emit_array(mut pool, e, mut env, mut prog, mut nl) +
+           "    (local.set $t)\n";
+  }
   if e.tag == parse.EX_VAR {
     let slot: i64 = env_look(env, e.name);
     if slot < 0 {
@@ -4432,6 +4451,7 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
     let ret: string = expr_enum_type(recv, env, mut prog);
     let mut rtype_full: string = "";
     if recv.tag == parse.EX_VAR && st_index(mut prog, recv.name) >= 0 {
+      rtype_full = recv.name;
       target = recv.name + "_" + e.name;
     } else {
       if len(ret) > 0 {
@@ -4462,6 +4482,23 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
     while k < len(e.args) {
       out = out + emit_arg(mut pool, e.args[k], mut env, mut prog, mut nl);
       k = k + 1;
+    }
+    // a pair-returning method (string, slice, fn value) leaves TWO
+    // values: park the pair in fresh slots and ride the address — the
+    // scalar-lane contract every emit_expr consumer assumes (a bare
+    // call in statement position stranded the length word)
+    let mut mrty: string = fn_rtype_of(prog, rtype_full + "." + e.name);
+    if rtype_is_pair(mrty) && !is_fn_type(mrty) {
+      out = out + "    call $u_";
+      out = out + target;
+      out = out + "\n";
+      let pa4: i64 = nl.v;
+      let pl4: i64 = nl.v + 1;
+      nl.v = nl.v + 2;
+      out = out + "    (local.set " + pl4.to_str() + ")\n";
+      out = out + "    (local.set " + pa4.to_str() + ")\n";
+      out = out + "    (local.get " + pa4.to_str() + ")\n";
+      return out;
     }
     out = out + "    call $u_";
     out = out + target;
@@ -5259,6 +5296,14 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
     }
     return out;
   }
+  if e.tag != parse.EX_BIN {
+    // the fall-through below renders ANY unrecognized tag as
+    // lhs+rhs+op — silent garbage in the child WAT (make's op 0
+    // rendered as a lone i64.add once). Name the tag on stderr so the
+    // census lists every family in one run; this becomes a refusal
+    // when the families close.
+    eprintf("EMITFALL tag={} op={}\n", e.tag, e.op);
+  }
   // the operand width: the declaring operand wins (§3.1 — literals
   // adapt to their consumer)
   let mut w: i64 = bin_width(e, env, mut prog);
@@ -5854,6 +5899,21 @@ fn fn_returns_string(prog: *Prog, name: string) -> bool {
 fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
                      mut nl: *NextLocal) -> *SPair {
   let mut bad = new SPair { ok: false, text: "", a: 0, l: 0 };
+  if e.tag == parse.EX_MAKE {
+    // a fresh make parks its {addr, count} pair into two slots —
+    // pair-shaped consumers (field stores, rebinding lets, pair
+    // returns, string-if arms) all normalize through here
+    let ma0: i64 = nl.v;
+    let ml0: i64 = nl.v + 1;
+    nl.v = nl.v + 2;
+    let mtext: string = emit_make(mut pool, e, mut env, mut prog,
+                                  mut nl);
+    let msp = new SPair { ok: true,
+      text: mtext + "    (local.set " + ml0.to_str() + ")\n" +
+            "    (local.set " + ma0.to_str() + ")\n",
+      a: ma0, l: ml0 };
+    return msp;
+  }
   // a string FIELD through a pointer or value frame: the pair rides
   // the field's slots — a slice-typed field rides the same two slots
   // (an argument over st.body used to push the address half alone)
@@ -6400,72 +6460,62 @@ fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
   }
   if e.tag == parse.EX_IF {
     // a string-valued if: both arms string-buildable, the chain rides
-    // pair results
-    let mut allstr2: bool = true;
+    // pair results. Each arm normalizes through build_string_pair — a
+    // concat chain, a make, a view, or a nested if all push exactly
+    // two — and any non-string arm refuses the whole if, so the
+    // scalar template takes over. The try IS the test: no shape
+    // guessing (a non-recursive stringiness probe misjudged nested
+    // concat chains).
+    let save2: i64 = nl.v;
+    let t_a2: i64 = nl.v;
+    let t_l2: i64 = nl.v + 1;
+    nl.v = nl.v + 2;
+    let mut text2: string = "";
+    match e.lhs {
+      Option.Some(cond2) => {
+        text2 = text2 + emit_expr(mut pool, cond2, mut env, mut prog, mut nl);
+      },
+      Option.None => {},
+    }
+    text2 = text2 + "    (i32.wrap_i64)\n";
+    text2 = text2 + "    (if (result i64) (result i64)\n";
+    text2 = text2 + "      (then\n";
     if len(e.args) > 0 {
-      match fold_string(e.args[0], env) {
-        Option.Some(raw) => {},
-        Option.None => {
-          if !is_stringy(e.args[0], env, mut prog) {
-            if e.args[0].tag != parse.EX_VAR {
-              allstr2 = false;
-            }
-          }
-        },
+      let spa2 = build_string_pair(e.args[0], mut pool, mut env, mut prog,
+                                   mut nl);
+      if !spa2.ok {
+        nl.v = save2;
+        return bad;
       }
+      text2 = text2 + spa2.text;
+      text2 = text2 + "    (local.get " + spa2.a.to_str() + ")\n";
+      text2 = text2 + "    (local.get " + spa2.l.to_str() + ")\n";
     } else {
-      allstr2 = false;
+      text2 = text2 + "    (i64.const 0)\n    (i64.const 0)\n";
     }
+    text2 = text2 + "      )\n      (else\n";
     if len(e.args) > 1 {
-      match fold_string(e.args[1], env) {
-        Option.Some(raw) => {},
-        Option.None => {
-          if !is_stringy(e.args[1], env, mut prog) {
-            if e.args[1].tag != parse.EX_VAR {
-              allstr2 = false;
-            }
-          }
-        },
+      let spb2 = build_string_pair(e.args[1], mut pool, mut env, mut prog,
+                                   mut nl);
+      if !spb2.ok {
+        nl.v = save2;
+        return bad;
       }
+      text2 = text2 + spb2.text;
+      text2 = text2 + "    (local.get " + spb2.a.to_str() + ")\n";
+      text2 = text2 + "    (local.get " + spb2.l.to_str() + ")\n";
     } else {
-      allstr2 = false;
+      text2 = text2 + "    (i64.const 0)\n    (i64.const 0)\n";
     }
-    if allstr2 {
-      let t_a2: i64 = nl.v;
-      let t_l2: i64 = nl.v + 1;
-      nl.v = nl.v + 2;
-      let mut text2: string = "";
-      match e.lhs {
-        Option.Some(cond2) => {
-          text2 = text2 + emit_expr(mut pool, cond2, mut env, mut prog, mut nl);
-        },
-        Option.None => {},
-      }
-      text2 = text2 + "    (i32.wrap_i64)\n";
-      text2 = text2 + "    (if (result i64) (result i64)\n";
-      text2 = text2 + "      (then\n";
-      if len(e.args) > 0 {
-        text2 = text2 + push_string(mut pool, e.args[0], mut env, mut prog, mut nl);
-      } else {
-        text2 = text2 + "    (i64.const 0)\n    (i64.const 0)\n";
-      }
-      text2 = text2 + "      )\n      (else\n";
-      if len(e.args) > 1 {
-        text2 = text2 + push_string(mut pool, e.args[1], mut env, mut prog, mut nl);
-      } else {
-        text2 = text2 + "    (i64.const 0)\n    (i64.const 0)\n";
-      }
-      text2 = text2 + "      ))\n";
-      text2 = text2 + "    (local.set ";
-      text2 = text2 + t_l2.to_str();
-      text2 = text2 + ")\n";
-      text2 = text2 + "    (local.set ";
-      text2 = text2 + t_a2.to_str();
-      text2 = text2 + ")\n";
-      let spi = new SPair { ok: true, text: text2, a: t_a2, l: t_l2 };
-      return spi;
-    }
-    return bad;
+    text2 = text2 + "      ))\n";
+    text2 = text2 + "    (local.set ";
+    text2 = text2 + t_l2.to_str();
+    text2 = text2 + ")\n";
+    text2 = text2 + "    (local.set ";
+    text2 = text2 + t_a2.to_str();
+    text2 = text2 + ")\n";
+    let spi = new SPair { ok: true, text: text2, a: t_a2, l: t_l2 };
+    return spi;
   }
   if e.tag == parse.EX_MATCH {
     // a string-valued match: every arm's tail must be string-buildable
@@ -6482,7 +6532,13 @@ fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
             Option.Some(raw) => {},
             Option.None => {
               if !vartrust && !is_stringy(v, env, mut prog) {
-                allstr = false;
+                if !(v.tag == parse.EX_BIN && v.op == 0 &&
+                     both_stringy(v, env, mut prog)) {
+                  if v.tag != parse.EX_MAKE && v.tag != parse.EX_SLICE2 &&
+                      v.tag != parse.EX_IF && v.tag != parse.EX_MATCH {
+                    allstr = false;
+                  }
+                }
               }
             },
           }
@@ -8502,6 +8558,7 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
   let mut i: usize = 0;
   while i < len(nodes) {
     let mut st = nodes[i];
+    body = body + "    (;st" + st.tag.to_str() + ";)\n";
     if st.tag == parse.ST_RET && in_fn {
       // a fn's return: the value parks in $r while the open scopes'
       // defers unwind (LIFO), then rides home — unless the value is a
@@ -9841,6 +9898,21 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                     body = body + " (i32.const 8)) (local.get $r))\n";
                   }
                 } else {
+                  let spf2 = build_string_pair(rhv, mut pool, mut env,
+                                               mut prog, mut nl);
+                  if spf2.ok {
+                    // the rhs's normalized pair (a view, a concat, a
+                    // make) copies both words into the field
+                    body = body + spf2.text;
+                    body = body + "    (local.get " +
+                           spf2.a.to_str() + ")\n    (local.set $t)\n";
+                    body = body + "    (local.get " +
+                           spf2.l.to_str() + ")\n    (local.set $r)\n";
+                    body = body + "    (i64.store (local.get $a)";
+                    body = body + " (local.get $t))\n";
+                    body = body + "    (i64.store (i32.add (local.get $a)";
+                    body = body + " (i32.const 8)) (local.get $r))\n";
+                  } else {
                   match st.val {
                     Option.Some(e19) => {
                       body = body + emit_expr(mut pool, e19, mut env,
@@ -9851,6 +9923,7 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                   body = body + "    (local.set $t)\n";
                   body = body + "    (i64.store (local.get $a)";
                   body = body + " (local.get $t))\n";
+                  }
                 }
               } else {
               match st.val {
