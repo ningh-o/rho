@@ -25,6 +25,10 @@ fn main() -> i32 {
     eprintf("parse: {} unresolved form(s)\n", prog.perrs);
     return 1;
   }
+  // the chain law: our own root consts ride the same parameters into
+  // the compiled program — the child's SRC/MODS are ours (§7)
+  parse.override_root_str(mut prog, "SRC", SRC);
+  parse.override_root_str(mut prog, "MODS", MODS);
   if !parse.load_mods(mut prog, MODS) {
     eprintf("mods: unresolved module path(s)\n");
     return 1;

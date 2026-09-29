@@ -559,14 +559,15 @@ pub fn check(prog: *Prog) -> i64 {
   let mut errs_box = new_errbox();
   let mut nf: usize = 0;
   while nf < len(prog.fns) {
+    let fd0: *FnDef = prog.fns[nf];
     let mut bound: []string = make([]string, 64);
     let mut k: usize = 0;
-    while k < len(prog.fns[nf].params) {
-      bound[k] = prog.fns[nf].params[k];
+    while k < len(fd0.params) {
+      bound[k] = fd0.params[k];
       k = k + 1;
     }
     let mut labels: []string = make([]string, 32);
-    stmts_walk(prog.fns[nf].body, prog, mut bound, k, mut labels, 0, mut errs_box);
+    stmts_walk(fd0.body, prog, mut bound, k, mut labels, 0, mut errs_box);
     nf = nf + 1;
   }
   let mut bound: []string = make([]string, 64);

@@ -445,10 +445,10 @@ fn alloc_wat(pool_top: i64) -> string {
 
 const ALLOC_BODY: string = """
   (func $w_alloc (param $n i32) (result i32)
-    (local $p i32) (local $k i32) (local $old i32)
+    (local $p i32) (local $k i32) (local $old i32) (local $g i32)
     (global.set $w_alloc_top
       (i32.sub (global.get $w_alloc_top)
-               (i32.mul (i32.add (local.get $n) (i32.const 1))
+               (i32.mul (i32.add (local.get $n) (i32.const 2))
                         (i32.const 8))))
     (if (i32.lt_u (global.get $w_alloc_top) (global.get $w_floor))
       (then
@@ -459,33 +459,43 @@ const ALLOC_BODY: string = """
         (local.set $k
           (i32.add
             (i32.div_u
-              (i32.add (i32.mul (i32.add (local.get $n) (i32.const 1))
+              (i32.add (i32.mul (i32.add (local.get $n) (i32.const 2))
                                 (i32.const 8))
                        (i32.const 65536))
               (i32.const 65536))
             (i32.const 1)))
-        (drop (memory.grow (local.get $k)))
+        ;; a refused grow (-1) must trap loudly: re-carving lived-in
+        ;; pages would alias the heap and corrupt the data segments
+        (local.set $g (memory.grow (local.get $k)))
+        (if (i32.eq (local.get $g) (i32.const -1))
+          (then unreachable))
         (global.set $w_floor
           (i32.mul (local.get $old) (i32.const 65536)))
         (global.set $w_alloc_top
           (i32.sub (i32.mul (memory.size) (i32.const 65536))
-                   (i32.mul (i32.add (local.get $n) (i32.const 1))
+                   (i32.mul (i32.add (local.get $n) (i32.const 2))
                             (i32.const 8))))))
     (local.set $p (global.get $w_alloc_top))
-    ;; the header slot sits before the returned pointer: rc = 1
-    (i64.store (local.get $p) (i64.const 1))
+    ;; the two header slots sit before the returned pointer: the rc
+    ;; stays at ptr-8 (every scope-exit release thunk and $w_retain
+    ;; decrement that slot — the counting law), the capacity in bytes
+    ;; rides the new ptr-16 slot ($w_app's in-place-versus-fresh read)
+    (i64.store (i32.add (local.get $p) (i32.const 8)) (i64.const 1))
+    (i64.store (local.get $p)
+               (i64.extend_i32_u
+                 (i32.mul (local.get $n) (i32.const 8))))
     (local.set $k (i32.const 0))
     (loop $z
       (if (i32.lt_u (local.get $k) (local.get $n))
         (then
           (i64.store
             (i32.add (local.get $p)
-                     (i32.mul (i32.add (local.get $k) (i32.const 1))
+                     (i32.mul (i32.add (local.get $k) (i32.const 2))
                               (i32.const 8)))
             (i64.const 0))
           (local.set $k (i32.add (local.get $k) (i32.const 1)))
           (br $z))))
-    (i32.add (local.get $p) (i32.const 8))
+    (i32.add (local.get $p) (i32.const 16))
   )
   (func $w_retain (param $p i64)
     (if (i64.ne (local.get $p) (i64.const 0))
@@ -504,6 +514,80 @@ const ALLOC_BODY: string = """
                              (i32.const 8))))))
       (else (return (i32.const 0))))
     (i32.const 0)
+  )
+  ;; the amortized append (boot's rho_app law): x = x + t rides this —
+  ;; in place when the block is unaliased (rc == 1), lives on the heap
+  ;; (never a rodata literal: those sit below the floor) and its
+  ;; capacity takes the tail; bytes beyond the old length are written,
+  ;; so views into [0, len) stay verbatim. Otherwise a fresh
+  ;; half-again block (geometric growth bounds a builder's total
+  ;; allocation at ~3x its final size). Appends own no old ref: in
+  ;; place the value grew, fresh the old block simply ages out.
+  (func $w_app (param $ap i64) (param $al i64) (param $bp i64)
+                (param $bl i64) (result i64) (result i64)
+    (local $p i32) (local $i i64) (local $n i64)
+    (if (i32.and
+          (i64.ge_u (local.get $ap)
+                    (i64.extend_i32_u (global.get $w_floor)))
+          (i32.and
+            (i64.eq (i64.load (i32.sub (i32.wrap_i64 (local.get $ap))
+                                       (i32.const 8)))
+                    (i64.const 1))
+            (i64.le_u (i64.add (local.get $al) (local.get $bl))
+                      (i64.load (i32.sub (i32.wrap_i64 (local.get $ap))
+                                         (i32.const 16))))))
+      (then
+        (local.set $i (i64.const 0))
+        (loop $a1
+          (if (i64.lt_u (local.get $i) (local.get $bl))
+            (then
+              (i32.store8
+                (i32.add (i32.wrap_i64 (i64.add (local.get $ap)
+                                                (local.get $al)))
+                         (i32.wrap_i64 (local.get $i)))
+                (i32.load8_u (i32.wrap_i64 (i64.add (local.get $bp)
+                                                    (local.get $i)))))
+              (local.set $i (i64.add (local.get $i) (i64.const 1)))
+              (br $a1))))
+        (local.get $ap)
+        (local.get $al)
+        (local.get $bl)
+        (i64.add)
+        (return)))
+    (local.set $n (i64.add (local.get $al) (local.get $bl)))
+    (local.set $p
+      (call $w_alloc
+        (i32.wrap_i64
+          (i64.div_u
+            (i64.add
+              (i64.add (local.get $n)
+                       (i64.div_u (local.get $n) (i64.const 2)))
+              (i64.const 7))
+            (i64.const 8)))))
+    (local.set $i (i64.const 0))
+    (loop $a2
+      (if (i64.lt_u (local.get $i) (local.get $al))
+        (then
+          (i32.store8
+            (i32.add (local.get $p) (i32.wrap_i64 (local.get $i)))
+            (i32.load8_u (i32.wrap_i64 (i64.add (local.get $ap)
+                                                (local.get $i)))))
+          (local.set $i (i64.add (local.get $i) (i64.const 1)))
+          (br $a2))))
+    (local.set $i (i64.const 0))
+    (loop $a3
+      (if (i64.lt_u (local.get $i) (local.get $bl))
+        (then
+          (i32.store8
+            (i32.add (i32.add (local.get $p)
+                              (i32.wrap_i64 (local.get $al)))
+                     (i32.wrap_i64 (local.get $i)))
+            (i32.load8_u (i32.wrap_i64 (i64.add (local.get $bp)
+                                                (local.get $i)))))
+          (local.set $i (i64.add (local.get $i) (i64.const 1)))
+          (br $a3))))
+    (i64.extend_i32_u (local.get $p))
+    (local.get $n)
   )
   (func $w_panic (param $m i32) (param $l i32)
     (i32.store (i32.const 64) (local.get $m))
@@ -530,6 +614,16 @@ fn oob_check_at(mut pool: *Pool, len_text: string, strict: bool) -> string {
 
 fn oob_check(mut pool: *Pool, len_text: string) -> string {
   return oob_check_at(mut pool, len_text, true);
+}
+
+// the same bounds check with the index operand spelled by the caller
+// (the generic IDX path parks its index in a real slot — a nested
+// base chain would clobber $t before the check runs)
+fn oob_check_idx(mut pool: *Pool, idx_text: string, len_text: string) -> string {
+  let msg_addr: i64 = pool_intern(mut pool, "index out of bounds");
+  return "    (if (i64.ge_u " + idx_text + " " + len_text + ")\n" +
+         "      (then (call $w_panic (i32.const " + msg_addr.to_str() +
+         ") (i32.const 19))))\n";
 }
 
 // one fd_write of nbytes at addr: the iovec cell pair at 64/68
@@ -648,8 +742,8 @@ fn env_new(cap: usize) -> *Env {
                    sraws: make([]string, cap),
                    skinds: make([]i64, cap), sn: 0,
                    fkind: make([]i64, cap),
-                   selnames: make([]string, 16),
-                   selvals: make([]string, 16),
+                   selnames: make([]string, 512),
+                   selvals: make([]string, 512),
                    sel_n: 0,
                    infn: false, retslot: 0 - 1,
                    loops: loops_new(), dstack: dstack_new(),
@@ -3785,8 +3879,14 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
       },
       Option.None => {},
     }
+    // the index parks in its OWN slot: a nested IDX inside the base
+    // chain parks ITS index in $t, and the oob/load below must read
+    // THIS index — the old $t park addressed xs[i][j] as j in both
+    // bounds and bytes once the base carried any indexing of its own
+    let tix: i64 = nl.v;
+    nl.v = nl.v + 1;
     out = out + emit_expr(mut pool, idx, mut env, mut prog, mut nl);
-    out = out + "    (local.set $t)\n";
+    out = out + "    (local.set " + tix.to_str() + ")\n";
     let mut base: *Expr = parse.lit(0);
     match e.lhs {
       Option.Some(b) => {
@@ -3800,7 +3900,7 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
         // runtime pair: slice or string
         let addr_slot: i64 = (0 - a) - 1;
         let len_slot: i64 = env_str_len_slot(env, base.name);
-        out = out + oob_check(mut pool, "(local.get " + len_slot.to_str() +
+        out = out + oob_check_idx(mut pool, "(local.get " + tix.to_str() + ")", "(local.get " + len_slot.to_str() +
                               ")");
         if env_kind_of(env, base.name) == 2 {
           let et0: string = env_slice_elemtext(env, base.name);
@@ -3812,7 +3912,7 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
                 st_nslots(mut prog, st_index(mut prog, et0));
             out = out + "    (i64.add (local.get ";
             out = out + addr_slot.to_str();
-            out = out + ") (i64.mul (local.get $t) (i64.const ";
+            out = out + ") (i64.mul (local.get " + tix.to_str() + ") (i64.const ";
             out = out + (esz0 * 8).to_str();
             out = out + ")))\n";
             return out;
@@ -3831,38 +3931,38 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
           out = out + addr_slot.to_str();
           out = out + "))\n";
           out = out + "                     (i32.mul (i32.wrap_i64 ";
-          out = out + "(local.get $t)) (i32.const " + strd0.to_str() +
+          out = out + "(local.get " + tix.to_str() + ")) (i32.const " + strd0.to_str() +
                  "))))\n";
         } else {
           out = out + "    (i64.extend_i32_u (i32.load8_u ";
           out = out + "(i32.add (i32.wrap_i64 (local.get ";
           out = out + addr_slot.to_str();
           out = out + "))\n";
-          out = out + "                     (i32.wrap_i64 (local.get $t)))))\n";
+          out = out + "                     (i32.wrap_i64 (local.get " + tix.to_str() + ")))))\n";
         }
         return out;
       }
       if env_kind_of(env, base.name) == 0 {
         // a folded string: const addr, const len
         let ln: i64 = env_str_len(env, base.name);
-        out = out + oob_check(mut pool, "(i64.const " + ln.to_str() + ")");
+        out = out + oob_check_idx(mut pool, "(local.get " + tix.to_str() + ")", "(i64.const " + ln.to_str() + ")");
         out = out + "    (i64.extend_i32_u (i32.load8_u (i32.add ";
         out = out + "(i32.const ";
         out = out + a.to_str();
         out = out + ")\n";
-        out = out + "                     (i32.wrap_i64 (local.get $t)))))\n";
+        out = out + "                     (i32.wrap_i64 (local.get " + tix.to_str() + ")))))\n";
         return out;
       }
     }
     if base.tag == parse.EX_STR {
       let saddr: i64 = pool_intern(mut pool, base.name);
       let ln: i64 = pool_len(pool, base.name);
-      out = out + oob_check(mut pool, "(i64.const " + ln.to_str() + ")");
+      out = out + oob_check_idx(mut pool, "(local.get " + tix.to_str() + ")", "(i64.const " + ln.to_str() + ")");
       out = out + "    (i64.extend_i32_u (i32.load8_u (i32.add ";
       out = out + "(i32.const ";
       out = out + saddr.to_str();
       out = out + ")\n";
-      out = out + "                     (i32.wrap_i64 (local.get $t)))))\n";
+      out = out + "                     (i32.wrap_i64 (local.get " + tix.to_str() + ")))))\n";
       return out;
     }
     if base.tag == parse.EX_FIELD {
@@ -3911,12 +4011,12 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
           if vb.tag == parse.EX_VAR &&
               len(env_val_of(env, vb.name)) > 0 {
             let b0: i64 = env_val_base(env, vb.name);
-            out = out + oob_check(mut pool, "(local.get " +
+            out = out + oob_check_idx(mut pool, "(local.get " + tix.to_str() + ")", "(local.get " +
                    (b0 + off / 8 + 1).to_str() + ")");
             if selemb >= 0 {
               out = out + "    (i64.add (local.get ";
               out = out + (b0 + off / 8).to_str();
-              out = out + ") (i64.mul (local.get $t) (i64.const ";
+              out = out + ") (i64.mul (local.get " + tix.to_str() + ") (i64.const ";
               out = out + stride.to_str();
               out = out + ")))\n";
               return out;
@@ -3925,7 +4025,7 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
             out = out + (b0 + off / 8).to_str();
             out = out + "))\n";
             out = out + "                     (i32.mul (i32.wrap_i64 ";
-            out = out + "(local.get $t)) (i32.const " +
+            out = out + "(local.get " + tix.to_str() + ")) (i32.const " +
                    stride.to_str() + "))))\n";
             return out;
           }
@@ -3936,7 +4036,7 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
           out = out + "    (local.set ";
           out = out + t0.to_str();
           out = out + ")\n";
-          out = out + oob_check(mut pool, "(i64.load (i32.add (i32.wrap_i64 " +
+          out = out + oob_check_idx(mut pool, "(local.get " + tix.to_str() + ")", "(i64.load (i32.add (i32.wrap_i64 " +
                  "(local.get " + t0.to_str() + ")) (i32.const " +
                  (off + 8).to_str() + ")))");
           // the element rides INSIDE the pair's storage: load the
@@ -3947,7 +4047,7 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
                    "(i32.add (i32.wrap_i64 " +
                    "(local.get " + t0.to_str() + ")) (i32.const " +
                    off.to_str() + ")))\n" +
-                   "                     (i64.mul (local.get $t) " +
+                   "                     (i64.mul (local.get " + tix.to_str() + ") " +
                    "(i64.const " + stride.to_str() + ")))\n";
             return out;
           }
@@ -3957,10 +4057,60 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
                  off.to_str() + ")))\n" +
                  "                     )\n" +
                  "                     (i32.mul (i32.wrap_i64 " +
-                 "(local.get $t)) (i32.const " + stride.to_str() +
+                 "(local.get " + tix.to_str() + ")) (i32.const " + stride.to_str() +
                  "))))\n";
           return out;
         }
+      }
+    }
+    // a STRING field's byte read: the field's own pair (addr at
+    // off, len at off+8) bounds the index; the byte loads at
+    // addr + idx — the old path admitted slices only, so c.src[k]
+    // fell through to garbage (the lexer shredded its input into
+    // one token per byte)
+    if base.tag == parse.EX_FIELD {
+      let mut fowner: *Expr = parse.lit(0);
+      match base.lhs {
+        Option.Some(fo) => {
+          fowner = fo;
+        },
+        Option.None => {},
+      }
+      let fbt: string = field_base_type(fowner, env, mut prog);
+      let fsi: i64 = st_index(mut prog, fbt);
+      let ffi: i64 = st_field_index(prog, fsi, base.name);
+      if fsi >= 0 && ffi >= 0 &&
+          prog.structs[fsi as usize].types[ffi as usize] == "string" {
+        let soff: i64 = st_field_off(mut prog, fsi, ffi) * 8;
+        let mut svb: *Expr = fowner;
+        if svb.tag == parse.EX_VAR &&
+            len(env_val_of(env, svb.name)) > 0 {
+          let sb0: i64 = env_val_base(env, svb.name);
+          out = out + oob_check_idx(mut pool,
+                 "(local.get " + tix.to_str() + ")",
+                 "(local.get " + (sb0 + soff / 8 + 1).to_str() + ")");
+          out = out + "    (i64.extend_i32_u (i32.load8_u (i32.add " +
+                 "(i32.wrap_i64 (local.get " +
+                 (sb0 + soff / 8).to_str() + "))" +
+                 " (i32.wrap_i64 (local.get " + tix.to_str() +
+                 ")))))\n";
+          return out;
+        }
+        let st0: i64 = nl.v;
+        nl.v = nl.v + 1;
+        out = out + emit_expr(mut pool, svb, mut env, mut prog, mut nl);
+        out = out + "    (local.set " + st0.to_str() + ")\n";
+        out = out + oob_check_idx(mut pool,
+               "(local.get " + tix.to_str() + ")",
+               "(i64.load (i32.add (i32.wrap_i64 (local.get " +
+               st0.to_str() + ")) (i32.const " + (soff + 8).to_str() +
+               ")))");
+        out = out + "    (i64.extend_i32_u (i32.load8_u (i32.add " +
+               "(i32.wrap_i64 (i64.load (i32.add (i32.wrap_i64 " +
+               "(local.get " + st0.to_str() + ")) (i32.const " +
+               soff.to_str() + ")))) (i32.wrap_i64 (local.get " +
+               tix.to_str() + ")))))\n";
+        return out;
       }
     }
     // an indexed base (xs[i][j]): the base read yields the
@@ -4005,7 +4155,7 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
             blk7.to_str() + "))\n" +
             "                     (i32.mul (i32.wrap_i64 (local.get " +
             bt8.to_str() + ")) (i32.const 16)))))\n" +
-            "                     (i32.wrap_i64 (local.get $t)))))\n";
+            "                     (i32.wrap_i64 (local.get " + tix.to_str() + ")))))\n";
         return out;
       }
     }
@@ -4628,7 +4778,19 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
             }
             out = out + "    (local.get $t)\n";
           } else {
-            out = out + push_string(mut pool, e.args[k], mut env, mut prog, mut nl);
+            // the init normalizes through the pair builder — a view,
+            // a binding, a concat, a make all park exactly {addr,len};
+            // push_string refused views (a slice view init emitted a
+            // lone value and left the field's len slot holding junk)
+            let spn = build_string_pair(e.args[k], mut pool, mut env,
+                                        mut prog, mut nl);
+            if spn.ok {
+              out = out + spn.text;
+              out = out + "    (local.get " + spn.a.to_str() + ")\n";
+              out = out + "    (local.get " + spn.l.to_str() + ")\n";
+            } else {
+              out = out + push_string(mut pool, e.args[k], mut env, mut prog, mut nl);
+            }
           }
           out = out + "    (local.set ";
           out = out + tl.to_str();
@@ -5102,6 +5264,41 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
       out = out + "    (i64.eqz)\n    (i64.extend_i32_s)\n";
     }
     return out;
+  }
+  if e.op == 9 || e.op == 10 {
+    let save9: i64 = nl.v;
+    let mut out9: string = "";
+    let mut ok9: bool = false;
+    match e.lhs {
+      Option.Some(l) => {
+        let sl = build_string_pair(l, mut pool, mut env, mut prog,
+                                   mut nl);
+        match e.rhs {
+          Option.Some(r) => {
+            let sr = build_string_pair(r, mut pool, mut env, mut prog,
+                                       mut nl);
+            if sl.ok && sr.ok {
+              out9 = sl.text + sr.text +
+                     "    (local.get " + sl.a.to_str() + ")\n" +
+                     "    (local.get " + sl.l.to_str() + ")\n" +
+                     "    (local.get " + sr.a.to_str() + ")\n" +
+                     "    (local.get " + sr.l.to_str() + ")\n" +
+                     "    call $w_streq\n";
+              if e.op == 10 {
+                out9 = out9 + "    (i64.eqz)\n    (i64.extend_i32_s)\n";
+              }
+              ok9 = true;
+            }
+          },
+          Option.None => {},
+        }
+      },
+      Option.None => {},
+    }
+    if ok9 {
+      return out9;
+    }
+    nl.v = save9;
   }
   // short-circuit && / ||: the lhs gates whether the rhs runs at all
   // (an if with an i64 result — both operators yield 0/1)
@@ -9954,6 +10151,50 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
             // the rebind see the new value (a slice rebind that fell
             // to the scalar lane pushed the address alone and left it
             // stranded on the branch stack)
+            // the amortized self-append: x = x + t (and x += t, the
+            // desugar lands here) rides $w_app — in place when the
+            // block is unaliased and its capacity takes the tail
+            // (boot's counting law). A per-append fresh block leaks
+            // O(n^2) space under a builder loop's storm and once
+            // starved the allocator corrupts; the self-append is the
+            // one shape that recurs at scale
+            let mut selfapp: bool = false;
+            if skind == 1 && e.tag == parse.EX_BIN && e.op == 0 {
+              let mut lx: *Expr = parse.lit(0);
+              match e.lhs {
+                Option.Some(l2) => {
+                  lx = l2;
+                },
+                Option.None => {},
+              }
+              if lx.tag == parse.EX_VAR && lx.name == st.name {
+                let mut tx: *Expr = parse.lit(0);
+                match e.rhs {
+                  Option.Some(t2) => {
+                    tx = t2;
+                  },
+                  Option.None => {},
+                }
+                let sapp = build_string_pair(tx, mut pool, mut env,
+                                             mut prog, mut nl);
+                if sapp.ok {
+                  let da: i64 = (0 - env_str_look(env, st.name)) - 1;
+                  let dl: i64 = env_str_len_slot(env, st.name);
+                  body = body + "    (local.get " + da.to_str() + ")\n";
+                  body = body + "    (local.get " + dl.to_str() + ")\n";
+                  body = body + sapp.text;
+                  body = body + "    (local.get " + sapp.a.to_str() +
+                         ")\n";
+                  body = body + "    (local.get " + sapp.l.to_str() +
+                         ")\n";
+                  body = body + "    call $w_app\n";
+                  body = body + "    (local.set " + dl.to_str() + ")\n";
+                  body = body + "    (local.set " + da.to_str() + ")\n";
+                  selfapp = true;
+                }
+              }
+            }
+            if !selfapp {
             let sp = build_string_pair(e, mut pool, mut env, mut prog,mut 
                                        nl);
             if sp.ok {
@@ -9971,6 +10212,7 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
             } else {
               body = body + emit_expr(mut pool, e, mut env, mut prog, mut nl);
               body = body + "    drop\n";
+            }
             }
           } else {
           if skind == 3 &&

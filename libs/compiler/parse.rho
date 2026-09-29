@@ -251,6 +251,40 @@ pub fn var(name: string) -> *Expr {
                      marms: make([]*MatchArm, 0) };
 }
 
+// the chain law (§7): this compiler's own root consts are the
+// compiled program's --set — the next generation's source rides the
+// same parameters through the chain. Replace the parsed program's
+// same-named root const text with ours (false: the program declares
+// none). Runs before load_mods, so only root consts exist in the
+// table and module consts cannot collide.
+pub fn override_root_str(mut prog: *Prog, nm: string, text: string) -> bool {
+  let mut i: usize = 0;
+  while i < prog.nconsts {
+    if prog.consts[i] == nm {
+      let mut ie: *Expr = prog.cexprs[i];
+      if ie.tag == EX_STR {
+        // the pool decodes raw spans on write (literals carry their
+        // source escapes); a runtime string must arrive
+        // backslash-doubled so that decode reproduces it verbatim
+        let mut enc: string = "";
+        let mut ei: usize = 0;
+        while ei < len(text) {
+          if text[ei] == 92 {
+            enc = enc + "\\\\";
+          } else {
+            enc = enc + text[ei..(ei + 1)];
+          }
+          ei = ei + 1;
+        }
+        ie.name = enc;
+        return true;
+      }
+    }
+    i = i + 1;
+  }
+  return false;
+}
+
 pub fn strlit(text: string) -> *Expr {
   return new Expr { tag: EX_STR, lit: 0, name: text, op: 0,
                      lhs: Option.None, rhs: Option.None ,
@@ -2764,7 +2798,7 @@ fn mods_slashes(p: string) -> string {
 // register a const under a (possibly qualified) name; the six
 // tables grow together
 fn mods_const_add(mut prog: *Prog, nm: string, cv: i64, ct: string,
-                  ce: *Expr) {
+                  ce: *Expr, cst: bool, cmu: bool) {
   let n2: usize = prog.nconsts;
   let mut c2: []string = make([]string, n2 + 1);
   let mut v2: []i64 = make([]i64, n2 + 1);
@@ -2784,9 +2818,9 @@ fn mods_const_add(mut prog: *Prog, nm: string, cv: i64, ct: string,
   }
   c2[n2] = nm;
   v2[n2] = cv;
-  s2[n2] = false;
+  s2[n2] = cst;
   t2[n2] = ct;
-  m2[n2] = false;
+  m2[n2] = cmu;
   e2[n2] = ce;
   prog.consts = c2;
   prog.cvals = v2;
@@ -3200,13 +3234,18 @@ fn mods_load(mut prog: *Prog, mods: string, path: string,
   let mut ci2: usize = 0;
   while ci2 < mp.nconsts {
     if !mods_const_in(prog, mp.consts[ci2]) {
+      // the bare name carries the module's own static/mut flags — a
+      // module static MUST land in the consts table flagged, or the
+      // emitter never builds its global (reads return 0 silently,
+      // writes strand a value in the child WAT)
       mods_const_add(mut prog, mp.consts[ci2], mp.cvals[ci2],
-                     mp.ctypes[ci2], mp.cexprs[ci2]);
+                     mp.ctypes[ci2], mp.cexprs[ci2], mp.cstatic[ci2],
+                     mp.cmuts[ci2]);
     }
     let qn: string = canon + "." + mp.consts[ci2];
     if !mods_const_in(prog, qn) {
       mods_const_add(mut prog, qn, mp.cvals[ci2], mp.ctypes[ci2],
-                     mp.cexprs[ci2]);
+                     mp.cexprs[ci2], false, false);
     }
     ci2 = ci2 + 1;
   }
