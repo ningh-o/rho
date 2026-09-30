@@ -6137,6 +6137,10 @@ fn arm_cond(a: *MatchArm, mut prog: *Prog, dslot: i64) -> string {
       // consts table's qualified entry — en_index("parse") is -1 and
       // the tag once folded to -1, killing every arm after it
       tag = const_i64(mut prog, a.pat.ename + "." + a.pat.vname);
+      if tag == 0 - 1 {
+        eprintf("DBG armfold: {}.{} kind={}\n", a.pat.ename,
+                a.pat.vname, a.pat.kind);
+      }
     }
   }
   return "(i64.eq (local.get $d) (i64.const " + tag.to_str() + "))";

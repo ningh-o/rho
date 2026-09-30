@@ -1165,9 +1165,17 @@ section — no placeholder stages. boot is the reference compiler.
       grand's runtime SOME arm's ename is neither Option/Result nor a
       registered enum, though the source spells Option.Some/None.
       Same source, same arm_cond code — the resolver/exports TABLE
-      STATE differs between the v1 and v2 runtimes. Next: one DBG at
-      arm_cond printing a.pat.ename when the tag folds to -1, run the
-      chain, read the spelling.
+      STATE differs between the v1 and v2 runtimes. MEASURED (the
+      ename probe ran the full chain): the child's runtime builds 219
+      `Option.Some` patterns and never folds; the grand's runtime
+      prints ZERO parse_pat probes yet arm_cond sees kind-2 patterns
+      spelled `Some.Some`/`None.None` (ename duplicated from vname) —
+      the grand's patterns do not come from its parse_pat run.
+      clone_expr SHARES patterns (pat: src.pat) so clones keep their
+      ename; the mangler is elsewhere. Next: find the grand's pattern
+      source — instrument mk_pat itself (called by every builder) to
+      print kind-2 builds, run the chain once, and compare which
+      builder emits Some.Some at v2.
 - [ ] **T4.4** std.io: read_line, file read/write wrappers over the raw
       LANDED 2026-09-27 (t44, reviewed and merged): fd_read/fd_close/path_open + four raw wrappers in the wasi tail; the prelude carries std.io's private __ window; read_line/read_file/write_file over Result; the verb gains // in: and --dir; the prelude's generic-instance chains reset per program (a real in-process compile fix the review caught); eleven io fixtures.
       tails.

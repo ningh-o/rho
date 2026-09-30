@@ -1377,6 +1377,7 @@ fn parse_pat(mut c: *PCur) -> *Pat {
       let mut p = mk_pat(2);
       p.ename = en;
       p.vname = vt;
+      eprintf("DBG pat: {}.{}\n", p.ename, p.vname);
       let mut binders: []string = make([]string, 8);
       let mut nb: usize = 0;
       if is_punct(tk(c), 40) {
