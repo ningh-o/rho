@@ -240,6 +240,7 @@ pub fn mk_arm(p: *Pat, body: []*Stmt, val: ?*Expr) -> *MatchArm {
 }
 
 pub fn mk_pat(kind: i32) -> *Pat {
+  eprintf("DBG mkpat {}\n", kind);
   return new Pat { kind: kind, lit: 0, ename: "", vname: "",
                    binders: make([]string, 0) };
 }
