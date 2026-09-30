@@ -1096,6 +1096,21 @@ section — no placeholder stages. boot is the reference compiler.
       substitution in check and emit) is the wave that unblocks both
       the compiler's own consumption of std.collections and any
       std-using corpus case through the differential.
+      WAVE IN FLIGHT (2026-10-01): the 5 parse errors were bare
+      prelude-variant patterns (Some(x)/None now normalize to
+      Option./Result. in parse_pat). The probe then climbed — loader
+      forms (fixed), the sibling-call qualifier (module-qualified
+      mcalls rewrite to plain qualified calls), sym_name mangling
+      brackets, ginst_method_target suffix-matching qualified methods,
+      generic-struct method templates skipped from the drain (boot's
+      ngparams law — only clones run), the clone receiver's
+      star-blind substitution, and the full-text binding for
+      instantiation params. The probe now ASSEMBLES and runs its Vec
+      half; the remaining gap is a RUNTIME one — the clones' tail
+      field stores (self.data[self.n] = v; self.n += 1) emit empty
+      (the clone's ST_FSTOREs render nothing), so n never advances
+      and get(0) panics. Next: the ST_FSTORE emission for cloned
+      statements. 
 - [ ] **T4.4** std.io: read_line, file read/write wrappers over the raw
       LANDED 2026-09-27 (t44, reviewed and merged): fd_read/fd_close/path_open + four raw wrappers in the wasi tail; the prelude carries std.io's private __ window; read_line/read_file/write_file over Result; the verb gains // in: and --dir; the prelude's generic-instance chains reset per program (a real in-process compile fix the review caught); eleven io fixtures.
       tails.

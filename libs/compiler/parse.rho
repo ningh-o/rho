@@ -1291,6 +1291,7 @@ fn parse_atom(mut c: *PCur) -> *Expr {
   // unusable primary: a zero literal keeps the walk alive — the
   // fallback count refuses the program before anything emits
   c.perrs = c.perrs + 1;
+          eprintf("PERR line={} tok={}\n", tk(c).line, tk(c).text);
   tkadv(mut c);
   return lit(0);
 }
@@ -1353,13 +1354,30 @@ fn parse_pat(mut c: *PCur) -> *Pat {
   if t.kind == lex.TK_IDENT || t.kind == lex.TK_KEYWORD {
     let name0: string = t.text;
     tkadv(mut c);
-    if is_punct(tk(c), 46) {
-      tkadv(mut c); // .
-      let vt = tk(c);
+    // the prelude's variants ride bare (Some(x) / None / Ok(v) / Err(e)
+    // — ambient like boot's, which consults the prelude table): they
+    // normalize to their enum's dotted form here
+    let mut ambient: string = "";
+    if name0 == "Some" || name0 == "None" {
+      ambient = "Option";
+    } else {
+      if name0 == "Ok" || name0 == "Err" {
+        ambient = "Result";
+      }
+    }
+    if is_punct(tk(c), 46) || len(ambient) > 0 {
+      let mut vt: string = name0;
+      let mut en: string = name0;
+      if len(ambient) > 0 {
+        en = ambient;
+      } else {
+        tkadv(mut c); // .
+        vt = tk(c).text;
+        tkadv(mut c);
+      }
       let mut p = mk_pat(2);
-      p.ename = name0;
-      p.vname = vt.text;
-      tkadv(mut c);
+      p.ename = en;
+      p.vname = vt;
       let mut binders: []string = make([]string, 8);
       let mut nb: usize = 0;
       if is_punct(tk(c), 40) {
@@ -1429,6 +1447,7 @@ fn parse_pat(mut c: *PCur) -> *Pat {
     return p0;
   }
   c.perrs = c.perrs + 1;
+          eprintf("PERR line={} tok={}\n", tk(c).line, tk(c).text);
   tkadv(mut c);
   return mk_pat(0);
 }
@@ -1567,6 +1586,7 @@ fn parse_stmt(mut c: *PCur) -> *Stmt {
     }
     if !eat_punct(mut c, 61) {
       c.perrs = c.perrs + 1;
+              eprintf("PERR line={} tok={}\n", tk(c).line, tk(c).text);
       let mut bad = mk_stmt(ST_RET);
       bad.ret = 0 - 21;
       return bad;
@@ -1587,6 +1607,7 @@ fn parse_stmt(mut c: *PCur) -> *Stmt {
     tkadv(mut c);
     if !eat_punct(mut c, 40) {
       c.perrs = c.perrs + 1;
+              eprintf("PERR line={} tok={}\n", tk(c).line, tk(c).text);
       let mut bad = mk_stmt(ST_RET);
       bad.ret = 0 - 22;
       return bad;
@@ -1594,6 +1615,7 @@ fn parse_stmt(mut c: *PCur) -> *Stmt {
     let ft = tk(c);
     if ft.kind != lex.TK_STR {
       c.perrs = c.perrs + 1;
+              eprintf("PERR line={} tok={}\n", tk(c).line, tk(c).text);
       let mut bad = mk_stmt(ST_RET);
       bad.ret = 0 - 23;
       return bad;
@@ -1969,6 +1991,7 @@ fn parse_stmt(mut c: *PCur) -> *Stmt {
   // unknown statement: skip a token so the walk makes progress —
   // the fallback count refuses the program before anything emits
   c.perrs = c.perrs + 1;
+          eprintf("PERR line={} tok={}\n", tk(c).line, tk(c).text);
   tkadv(mut c);
   let mut bad = mk_stmt(ST_RET);
   bad.ret = 0 - 100;
@@ -2956,6 +2979,45 @@ fn mods_qual_expr(mut e: *Expr, mp: *Prog, canon: string,
   if e.tag == EX_CALL && mods_fn_in(mp, e.name) {
     e.name = canon + "." + e.name;
   }
+  // a SIBLING module's fn through a use binding: strutil.str_lt(...)
+  // rides EX_MCALL with the binding as the receiver — rewrite to the
+  // qualified plain call (map.rho's ordering law was the witness: the
+  // qualifier only self-qualified, and the checker then met a bare
+  // binding name where no variable exists)
+  if e.tag == EX_MCALL {
+    match e.lhs {
+      Option.Some(rb) => {
+        if rb.tag == EX_VAR {
+          let mut qb: usize = 0;
+          while qb < nb {
+            if bnames[qb] == rb.name {
+              e.tag = EX_CALL;
+              e.name = bcans[qb] + "." + e.name;
+              e.lhs = Option.None;
+            }
+            qb = qb + 1;
+          }
+        }
+      },
+      Option.None => {},
+    }
+  }
+  if e.tag == EX_CALL {
+    // the dotted-name spelling of the same thing (head.item(...)):
+    // qualify through the binding when the head is one
+    let dtmp: i64 = mods_find_sub(e.name, ".", 0);
+    if dtmp > 0 {
+      let head: string = e.name[0..(dtmp as usize)];
+      let mut qb2: usize = 0;
+      while qb2 < nb {
+        if bnames[qb2] == head {
+          e.name = bcans[qb2] + "." +
+                   e.name[((dtmp as usize) + 1)..len(e.name)];
+        }
+        qb2 = qb2 + 1;
+      }
+    }
+  }
   if e.tag == EX_FIELD {
     // binding.CONST — another module's const through a use binding
     // (lex.TK_EOF and friends: the self-compile's bread and butter)
@@ -3067,6 +3129,13 @@ fn mods_load(mut prog: *Prog, mods: string, path: string,
              dir: string) -> string {
   let mut base: string = dir;
   if len(base) > 0 {
+    // a loose file module hands its dir down with the trailing slash
+    // its own load appended — normalize before appending another (the
+    // doubled slash once made std/collections//strutil.rho miss the
+    // baked tree)
+    if base[len(base) - 1..len(base)] == "/" {
+      base = base[0..(len(base) - 1)];
+    }
     base = base + "/";
   }
   let slashes: string = mods_slashes(path);
@@ -3099,6 +3168,8 @@ fn mods_load(mut prog: *Prog, mods: string, path: string,
   let toks: []*Tok = lex.lex(text);
   let mp: *Prog = parse(toks, text);
   if mp.perrs > 0 {
+    eprintf("DBG parse errs={} loading {} (dir={})\n", mp.perrs, path,
+            dir);
     prog.perrs = prog.perrs + mp.perrs;
     return "";
   }
@@ -3154,6 +3225,7 @@ fn mods_load(mut prog: *Prog, mods: string, path: string,
       }
       let can2: string = mods_load(mut prog, mods, modpart0, mdir);
       if len(can2) == 0 {
+        eprintf("DBG head-load failed: {} (dir={})\n", modpart0, mdir);
         prog.perrs = prog.perrs + 1;
         return "";
       }
@@ -3202,6 +3274,7 @@ fn mods_load(mut prog: *Prog, mods: string, path: string,
     }
     let subcan: string = mods_load(mut prog, mods, upath, mdir);
     if len(subcan) == 0 {
+      eprintf("DBG sub load failed: {} (dir={})\n", upath, mdir);
       prog.perrs = prog.perrs + 1;
       return "";
     }

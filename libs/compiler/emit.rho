@@ -3383,7 +3383,13 @@ fn sym_name(name: string) -> string {
     if name[i] == 46 {
       out = out + "_";
     } else {
-      out = out + name[i..(i + 1)];
+      if name[i] == 91 || name[i] == 93 {
+        // generic-instantiation brackets are not wasm symbol
+        // characters (Vec[i32]_push once assembled into nothing)
+        out = out + "_";
+      } else {
+        out = out + name[i..(i + 1)];
+      }
     }
     i = i + 1;
   }
@@ -4810,6 +4816,9 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
         }
         rtype_full = bt;
         target = bt + "_" + e.name;
+        if e.name == "lower" {
+          eprintf("DBG lower bt={} recv_tag={}\n", bt, recv.tag);
+        }
         out = out + emit_expr(mut pool, recv, mut env, mut prog, mut nl);
       }
     }
@@ -8349,10 +8358,73 @@ fn ginst_call_name(mut pool: *Pool, prog: *Prog, e: *Expr,
 // type's declared params ride implicitly, bound from the receiver's
 // bracket args (boot's law); the receiver param's written type takes
 // the full instantiated text so field reads key on true layouts
+// a method of a GENERIC struct is a template: boot never emits it
+// (only per-instantiation clones run — ginst_method_target clones on
+// demand); emitting the template once baked its unbound calls
+// (StringMap.get's self.lower stayed $u_StringMap_lower, no body)
+// *Base[a, b] whose Base is a generic struct with matching arity —
+// the instantiation spellings bind (and read back) with their full
+// text, brackets and all
+fn is_ginst_ptr(mut prog: *Prog, pt: string) -> bool {
+  if len(pt) < 3 || pt[0] != 42 {
+    return false;
+  }
+  let t: string = pt[1..len(pt)];
+  let ob: i64 = open_bracket(t);
+  if ob < 0 {
+    return false;
+  }
+  if t[len(t) - 1..len(t)] != "]" {
+    return false;
+  }
+  let base: string = t[0..(ob as usize)];
+  let si: i64 = st_index(mut prog, base);
+  if si < 0 {
+    return false;
+  }
+  let gtps: []string = prog.structs[si as usize].tparams;
+  if len(gtps) == 0 {
+    return false;
+  }
+  let tys: []string = split_type_args(
+      t[((ob as usize) + 1)..(len(t) - 1)]);
+  return len(tys) == len(gtps);
+}
+
+fn gstruct_method_skip(mut prog: *Prog, fd: *FnDef) -> bool {
+  // the qualified name reads canon.Struct.method — the struct is the
+  // SECOND-TO-LAST segment (std.collections.map.StringMap.get)
+  let mut lastdot: i64 = 0 - 1;
+  let mut prevdot: i64 = 0 - 1;
+  let mut i9: usize = 0;
+  while i9 < len(fd.name) {
+    if fd.name[i9] == 46 {
+      prevdot = lastdot;
+      lastdot = i9 as i64;
+    }
+    i9 = i9 + 1;
+  }
+  if lastdot <= 0 || prevdot < 0 {
+    return false;
+  }
+  let base: string = fd.name[((prevdot as usize) + 1)..(lastdot as usize)];
+  let si: i64 = st_index(mut prog, base);
+  if si < 0 {
+    return false;
+  }
+  return len(prog.structs[si as usize].tparams) > 0;
+}
+
 fn ginst_method_target(mut pool: *Pool, mut prog: *Prog, rtype: string,
                        mname: string) -> string {
-  let base: string = type_base(rtype);
-  let ob: i64 = open_bracket(rtype);
+  // the receiver text may arrive pointer-spelled (a clone's self
+  // binding does) — the base lookup wants the bare struct name
+  let mut rt: string = rtype;
+  if len(rt) > 0 && rt[0] == 42 {
+    rt = rt[1..len(rt)];
+  }
+  let base: string = type_base(rt);
+  let ob: i64 = open_bracket(rt);
   if ob < 0 {
     return "";
   }
@@ -8367,14 +8439,39 @@ fn ginst_method_target(mut pool: *Pool, mut prog: *Prog, rtype: string,
     }
   }
   if len(gtps) == 0 {
+    eprintf("DBG gmt no gtps: {}\n", base);
     return "";
   }
   let mfull: string = base + "." + mname;
+  eprintf("DBG gmt enter rtype={} mname={} mfull={}\n", rtype, mname,
+          mfull);
+  // the method may ride module-qualified (std.collections.vec.Vec.push
+  // ends with Vec.push) — the suffix match finds it; registration
+  // stays keyed on the bare mfull so every call site agrees
+  let mut dfull: string = mfull;
   if !user_fn_exists(prog, mfull) {
-    return "";
+    let mut hit: i64 = 0 - 1;
+    let mut fi3: usize = 0;
+    while fi3 < len(prog.fns) {
+      let nm3: string = prog.fns[fi3].name;
+      let nl3: i64 = len(nm3) as i64;
+      let ml3: i64 = len(mfull) as i64;
+      if nl3 > ml3 {
+        if nm3[((nl3 - ml3 - 1) as usize)..(nl3 as usize)] ==
+            "." + mfull {
+          hit = fi3 as i64;
+        }
+      }
+      fi3 = fi3 + 1;
+    }
+    if hit < 0 {
+      eprintf("DBG gmt suffix miss: {}\n", mfull);
+      return "";
+    }
+    dfull = prog.fns[hit as usize].name;
   }
   let mut tys: []string = split_type_args(
-      rtype[((ob as usize) + 1)..(len(rtype) - 1)]);
+      rt[((ob as usize) + 1)..(len(rt) - 1)]);
   let mut key: string = "";
   let mut ki: usize = 0;
   while ki < len(gtps) {
@@ -8389,7 +8486,7 @@ fn ginst_method_target(mut pool: *Pool, mut prog: *Prog, rtype: string,
     }
     i = i + 1;
   }
-  let fdm: *FnDef = fn_def_of(prog, mfull);
+  let fdm: *FnDef = fn_def_of(prog, dfull);
   let mut clone = parse.clone_fndef(fdm);
   clone.name = mfull + key;
   let npt: usize = len(fdm.ptypes);
@@ -8402,15 +8499,28 @@ fn ginst_method_target(mut pool: *Pool, mut prog: *Prog, rtype: string,
     if len(pt4) > 0 {
       // the receiver's bare base becomes the full instantiation
       let pb: string = type_base(pt4);
-      if pb == base && pt4 == pb {
+      // the base comparison must be star-blind: type_base keeps the
+      // star ("*StringMap"), so a template receiver (*StringMap) once
+      // matched the value arm and the clone's self lost its star —
+      // every method call inside the clone then read the wrong
+      // receiver (StringMap_lower went bare)
+      let mut pb2: string = pb;
+      let mut star: bool = false;
+      if len(pb2) > 0 && pb2[0] == 42 {
+        star = true;
+        pb2 = pb2[1..len(pb2)];
+      }
+      if pb2 == base && (pt4 == pb2 || pt4 == "*" + pb2) {
         pt4 = rtype;
+        if star && len(pt4) > 0 && pt4[0] != 42 {
+          pt4 = "*" + pt4;
+        }
+        if !star && len(pt4) > 0 && pt4[0] == 42 {
+          pt4 = pt4[1..len(pt4)];
+        }
       } else {
-        if pb == base && pt4 == "*" + pb {
-          pt4 = "*" + rtype;
-        } else {
-          if pb == base && pt4 == "?" + pb {
-            pt4 = "?" + rtype;
-          }
+        if pb2 == base && pt4 == "?" + pb2 {
+          pt4 = "?" + rtype;
         }
       }
     }
@@ -11131,7 +11241,20 @@ fn emit_fn(fd: *FnDef, mut pool: *Pool, mut prog: *Prog,
         svp_types[svp_n] = pt;
         svp_srcs[svp_n] = nl.v;
         svp_n = svp_n + 1;
+      } else if is_ginst_ptr(mut prog, pt) {
+        // a generic-struct instantiation param (self: *StringMap[string])
+        // binds with its FULL text — the bare-base bind once stripped
+        // the instantiation and every method call inside the clone
+        // then read the wrong receiver (StringMap_lower went bare)
+        if fd.params[k] == "self" {
+          eprintf("DBG self bind ginst: {}\n", pt);
+        }
+        env_bind_ptr(mut env, fd.params[k], nl.v, pt);
       } else if len(target) > 0 && st_index(mut prog, target) >= 0 {
+        if fd.params[k] == "self" {
+          eprintf("DBG self bind bare-target: pt={} target={}\n", pt,
+                  target);
+        }
         env_bind_ptr(mut env, fd.params[k], nl.v, target);
       } else {
         if pt == "f64" || pt == "f32" {
@@ -11637,7 +11760,8 @@ pub fn emit(mut prog: *Prog) -> string {
   let mut fntext: string = "";
   let mut fi: usize = 0;
   while fi < len(prog.fns) {
-    if len(prog.fns[fi].tparams) == 0 {
+    if len(prog.fns[fi].tparams) == 0 &&
+        !gstruct_method_skip(mut prog, prog.fns[fi]) {
       fntext = fntext + emit_fn(prog.fns[fi], mut pool, mut prog,
                                 wasm_fn_name(prog, prog.fns[fi]));
     }
