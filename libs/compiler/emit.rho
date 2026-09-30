@@ -440,6 +440,8 @@ fn alloc_wat(pool_top: i64) -> string {
   return "  (global $w_alloc_top (mut i32) (i32.const " +
          pool_top.to_str() + "))\n" +
          "  (global $w_floor (mut i32) (i32.const " +
+         pool_top.to_str() + "))\n" +
+         "  (global $w_base i32 (i32.const " +
          pool_top.to_str() + "))\n";
 }
 
@@ -498,13 +500,24 @@ const ALLOC_BODY: string = """
     (i32.add (local.get $p) (i32.const 16))
   )
   (func $w_retain (param $p i64)
-    (if (i64.ne (local.get $p) (i64.const 0))
+    ;; statics (data literals below the heap floor) are immortal —
+    ;; the data region spans megabytes when the program is large
+    ;; (the self-host chain was the witness: a blind rc bump wrote
+    ;; into the preceding literal and the source pool rotted). The
+    ;; line is $w_base — the INITIAL floor — never $w_floor: the
+    ;; allocator's stop-line rises at every grow, and a guard on it
+    ;; would immortalize every block below the new end (one n13
+    ;; churn node survived exactly that way)
+    (if (i64.ge_u (local.get $p)
+                  (i64.extend_i32_u (global.get $w_base)))
       (then
-        (i64.store (i32.sub (i32.wrap_i64 (local.get $p)) (i32.const 8))
-                   (i64.add
-                     (i64.load (i32.sub (i32.wrap_i64 (local.get $p))
-                                        (i32.const 8)))
-                     (i64.const 1)))))
+        (if (i64.ne (local.get $p) (i64.const 0))
+          (then
+            (i64.store (i32.sub (i32.wrap_i64 (local.get $p)) (i32.const 8))
+                       (i64.add
+                         (i64.load (i32.sub (i32.wrap_i64 (local.get $p))
+                                            (i32.const 8)))
+                         (i64.const 1)))))))
   )
   (func $w_alive (param $p i64) (result i32)
     (if (i64.ne (local.get $p) (i64.const 0))
@@ -528,7 +541,7 @@ const ALLOC_BODY: string = """
     (local $p i32) (local $i i64) (local $n i64)
     (if (i32.and
           (i64.ge_u (local.get $ap)
-                    (i64.extend_i32_u (global.get $w_floor)))
+                    (i64.extend_i32_u (global.get $w_base)))
           (i32.and
             (i64.eq (i64.load (i32.sub (i32.wrap_i64 (local.get $ap))
                                        (i32.const 8)))
@@ -854,6 +867,16 @@ fn push_string(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
       }
     }
     return "    (i64.const 0)\n    (i64.const 0)\n";
+  }
+  // a string-returning call: the call rides, its parked pair pushes
+  // (the stringiness of f(...) == "string" comparisons died without
+  // this — the pair degraded to a const-0 stub, always false)
+  if e.tag == parse.EX_CALL {
+    let spc = build_string_pair(e, mut pool, mut env, mut prog, mut nl);
+    if spc.ok {
+      return spc.text + "    (local.get " + spc.a.to_str() + ")\n" +
+             "    (local.get " + spc.l.to_str() + ")\n";
+    }
   }
   match fold_string(e, env) {
     Option.Some(raw) => {
@@ -1581,6 +1604,9 @@ pub fn st_index(mut prog: *Prog, name: string) -> i64 {
 }
 
 fn st_field_index(prog: *Prog, si: i64, fname: string) -> i64 {
+  if si < 0 {
+    return 0 - 1;
+  }
   let mut k: usize = 0;
   while k < len(prog.structs[si as usize].fields) {
     if prog.structs[si as usize].fields[k] == fname {
@@ -1872,6 +1898,39 @@ fn expr_fkind(e: *Expr, env: *Env, mut prog: *Prog) -> i64 {
 }
 
 // the enum an expression's value belongs to, "" when none
+// an option-typed scrutinee shares the enum box ABI: the match
+// dispatch reads the box's tag slot, not the raw pointer. Enums
+// resolve through expr_enum_type; a ?T-returning call/method does
+// not (its rtype texts as "?T"), so the rtype's own '?' decides.
+fn scrutinee_boxes(sc: *Expr, env: *Env, mut prog: *Prog) -> bool {
+  if len(expr_enum_type(sc, env, mut prog)) > 0 {
+    return true;
+  }
+  if sc.tag == parse.EX_CALL {
+    let rt: string = fn_rtype_of(prog, sc.name);
+    if len(rt) >= 1 && rt[0] == 63 {
+      return true;
+    }
+  }
+  if sc.tag == parse.EX_MCALL {
+    let mut recv: *Expr = parse.lit(0);
+    match sc.lhs {
+      Option.Some(r) => {
+        recv = r;
+      },
+      Option.None => {},
+    }
+    let bt: string = expr_ptr_type(recv, env, mut prog);
+    if len(bt) > 0 {
+      let rt2: string = fn_rtype_of(prog, bt + "." + sc.name);
+      if len(rt2) >= 1 && rt2[0] == 63 {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 fn expr_enum_type(e: *Expr, env: *Env, mut prog: *Prog) -> string {
   if e.tag == parse.EX_VAR {
     return env_enum_of(env, e.name);
@@ -2011,7 +2070,8 @@ fn field_base_type(e: *Expr, env: *Env, mut prog: *Prog) -> string {
     if len(vt) > 0 {
       return vt;
     }
-    return env_ptr_of(env, e.name);
+    let pt: string = env_ptr_of(env, e.name);
+    return pt;
   }
   return expr_ptr_type(e, env, mut prog);
 }
@@ -2347,22 +2407,32 @@ fn rel_register(mut pool: *Pool, name: string, text: string) -> string {
 }
 
 // the rc-decrement preamble every thunk shares; the walk lands inside
-// the (then) — walk_text may be empty
+// the (then) — walk_text may be empty. Statics (data literals below
+// the heap floor) are immortal: a release of a folded-literal
+// binding must never rc-decrement into the preceding pool bytes. The
+// line is $w_base — the INITIAL floor: $w_floor is the allocator's
+// grow stop-line and rises at every grow, which would immortalize
+// every block below the new end (one n13 churn node died that way)
 fn rel_body(p: string, walk_text: string) -> string {
   let mut out: string = "";
   out = out + "  (func ";
   out = out + p;
   out = out + " (param $p i64)\n";
   out = out + "    (local $c i64)\n";
-  out = out + "    (if (i64.ne (local.get $p) (i64.const 0))\n";
+  out = out + "    (if (i64.ge_u (local.get $p)\n";
+  out = out + "          (i64.extend_i32_u (global.get $w_base)))\n";
   out = out + "      (then\n";
-  out = out + "        (local.set $c (i64.sub (i64.load (i32.sub ";
-  out = out + "(i32.wrap_i64 (local.get $p)) (i32.const 8))) (i64.const 1)))\n";
-  out = out + "        (i64.store (i32.sub (i32.wrap_i64 (local.get $p))";
-  out = out + " (i32.const 8)) (local.get $c))\n";
-  out = out + "        (if (i64.eq (local.get $c) (i64.const 0))\n";
+  out = out + "        (if (i64.ne (local.get $p) (i64.const 0))\n";
   out = out + "          (then\n";
+  out = out + "            (local.set $c (i64.sub (i64.load (i32.sub ";
+  out = out + "(i32.wrap_i64 (local.get $p)) (i32.const 8))) (i64.const 1)))\n";
+  out = out + "            (i64.store (i32.sub (i32.wrap_i64 (local.get $p))";
+  out = out + " (i32.const 8)) (local.get $c))\n";
+  out = out + "            (if (i64.eq (local.get $c) (i64.const 0))\n";
+  out = out + "              (then\n";
   out = out + walk_text;
+  out = out + "              )\n";
+  out = out + "            )\n";
   out = out + "          )\n";
   out = out + "        )\n";
   out = out + "      )\n";
@@ -3544,6 +3614,29 @@ fn optpt_of_scrutinee(sc: *Expr, mut env: *Env, mut prog: *Prog) -> string {
     }
     return oet;
   }
+  if sc.tag == parse.EX_CALL {
+    // a ?T-returning call: the payload text rides the rtype's tail
+    let rt3: string = fn_rtype_of(prog, sc.name);
+    if len(rt3) >= 2 && rt3[0] == 63 {
+      return rt3[1..len(rt3)];
+    }
+  }
+  if sc.tag == parse.EX_MCALL {
+    let mut recv3: *Expr = parse.lit(0);
+    match sc.lhs {
+      Option.Some(r3) => {
+        recv3 = r3;
+      },
+      Option.None => {},
+    }
+    let bt3: string = expr_ptr_type(recv3, env, mut prog);
+    if len(bt3) > 0 {
+      let rt4: string = fn_rtype_of(prog, bt3 + "." + sc.name);
+      if len(rt4) >= 2 && rt4[0] == 63 {
+        return rt4[1..len(rt4)];
+      }
+    }
+  }
   if sc.tag == parse.EX_FIELD {
     // a ?*T field over a typed base: the payload's target is the
     // binder's pointer lane
@@ -4078,9 +4171,10 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
       }
       let fbt: string = field_base_type(fowner, env, mut prog);
       let fsi: i64 = st_index(mut prog, fbt);
-      let ffi: i64 = st_field_index(prog, fsi, base.name);
-      if fsi >= 0 && ffi >= 0 &&
-          prog.structs[fsi as usize].types[ffi as usize] == "string" {
+      if fsi >= 0 {
+        let ffi: i64 = st_field_index(prog, fsi, base.name);
+        if ffi >= 0 &&
+            prog.structs[fsi as usize].types[ffi as usize] == "string" {
         let soff: i64 = st_field_off(mut prog, fsi, ffi) * 8;
         let mut svb: *Expr = fowner;
         if svb.tag == parse.EX_VAR &&
@@ -4110,7 +4204,8 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
                "(local.get " + st0.to_str() + ")) (i32.const " +
                soff.to_str() + ")))) (i32.wrap_i64 (local.get " +
                tix.to_str() + ")))))\n";
-        return out;
+          return out;
+        }
       }
     }
     // an indexed base (xs[i][j]): the base read yields the
@@ -4902,8 +4997,7 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
     out = out + "    (local.set ";
     out = out + bx.to_str();
     out = out + ")\n";
-    let et: string = expr_enum_type(sc, env, mut prog);
-    if len(et) > 0 {
+    if scrutinee_boxes(sc, env, mut prog) {
       out = out + "    (i64.load (i32.wrap_i64 (local.get ";
       out = out + bx.to_str();
       out = out + ")))\n";
@@ -5345,6 +5439,15 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
     },
     Option.None => {},
   }
+  // a comparison's operands must share one face: the declaring
+  // operand's width wraps BOTH sides (a usize sentinel stored
+  // zero-extended compared against a sign-extended literal read
+  // unequal forever)
+  let cmpw: i64 = bin_width(e, env, mut prog);
+  if e.op >= 5 && e.op <= 10 && cmpw != 0 && cmpw != 64 &&
+      cmpw != 0 - 64 {
+    out = out + wrap_snippet(cmpw);
+  }
   if e.op == 11 {
     // 'as T': an enum operand takes the tag (§3.3); a float operand
     // converts through the f64 lane (trunc-toward-zero, saturating);
@@ -5455,6 +5558,10 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
       out = out + emit_expr(mut pool, r, mut env, mut prog, mut nl);
     },
     Option.None => {},
+  }
+  if e.op >= 5 && e.op <= 10 && cmpw != 0 && cmpw != 64 &&
+      cmpw != 0 - 64 {
+    out = out + wrap_snippet(cmpw);
   }
   if divish {
     // /0 %0 panics (§11); MIN / -1 wraps back to MIN and MIN % -1
@@ -6329,13 +6436,50 @@ fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
           },
           Option.None => {},
         }
-        let vbt: string = field_base_type(vowner, env, mut prog);
+        let mut vbt: string = field_base_type(vowner, env, mut prog);
         if len(vbt) > 0 {
+          // a pointer binding's type spells "*Name" — the struct
+          // lookup wants the bare name (without this, e.args[1..len]
+          // views fell through to the generic bin template, whose
+          // base slot reads the caller's first param — the pool —
+          // and every hole printed pool garbage)
+          if vbt[0] == 42 {
+            vbt = vbt[1..len(vbt)];
+          }
           let vsi: i64 = st_index(mut prog, vbt);
           let vfi: i64 = st_field_index(prog, vsi, vbase.name);
           if vfi >= 0 {
             let vft: string =
                 prog.structs[vsi as usize].types[vfi as usize];
+            if vft == "string" {
+              // a STRING field's view: byte stride, the pair (addr,
+              // len) loads straight off the owner — without this the
+              // view fell through to the generic bin template, where
+              // the both-ends bit-field (op == 3) reads as division
+              let vfoff: i64 = st_field_off(mut prog, vsi, vfi) * 8;
+              let vtmp: i64 = nl.v;
+              nl.v = nl.v + 1;
+              vtext = vtext + emit_expr(mut pool, vowner, mut env,
+                                        mut prog, mut nl);
+              vtext = vtext + "    (local.set " + vtmp.to_str() +
+                      ")\n";
+              vtext = vtext + "    (i64.load (i32.add (i32.wrap_i64 " +
+                      "(local.get " + vtmp.to_str() + ")) (i32.const " +
+                      vfoff.to_str() + ")))\n";
+              vtext = vtext + "    (local.set " + nl.v.to_str() +
+                      ")\n";
+              vba = nl.v;
+              nl.v = nl.v + 1;
+              vtext = vtext + "    (i64.load (i32.add (i32.wrap_i64 " +
+                      "(local.get " + vtmp.to_str() + ")) (i32.const " +
+                      (vfoff + 8).to_str() + ")))\n";
+              vtext = vtext + "    (local.set " + nl.v.to_str() +
+                      ")\n";
+              vbl = nl.v;
+              nl.v = nl.v + 1;
+              vesz = 1;
+              vok = true;
+            } else {
             if len(vft) >= 2 && vft[0] == 91 && vft[1] == 93 {
               let vfoff: i64 = st_field_off(mut prog, vsi, vfi) * 8;
               let vtmp: i64 = nl.v;
@@ -6370,6 +6514,7 @@ fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
                 vesz = 16;
               }
               vok = true;
+            }
             }
           }
         }
@@ -6760,8 +6905,7 @@ fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
       text = text + "    (local.set ";
       text = text + bx.to_str();
       text = text + ")\n";
-      let et: string = expr_enum_type(sc, env, mut prog);
-      if len(et) > 0 {
+      if scrutinee_boxes(sc, env, mut prog) {
         text = text + "    (i64.load (i32.wrap_i64 (local.get ";
         text = text + bx.to_str();
         text = text + ")))\n";
@@ -8604,7 +8748,6 @@ fn emit_print_fd(mut pool: *Pool, fmt: string, args: []*Expr, mut env: *Env,
         let dyn_pair: bool =
             dyn_hole_dispatch(arg, mut pool, mut env, mut prog, mut nl);
         if dyn_pair {
-          // a dyn value renders through its vtable's to_str slot
           t_a[q] = DYN_A;
           t_l[q] = DYN_L;
           kinds[q] = 4;
@@ -8913,7 +9056,7 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
               body = body + ")\n";
               body = body + retain_if_shared(e, ob7);
               env_str_bind_runtime(mut env, st.name, vb7, ob7, 3);
-              env_bind_sliceelem(mut env, st.name, st.fmt);
+                            env_bind_sliceelem(mut env, st.name, st.fmt);
               // the scope-exit release dispatches through the
               // vtable's release slot (a rebind updates the pair
               // slots in place, so the exit sees the live value)
@@ -9043,7 +9186,7 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
               body = body + "))))\n";
             }
             env_str_bind_runtime(mut env, st.name, a_slot, l_slot, 2);
-            env_bind_sliceelem(mut env, st.name, e.name);
+                        env_bind_sliceelem(mut env, st.name, e.name);
             let relm: string = rel_callee(mut pool, mut prog,
                                           "[]" + e.name);
             if len(relm) > 0 {
@@ -9064,28 +9207,99 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                 },
                 Option.None => {},
               }
+              // a field-chain base loads its (data,len) pair straight
+              // off the owner: the env path below only knows bare
+              // variables, so e.args[1..len] once resolved the FIELD
+              // name through the env and read the wrong binding's
+              // slots as the view base (the pool, for emit_expr)
+              let mut fba: i64 = 0 - 1;
+              let mut fbl: i64 = 0 - 1;
+              let mut fbet: string = "";
+              if base.tag == parse.EX_FIELD {
+                let mut vowner: *Expr = parse.lit(0);
+                match base.lhs {
+                  Option.Some(vo) => {
+                    vowner = vo;
+                  },
+                  Option.None => {},
+                }
+                let mut vbt: string = field_base_type(vowner, env,
+                                                      mut prog);
+                if len(vbt) > 0 {
+                  // a pointer binding's type spells "*Name" — the
+                  // struct lookup wants the bare name
+                  if vbt[0] == 42 {
+                    vbt = vbt[1..len(vbt)];
+                  }
+                  let vsi: i64 = st_index(mut prog, vbt);
+                  let vfi: i64 = st_field_index(prog, vsi, base.name);
+                  if vfi >= 0 {
+                    let vft: string =
+                        prog.structs[vsi as usize].types[vfi as usize];
+                    if len(vft) >= 2 && vft[0] == 91 && vft[1] == 93 {
+                      let vfoff: i64 = st_field_off(mut prog, vsi,
+                                                    vfi) * 8;
+                      let vtmp: i64 = nl.v;
+                      nl.v = nl.v + 1;
+                      body = body + emit_expr(mut pool, vowner, mut env,
+                                              mut prog, mut nl);
+                      body = body + "    (local.set " + vtmp.to_str() +
+                             ")\n";
+                      fba = nl.v;
+                      nl.v = nl.v + 1;
+                      body = body + "    (i64.load (i32.add (i32.wrap_i64 " +
+                             "(local.get " + vtmp.to_str() +
+                             ")) (i32.const " + vfoff.to_str() + ")))\n";
+                      body = body + "    (local.set " + fba.to_str() +
+                             ")\n";
+                      fbl = nl.v;
+                      nl.v = nl.v + 1;
+                      body = body + "    (i64.load (i32.add (i32.wrap_i64 " +
+                             "(local.get " + vtmp.to_str() +
+                             ")) (i32.const " + (vfoff + 8).to_str() +
+                             ")))\n";
+                      body = body + "    (local.set " + fbl.to_str() +
+                             ")\n";
+                      fbet = vft[2..len(vft)];
+                    }
+                  }
+                }
+              }
               let bname: string = base.name;
               let bkind: i64 = env_kind_of(env, bname);
               // a slice of a string is a RUNTIME string pair (kind 1)
               // even when the base was folded (kind 0); slices stay 2
               let mut kind: i64 = 2;
-              if bkind == 0 || bkind == 1 {
-                kind = 1;
-              }
-              let mut esz: i64 = 8;
-              if kind == 1 {
-                esz = 1;
+              if fba < 0 {
+                if bkind == 0 || bkind == 1 {
+                  kind = 1;
+                }
               }
               // a slice base's element stride: strings and dyn pairs
               // ride 16 bytes, a struct element its slot block
               let bet: string = env_slice_elemtext(env, bname);
-              if bkind == 2 && len(bet) > 0 {
-                if bet == "string" || is_dyn_type(bet) {
+              let mut esz: i64 = 8;
+              if fba >= 0 {
+                if fbet == "string" || is_dyn_type(fbet) {
                   esz = 16;
                 } else {
-                  let bsi: i64 = st_index(mut prog, bet);
-                  if bsi >= 0 {
-                    esz = st_nslots(mut prog, bsi) * 8;
+                  let fsi: i64 = st_index(mut prog, fbet);
+                  if fsi >= 0 {
+                    esz = st_nslots(mut prog, fsi) * 8;
+                  }
+                }
+              } else {
+                if kind == 1 {
+                  esz = 1;
+                }
+                if bkind == 2 && len(bet) > 0 {
+                  if bet == "string" || is_dyn_type(bet) {
+                    esz = 16;
+                  } else {
+                    let bsi: i64 = st_index(mut prog, bet);
+                    if bsi >= 0 {
+                      esz = st_nslots(mut prog, bsi) * 8;
+                    }
                   }
                 }
               }
@@ -9106,14 +9320,20 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
               if (e.op / 2) % 2 == 1 && len(e.args) > 1 {
                 body = body + emit_expr(mut pool, e.args[1], mut env, mut prog, mut nl);
               } else {
-                if bkind == 0 {
-                  body = body + "    (i64.const ";
-                  body = body + env_str_len(env, bname).to_str();
+                if fba >= 0 {
+                  body = body + "    (local.get ";
+                  body = body + fbl.to_str();
                   body = body + ")\n";
                 } else {
-                  body = body + "    (local.get ";
-                  body = body + env_str_len_slot(env, bname).to_str();
-                  body = body + ")\n";
+                  if bkind == 0 {
+                    body = body + "    (i64.const ";
+                    body = body + env_str_len(env, bname).to_str();
+                    body = body + ")\n";
+                  } else {
+                    body = body + "    (local.get ";
+                    body = body + env_str_len_slot(env, bname).to_str();
+                    body = body + ")\n";
+                  }
                 }
               }
               body = body + "    (local.set ";
@@ -9122,12 +9342,16 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
               // bounds both ends against the base's len (lo first,
               // then hi — each rides $t for the check)
               let mut blen: string = "";
-              if bkind == 0 {
-                blen = "(i64.const " +
-                       env_str_len(env, bname).to_str() + ")";
+              if fba >= 0 {
+                blen = "(local.get " + fbl.to_str() + ")";
               } else {
-                blen = "(local.get " +
-                       env_str_len_slot(env, bname).to_str() + ")";
+                if bkind == 0 {
+                  blen = "(i64.const " +
+                         env_str_len(env, bname).to_str() + ")";
+                } else {
+                  blen = "(local.get " +
+                         env_str_len_slot(env, bname).to_str() + ")";
+                }
               }
               body = body + "    (local.set $t (local.get ";
               body = body + a_slot.to_str();
@@ -9145,6 +9369,16 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
               body = body + l_slot.to_str();
               body = body + ")\n";
               // addr' = base + lo*esz
+              if fba >= 0 {
+                body = body + "    (i64.add (local.get ";
+                body = body + fba.to_str();
+                body = body + ") (i64.mul ";
+                body = body + "(local.get ";
+                body = body + a_slot.to_str();
+                body = body + ") (i64.const ";
+                body = body + esz.to_str();
+                body = body + ")))\n";
+              } else {
               if bkind == 0 {
                 body = body + "    (i64.add (i64.const ";
                 body = body + env_str_look(env, bname).to_str();
@@ -9164,14 +9398,19 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                 body = body + esz.to_str();
                 body = body + ")))\n";
               }
+              }
               body = body + "    (local.set ";
               body = body + a_slot.to_str();
               body = body + ")\n";
               env_str_bind_runtime(mut env, st.name, a_slot, l_slot, kind);
               // the view carries the base's element text (element
               // reads and stores key on it)
-              if bkind == 2 && len(bet) > 0 {
-                env_bind_sliceelem(mut env, st.name, bet);
+              if fba >= 0 {
+                env_bind_sliceelem(mut env, st.name, fbet);
+              } else {
+                if bkind == 2 && len(bet) > 0 {
+                                env_bind_sliceelem(mut env, st.name, bet);
+                }
               }
             } else {
               match fold_string(e, env) {
@@ -9239,7 +9478,7 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                         aet = "string";
                       }
                     }
-                    env_bind_sliceelem(mut env, st.name, aet);
+                                        env_bind_sliceelem(mut env, st.name, aet);
                   } else {
                   if len(st.fmt) > 0 &&
                       st_index(mut prog, st.fmt) >= 0 &&
@@ -9342,7 +9581,7 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                     // Some binders keep the pointer lane
                     let opay: string = opt_payload(st.fmt);
                     if len(opay) > 0 {
-                      env_bind_sliceelem(mut env, st.name, opay);
+                                            env_bind_sliceelem(mut env, st.name, opay);
                     }
                     nl.v = nl.v + 1;
                   } else {
@@ -9419,7 +9658,7 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                       env_str_bind_runtime(mut env, st.name, pa, pl, fki);
                       if len(st.fmt) >= 2 && st.fmt[0] == 91 &&
                           st.fmt[1] == 93 {
-                        env_bind_sliceelem(mut env, st.name,
+                                                env_bind_sliceelem(mut env, st.name,
                                            st.fmt[2..len(st.fmt)]);
                       }
                     } else {
@@ -9443,7 +9682,7 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                                 nl.v.to_str() + ")\n" +
                                 "    call " + relp + "\n");
                     }
-                    env_bind_ptr(mut env, st.name, nl.v, ps);
+                                        env_bind_ptr(mut env, st.name, nl.v, ps);
                     nl.v = nl.v + 1;
                   } else {
                   // a slice-returning call parks its (addr, len) pair
@@ -9465,7 +9704,7 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                       body = body + spc.text;
                       env_str_bind_runtime(mut env, st.name, spc.a,
                                            spc.l, 2);
-                      env_bind_sliceelem(mut env, st.name,
+                                            env_bind_sliceelem(mut env, st.name,
                                          scrt[2..len(scrt)]);
                     } else {
                       body = body + emit_expr(mut pool, e, mut env,
@@ -9531,7 +9770,8 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
         body = body + "    (local.set $t)\n";
         body = body + oob_check(mut pool, "(local.get " + len_slot.to_str() +
                                ")");
-        if env_slice_elemtext(env, st.name) == "string" {
+        let iet: string = env_slice_elemtext(env, st.name);
+        if iet == "string" {
           // a string element writes its pair at a 16-byte stride. The
           // LHS index parks in its OWN slot first: the RHS pair build
           // reuses $t for its own element reads and used to clobber
@@ -10406,8 +10646,7 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
           body = body + "    (local.set ";
           body = body + bx.to_str();
           body = body + ")\n";
-          let et: string = expr_enum_type(sc, env, mut prog);
-          if len(et) > 0 {
+          if scrutinee_boxes(sc, env, mut prog) {
             body = body + "    (i64.load (i32.wrap_i64 (local.get ";
             body = body + bx.to_str();
             body = body + ")))\n";
@@ -11177,6 +11416,7 @@ fn float_runtime_wat(mut pool: *Pool) -> string {
   }
   return out;
 }
+
 
 pub fn emit(mut prog: *Prog) -> string {
   let mut pool = new_pool();

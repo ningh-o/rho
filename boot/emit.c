@@ -724,7 +724,7 @@ static bool emit_compound_op(FnCx *cx, Type *t, int opk, size_t res,
     // it overwrites
     if (opk != OP_ADD)
       return false;
-    op(cx, "(call $rho_cat2 (local.get %zu) (local.get %zu) "
+    op(cx, "(call $rho_app (local.get %zu) (local.get %zu) "
            "(local.get %zu) (local.get %zu))\n", oldv, oldv + 1, rhs,
        rhs + 1);
     op(cx, "(local.set %zu (global.get $cat_ptr))\n", res);
@@ -4947,6 +4947,33 @@ int emit_program(Program *p, bool debug, char **wat_out, size_t *wat_len) {
   tprintf(o, "  (func $rho_cat2 (param $a i32) (param $al i32) "
              "(param $b i32) (param $bl i32)\n");
   tprintf(o, "    (local $p i32) (local $i i32)\n");
+  // in place when the block is unaliased (rc==1), lives on the heap
+  // and the header's size takes the tail — a concat chain then rides
+  // one geometrically growing block instead of an O(n^2) fresh march
+  // (cat owns no old ref: plain + borrows its lhs, so the fresh path
+  // never releases)
+  tprintf(o, "    (if (i32.and (i32.ge_u (local.get $a) "
+             "(global.get $data_top))\n");
+  tprintf(o, "              (i32.and (i32.eq (i32.load (i32.sub "
+             "(local.get $a) (i32.const 24))) (i32.const 1))\n");
+  tprintf(o, "                       (i32.le_u (i32.add (local.get $al) "
+             "(local.get $bl))\n");
+  tprintf(o, "                                 (i32.load (i32.sub "
+             "(local.get $a) (i32.const 20))))))\n");
+  tprintf(o, "      (then\n");
+  tprintf(o, "        (local.set $i (i32.const 0))\n");
+  tprintf(o, "        (block $c0 (loop $b0 (br_if $c0 (i32.ge_u "
+             "(local.get $i) (local.get $bl)))\n");
+  tprintf(o, "          (i32.store8 (i32.add (i32.add (local.get $a) "
+             "(local.get $al)) (local.get $i))\n");
+  tprintf(o, "            (i32.load8_u (i32.add (local.get $b) "
+             "(local.get $i))))\n");
+  tprintf(o, "          (local.set $i (i32.add (local.get $i) "
+             "(i32.const 1))) (br $b0)))\n");
+  tprintf(o, "        (global.set $cat_ptr (local.get $a))\n");
+  tprintf(o, "        (global.set $cat_len (i32.add (local.get $al) "
+             "(local.get $bl)))\n");
+  tprintf(o, "        (return)))\n");
   // half-again headroom: a cat result is append-ready
   tprintf(o, "    (local.set $p (call $rho_alloc (i32.add (i32.add "
              "(local.get $al) (local.get $bl)) (i32.div_u (i32.add "
