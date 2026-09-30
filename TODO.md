@@ -1133,11 +1133,18 @@ section — no placeholder stages. boot is the reference compiler.
       guard ei<0 (en_vtag reads tag -1, en_nslots/en_vslots 0) and
       the child now completes. The chain's red moved to the
       determinism law: 17 functions diverge, rooted in an
-      option-binding face — v1 field-loads and releases through
-      $w_relopt_ where v2 const-folds without a release (bin_width
-      and fmt_line are the smallest witnesses, cascading through
-      emit_expr/build_string_pair/emit_stmts). Next: which binding
-      spelling resolves option-ness differently at the two levels.
+      option-binding face — NARROWED (fmt_line's raw witness): a
+      NESTED match whose inner arm condition compares the loaded tag
+      to **-1** in v2 vs **1** in v1 — the grand's arm_cond folded
+      `tag == en_vtag(ei=-1)` (the new guard's return) for an arm
+      whose pattern enum did not resolve, so the arm can never match
+      and the whole tail after it vanishes. The trigger construct is
+      a match whose arm pattern's enum fails en_index — most likely a
+      module-qualified enum pattern whose canonicalization misses
+      under one of the wave's loader/qualifier changes. Next: make
+      the unresolving pattern's ename print at arm_cond, then fix the
+      canonicalization (or route the pattern like its dotted
+      siblings).
 - [ ] **T4.4** std.io: read_line, file read/write wrappers over the raw
       LANDED 2026-09-27 (t44, reviewed and merged): fd_read/fd_close/path_open + four raw wrappers in the wasi tail; the prelude carries std.io's private __ window; read_line/read_file/write_file over Result; the verb gains // in: and --dir; the prelude's generic-instance chains reset per program (a real in-process compile fix the review caught); eleven io fixtures.
       tails.
