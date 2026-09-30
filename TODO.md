@@ -1081,6 +1081,21 @@ section — no placeholder stages. boot is the reference compiler.
       not copied, from the compiler's own source; the compiler consumes
       them afterwards). Map iteration order is **deterministic and
       documented** (D3).
+      CONSUMPTION PREREQUISITES (2026-10-01 probe: std.collections
+      through the self-host): two module-forms fixed in the self-host's
+      loader — (1) `pub use X.item;` (alias-less re-exports) now loads
+      the head module and sells under the item's own name; (2) the
+      suite verb `test "..." { ... }` parses-and-drops in normal
+      builds (boot checks the body for `rho test`; the emitted program
+      never carries it). The probe then stalls on the REAL blocker:
+      **generic structs are boot-only** — `pub struct Vec[T]` and the
+      per-instantiation methods (`fn Vec.push(self: *Vec[i32], ...)`)
+      hit 5 parse errors in the self-host's parser, which knows only
+      fn-level type parameters. Porting generic structs (parse + the
+      struct table keyed by mangled instantiation + field/method
+      substitution in check and emit) is the wave that unblocks both
+      the compiler's own consumption of std.collections and any
+      std-using corpus case through the differential.
 - [ ] **T4.4** std.io: read_line, file read/write wrappers over the raw
       LANDED 2026-09-27 (t44, reviewed and merged): fd_read/fd_close/path_open + four raw wrappers in the wasi tail; the prelude carries std.io's private __ window; read_line/read_file/write_file over Result; the verb gains // in: and --dir; the prelude's generic-instance chains reset per program (a real in-process compile fix the review caught); eleven io fixtures.
       tails.

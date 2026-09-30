@@ -2532,6 +2532,24 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
       pending_pub = true;
       continue;
     }
+    if t.kind == lex.TK_IDENT && t.text == "test" &&
+        c.pos + 1 < len(c.toks) &&
+        c.toks[c.pos + 1].kind == lex.TK_STR {
+      // test "name" { stmts } — the suite verb (T3.5). Normal builds
+      // parse and DROP the body: boot checks it for `rho test`, and
+      // the emitted program never carries it (a test block cannot be
+      // pub — the pending flag dies here either way)
+      tkadv(mut c);
+      tkadv(mut c);
+      pending_pub = false;
+      if eat_punct(mut c, 123) {
+        while tk(c).kind != lex.TK_EOF && !is_punct(tk(c), 125) {
+          parse_stmt(mut c);
+        }
+        eat_punct(mut c, 125);
+      }
+      continue;
+    }
     if t.kind == lex.TK_IDENT && t.text == "use" &&
         c.pos + 1 < len(c.toks) &&
         c.toks[c.pos + 1].kind == lex.TK_IDENT {
@@ -3101,10 +3119,67 @@ fn mods_load(mut prog: *Prog, mods: string, path: string,
   let mut ui: usize = 0;
   while ui < mp.nuses {
     let upath: string = mp.usepath[ui];
-    // `pub use X.item as Y;` — the last segment names an item of an
-    // already-bound module: not a module load (pass 2 below sells it)
+    // `pub use X.item [as Y];` — the head names a module: load it
+    // (dir-relative; idempotent for an already-loaded one), bind it
+    // under its last segment, and pass 2 sells the item. The aliased
+    // form used to skip the load entirely, which worked only while
+    // some other use happened to bind the head (the std.collections
+    // facade's alias-less re-exports were the witness)
     let lastdot0: i64 = mods_find_sub(upath, ".", 0);
-    if mp.usepub[ui] && len(mp.usealias[ui]) > 0 && lastdot0 >= 0 {
+    if mp.usepub[ui] && lastdot0 >= 0 {
+      // the head already bound (an earlier `use inner.core as core;`)
+      // needs no load — pass 2 sells from the binding
+      let modpart0: string = upath[0..(lastdot0 as usize)];
+      let mut head0: string = modpart0;
+      let mut li9: usize = 0;
+      while li9 < len(modpart0) {
+        let mut j9: usize = li9;
+        while j9 < len(modpart0) && modpart0[j9] != 46 {
+          j9 = j9 + 1;
+        }
+        head0 = modpart0[li9..j9];
+        li9 = j9 + 1;
+      }
+      let mut bound0: bool = false;
+      let mut bi9: usize = 0;
+      while bi9 < nb {
+        if bnames[bi9] == head0 || bnames[bi9] == modpart0 {
+          bound0 = true;
+        }
+        bi9 = bi9 + 1;
+      }
+      if bound0 {
+        ui = ui + 1;
+        continue;
+      }
+      let can2: string = mods_load(mut prog, mods, modpart0, mdir);
+      if len(can2) == 0 {
+        prog.perrs = prog.perrs + 1;
+        return "";
+      }
+      let mut bname2: string = modpart0;
+      let mut li0: usize = 0;
+      while li0 < len(modpart0) {
+        let mut j0: usize = li0;
+        while j0 < len(modpart0) && modpart0[j0] != 46 {
+          j0 = j0 + 1;
+        }
+        bname2 = modpart0[li0..j0];
+        li0 = j0 + 1;
+      }
+      let mut bseen: bool = false;
+      let mut bi0: usize = 0;
+      while bi0 < nb {
+        if bnames[bi0] == bname2 {
+          bseen = true;
+        }
+        bi0 = bi0 + 1;
+      }
+      if !bseen && nb < len(bnames) {
+        bnames[nb] = bname2;
+        bcans[nb] = can2;
+        nb = nb + 1;
+      }
       ui = ui + 1;
       continue;
     }
@@ -3155,11 +3230,12 @@ fn mods_load(mut prog: *Prog, mods: string, path: string,
     }
     ui = ui + 1;
   }
-  // one renamed item: pub use X.item as Y; (the path's last segment
-  // names an item of the module the prefix resolves to)
+  // one renamed item: pub use X.item [as Y]; (the path's last segment
+  // names an item of the module the prefix resolves to; alias-less
+  // forms sell under the item's own name)
   let mut ui2: usize = 0;
   while ui2 < mp.nuses {
-    if mp.usepub[ui2] && len(mp.usealias[ui2]) > 0 {
+    if mp.usepub[ui2] {
       let upath2: string = mp.usepath[ui2];
       let lastdot: i64 = mods_find_sub(upath2, ".", 0);
       if lastdot >= 0 {
@@ -3187,8 +3263,11 @@ fn mods_load(mut prog: *Prog, mods: string, path: string,
             while ei < prog.nx {
               if prog.xown[ei] == srcmod &&
                   prog.xitem[ei] == itempart {
-                mods_export_add(mut prog, canon, mp.usealias[ui2],
-                                prog.xtar[ei]);
+                let mut sold: string = mp.usealias[ui2];
+                if len(sold) == 0 {
+                  sold = itempart;
+                }
+                mods_export_add(mut prog, canon, sold, prog.xtar[ei]);
               }
               ei = ei + 1;
             }
