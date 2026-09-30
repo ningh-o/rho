@@ -836,7 +836,7 @@ fn push_string(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
     }
     let bt: string = field_base_type(base, env, mut prog);
     if len(bt) > 0 {
-      let si: i64 = st_index(mut prog, bt);
+      let si: i64 = st_index(mut prog, st_name_of(bt));
       let fi: i64 = st_field_index(prog, si, e.name);
       if fi >= 0 &&
           (type_kind(prog.structs[si as usize].types[fi as usize]) == 1 ||
@@ -1329,7 +1329,7 @@ fn expr_slice_elemtext(e: *Expr, env: *Env, mut prog: *Prog) -> string {
     }
     let bt: string = field_base_type(base, env, mut prog);
     if len(bt) > 0 {
-      let si: i64 = st_index(mut prog, bt);
+      let si: i64 = st_index(mut prog, st_name_of(bt));
       let fi: i64 = st_field_index(prog, si, e.name);
       if fi >= 0 {
         let fty: string =
@@ -1415,7 +1415,7 @@ fn expr_width(e: *Expr, env: *Env, mut prog: *Prog) -> i64 {
     }
     let bt: string = expr_ptr_type(base, env, mut prog);
     if len(bt) > 0 {
-      let si: i64 = st_index(mut prog, bt);
+      let si: i64 = st_index(mut prog, st_name_of(bt));
       let fi: i64 = st_field_index(prog, si, e.name);
       if fi >= 0 {
         return type_width(prog.structs[si as usize].types[fi as usize]);
@@ -1550,6 +1550,19 @@ fn type_ptr_target(ty: string) -> string {
     return ty[1..len(ty)];
   }
   return "";
+}
+
+// the struct-table name for a type text: pointer spellings resolve
+// to their target (field_base_type/expr_ptr_type feed the struct
+// lookups, and a pointer binding's text spells "*Name" — a lookup
+// on the star misses and the field silently vanishes; e.args views
+// were the witness)
+fn st_name_of(ty: string) -> string {
+  let t: string = type_ptr_target(ty);
+  if len(t) > 0 {
+    return t;
+  }
+  return ty;
 }
 
 // weak[T] — the handle type (rides the pointer lane, never counted)
@@ -1841,7 +1854,7 @@ fn expr_fkind(e: *Expr, env: *Env, mut prog: *Prog) -> i64 {
       Option.Some(b) => {
         let bt: string = field_base_type(b, env, mut prog);
         if len(bt) > 0 {
-          let si: i64 = st_index(mut prog, bt);
+          let si: i64 = st_index(mut prog, st_name_of(bt));
           if si >= 0 {
             let fk: i64 = st_field_fkind(prog, si, e.name);
             if fk > 0 {
@@ -1994,7 +2007,7 @@ fn expr_enum_type(e: *Expr, env: *Env, mut prog: *Prog) -> string {
       }
       let bt5: string = field_base_type(ow5, env, mut prog);
       if len(bt5) > 0 {
-        let si5: i64 = st_index(mut prog, bt5);
+        let si5: i64 = st_index(mut prog, st_name_of(bt5));
         let fi5: i64 = st_field_index(prog, si5, b5.name);
         if fi5 >= 0 {
           let fty5: string =
@@ -2029,7 +2042,7 @@ fn expr_enum_type(e: *Expr, env: *Env, mut prog: *Prog) -> string {
     // the match fell through every arm), a named field its enum
     let bt0: string = field_base_type(b0, env, mut prog);
     if len(bt0) > 0 {
-      let si0: i64 = st_index(mut prog, bt0);
+      let si0: i64 = st_index(mut prog, st_name_of(bt0));
       let fi0: i64 = st_field_index(prog, si0, e.name);
       if fi0 >= 0 {
         let fty0: string =
@@ -2091,7 +2104,7 @@ fn struct_type_of(e: *Expr, env: *Env, mut prog: *Prog) -> string {
       Option.None => {},
     }
     let it: string = expr_ptr_type(inner, env, mut prog);
-    if st_index(mut prog, it) >= 0 {
+    if st_index(mut prog, st_name_of(it)) >= 0 {
       return it;
     }
     return "";
@@ -2109,7 +2122,7 @@ fn struct_type_of(e: *Expr, env: *Env, mut prog: *Prog) -> string {
     }
     let bt: string = field_base_type(base, env, mut prog);
     if len(bt) > 0 {
-      let si: i64 = st_index(mut prog, bt);
+      let si: i64 = st_index(mut prog, st_name_of(bt));
       let fi: i64 = st_field_index(prog, si, e.name);
       if fi >= 0 {
         let fty: string = prog.structs[si as usize].types[fi as usize];
@@ -2171,7 +2184,7 @@ fn val_chain_slot(e: *Expr, env: *Env, mut prog: *Prog) -> i64 {
     if len(bt) == 0 {
       return 0 - 1;
     }
-    let si: i64 = st_index(mut prog, bt);
+    let si: i64 = st_index(mut prog, st_name_of(bt));
     let fi: i64 = st_field_index(prog, si, e.name);
     if fi < 0 {
       return 0 - 1;
@@ -2329,7 +2342,7 @@ fn expr_ptr_type(e: *Expr, env: *Env, mut prog: *Prog) -> string {
     }
     let bt: string = field_base_type(base, env, mut prog);
     if len(bt) > 0 {
-      let si: i64 = st_index(mut prog, bt);
+      let si: i64 = st_index(mut prog, st_name_of(bt));
       let fi: i64 = st_field_index(prog, si, e.name);
       if fi >= 0 {
         let fty: string = prog.structs[si as usize].types[fi as usize];
@@ -2741,7 +2754,7 @@ fn dyn_pair_load(arg: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
     }
     let bt: string = field_base_type(base, env, mut prog);
     if len(bt) > 0 {
-      let si: i64 = st_index(mut prog, bt);
+      let si: i64 = st_index(mut prog, st_name_of(bt));
       let fi: i64 = st_field_index(prog, si, arg.name);
       if fi >= 0 &&
           is_dyn_type(prog.structs[si as usize].types[fi as usize]) {
@@ -3081,7 +3094,7 @@ fn dyn_recv_trait(e: *Expr, mut env: *Env, mut prog: *Prog) -> string {
     }
     let bt: string = field_base_type(base, env, mut prog);
     if len(bt) > 0 {
-      let si: i64 = st_index(mut prog, bt);
+      let si: i64 = st_index(mut prog, st_name_of(bt));
       let fi: i64 = st_field_index(prog, si, e.name);
       if fi >= 0 {
         let fty: string =
@@ -3520,7 +3533,7 @@ fn field_is_slice(e: *Expr, env: *Env, mut prog: *Prog) -> bool {
   }
   let bt: string = field_base_type(base, env, mut prog);
   if len(bt) > 0 {
-    let si: i64 = st_index(mut prog, bt);
+    let si: i64 = st_index(mut prog, st_name_of(bt));
     let fi: i64 = st_field_index(prog, si, e.name);
     if fi >= 0 {
       return type_kind(prog.structs[si as usize].types[fi as usize]) == 2;
@@ -3572,7 +3585,7 @@ fn is_stringy(e: *Expr, env: *Env, mut prog: *Prog) -> bool {
     }
     let bt: string = field_base_type(base, env, mut prog);
     if len(bt) > 0 {
-      let si: i64 = st_index(mut prog, bt);
+      let si: i64 = st_index(mut prog, st_name_of(bt));
       let fi: i64 = st_field_index(prog, si, e.name);
       if fi >= 0 {
         return type_kind(prog.structs[si as usize].types[fi as usize]) == 1;
@@ -3650,7 +3663,7 @@ fn optpt_of_scrutinee(sc: *Expr, mut env: *Env, mut prog: *Prog) -> string {
     let bt2: string = field_base_type(fb, env, mut prog);
     let mut fty2: string = "";
     if len(bt2) > 0 {
-      let si2: i64 = st_index(mut prog, bt2);
+      let si2: i64 = st_index(mut prog, st_name_of(bt2));
       let fi2: i64 = st_field_index(prog, si2, sc.name);
       if fi2 >= 0 {
         fty2 = prog.structs[si2 as usize].types[fi2 as usize];
@@ -3834,7 +3847,7 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
             let bt6: string = field_base_type(owner6, env, mut prog);
             let mut ok6: bool = false;
             if len(bt6) > 0 {
-              let si6: i64 = st_index(mut prog, bt6);
+              let si6: i64 = st_index(mut prog, st_name_of(bt6));
               let fi6: i64 = st_field_index(prog, si6, base6.name);
               if fi6 >= 0 {
                 boff6 = st_field_off(mut prog, si6, fi6) * 8;
@@ -3892,7 +3905,7 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
       }
       let bt4: string = field_base_type(base, env, mut prog);
       if len(bt4) > 0 {
-        let si4: i64 = st_index(mut prog, bt4);
+        let si4: i64 = st_index(mut prog, st_name_of(bt4));
         let fi4: i64 = st_field_index(prog, si4, a0.name);
         if fi4 >= 0 {
           let fty4: string = prog.structs[si4 as usize].types[fi4 as usize];
@@ -4071,7 +4084,7 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
       }
       let bt: string = field_base_type(owner, env, mut prog);
       if len(bt) > 0 {
-        let si: i64 = st_index(mut prog, bt);
+        let si: i64 = st_index(mut prog, st_name_of(bt));
         let fi: i64 = st_field_index(prog, si, base.name);
         if fi >= 0 &&
             type_kind(prog.structs[si as usize].types[fi as usize]) == 2 {
@@ -4170,7 +4183,7 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
         Option.None => {},
       }
       let fbt: string = field_base_type(fowner, env, mut prog);
-      let fsi: i64 = st_index(mut prog, fbt);
+      let fsi: i64 = st_index(mut prog, st_name_of(fbt));
       if fsi >= 0 {
         let ffi: i64 = st_field_index(prog, fsi, base.name);
         if ffi >= 0 &&
@@ -4298,7 +4311,7 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
     if len(bt) == 0 {
       return "    (i64.const 0)\n";
     }
-    let si: i64 = st_index(mut prog, bt);
+    let si: i64 = st_index(mut prog, st_name_of(bt));
     let fi: i64 = st_field_index(prog, si, e.name);
     if fi < 0 {
       return "    (i64.const 0)\n";
@@ -4672,7 +4685,7 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
           // a pointer payload the box owns: the count pairs with the
           // box's death walk
           let argt: string = expr_ptr_type(e.args[k], env, mut prog);
-          if len(argt) > 0 && st_index(mut prog, argt) >= 0 {
+          if len(argt) > 0 && st_index(mut prog, st_name_of(argt)) >= 0 {
             out = out + retain_if_shared(e.args[k], tv);
           }
           out = out + "    (i64.store (i32.add (i32.wrap_i64 (local.get ";
@@ -6332,7 +6345,7 @@ fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
         let bt: string = field_base_type(owner, env, mut prog);
         let mut ok2: bool = false;
         if len(bt) > 0 {
-          let si: i64 = st_index(mut prog, bt);
+          let si: i64 = st_index(mut prog, st_name_of(bt));
           let fi: i64 = st_field_index(prog, si, base.name);
           if fi >= 0 {
             foff = st_field_off(mut prog, si, fi) * 8;
@@ -9601,7 +9614,7 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                     }
                     let fbt: string = field_base_type(fbase, env, mut prog);
                     if len(fbt) > 0 {
-                      fsi = st_index(mut prog, fbt);
+                      fsi = st_index(mut prog, st_name_of(fbt));
                       ffi = st_field_index(prog, fsi, e.name);
                       if ffi >= 0 {
                         fki = type_kind(

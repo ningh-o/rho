@@ -71,21 +71,19 @@ cap 600 wasmtime /tmp/gate-child.wasm --set "SRC=$(modsrc)" \
   || fail "child run"
 cmp -s /tmp/gate-child.wat /tmp/gate-grand.wat \
   || fail "child/grandchild WAT diverge (determinism law)"
-# behavior: the grandchild compiles the same probe boot does, and the
-# two programs behave identically (the corpus already grades the
-# mirror; this grades the child's child)
+# behavior: every level's input is frozen at bake time, so no deeper
+# level can ever compile a fresh probe — what the old probe clause was
+# after (the grandchild behaves as the child) is implied by the
+# byte-identity just proved, and the rho codegen's program-level
+# behavior is graded against boot by leg 3's corpus differential. The
+# direct residue: run the grand — its code compiling its own baked
+# input must reproduce itself (v3 == v2, the chain closed at depth).
 wat2wasm /tmp/gate-grand.wat -o /tmp/gate-grand.wasm 2>/dev/null \
   || fail "grandchild wat2wasm"
-PROBE=corpus/012_recursion.rho
-cap 120 "$RHO" run $PROBE >/tmp/gate-boot.out 2>/dev/null; brc=$?
-cap 120 wasmtime /tmp/gate-grand.wasm --set "SRC=$(cat $PROBE)" \
-    --set "MODS=" >/tmp/gate-grand-prog.wat 2>/dev/null \
-  || fail "grandchild probe compile"
-wat2wasm /tmp/gate-grand-prog.wat -o /tmp/gate-grand-prog.wasm 2>/dev/null \
-  || fail "grandchild probe wat2wasm"
-cap 60 wasmtime /tmp/gate-grand-prog.wasm >/tmp/gate-gp.out 2>/dev/null; grc=$?
-[ "$brc" -eq "$grc" ] || fail "probe exit codes differ"
-cmp -s /tmp/gate-boot.out /tmp/gate-gp.out || fail "probe outputs differ"
+cap 600 wasmtime /tmp/gate-grand.wasm >/tmp/gate-v3.wat 2>/dev/null \
+  || fail "grand run"
+cmp -s /tmp/gate-grand.wat /tmp/gate-v3.wat \
+  || fail "v3 diverges (chain not closed at depth)"
 
 # --- leg 5: the seed canary (T3.2) ---
 echo "== gate: seed canary (pure-source rebuild, byte-exact)"
@@ -107,8 +105,14 @@ par() {
   local bad=$1 want=$2
   local bmsg smsg
   bmsg=$("$RHO" check "$bad" 2>&1 >/dev/null); local brc=$?
-  cap 300 wasmtime /tmp/gate-mirror.wasm --set "SRC=$(cat "$bad")" \
-      --set "MODS=" >/dev/null 2>/tmp/gate-par.err
+  # the self-host side bakes the bad program into a fresh mirror (a
+  # compiled compiler's input is frozen at bake time — a runtime --set
+  # is ignored, and reusing the chain's mirror just recompiles the
+  # compiler and accepts everything)
+  cap 300 "$RHO" build libs/compiler/main.rho -o /tmp/gate-par.wasm \
+      --set "SRC=$(cat "$bad")" --set "MODS=" >/dev/null 2>&1 \
+    || fail "parity mirror build: $bad"
+  cap 300 wasmtime /tmp/gate-par.wasm >/dev/null 2>/tmp/gate-par.err
   local src_rc=$?
   smsg=$(cat /tmp/gate-par.err)
   [ "$brc" -ne 0 ] || fail "parity: boot accepted $bad"
