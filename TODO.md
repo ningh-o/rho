@@ -1118,12 +1118,19 @@ section — no placeholder stages. boot is the reference compiler.
       (is_ginst_ptr before the by-value faces; the by-value faces
       reject pt[0]==42) and st_index instantiates starred spellings.
       The probe's Vec half runs end to end (push/get/len through the
-      clones). REMAINING, both in the map half: (1) the ?V returns of
-      clone-dispatched methods (m.get/m.remove) match None silently —
-      the option-box face of a ginst-clone return; (2) a clone call's
-      bool result prints 0/1 instead of false/true — the boolish
-      classification does not see through the ginst clone's declared
-      return. 
+      clones). RESOLVED same night: both map-half gaps were the same
+      lookup — a method's return type resolved only by the exact
+      receiver spelling. method_rtype now resolves through the
+      instantiation (suffix-matching the qualified template and
+      substituting), and scrutinee_boxes/optpt_of_scrutinee/the
+      boolish classifier all route through it — the probe's map half
+      matches boot byte for byte (insert/get/contains/remove, option
+      matches, bool words). The CHAIN is the one red leg: the child's
+      self-compile panics with an OOB in en_vtag — one of its four
+      unguarded callers (the Enum.Var constructor emissions, the
+      box-face binder walk, or arm_cond) now meets ei=-1 on a
+      construct the wave introduced. Guard the callers, then find
+      which construct.
 - [ ] **T4.4** std.io: read_line, file read/write wrappers over the raw
       LANDED 2026-09-27 (t44, reviewed and merged): fd_read/fd_close/path_open + four raw wrappers in the wasi tail; the prelude carries std.io's private __ window; read_line/read_file/write_file over Result; the verb gains // in: and --dir; the prelude's generic-instance chains reset per program (a real in-process compile fix the review caught); eleven io fixtures.
       tails.
