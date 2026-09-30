@@ -1681,7 +1681,13 @@ pub fn st_index(mut prog: *Prog, name: string) -> i64 {
   // text (idempotent: the scan above finds it on later calls)
   let ob: i64 = open_bracket(name);
   if ob >= 0 && name[(len(name) - 1)..len(name)] == "]" {
-    let base: string = name[0..(ob as usize)];
+    let mut base: string = name[0..(ob as usize)];
+    // a receiver spelling carries the pointer star (*Vec[i32]) — the
+    // instantiation is of the bare declaration (the star once left
+    // the clone's field stores nothing to write through)
+    if len(base) > 0 && base[0] == 42 {
+      base = base[1..len(base)];
+    }
     let inner: string = name[((ob as usize) + 1)..(len(name) - 1)];
     let bi: i64 = st_index(mut prog, base);
     if bi >= 0 && len(prog.structs[bi as usize].tparams) > 0 {
@@ -4812,6 +4818,10 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
       } else {
         let bt: string = expr_ptr_type(recv, env, mut prog);
         if len(bt) == 0 {
+          if e.name == "sum" {
+            eprintf("DBG sum mcall bt empty: recv={} ptr_of={}\n",
+                    recv.tag, env_ptr_of(env, recv.name));
+          }
           return "    (i64.const 0)\n";
         }
         rtype_full = bt;
@@ -9794,7 +9804,7 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                     }
                                         env_bind_sliceelem(mut env, st.name, aet);
                   } else {
-                  if len(st.fmt) > 0 &&
+                  if len(st.fmt) > 0 && st.fmt[0] != 42 &&
                       st_index(mut prog, st.fmt) >= 0 &&
                       len(struct_type_of(e, env, mut prog)) > 0 {
                     // a by-value struct binding (annotation naming a
@@ -9983,6 +9993,9 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                     ps = expr_ptr_type(e, env, mut prog);
                   }
                   if len(ps) > 0 && st_index(mut prog, ps) >= 0 {
+                    if st.name == "p" {
+                      eprintf("DBG ptr-let p: ps={}\n", ps);
+                    }
                     body = body + emit_expr(mut pool, e, mut env, mut prog, mut nl);
                     body = body + "    (local.set ";
                     body = body + nl.v.to_str();
@@ -11232,7 +11245,16 @@ fn emit_fn(fd: *FnDef, mut pool: *Pool, mut prog: *Prog,
         env_bind_enum(mut env, fd.params[k], nl.v, "Option");
         env_bind_sliceelem(mut env, fd.params[k],
                            type_ptr_target(pt));
-      } else if len(pt) > 0 && st_index(mut prog, pt) >= 0 && svp_n < 8 {
+      } else if is_ginst_ptr(mut prog, pt) {
+        // a generic-struct instantiation param (self: *StringMap[string])
+        // binds with its FULL text — and BEFORE the value-struct face:
+        // with st_index resolving starred spellings, a pointer to an
+        // instantiation once matched the by-value arm and the clone
+        // copied the whole struct into a scratch frame (self.n += 1
+        // advanced the copy; the caller's container never grew)
+        env_bind_ptr(mut env, fd.params[k], nl.v, pt);
+      } else if len(pt) > 0 && pt[0] != 42 &&
+          st_index(mut prog, pt) >= 0 && svp_n < 8 {
         // a by-value struct param: the lane carries the source's
         // address; the prologue (emitted past the $a..$d reservation)
         // copies the slots into a fresh frame the binding reads
@@ -11241,15 +11263,6 @@ fn emit_fn(fd: *FnDef, mut pool: *Pool, mut prog: *Prog,
         svp_types[svp_n] = pt;
         svp_srcs[svp_n] = nl.v;
         svp_n = svp_n + 1;
-      } else if is_ginst_ptr(mut prog, pt) {
-        // a generic-struct instantiation param (self: *StringMap[string])
-        // binds with its FULL text — the bare-base bind once stripped
-        // the instantiation and every method call inside the clone
-        // then read the wrong receiver (StringMap_lower went bare)
-        if fd.params[k] == "self" {
-          eprintf("DBG self bind ginst: {}\n", pt);
-        }
-        env_bind_ptr(mut env, fd.params[k], nl.v, pt);
       } else if len(target) > 0 && st_index(mut prog, target) >= 0 {
         if fd.params[k] == "self" {
           eprintf("DBG self bind bare-target: pt={} target={}\n", pt,

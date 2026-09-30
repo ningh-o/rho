@@ -1109,8 +1109,21 @@ section — no placeholder stages. boot is the reference compiler.
       half; the remaining gap is a RUNTIME one — the clones' tail
       field stores (self.data[self.n] = v; self.n += 1) emit empty
       (the clone's ST_FSTOREs render nothing), so n never advances
-      and get(0) panics. Next: the ST_FSTORE emission for cloned
-      statements. 
+      and get(0) panics. RESOLVED same night: the store's base lookup
+      rode st_index, whose new star-strip let the pointer receiver
+      match the BY-VALUE arms — the param loop copied the whole struct
+      into a scratch frame (self.n += 1 advanced the copy) and the
+      annotated pointer-let bound a value frame (p.sum() read a
+      const-0). The pointer spellings now win the arm ordering
+      (is_ginst_ptr before the by-value faces; the by-value faces
+      reject pt[0]==42) and st_index instantiates starred spellings.
+      The probe's Vec half runs end to end (push/get/len through the
+      clones). REMAINING, both in the map half: (1) the ?V returns of
+      clone-dispatched methods (m.get/m.remove) match None silently —
+      the option-box face of a ginst-clone return; (2) a clone call's
+      bool result prints 0/1 instead of false/true — the boolish
+      classification does not see through the ginst clone's declared
+      return. 
 - [ ] **T4.4** std.io: read_line, file read/write wrappers over the raw
       LANDED 2026-09-27 (t44, reviewed and merged): fd_read/fd_close/path_open + four raw wrappers in the wasi tail; the prelude carries std.io's private __ window; read_line/read_file/write_file over Result; the verb gains // in: and --dir; the prelude's generic-instance chains reset per program (a real in-process compile fix the review caught); eleven io fixtures.
       tails.
