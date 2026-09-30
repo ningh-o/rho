@@ -1150,10 +1150,17 @@ section — no placeholder stages. boot is the reference compiler.
       layout) and v2 folds the Some arm's payload to an empty-string
       pair (0,0). I.e. the field-offset/field-type resolution for a
       generic struct's ?T fields reads a DIFFERENT struct entry at
-      the two levels — prime suspect: the reg_struct_inst
-      instantiation entries vs the template entry (field table order
-      or slot arithmetic for ?T fields). Next: dump both levels'
-      st_field_off(Expr, "lhs") and the instantiation's field table.
+      the two levels — REFINED to the binder: in the grand's Some
+      arm, the binder `l` has NO recorded pointer lane (its field
+      read folded to the scalar-lane const 0, and parse.EX_LIT = 0
+      made the comparison 0==0), i.e. the binder binding from the
+      option box never took env_bind_ptr for this shape — prime
+      suspects: parse_pat's binder collection after the
+      ambient-variant restructure (the dotted vs shared path), and
+      the box-face binder walk's payload-text resolution (5944
+      region) for ?*Expr payloads. Next: instrument env_bind_ptr's
+      callers for the Some binder in a match on a ?*Expr FIELD
+      (bin_width's match e.lhs is the minimal witness).
 - [ ] **T4.4** std.io: read_line, file read/write wrappers over the raw
       LANDED 2026-09-27 (t44, reviewed and merged): fd_read/fd_close/path_open + four raw wrappers in the wasi tail; the prelude carries std.io's private __ window; read_line/read_file/write_file over Result; the verb gains // in: and --dir; the prelude's generic-instance chains reset per program (a real in-process compile fix the review caught); eleven io fixtures.
       tails.
