@@ -2007,6 +2007,55 @@ fn expr_fkind(e: *Expr, env: *Env, mut prog: *Prog) -> i64 {
 // dispatch reads the box's tag slot, not the raw pointer. Enums
 // resolve through expr_enum_type; a ?T-returning call/method does
 // not (its rtype texts as "?T"), so the rtype's own '?' decides.
+// a method's return type with the receiver's type text: the exact
+// spelling first, then through a generic instantiation — the receiver
+// may spell *StringMap[string] whose methods register under the
+// qualified template's name (m.remove's ?V once read as a raw
+// pointer and every Some arm matched None)
+fn method_rtype(mut prog: *Prog, bt: string, mname: string) -> string {
+  let r1: string = fn_rtype_of(prog, bt + "." + mname);
+  if len(r1) > 0 {
+    return r1;
+  }
+  let mut rt: string = bt;
+  if len(rt) > 0 && rt[0] == 42 {
+    rt = rt[1..len(rt)];
+  }
+  let ob: i64 = open_bracket(rt);
+  if ob < 0 {
+    return "";
+  }
+  let base: string = rt[0..(ob as usize)];
+  let si: i64 = st_index(mut prog, base);
+  if si < 0 {
+    return "";
+  }
+  let gtps: []string = prog.structs[si as usize].tparams;
+  if len(gtps) == 0 {
+    return "";
+  }
+  let mfull: string = base + "." + mname;
+  let mut hit: i64 = 0 - 1;
+  let mut fi3: usize = 0;
+  while fi3 < len(prog.fns) {
+    let nm3: string = prog.fns[fi3].name;
+    let nl3: i64 = len(nm3) as i64;
+    let ml3: i64 = len(mfull) as i64;
+    if nl3 > ml3 {
+      if nm3[((nl3 - ml3 - 1) as usize)..(nl3 as usize)] == "." + mfull {
+        hit = fi3 as i64;
+      }
+    }
+    fi3 = fi3 + 1;
+  }
+  if hit < 0 {
+    return "";
+  }
+  let tys: []string = split_type_args(
+      rt[((ob as usize) + 1)..(len(rt) - 1)]);
+  return tsub_type(prog.fns[hit as usize].rtype, gtps, tys);
+}
+
 fn scrutinee_boxes(sc: *Expr, env: *Env, mut prog: *Prog) -> bool {
   if len(expr_enum_type(sc, env, mut prog)) > 0 {
     return true;
@@ -2027,7 +2076,7 @@ fn scrutinee_boxes(sc: *Expr, env: *Env, mut prog: *Prog) -> bool {
     }
     let bt: string = expr_ptr_type(recv, env, mut prog);
     if len(bt) > 0 {
-      let rt2: string = fn_rtype_of(prog, bt + "." + sc.name);
+      let rt2: string = method_rtype(mut prog, bt, sc.name);
       if len(rt2) >= 1 && rt2[0] == 63 {
         return true;
       }
@@ -3742,7 +3791,7 @@ fn optpt_of_scrutinee(sc: *Expr, mut env: *Env, mut prog: *Prog) -> string {
     }
     let bt3: string = expr_ptr_type(recv3, env, mut prog);
     if len(bt3) > 0 {
-      let rt4: string = fn_rtype_of(prog, bt3 + "." + sc.name);
+      let rt4: string = method_rtype(mut prog, bt3, sc.name);
       if len(rt4) >= 2 && rt4[0] == 63 {
         return rt4[1..len(rt4)];
       }
@@ -4819,15 +4868,12 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
         let bt: string = expr_ptr_type(recv, env, mut prog);
         if len(bt) == 0 {
           if e.name == "sum" {
-            eprintf("DBG sum mcall bt empty: recv={} ptr_of={}\n",
-                    recv.tag, env_ptr_of(env, recv.name));
           }
           return "    (i64.const 0)\n";
         }
         rtype_full = bt;
         target = bt + "_" + e.name;
         if e.name == "lower" {
-          eprintf("DBG lower bt={} recv_tag={}\n", bt, recv.tag);
         }
         out = out + emit_expr(mut pool, recv, mut env, mut prog, mut nl);
       }
@@ -8449,12 +8495,9 @@ fn ginst_method_target(mut pool: *Pool, mut prog: *Prog, rtype: string,
     }
   }
   if len(gtps) == 0 {
-    eprintf("DBG gmt no gtps: {}\n", base);
     return "";
   }
   let mfull: string = base + "." + mname;
-  eprintf("DBG gmt enter rtype={} mname={} mfull={}\n", rtype, mname,
-          mfull);
   // the method may ride module-qualified (std.collections.vec.Vec.push
   // ends with Vec.push) — the suffix match finds it; registration
   // stays keyed on the bare mfull so every call site agrees
@@ -8475,7 +8518,6 @@ fn ginst_method_target(mut pool: *Pool, mut prog: *Prog, rtype: string,
       fi3 = fi3 + 1;
     }
     if hit < 0 {
-      eprintf("DBG gmt suffix miss: {}\n", mfull);
       return "";
     }
     dfull = prog.fns[hit as usize].name;
@@ -9117,8 +9159,9 @@ fn emit_print_fd(mut pool: *Pool, fmt: string, args: []*Expr, mut env: *Env,
                 Option.None => {},
               }
               if recv0.tag == parse.EX_VAR {
-                boolish = fn_rtype_of(prog, recv0.name + "." +
-                                      arg.name) == "bool";
+                boolish = method_rtype(mut prog,
+                                       expr_ptr_type(recv0, env, mut prog),
+                                       arg.name) == "bool";
               }
             }
             pre = pre + emit_expr(mut pool, arg, mut env, mut prog, mut nl);
@@ -9994,7 +10037,6 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                   }
                   if len(ps) > 0 && st_index(mut prog, ps) >= 0 {
                     if st.name == "p" {
-                      eprintf("DBG ptr-let p: ps={}\n", ps);
                     }
                     body = body + emit_expr(mut pool, e, mut env, mut prog, mut nl);
                     body = body + "    (local.set ";
@@ -11265,8 +11307,6 @@ fn emit_fn(fd: *FnDef, mut pool: *Pool, mut prog: *Prog,
         svp_n = svp_n + 1;
       } else if len(target) > 0 && st_index(mut prog, target) >= 0 {
         if fd.params[k] == "self" {
-          eprintf("DBG self bind bare-target: pt={} target={}\n", pt,
-                  target);
         }
         env_bind_ptr(mut env, fd.params[k], nl.v, target);
       } else {

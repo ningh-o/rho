@@ -1291,7 +1291,6 @@ fn parse_atom(mut c: *PCur) -> *Expr {
   // unusable primary: a zero literal keeps the walk alive — the
   // fallback count refuses the program before anything emits
   c.perrs = c.perrs + 1;
-          eprintf("PERR line={} tok={}\n", tk(c).line, tk(c).text);
   tkadv(mut c);
   return lit(0);
 }
@@ -1447,7 +1446,6 @@ fn parse_pat(mut c: *PCur) -> *Pat {
     return p0;
   }
   c.perrs = c.perrs + 1;
-          eprintf("PERR line={} tok={}\n", tk(c).line, tk(c).text);
   tkadv(mut c);
   return mk_pat(0);
 }
@@ -1586,7 +1584,6 @@ fn parse_stmt(mut c: *PCur) -> *Stmt {
     }
     if !eat_punct(mut c, 61) {
       c.perrs = c.perrs + 1;
-              eprintf("PERR line={} tok={}\n", tk(c).line, tk(c).text);
       let mut bad = mk_stmt(ST_RET);
       bad.ret = 0 - 21;
       return bad;
@@ -1607,7 +1604,6 @@ fn parse_stmt(mut c: *PCur) -> *Stmt {
     tkadv(mut c);
     if !eat_punct(mut c, 40) {
       c.perrs = c.perrs + 1;
-              eprintf("PERR line={} tok={}\n", tk(c).line, tk(c).text);
       let mut bad = mk_stmt(ST_RET);
       bad.ret = 0 - 22;
       return bad;
@@ -1615,7 +1611,6 @@ fn parse_stmt(mut c: *PCur) -> *Stmt {
     let ft = tk(c);
     if ft.kind != lex.TK_STR {
       c.perrs = c.perrs + 1;
-              eprintf("PERR line={} tok={}\n", tk(c).line, tk(c).text);
       let mut bad = mk_stmt(ST_RET);
       bad.ret = 0 - 23;
       return bad;
@@ -1991,7 +1986,6 @@ fn parse_stmt(mut c: *PCur) -> *Stmt {
   // unknown statement: skip a token so the walk makes progress —
   // the fallback count refuses the program before anything emits
   c.perrs = c.perrs + 1;
-          eprintf("PERR line={} tok={}\n", tk(c).line, tk(c).text);
   tkadv(mut c);
   let mut bad = mk_stmt(ST_RET);
   bad.ret = 0 - 100;
@@ -3168,8 +3162,6 @@ fn mods_load(mut prog: *Prog, mods: string, path: string,
   let toks: []*Tok = lex.lex(text);
   let mp: *Prog = parse(toks, text);
   if mp.perrs > 0 {
-    eprintf("DBG parse errs={} loading {} (dir={})\n", mp.perrs, path,
-            dir);
     prog.perrs = prog.perrs + mp.perrs;
     return "";
   }
@@ -3225,7 +3217,6 @@ fn mods_load(mut prog: *Prog, mods: string, path: string,
       }
       let can2: string = mods_load(mut prog, mods, modpart0, mdir);
       if len(can2) == 0 {
-        eprintf("DBG head-load failed: {} (dir={})\n", modpart0, mdir);
         prog.perrs = prog.perrs + 1;
         return "";
       }
@@ -3274,7 +3265,6 @@ fn mods_load(mut prog: *Prog, mods: string, path: string,
     }
     let subcan: string = mods_load(mut prog, mods, upath, mdir);
     if len(subcan) == 0 {
-      eprintf("DBG sub load failed: {} (dir={})\n", upath, mdir);
       prog.perrs = prog.perrs + 1;
       return "";
     }
