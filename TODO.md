@@ -1166,9 +1166,10 @@ section — no placeholder stages. boot is the reference compiler.
       registered enum, though the source spells Option.Some/None.
       Same source, same arm_cond code — the resolver/exports TABLE
       STATE differs between the v1 and v2 runtimes. MEASURED (the
-      ename probe ran the full chain): the child's runtime builds 219
-      `Option.Some` patterns and never folds; the grand's runtime
-      prints ZERO parse_pat probes yet arm_cond sees kind-2 patterns
+      ename + mk_pat probes ran the full chain): the child's runtime
+      builds 468 patterns (mk_pat) and prints 438 Option.Some/None
+      parses; the grand's runtime prints ZERO of either yet arm_cond
+      sees 436 kind-2 patterns
       spelled `Some.Some`/`None.None` (ename duplicated from vname) —
       the grand's patterns do not come from its parse_pat run.
       clone_expr SHARES patterns (pat: src.pat) so clones keep their
