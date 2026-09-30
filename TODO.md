@@ -1173,10 +1173,16 @@ section — no placeholder stages. boot is the reference compiler.
       spelled `Some.Some`/`None.None` (ename duplicated from vname) —
       the grand's patterns do not come from its parse_pat run.
       clone_expr SHARES patterns (pat: src.pat) so clones keep their
-      ename; the mangler is elsewhere. Next: find the grand's pattern
-      source — instrument mk_pat itself (called by every builder) to
-      print kind-2 builds, run the chain once, and compare which
-      builder emits Some.Some at v2.
+      ename; the mangler is elsewhere. MEASURED (the mk_pat probe ran
+      the full chain): the child's mk_pat fires (kind-2 builds land,
+      438 kind-2 parse prints); the grand's mk_pat prints ZERO yet
+      arm_cond sees 436 Some.Some/None.None — the grand's patterns
+      come from a builder that is not mk_pat and not parse_pat.
+      METHOD NOTE: wat function extraction by the first `  )` line
+      TRUNCATES folded-form bodies (parse_pat's "865-line body" was a
+      truncation — the probe call sits past it); use balanced-paren
+      scanning or the mk_pat side channel instead, and treat wat
+      text-grep as unreliable (data segments escape inconsistently).
 - [ ] **T4.4** std.io: read_line, file read/write wrappers over the raw
       LANDED 2026-09-27 (t44, reviewed and merged): fd_read/fd_close/path_open + four raw wrappers in the wasi tail; the prelude carries std.io's private __ window; read_line/read_file/write_file over Result; the verb gains // in: and --dir; the prelude's generic-instance chains reset per program (a real in-process compile fix the review caught); eleven io fixtures.
       tails.
