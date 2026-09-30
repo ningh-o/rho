@@ -6095,6 +6095,19 @@ fn match_chain_m(mut pool: *Pool, arms: []*MatchArm, i: usize, bx: i64,
 // one arm's discriminator condition text ("" for the wildcard): the
 // tag local rides $d for enum scrutinees, the value itself for
 // scalars
+// a qualified const's folded value, -1 when absent (tags are >= 0,
+// so -1 reads as "this arm can never match")
+fn const_i64(mut prog: *Prog, qname: string) -> i64 {
+  let mut i: usize = 0;
+  while i < prog.nconsts {
+    if prog.consts[i] == qname {
+      return prog.cvals[i];
+    }
+    i = i + 1;
+  }
+  return 0 - 1;
+}
+
 fn arm_cond(a: *MatchArm, mut prog: *Prog, dslot: i64) -> string {
   if a.pat.kind == 0 {
     return "";
@@ -6116,7 +6129,15 @@ fn arm_cond(a: *MatchArm, mut prog: *Prog, dslot: i64) -> string {
     }
   } else {
     let ei: i64 = en_index(mut prog, a.pat.ename);
-    tag = en_vtag(prog, ei, a.pat.vname);
+    if ei >= 0 {
+      tag = en_vtag(prog, ei, a.pat.vname);
+    } else {
+      // a module-qualified CONST pattern (match e.tag {
+      // parse.EX_VAR => ... }): the comparison constant rides the
+      // consts table's qualified entry — en_index("parse") is -1 and
+      // the tag once folded to -1, killing every arm after it
+      tag = const_i64(mut prog, a.pat.ename + "." + a.pat.vname);
+    }
   }
   return "(i64.eq (local.get $d) (i64.const " + tag.to_str() + "))";
 }

@@ -1141,10 +1141,19 @@ section — no placeholder stages. boot is the reference compiler.
       and the whole tail after it vanishes. The trigger construct is
       a match whose arm pattern's enum fails en_index — most likely a
       module-qualified enum pattern whose canonicalization misses
-      under one of the wave's loader/qualifier changes. Next: make
-      the unresolving pattern's ename print at arm_cond, then fix the
-      canonicalization (or route the pattern like its dotted
-      siblings).
+      under one of the wave's loader/qualifier changes. The
+      const-pattern fix (arm_cond resolving qualified consts through
+      the consts table) was correct but not the root — the
+      bin_width witness refines it: the two levels disagree on a
+      ?*Expr FIELD OFFSET (v1 loads the scrutinee `e.lhs` at +16 —
+      the name field's slot — where lhs lives at +40 of the Expr
+      layout) and v2 folds the Some arm's payload to an empty-string
+      pair (0,0). I.e. the field-offset/field-type resolution for a
+      generic struct's ?T fields reads a DIFFERENT struct entry at
+      the two levels — prime suspect: the reg_struct_inst
+      instantiation entries vs the template entry (field table order
+      or slot arithmetic for ?T fields). Next: dump both levels'
+      st_field_off(Expr, "lhs") and the instantiation's field table.
 - [ ] **T4.4** std.io: read_line, file read/write wrappers over the raw
       LANDED 2026-09-27 (t44, reviewed and merged): fd_read/fd_close/path_open + four raw wrappers in the wasi tail; the prelude carries std.io's private __ window; read_line/read_file/write_file over Result; the verb gains // in: and --dir; the prelude's generic-instance chains reset per program (a real in-process compile fix the review caught); eleven io fixtures.
       tails.
