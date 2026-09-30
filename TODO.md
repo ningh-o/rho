@@ -1129,8 +1129,15 @@ section — no placeholder stages. boot is the reference compiler.
       self-compile panics with an OOB in en_vtag — one of its four
       unguarded callers (the Enum.Var constructor emissions, the
       box-face binder walk, or arm_cond) now meets ei=-1 on a
-      construct the wave introduced. Guard the callers, then find
-      which construct.
+      construct the wave introduced. RESOLVED: the enum accessors
+      guard ei<0 (en_vtag reads tag -1, en_nslots/en_vslots 0) and
+      the child now completes. The chain's red moved to the
+      determinism law: 17 functions diverge, rooted in an
+      option-binding face — v1 field-loads and releases through
+      $w_relopt_ where v2 const-folds without a release (bin_width
+      and fmt_line are the smallest witnesses, cascading through
+      emit_expr/build_string_pair/emit_stmts). Next: which binding
+      spelling resolves option-ness differently at the two levels.
 - [ ] **T4.4** std.io: read_line, file read/write wrappers over the raw
       LANDED 2026-09-27 (t44, reviewed and merged): fd_read/fd_close/path_open + four raw wrappers in the wasi tail; the prelude carries std.io's private __ window; read_line/read_file/write_file over Result; the verb gains // in: and --dir; the prelude's generic-instance chains reset per program (a real in-process compile fix the review caught); eleven io fixtures.
       tails.

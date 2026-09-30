@@ -1815,6 +1815,12 @@ pub fn en_index(mut prog: *Prog, name: string) -> i64 {
 }
 
 fn en_vtag(prog: *Prog, ei: i64, vname: string) -> i64 {
+  // an unknown enum (ei = -1) reads as tag -1: the arm can never
+  // match, which degrades honestly — the bounds check once panicked
+  // the child's self-compile mid-emission instead
+  if ei < 0 {
+    return 0 - 1;
+  }
   let mut k: usize = 0;
   while k < prog.enums[ei as usize].nv {
     if prog.enums[ei as usize].vnames[k] == vname {
@@ -1852,6 +1858,9 @@ fn enum_variant_ptys(mut prog: *Prog, ename: string,
 // an enum box: [tag][payload slots...] sized by the widest variant —
 // a string payload rides a pair, two slots
 fn en_nslots(mut prog: *Prog, ei: i64) -> i64 {
+  if ei < 0 {
+    return 0;
+  }
   let mut mx: i64 = 0;
   let mut k: usize = 0;
   while k < prog.enums[ei as usize].nv {
@@ -1877,6 +1886,9 @@ fn en_nslots(mut prog: *Prog, ei: i64) -> i64 {
 }
 
 fn en_vslots(prog: *Prog, ei: i64, vname: string) -> i64 {
+  if ei < 0 {
+    return 0;
+  }
   let mut k: usize = 0;
   while k < prog.enums[ei as usize].nv {
     if prog.enums[ei as usize].vnames[k] == vname {
