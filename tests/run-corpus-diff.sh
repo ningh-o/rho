@@ -26,7 +26,12 @@ RHO=${RHO:-./build/rho}
 # whole parse) and 107 (a struct and enum born inside a package; the
 # module merge never registered them, so module-local `new` stayed
 # unknown to the self-host's own checker).
-PINNED=110
+#
+# 110 → 111 with n14_io_stdin: the __ face (std.io's raw wasi window)
+# now rides the self-host twin too — imports, the four wrappers, and
+# __string_from as a build_string_pair face; the differential grades
+# both compilers on stdin/window/write behavior.
+PINNED=111
 
 # one file's differential; echoes "pass" or the failure label
 check_one() {

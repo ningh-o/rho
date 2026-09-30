@@ -11,6 +11,14 @@ pub fn name_known(prog: *Prog, name: string) -> bool {
       name == "panic" {
     return true;
   }
+  if name == "__fd_read_packed" || name == "__fd_write" ||
+      name == "__fd_close" || name == "__path_open" ||
+      name == "__string_from" {
+    // std.io's raw window: the kernel's wasi tail, lowered by the
+    // emitter (the __ face is never user-callable by law, but the
+    // names anchor here like printf's do)
+    return true;
+  }
   if name == "weak" {
     // the weak namespace's only member: weak.from(p) — the identity
     return true;

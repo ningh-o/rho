@@ -1048,6 +1048,30 @@ section — no placeholder stages. boot is the reference compiler.
       panic hooks, allocator + rc glue, string primitives, raw per-target
       syscall tails). Nothing else. The standing law: **the kernel grows
       only when a language mechanism grows.**
+      AUDIT 2026-10-01 (the twin-prelude inventory, boot kernel vs the
+      self-host's $w_* set):
+      - CLOSED: the __ face (std.io's raw wasi window) rode boot only —
+        a self-host compile of any io program emitted undefined calls
+        under wabt's resolution-skip mask. The self-host now carries
+        the three imports, the four wrappers ($w_fd_read_packed /
+        $w_fd_write / $w_fd_close / $w_path_open), and __string_from
+        as a build_string_pair face (the string-let binds the pair;
+        the scalar lane rides the address). io scratch locals $sfa/
+        $sfl joined every function prologue. n14_io_stdin pins the
+        differential (floor 111).
+      - DIVERGENCE, ruling pending: weak handles. boot = a handle box
+        + a weak count at payload-16 (rho_weak_from/alive/payload);
+        the self-host = the identity pointer, get() probes the rc
+        header. Observably equivalent on the corpus (alive = rc>0),
+        but the ABIs differ; pick one law (the identity handle is
+        simpler — boot would shed the weak-count slot).
+      - DIVERGENCE, ruling pending: ?T layout. boot = flat 3-slot;
+        the self-host = a heap box. Programs see one compiler, so
+        nothing mixes today; the corpus would catch drift.
+      - Strategy note: name-for-name diffs between the two preludes
+        are the wrong lens (the fb_* format family vs the write_fd
+        piece strategy is deliberate); audit by mechanism, then by
+        observable behavior on shared fixtures.
 - [ ] **T4.2** `std` = the reserved in-repo directory; `use std.io;`
       LANDED 2026-09-27 from the parallel wave (t42 worktree): a use whose first segment is std resolves against the reserved in-repo std/ tree (anchored at the boot/-marked repository root — the provisional ruling, recorded); ten stdrule fixtures.
       resolves by the single rule (first segment `std` → the reserved
