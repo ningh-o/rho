@@ -1179,10 +1179,19 @@ section — no placeholder stages. boot is the reference compiler.
       arm_cond sees 436 Some.Some/None.None — the grand's patterns
       come from a builder that is not mk_pat and not parse_pat.
       METHOD NOTE: wat function extraction by the first `  )` line
-      TRUNCATES folded-form bodies (parse_pat's "865-line body" was a
-      truncation — the probe call sits past it); use balanced-paren
-      scanning or the mk_pat side channel instead, and treat wat
-      text-grep as unreliable (data segments escape inconsistently).
+      TRUNCATES folded-form bodies — use balanced-paren scanning
+      (verified: parse_pat is genuinely 865 complete lines at both
+      levels) — and treat wat text-grep as unreliable (data segments
+      escape inconsistently). THE PARADOX TO SIT WITH: parse_pat's
+      emitted body (balanced-extract, both levels) contains NO io
+      writes and NO printer calls — its only calls are tkadv/tk/
+      rel_Tok/is_punct/mk_pat/panic/streq/eat_punct — yet the child's
+      runtime printed 438 `DBG pat: Option.Some` lines and the
+      grand's printed zero. Either the prints originate from a call
+      whose target is not a literal `$name` in the body (a computed
+      call_indirect?), or the probe line at parse.rho:1383 is not in
+      the function the child executes. Check parse_arms/clone paths
+      and call_indirect sites next.
 - [ ] **T4.4** std.io: read_line, file read/write wrappers over the raw
       LANDED 2026-09-27 (t44, reviewed and merged): fd_read/fd_close/path_open + four raw wrappers in the wasi tail; the prelude carries std.io's private __ window; read_line/read_file/write_file over Result; the verb gains // in: and --dir; the prelude's generic-instance chains reset per program (a real in-process compile fix the review caught); eleven io fixtures.
       tails.
