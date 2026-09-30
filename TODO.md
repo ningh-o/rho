@@ -1158,9 +1158,16 @@ section — no placeholder stages. boot is the reference compiler.
       suspects: parse_pat's binder collection after the
       ambient-variant restructure (the dotted vs shared path), and
       the box-face binder walk's payload-text resolution (5944
-      region) for ?*Expr payloads. Next: instrument env_bind_ptr's
-      callers for the Some binder in a match on a ?*Expr FIELD
-      (bin_width's match e.lhs is the minimal witness).
+      region) for ?*Expr payloads. SHARPEST WITNESS (post const-fix,
+      fmt_line): the child emits the Some arm as `tag == 1` with real
+      payload loads; the grand emits AN ARM as `tag == -1`
+      (const_i64's miss return) with a folded-zero body — in the
+      grand's runtime SOME arm's ename is neither Option/Result nor a
+      registered enum, though the source spells Option.Some/None.
+      Same source, same arm_cond code — the resolver/exports TABLE
+      STATE differs between the v1 and v2 runtimes. Next: one DBG at
+      arm_cond printing a.pat.ename when the tag folds to -1, run the
+      chain, read the spelling.
 - [ ] **T4.4** std.io: read_line, file read/write wrappers over the raw
       LANDED 2026-09-27 (t44, reviewed and merged): fd_read/fd_close/path_open + four raw wrappers in the wasi tail; the prelude carries std.io's private __ window; read_line/read_file/write_file over Result; the verb gains // in: and --dir; the prelude's generic-instance chains reset per program (a real in-process compile fix the review caught); eleven io fixtures.
       tails.
