@@ -3774,6 +3774,26 @@ fn is_stringy(e: *Expr, env: *Env, mut prog: *Prog) -> bool {
     }
     return false;
   }
+  if e.tag == parse.EX_MCALL {
+    // to_str IS the string conversion face — every type's to_str
+    // returns string by law (an enum-payload binder's to_str rode
+    // non-stringy once and its concat arm collapsed the whole match
+    // out of the pair lanes); any other method rides its declared
+    // return through the receiver's instantiation
+    if e.name == "to_str" {
+      return true;
+    }
+    match e.lhs {
+      Option.Some(r14) => {
+        let rt14: string = method_rtype(mut prog,
+                                        expr_ptr_type(r14, env, mut prog),
+                                        e.name);
+        return rt14 == "string";
+      },
+      Option.None => {},
+    }
+    return false;
+  }
   return false;
 }
 
@@ -3817,10 +3837,20 @@ fn optpt_of_scrutinee(sc: *Expr, mut env: *Env, mut prog: *Prog) -> string {
     if len(rt3) >= 2 && rt3[0] == 63 {
       return rt3[1..len(rt3)];
     }
-    if len(rt3) > 8 && rt3[0..7] == "Result[" {
-      let tas: []string = split_type_args(rt3[7..(len(rt3) - 1)]);
-      if len(tas) > 0 {
-        return tas[0];
+    // Option[T] / Result[T, E] spelled in full: the payload is the
+    // first bracket arg (norm_enum collapses the spelling downstream,
+    // so the payload text must come off HERE, before it — maybe()'s
+    // Option[string] and read_file's Result[string] payloads rode
+    // scalar once and every binder over them collapsed the pair
+    // lanes)
+    if starts_open(rt3, "Option") || starts_open(rt3, "Result") {
+      let ob: i64 = open_bracket(rt3);
+      if ob >= 0 {
+        let tas: []string = split_type_args(
+            rt3[((ob as usize) + 1)..(len(rt3) - 1)]);
+        if len(tas) > 0 {
+          return tas[0];
+        }
       }
     }
   }

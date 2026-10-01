@@ -727,17 +727,23 @@ fn eat_type(mut c: *PCur) -> string {
     }
     if (name == "Option" || name == "Result") &&
        is_punct(tk(c), 91) {
-      // the bracketed payload(s): consumed whole, the builtin name
-      // rides on (norm_enum collapses the text downstream)
+      // the bracketed payload(s) ride the type text whole: the
+      // payload readers (a match binder's lane, the checker's
+      // resolution) need the payload text, and norm_enum collapses
+      // the spelling downstream wherever only the enum kind matters
       tkadv(mut c); // [
+      let mut args: string = "";
       while tk(c).kind != lex.TK_EOF && !is_punct(tk(c), 93) {
-        eat_type(mut c);
+        if len(args) > 0 {
+          args = args + ", ";
+        }
+        args = args + eat_type(mut c);
         if !eat_punct(mut c, 44) {
           break;
         }
       }
       eat_punct(mut c, 93); // ]
-      return pre + name;
+      return pre + name + "[" + args + "]";
     }
     if name == "dyn" && tk(c).kind == lex.TK_IDENT {
       // dyn Trait — the fat-dispatch type rides its trait's name

@@ -81,7 +81,17 @@ RHO=${RHO:-./build/rho}
 # make-substitution law they were waiting for). The case pins the
 # compiler-consumption shape: vec_of[*Pt] instantiates over a type
 # the PROGRAM owns, and the generic push serves it.
-PINNED=116
+#
+# 116 → 117 with n20_pair_shapes: the pair-lane shapes the site's
+# runtime face exercised — a string fn returning a match (the arms
+# ride the pair lanes through the return), a string param fed from
+# an Option binder (the payload text rides the call), and a value
+# enum's to_str concat (a to_str method call is stringy by law).
+# The std-era full spellings — Option[string] / Result[T, E] as
+# declared return types — now carry their payload text through
+# eat_type, and optpt_of_scrutinee reads it off the first bracket
+# arg.
+PINNED=117
 
 # one file's differential; echoes "pass" or the failure label
 check_one() {
