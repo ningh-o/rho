@@ -42,5 +42,19 @@ fn main() -> i32 {
   vi.push(9);
   vi.push(10);
   printf("{}\n", vi.get(1));
+  // the ordered maps ride the same door: a pointer-valued map is
+  // spellable now, and insert collapses to its generic form
+  let mut mp = collections.smap_of[*Pt](4);
+  mp.insert("first", p1);
+  mp.insert("second", p1);
+  match mp.insert("first", p1) {
+    Option.Some(old) => { printf("{}\n", old.x); },
+    Option.None => { printf("absent\n"); }
+  }
+  let mut w: usize = 0;
+  while w < mp.len() {
+    printf("{}={} {}\n", mp.key_at(w), mp.val_at(w).x, mp.val_at(w).y);
+    w = w + 1;
+  }
   return 0;
 }

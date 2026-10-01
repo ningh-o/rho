@@ -91,6 +91,15 @@ signature must match the trait's signature exactly. Receiver
 `mut`-ness (§14) is not a resolution axis: two candidates differing
 only in `mut self` are an ambiguity.
 
+Generic functions resolve the same way — a generic's parameter types
+match structurally, and the type parameters bind from the arguments
+(and, when a parameter appears only in the return type, from the
+consumer). A call may also name the instantiation explicitly:
+`f[T1, T2](args)` (§6.2 of syntax) seeds the binds from the spelling;
+the type arguments then take no part in overload matching — the
+overload is chosen by base name and arity, and the seed must satisfy
+the declaration's trait bounds (§8) per instantiation.
+
 ## 6. Method visibility is import-scoped
 
 The candidate set for `x.m(args)`:

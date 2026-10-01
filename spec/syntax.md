@@ -326,6 +326,18 @@ there is no truthiness.
   the argument's own binding must be `mut` (TODO.md §18), method
   calls `x.m(args)`,
   associated calls `T.m(args)`
+- explicit type arguments on a call: `f[T1, T2](args)` and
+  `pkg.f[T](args)` — the callee must be generic and the count must
+  match its declaration; the spelling binds the instantiation
+  directly, because a factory's type parameter appears only in its
+  return type and argument inference can never bind it. The
+  disambiguation from indexing is structural: rho has no
+  index-then-call, so a `[` whose matching `]` is followed by `(`
+  opens the type-argument list; `a[i]` stays an index. The type
+  arguments participate in no overload matching — the overload is
+  picked by the base name and arity, then the instantiation is
+  seeded from the spelling. A generic factory is the idiomatic use:
+  `let v = collections.vec_of[*Expr](16);`
 - field access `p.x`, indexing `s[i]` (index type `usize`)
 - slicing `s[a..b]` with either end open (`s[..n]`, `s[n..]`)
 - parenthesized `(e)`

@@ -6042,9 +6042,15 @@ fn match_chain_m(mut pool: *Pool, arms: []*MatchArm, i: usize, bx: i64,
         env_bind_f(mut env, a.pat.binders[k], bslot, fk2);
       } else {
         if (a.pat.ename == "Option" || a.pat.ename == "Result") &&
-            len(optpt) > 0 && st_index(mut prog, optpt) >= 0 {
+            len(optpt) > 0 &&
+            st_index(mut prog, st_name_of(optpt)) >= 0 {
           // a Some/Ok binder over a *T element: the pointer lane keeps
-          // its fields reachable
+          // its fields reachable — the gate reads the BARE struct name
+          // (st_index's star handling lives in its bracket arm, so a
+          // starred non-generic spelling once missed and the binder
+          // fell to the scalar lane: the box read as the payload and
+          // every field off it read 0 — smap_of[*Pt]'s upsert binder
+          // was the first witness)
           env_bind_ptr(mut env, a.pat.binders[k], bslot, optpt);
         } else {
           if optpt == "bool" {

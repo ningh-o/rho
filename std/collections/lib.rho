@@ -23,9 +23,11 @@ pub use vec.vec_of;
 pub use map.smap_str;
 pub use map.smap_i32;
 pub use map.smap_i64;
+pub use map.smap_of;
 pub use map.imap_str;
 pub use map.imap_i32;
 pub use map.imap_i64;
+pub use map.imap_of;
 
 pub use strutil.str_lt;
 pub use strutil.str_eq;

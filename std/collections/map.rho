@@ -14,13 +14,14 @@
 // (binary search on lookup, shift on insert/remove), so the stored
 // order IS ascending key order at every observable point.
 //
-// Boot capability note (2026-09-27 probes, WORKTREE-NOTES.md): the
-// value-carrying, allocating method (insert) is concretized per value
-// type — `make([]V, n)` cannot be spelled inside an instantiated
-// body, and callers cannot name a package's generic type — while
-// every non-allocating method is one struct-parameter generic. When
-// boot carries the make type-arg through instantiation, the concrete
-// inserts collapse into the generic form.
+// Wall-lift note (2026-10-02): the 2026-09-27 capability wall is
+// gone — boot (and the self-host behind it) carries explicit
+// call-site type arguments and substitutes make([]V) through the
+// instance's binds. The three concrete inserts per map collapsed
+// into one generic form each, exactly as this note once promised,
+// and smap_of[V]/imap_of[V] below are the generic factories the wall
+// once forbade. Keys stay pinned to the two builtin orders (see the
+// traits note below).
 //
 // Operator traits (Eq/Ord/Hash, T3.12) are not landed, so `<` cannot
 // order user types yet: keys are pinned to the two builtin orders
@@ -196,17 +197,17 @@ fn IntMap.clear(mut self: *IntMap) {
 // insert (bare doubling from 0 stays 0). Amortized O(n) per insert
 // (the shift dominates; the search is O(log n)).
 
-fn StringMap.insert(mut self: *StringMap[string], k: string,
-                    v: string) -> ?string {
+fn StringMap.insert(mut self: *StringMap, k: string,
+                    v: V) -> ?V {
   let pos: usize = self.lower(k);
   if pos < self.n && self.keys[pos] == k {
-    let old: string = self.vals[pos];
+    let old: V = self.vals[pos];
     self.vals[pos] = v;
     return Option.Some(old);
   }
   if self.n == self.cap {
     let mut nk: []string = make([]string, self.cap * 2 + 1);
-    let mut nv: []string = make([]string, self.cap * 2 + 1);
+    let mut nv: []V = make([]V, self.cap * 2 + 1);
     let mut i: usize = 0;
     while i < self.n {
       nk[i] = self.keys[i];
@@ -229,83 +230,17 @@ fn StringMap.insert(mut self: *StringMap[string], k: string,
   return Option.None;
 }
 
-fn StringMap.insert(mut self: *StringMap[i32], k: string,
-                    v: i32) -> ?i32 {
+fn IntMap.insert(mut self: *IntMap, k: i64,
+                 v: V) -> ?V {
   let pos: usize = self.lower(k);
   if pos < self.n && self.keys[pos] == k {
-    let old: i32 = self.vals[pos];
-    self.vals[pos] = v;
-    return Option.Some(old);
-  }
-  if self.n == self.cap {
-    let mut nk: []string = make([]string, self.cap * 2 + 1);
-    let mut nv: []i32 = make([]i32, self.cap * 2 + 1);
-    let mut i: usize = 0;
-    while i < self.n {
-      nk[i] = self.keys[i];
-      nv[i] = self.vals[i];
-      i = i + 1;
-    }
-    self.keys = nk;
-    self.vals = nv;
-    self.cap = self.cap * 2 + 1;
-  }
-  let mut j: usize = self.n;
-  while j > pos {
-    self.keys[j] = self.keys[j - 1];
-    self.vals[j] = self.vals[j - 1];
-    j = j - 1;
-  }
-  self.keys[pos] = k;
-  self.vals[pos] = v;
-  self.n = self.n + 1;
-  return Option.None;
-}
-
-fn StringMap.insert(mut self: *StringMap[i64], k: string,
-                    v: i64) -> ?i64 {
-  let pos: usize = self.lower(k);
-  if pos < self.n && self.keys[pos] == k {
-    let old: i64 = self.vals[pos];
-    self.vals[pos] = v;
-    return Option.Some(old);
-  }
-  if self.n == self.cap {
-    let mut nk: []string = make([]string, self.cap * 2 + 1);
-    let mut nv: []i64 = make([]i64, self.cap * 2 + 1);
-    let mut i: usize = 0;
-    while i < self.n {
-      nk[i] = self.keys[i];
-      nv[i] = self.vals[i];
-      i = i + 1;
-    }
-    self.keys = nk;
-    self.vals = nv;
-    self.cap = self.cap * 2 + 1;
-  }
-  let mut j: usize = self.n;
-  while j > pos {
-    self.keys[j] = self.keys[j - 1];
-    self.vals[j] = self.vals[j - 1];
-    j = j - 1;
-  }
-  self.keys[pos] = k;
-  self.vals[pos] = v;
-  self.n = self.n + 1;
-  return Option.None;
-}
-
-fn IntMap.insert(mut self: *IntMap[string], k: i64,
-                 v: string) -> ?string {
-  let pos: usize = self.lower(k);
-  if pos < self.n && self.keys[pos] == k {
-    let old: string = self.vals[pos];
+    let old: V = self.vals[pos];
     self.vals[pos] = v;
     return Option.Some(old);
   }
   if self.n == self.cap {
     let mut nk: []i64 = make([]i64, self.cap * 2 + 1);
-    let mut nv: []string = make([]string, self.cap * 2 + 1);
+    let mut nv: []V = make([]V, self.cap * 2 + 1);
     let mut i: usize = 0;
     while i < self.n {
       nk[i] = self.keys[i];
@@ -328,69 +263,6 @@ fn IntMap.insert(mut self: *IntMap[string], k: i64,
   return Option.None;
 }
 
-fn IntMap.insert(mut self: *IntMap[i32], k: i64, v: i32) -> ?i32 {
-  let pos: usize = self.lower(k);
-  if pos < self.n && self.keys[pos] == k {
-    let old: i32 = self.vals[pos];
-    self.vals[pos] = v;
-    return Option.Some(old);
-  }
-  if self.n == self.cap {
-    let mut nk: []i64 = make([]i64, self.cap * 2 + 1);
-    let mut nv: []i32 = make([]i32, self.cap * 2 + 1);
-    let mut i: usize = 0;
-    while i < self.n {
-      nk[i] = self.keys[i];
-      nv[i] = self.vals[i];
-      i = i + 1;
-    }
-    self.keys = nk;
-    self.vals = nv;
-    self.cap = self.cap * 2 + 1;
-  }
-  let mut j: usize = self.n;
-  while j > pos {
-    self.keys[j] = self.keys[j - 1];
-    self.vals[j] = self.vals[j - 1];
-    j = j - 1;
-  }
-  self.keys[pos] = k;
-  self.vals[pos] = v;
-  self.n = self.n + 1;
-  return Option.None;
-}
-
-fn IntMap.insert(mut self: *IntMap[i64], k: i64, v: i64) -> ?i64 {
-  let pos: usize = self.lower(k);
-  if pos < self.n && self.keys[pos] == k {
-    let old: i64 = self.vals[pos];
-    self.vals[pos] = v;
-    return Option.Some(old);
-  }
-  if self.n == self.cap {
-    let mut nk: []i64 = make([]i64, self.cap * 2 + 1);
-    let mut nv: []i64 = make([]i64, self.cap * 2 + 1);
-    let mut i: usize = 0;
-    while i < self.n {
-      nk[i] = self.keys[i];
-      nv[i] = self.vals[i];
-      i = i + 1;
-    }
-    self.keys = nk;
-    self.vals = nv;
-    self.cap = self.cap * 2 + 1;
-  }
-  let mut j: usize = self.n;
-  while j > pos {
-    self.keys[j] = self.keys[j - 1];
-    self.vals[j] = self.vals[j - 1];
-    j = j - 1;
-  }
-  self.keys[pos] = k;
-  self.vals[pos] = v;
-  self.n = self.n + 1;
-  return Option.None;
-}
 
 // -------------------------------------------------------- factories
 //
@@ -447,6 +319,29 @@ pub fn imap_i64(cap: usize) -> *IntMap[i64] {
   return new IntMap[i64] {
     keys: make([]i64, cap),
     vals: make([]i64, cap),
+    n: 0,
+    cap: cap,
+  };
+}
+
+// the generic factories (the wall lift's payoff, 2026-10-02): a
+// caller names any value type it owns with explicit type arguments
+// at the call site — smap_of[*Pt](16) — the same door vec_of opened.
+// make([]V) substitutes through the instance's binds in both
+// compilers.
+pub fn smap_of[V](cap: usize) -> *StringMap[V] {
+  return new StringMap[V] {
+    keys: make([]string, cap),
+    vals: make([]V, cap),
+    n: 0,
+    cap: cap,
+  };
+}
+
+pub fn imap_of[V](cap: usize) -> *IntMap[V] {
+  return new IntMap[V] {
+    keys: make([]i64, cap),
+    vals: make([]V, cap),
     n: 0,
     cap: cap,
   };
