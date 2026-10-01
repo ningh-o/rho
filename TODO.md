@@ -1402,6 +1402,41 @@ section — no placeholder stages. boot is the reference compiler.
       capacity-boundary test now sizes its pad with an
       already-canonical tail: the old premise (output smaller than
       input) held only while comments were dropped.
+      T5 PROBE — THE SITE REFRESH HIT THE REAL DESIGN GAP (2026-10-02
+      night): the app's rho.wasm (0.4.0, Sep 25) predates the whole
+      restart era, and the current mirror's build face is BAKE-ONLY —
+      SRC/MODS are build-time consts (§14: the self-host has no
+      files), the WAT goes to stdout, and the runtime CLI faces the
+      old artifact carried (argv + path_open reads of /main.rho) are
+      retired. The site needs runtime compile; the gap is a rho-side
+      wave, scoped by tonight's probe: (1) main.rho grows the app
+      face — when the host writes /main.rho, compile THAT (the verb
+      rides a /mode marker: build default, check, fmt); the module
+      tree rides a second baked const MODS_APP (the site's artifact
+      bakes the std tree there; the chain's own build leaves it
+      empty, so §7's law stays untouched). DRAFTED AND PARKED: the
+      face works under wasmtime --dir .::/ mappings but tripped TWO
+      PRE-EXISTING EMITTER HOLES on its first real exercise — (a) a
+      pair-returning fn's `return match {...}` (std/io's
+      IoError.to_str — the string match rendered as a pair, then the
+      return rode one slot; rtype_is_pair's sret path needs the
+      match-as-pair face), and (b) an Option/Result binder used as a
+      string CALL ARG rides scalar ($_start's call $u_app_compile got
+      [i64] where the pair ABI wants two) — the optpt fix of the
+      night (optpt_of_scrutinee's Result arm, committed inert) fixed
+      the SCRUTINEE-side payload read; the binder-lane/call-arg pair
+      is the remaining half. (2) the app bridges the mirror's WAT
+      stdout through wabt (drafted, works — wabt assembles the
+      subset; the repo's own wat2wasm law, never a second assembler).
+      (3) wasm-opt RETIRES for rho artifacts: every level (-Oz/-O/-Os
+      with bulk-memory+multivalue, --enable-all) miscompiles or
+      strips the current artifact (the io/args imports vanish, the
+      CLI goes silent) — the raw mirror artifact (1.42 MB vs the old
+      2.47 MB) is the shipping form until §13's in-compiler
+      optimizer exists. NEXT WAVE ORDER: (a) the two emitter holes
+      with corpus witnesses, (b) main.rho's app face re-landed green
+      through the chain, (c) the app's compile() bridge + raw
+      artifact + the lesson corpus re-pinned, (d) RHO_VERSION bump.
       rho-lsp, vite-plugin-rho, and tools/bench stay ON THEIR
       BRANCHES (in-flight, not superseded): their uncommitted state
       is committed branch-side (no node_modules), the worktrees
