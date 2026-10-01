@@ -1,0 +1,327 @@
+// lex.rho — the self-hosted compiler's lexer (T2.1 skeleton).
+// Tokens: idents, integer literals, string literals (raw bytes; the
+// emitter decodes escapes when it writes WAT data), punctuation,
+// keywords. The source is scanned by position; the token list is a
+// slice the parser walks with its own cursor.
+pub struct Tok {
+  kind: i32,   // TK_* below
+  text: string,
+  ival: i64,
+  line: i32,
+}
+
+pub const TK_EOF: i32 = 0;
+pub const TK_IDENT: i32 = 1;
+pub const TK_INT: i32 = 2;
+pub const TK_STR: i32 = 3;
+pub const TK_PUNCT: i32 = 4;
+pub const TK_KEYWORD: i32 = 5;
+pub const TK_FLOAT: i32 = 6; // the raw decimal text rides the token
+                             // (the emitter's f64.const does strtod)
+
+struct Cur {
+  src: string,
+  pos: usize,
+  line: i32,
+}
+
+fn at(c: *Cur) -> u8 {
+  if c.pos < len(c.src) {
+    return c.src[c.pos];
+  }
+  return 0;
+}
+
+fn adv(mut c: *Cur) {
+  if c.pos < len(c.src) {
+    c.pos = c.pos + 1;
+  }
+}
+
+fn is_digit(b: u8) -> bool {
+  return b >= 48 && b <= 57;
+}
+
+fn is_ident_start(b: u8) -> bool {
+  return (b >= 97 && b <= 122) || (b >= 65 && b <= 90) || b == 95;
+}
+
+fn is_ident(b: u8) -> bool {
+  return is_ident_start(b) || is_digit(b);
+}
+
+fn is_hexdig(b: u8) -> bool {
+  return is_digit(b) || (b >= 97 && b <= 102) || (b >= 65 && b <= 70);
+}
+
+fn hexdig(b: u8) -> i64 {
+  if is_digit(b) {
+    return (b as i64) - 48;
+  }
+  if b >= 97 {
+    return (b as i64) - 87;
+  }
+  return (b as i64) - 55;
+}
+
+// the keyword set the skeleton grammar uses
+fn is_keyword(s: string) -> bool {
+  if s == "fn" || s == "return" || s == "let" {
+    return true;
+  }
+  if s == "i32" || s == "string" {
+    return true;
+  }
+  if s == "if" || s == "else" || s == "while" {
+    return true;
+  }
+  if s == "as" || s == "i64" || s == "usize" {
+    return true;
+  }
+  if s == "true" || s == "false" {
+    return true;
+  }
+  if s == "break" || s == "continue" || s == "loop" {
+    return true;
+  }
+  if s == "const" || s == "static" || s == "defer" {
+    return true;
+  }
+  return false;
+}
+
+// a triple-quoted span's end: the first subsequent """ closes it
+// (mid-line closers included); the newline count rides the cursor
+fn scan_verbatim_end(mut c: *Cur) -> usize {
+  while c.pos + 2 < len(c.src) {
+    if c.src[c.pos] == 34 && c.src[c.pos + 1] == 34 &&
+       c.src[c.pos + 2] == 34 {
+      let end: usize = c.pos;
+      adv(mut c);
+      adv(mut c);
+      adv(mut c);
+      return end;
+    }
+    if c.src[c.pos] == 10 {
+      c.line = c.line + 1;
+    }
+    adv(mut c);
+  }
+  while c.pos < len(c.src) {
+    if c.src[c.pos] == 10 {
+      c.line = c.line + 1;
+    }
+    adv(mut c);
+  }
+  return len(c.src);
+}
+
+// the verbatim span as a raw span: every byte rides as written — the
+// one byte the escape convention would eat is the backslash itself,
+// so it alone is doubled (decoders yield it back as a single byte)
+fn verbatim_text(s: string, start: usize, end: usize) -> string {
+  let mut out: string = "";
+  let mut i: usize = start;
+  let mut run: usize = start;
+  while i < end {
+    if s[i] == 92 {
+      out = out + s[run..i];
+      out = out + "\\\\";
+      i = i + 1;
+      run = i;
+    } else {
+      i = i + 1;
+    }
+  }
+  return out + s[run..end];
+}
+
+// a string literal's raw span, quotes stripped: src[a..b]
+fn scan_string_span(mut c: *Cur) -> usize {
+  adv(mut c); // the opening quote
+  let mut end: usize = c.pos;
+  while c.pos < len(c.src) {
+    let b: u8 = at(c);
+    if b == 34 {
+      end = c.pos;
+      adv(mut c);
+      return end;
+    }
+    if b == 92 && c.pos + 1 < len(c.src) {
+      adv(mut c); // the escape char rides the span; the emitter decodes
+    } else if b == 10 {
+      c.line = c.line + 1;
+    }
+    adv(mut c);
+  }
+  return len(c.src);
+}
+
+pub fn lex(src: string) -> []*Tok {
+  // every token eats at least one source byte: len(src) bounds the run
+  let mut toks: []*Tok = make([]*Tok, len(src) + 1);
+  let mut n: usize = 0;
+  let mut c = new Cur { src: src, pos: 0, line: 1 };
+  while c.pos < len(src) {
+    let b: u8 = at(c);
+    if b == 32 || b == 9 || b == 13 {
+      adv(mut c);
+      continue;
+    }
+    if b == 10 {
+      c.line = c.line + 1;
+      adv(mut c);
+      continue;
+    }
+    // comments: // to end of line
+    if b == 47 && c.pos + 1 < len(src) && src[c.pos + 1] == 47 {
+      while c.pos < len(src) && at(c) != 10 {
+        adv(mut c);
+      }
+      continue;
+    }
+    let line: i32 = c.line;
+    if is_ident_start(b) {
+      let start: usize = c.pos;
+      while c.pos < len(src) && is_ident(at(c)) {
+        adv(mut c);
+      }
+      let word: string = src[start..c.pos];
+      let k: i32 = if is_keyword(word) { TK_KEYWORD } else { TK_IDENT };
+      toks[n] = new Tok { kind: k, text: word, ival: 0, line: line };
+      n = n + 1;
+      continue;
+    }
+    if is_digit(b) {
+      let start: usize = c.pos;
+      let mut v: i64 = 0;
+      // 0x hex and 0b bin literals (underscores carry no value)
+      if b == 48 && c.pos + 1 < len(src) &&
+          (src[c.pos + 1] == 120 || src[c.pos + 1] == 88) {
+        adv(mut c);
+        adv(mut c);
+        while c.pos < len(src) &&
+            (is_hexdig(at(c)) || at(c) == 95) {
+          if at(c) != 95 {
+            v = v * 16 + hexdig(at(c));
+          }
+          adv(mut c);
+        }
+      } else {
+        if b == 48 && c.pos + 1 < len(src) &&
+            (src[c.pos + 1] == 98 || src[c.pos + 1] == 66) {
+          adv(mut c);
+          adv(mut c);
+          while c.pos < len(src) &&
+              (at(c) == 48 || at(c) == 49 || at(c) == 95) {
+            if at(c) != 95 {
+              v = v * 2 + (at(c) as i64 - 48);
+            }
+            adv(mut c);
+          }
+        } else {
+          while c.pos < len(src) && (is_digit(at(c)) || at(c) == 95) {
+            if at(c) != 95 {
+              v = v * 10 + (at(c) as i64 - 48);
+            }
+            adv(mut c);
+          }
+        }
+      }
+      // a trailing '.', or an exponent with a digit behind it, makes
+      // the run a float literal (the raw text rides along)
+      let mut isf: bool = false;
+      if c.pos < len(src) && src[c.pos] == 46 && c.pos + 1 < len(src) &&
+          is_digit(src[c.pos + 1]) {
+        // only '.digit' opens a fraction — '1..' is a range, and a
+        // member dot never follows an INT in this grammar
+        isf = true;
+        adv(mut c);
+        while c.pos < len(src) && (is_digit(at(c)) || at(c) == 95) {
+          adv(mut c);
+        }
+      }
+      // an exponent may follow the fraction too (2.5e-9) — the raw
+      // text rides the whole literal
+      if c.pos < len(src) && (src[c.pos] == 101 ||
+          src[c.pos] == 69) && c.pos + 1 < len(src) &&
+          (is_digit(src[c.pos + 1]) || src[c.pos + 1] == 45 ||
+           src[c.pos + 1] == 43) {
+        let digbehind: bool = c.pos + 2 < len(src) &&
+            is_digit(src[c.pos + 2]);
+        let sign: bool = src[c.pos + 1] == 45 || src[c.pos + 1] == 43;
+        if digbehind || !sign {
+          isf = true;
+          adv(mut c);
+          if sign {
+            adv(mut c);
+          }
+          while c.pos < len(src) && (is_digit(at(c)) || at(c) == 95) {
+            adv(mut c);
+          }
+        }
+      }
+      if isf {
+        toks[n] = new Tok { kind: TK_FLOAT, text: src[start..c.pos],
+                            ival: 0, line: line };
+        n = n + 1;
+        continue;
+      }
+      toks[n] = new Tok { kind: TK_INT, text: src[start..c.pos],
+                          ival: v, line: line };
+      n = n + 1;
+      continue;
+    }
+    if b == 34 {
+      // """ opens a fully verbatim span (spec §2.5): no escape
+      // decodes, content runs to the first subsequent """
+      if c.pos + 2 < len(src) && src[c.pos + 1] == 34 &&
+         src[c.pos + 2] == 34 {
+        adv(mut c);
+        adv(mut c);
+        adv(mut c);
+        let vstart: usize = c.pos;
+        let vend: usize = scan_verbatim_end(mut c);
+        toks[n] = new Tok { kind: TK_STR,
+                            text: verbatim_text(src, vstart, vend),
+                            ival: 0, line: line };
+        n = n + 1;
+        continue;
+      }
+      let start: usize = c.pos + 1;
+      let end: usize = scan_string_span(mut c);
+      toks[n] = new Tok { kind: TK_STR, text: src[start..end],
+                          ival: 0, line: line };
+      n = n + 1;
+      continue;
+    }
+    // punctuation: two-char operators first, then single characters
+    let pstart: usize = c.pos;
+    let b2: u8 = b;
+    let mut two: bool = false;
+    if c.pos + 1 < len(src) {
+      let nx: u8 = src[c.pos + 1];
+      if nx == 61 {
+        // == != <= >= and the += -= *= /= %= &= |= ^= family
+        if b2 == 61 || b2 == 33 || b2 == 60 || b2 == 62 || b2 == 43 ||
+            b2 == 45 || b2 == 42 || b2 == 47 || b2 == 37 || b2 == 38 ||
+            b2 == 124 || b2 == 94 {
+          two = true;
+        }
+      }
+      if nx == b2 && (b2 == 38 || b2 == 124 || b2 == 60 || b2 == 62) {
+        two = true; // && || << >>
+      }
+    }
+    adv(mut c);
+    if two {
+      adv(mut c);
+    }
+    toks[n] = new Tok { kind: TK_PUNCT, text: src[pstart..c.pos],
+                        ival: 0, line: line };
+    n = n + 1;
+  }
+  toks[n] = new Tok { kind: TK_EOF, text: "", ival: 0, line: c.line };
+  n = n + 1;
+  return toks[0..n];
+}

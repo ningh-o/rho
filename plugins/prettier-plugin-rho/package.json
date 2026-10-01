@@ -1,0 +1,43 @@
+{
+  "name": "prettier-plugin-rho",
+  "version": "0.1.0",
+  "description": "prettier plugin for the rho language — embeds the compiler's fmt wasm (generation dd06e2a6da0f) and hands prettier the canonical text verbatim; never a second formatter",
+  "license": "MIT",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src",
+    "assets",
+    "rho",
+    "tools",
+    "README.md"
+  ],
+  "scripts": {
+    "build:fmt": "node tools/build-fmt.mjs",
+    "check:fmt": "node tools/build-fmt.mjs --check",
+    "test": "vitest run"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "peerDependencies": {
+    "prettier": ">=3"
+  },
+  "devDependencies": {
+    "prettier": "^3.3.3",
+    "vitest": "^2.1.9"
+  },
+  "rho": {
+    "generation": "dd06e2a6da0f",
+    "chain": "boot + libs/compiler fmt pipeline (rho/fmtmain.rho entry; vendored lex/parse/fmt)"
+  },
+  "keywords": [
+    "prettier",
+    "prettier-plugin",
+    "rho",
+    "formatter"
+  ]
+}

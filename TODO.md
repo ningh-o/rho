@@ -1342,6 +1342,44 @@ section — no placeholder stages. boot is the reference compiler.
       its own extraction through the deepest differential there is.
       T4.3 is CLOSED: extraction, consumption, and the wall are all
       on the record. Suites 573/0; corpus 116; gate green.
+      WORKTREE CONSOLIDATION (2026-10-02): the twelve parallel
+      worktree branches all sat 0-ahead of master — the std waves
+      (T4.2–T4.6) and the t35 protocol landed through their reviewed
+      merges, so their worktrees retire with their branches. The
+      ecosystem deliverables did NOT land — they commit now:
+      plugins/prettier-plugin-rho rides master (the vendor refreshed
+      to the current compiler, the artifact rebuilt through the
+      chain, the generation pin bumped, and the wasm import object
+      grown for the kernel's whole wasi tail — the std-era sources
+      pull fd_read/fd_close/path_open where the old artifact carried
+      only fd_write/proc_exit). Its identity law finally runs LIVE
+      against a real boot — the worktree never had one, so the test
+      skipped silently — and that exposed a real language gap: THE
+      COMMENT REPLAY LAW HAS NO RHO-SIDE PORT. boot's fmt records
+      every comment (fmt.c's cmt_flush/cmt_tail) and replays them by
+      line; fmt.rho drops them, and the fmt-self parity fixtures are
+      all comment-free, so no repo leg ever compared a comment. The
+      plugin's identity suite names the debt (36 corpus files skip
+      with the reason; a guard test keeps the count visible). THE
+      PORT'S DESIGN, for the wave that lands it: the lexer records
+      (text, line) into a module-level table reset per lex() call
+      (boot's g_cmts design); Stmt and the five decl structs grow
+      line/end_line stamps (mk_stmt is the single construction point;
+      parse_stmt stamps end_line from the last consumed token; the
+      decl sites stamp from their branch token); fmt replays at
+      boot's three site families (before each declaration, above
+      block closers, at the file tail) with the same monotonic
+      cursor. Witness when landed: the plugin's owed set drains to
+      zero and its guard test retires.
+      rho-lsp, vite-plugin-rho, and tools/bench stay ON THEIR
+      BRANCHES (in-flight, not superseded): their uncommitted state
+      is committed branch-side (no node_modules), the worktrees
+      retire, and their known-red suites are the landing work —
+      rho-lsp 109/114 (runner-bake ordering, refusal parsing,
+      surrogate clamping), vite 77/83, bench 69/84 (the report
+      renderer). gap-tests likewise keeps its branch (GAPS.md, the
+      gap-fmt goldens, robust-gap, run-fmt-gap.sh) pending its own
+      landing pass against master's Makefile.
       CONSUMPTION WAVE 1 LANDED (2026-10-01, after the deep hunt):
       parse_pat's binders ride std.collections' Vec[string] — the
       fixed cap (make([]string, 8), never grown) is gone — and the

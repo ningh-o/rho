@@ -1,0 +1,39 @@
+{
+  "generation": "dd06e2a6da0f63c72b5435dc8feec96b90638be88ac407ccf70f02dc03e7d3fb",
+  "generationShort": "dd06e2a6da0f",
+  "chain": "boot (build/rho) + libs/compiler fmt pipeline (vendored: lex, parse, fmt) + rho/fmtmain.rho",
+  "build": "./build/rho build plugins/prettier-plugin-rho/rho/fmtmain.rho -o fmt.wasm  # in the worktree root",
+  "inputSlot": {
+    "offset": 4432,
+    "rawBytes": 224403,
+    "capacity": 224402,
+    "terminator": "NUL",
+    "bridge": "host writes source bytes + NUL at offset, then calls _start",
+    "semantics": "capacity = usable source bytes = rawBytes - 1: the raw data literal is the full folded const (marker + fill) and carries no NUL; its last byte is reserved — the host writes the NUL there at run time — so source + terminator never write past the literal"
+  },
+  "inputs": {
+    "rho/lex.rho": "2003e9e43e7a904f0ac317d4642f04c1b4dde644315e69475d549ba0e1c43d06",
+    "rho/parse.rho": "16aa9e029f08c9d885f6450eb375f5aa3ca9eaee3e13b8ed0668ec52af95ff4a",
+    "rho/fmt.rho": "17542267169f6f779c7bb1922e0f5acfc074525e1b5d65ae94c17235f802d622",
+    "rho/fmtmain.rho": "a3555f247c69f669d35982f37e2541e21151b63255f77ba5133d97337397f1cc",
+    "boot/check.c": "2b9a79eb066fc65ec0fdb6deb2a7867b4abfc9a67f77a11104581c0176e5804e",
+    "boot/check2.c": "22da137e5d24a947dca82d0aa5e6683742eb5e8ea35d962577f36671c292a579",
+    "boot/check3.c": "34bf769d8b4b48b5a97116560ffa11adedd4c1b1e7d48d50d1e667f6be56cef3",
+    "boot/cval.h": "f2775be4945f25056658655cc299c37311b29a8c3b11bfb22d5825f8486197ea",
+    "boot/driver.c": "46ff25b607622faaf12963ff67a3f86d1de960617153534e83225ac9de47aeb8",
+    "boot/dump.c": "8d4ac67d67cd4a827d8e63033abbdaa2824a4d2603362190139a1ff934f7fde3",
+    "boot/emit.c": "d6553d0e3e6cf3ed8d8697e18b9e90dcd95cefa0f8da0e3f76828d27617299a6",
+    "boot/fmt.c": "8037a21e9ea025e8b07efec36126d0aa7faeb702581e0608cb164c7325b7d10c",
+    "boot/kernel_wat.c": "5dc343b384c8dd15d0faa21dfefc11db979fe9f5535dbade267d2379703d4cdc",
+    "boot/lex.c": "3264085dacb02b83e916f28c2f0ae3420580aac67fa0ba8f58dc7086c9177fd2",
+    "boot/main.c": "1637920fc5a2c5f43678de7fa16902fff1e38d70e624abc02a9b232d0392e521",
+    "boot/parse.c": "0ab75d8ccb2ee60b28cf54e461c0a2efba49d143d707a1dcdc536f6c51d51700",
+    "boot/prelude.c": "3c3731b4c51242d9096cbe88fb36d478ce43670d028150b01c326e5734603507",
+    "boot/rho.h": "aeba8d5be0c439c9f245b5469a9e848d1db397821893a7a22886501ee2bcb14e",
+    "boot/selftest.c": "f6b0c4e9c565675290672ce92dcec2bc07e314a791d500ff6ddc8303b400166c",
+    "boot/sem.h": "8e4259d6237125a4be2222bd5454335197e0cc7b5a98674d9ca143badab2aa53",
+    "boot/test.c": "dd79f63c2513922e396dc731c1e5e9a5c4fbdebc99c161a2b84030c357c0ec30",
+    "boot/util.c": "d2fa5dec13d2f9d085b1509ac328ef56d571c5afb21c7616fa98dd886f5aad03",
+    "boot/wat/kernel.wat": "2a214780b58a72b50e8cde29b7f1df3ccef7dccbb8172ea124100170e524dc7d"
+  }
+}
