@@ -50,7 +50,16 @@ RHO=${RHO:-./build/rho}
 # return via method_rtype and targets the per-instantiation clone,
 # ginst_method_target picks the overload whose receiver instantiation
 # matches the call, and method_rtype sees bare-registered methods.
-PINNED=113
+#
+# 113 → 114 with n17_const_flood: parse()'s accumulation tables ride
+# std Vec (wave 3) — 70 chained consts plus string/bool/static mut
+# ride the tables past the old fixed cap of 64, and an 18-variant
+# enum (with a two-payload variant at index 16) rides vnames/vslots
+# past the old fixed 16 and the payload pool past its fixed 128
+# slots. Boot strictness pinned in passing: main must return i32,
+# statics are always `static mut`, and the last enum variant takes no
+# trailing semicolon.
+PINNED=114
 
 # one file's differential; echoes "pass" or the failure label
 check_one() {

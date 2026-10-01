@@ -1258,6 +1258,24 @@ section — no placeholder stages. boot is the reference compiler.
       8-payload slot — a 17-variant enum overflows) ride the same
       wave; pointer-element tables wait for the boot capability wall
       (call-site generic naming) to lift.
+      CONSUMPTION WAVE 3 LANDED (2026-10-01): parse()'s accumulation
+      tables grow — cnames/cvals/cstatic/ctypes/cmuts ride std Vec
+      (vec_str/vec_i64/vec_bool, grow *2+1; the old fixed-64 arrays
+      were written unguarded and parse.rho itself rode 33/64), and
+      the enum tables follow: vnames/vslots ride Vec, vtpool stays a
+      local array with a per-variant grow (its writes are sparse —
+      slot v*8+p — and Vec.set cannot extend). cexprs stays a local
+      doubled array: []*Expr cannot ride the package Vec while the
+      boot capability wall stands. First-draft green: the chain ran
+      LEG4 GREEN with no re-spin. Corpus 113 → 114 with
+      n17_const_flood (70 chained consts past the old cap, an
+      18-variant enum with a two-payload variant at index 16; boot
+      strictness pinned in passing — main must return i32, statics
+      are always `static mut`, the last enum variant takes no
+      trailing semicolon). NEXT for T4.3: pointer-element tables wait
+      for the capability wall to lift (a boot evolution item); the
+      compiler consumes std for its value tables everywhere that
+      matters today.
       CONSUMPTION WAVE 1 LANDED (2026-10-01, after the deep hunt):
       parse_pat's binders ride std.collections' Vec[string] — the
       fixed cap (make([]string, 8), never grown) is gone — and the

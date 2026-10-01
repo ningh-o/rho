@@ -1,0 +1,118 @@
+// n17 — the const flood and the wide enum: parse()'s
+// accumulation tables grow past the old fixed caps (64 const
+// table slots, 16 enum variants / 128 payload-pool slots)
+// through both compilers. K1..K69 fold const-to-const over the
+// growing table; the enum's Pair/Str variants ride indices 16/17.
+
+enum Wide {
+  Bare1, Bare2, Bare3, Bare4, Bare5, Bare6, Bare7, Bare8,
+  Bare9, Bare10, Bare11, Bare12, Bare13, Bare14, Bare15,
+  Tup(i64), Pair(i64, string), Str(string)
+}
+
+const K0: i64 = 0;
+const K1: i64 = K0 + 1;
+const K2: i64 = K1 + 1;
+const K3: i64 = K2 + 1;
+const K4: i64 = K3 + 1;
+const K5: i64 = K4 + 1;
+const K6: i64 = K5 + 1;
+const K7: i64 = K6 + 1;
+const K8: i64 = K7 + 1;
+const K9: i64 = K8 + 1;
+const K10: i64 = K9 + 1;
+const K11: i64 = K10 + 1;
+const K12: i64 = K11 + 1;
+const K13: i64 = K12 + 1;
+const K14: i64 = K13 + 1;
+const K15: i64 = K14 + 1;
+const K16: i64 = K15 + 1;
+const K17: i64 = K16 + 1;
+const K18: i64 = K17 + 1;
+const K19: i64 = K18 + 1;
+const K20: i64 = K19 + 1;
+const K21: i64 = K20 + 1;
+const K22: i64 = K21 + 1;
+const K23: i64 = K22 + 1;
+const K24: i64 = K23 + 1;
+const K25: i64 = K24 + 1;
+const K26: i64 = K25 + 1;
+const K27: i64 = K26 + 1;
+const K28: i64 = K27 + 1;
+const K29: i64 = K28 + 1;
+const K30: i64 = K29 + 1;
+const K31: i64 = K30 + 1;
+const K32: i64 = K31 + 1;
+const K33: i64 = K32 + 1;
+const K34: i64 = K33 + 1;
+const K35: i64 = K34 + 1;
+const K36: i64 = K35 + 1;
+const K37: i64 = K36 + 1;
+const K38: i64 = K37 + 1;
+const K39: i64 = K38 + 1;
+const K40: i64 = K39 + 1;
+const K41: i64 = K40 + 1;
+const K42: i64 = K41 + 1;
+const K43: i64 = K42 + 1;
+const K44: i64 = K43 + 1;
+const K45: i64 = K44 + 1;
+const K46: i64 = K45 + 1;
+const K47: i64 = K46 + 1;
+const K48: i64 = K47 + 1;
+const K49: i64 = K48 + 1;
+const K50: i64 = K49 + 1;
+const K51: i64 = K50 + 1;
+const K52: i64 = K51 + 1;
+const K53: i64 = K52 + 1;
+const K54: i64 = K53 + 1;
+const K55: i64 = K54 + 1;
+const K56: i64 = K55 + 1;
+const K57: i64 = K56 + 1;
+const K58: i64 = K57 + 1;
+const K59: i64 = K58 + 1;
+const K60: i64 = K59 + 1;
+const K61: i64 = K60 + 1;
+const K62: i64 = K61 + 1;
+const K63: i64 = K62 + 1;
+const K64: i64 = K63 + 1;
+const K65: i64 = K64 + 1;
+const K66: i64 = K65 + 1;
+const K67: i64 = K66 + 1;
+const K68: i64 = K67 + 1;
+const K69: i64 = K68 + 1;
+const GREET: string = "flood";
+const FLAG: bool = true;
+static mut TAIL: i32 = 500;
+static mut MC: i32 = 0;
+
+fn main() -> i32 {
+  printf("{}\n", K69);
+  printf("{}\n", K35);
+  printf("{}\n", K0 + K1 + K2 + K3 + K4);
+  printf("{}\n", GREET);
+  if FLAG {
+    printf("flag\n");
+  }
+  MC += TAIL;
+  printf("{}\n", MC);
+  let wt: Wide = Wide.Tup(41);
+  match wt {
+    Wide.Tup(n) => { printf("tup {}\n", n); },
+    _ => { printf("?\n"); }
+  }
+  let wp: Wide = Wide.Pair(7, "seven");
+  match wp {
+    _ => { printf("pair\n"); }
+  }
+  let ws: Wide = Wide.Str("tail");
+  match ws {
+    Wide.Str(s) => { printf("str {}\n", s); },
+    _ => { printf("?\n"); }
+  }
+  let wb: Wide = Wide.Bare15;
+  match wb {
+    Wide.Bare15 => { printf("bare15\n"); },
+    _ => { printf("?\n"); }
+  }
+  return 0;
+}

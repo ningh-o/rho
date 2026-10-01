@@ -2174,11 +2174,16 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
   let mut n: usize = 0;
   let mut c = new PCur { toks: toks, pos: 0, perrs: 0,
                     impl_type: "" };
-  let mut cnames: []string = make([]string, 64);
-  let mut cvals: []i64 = make([]i64, 64);
-  let mut cstatic: []bool = make([]bool, 64);
-  let mut ctypes: []string = make([]string, 64);
-  let mut cmuts: []bool = make([]bool, 64);
+  // the five value tables ride std Vec (grow by *2+1 — the old
+  // fixed-64 arrays were written unguarded, and parse.rho itself
+  // already rode 33 of the 64); the init expressions stay a local
+  // doubled array — []*Expr cannot ride the package Vec while boot
+  // cannot name generic types at call sites
+  let mut cnames = collections.vec_str(64);
+  let mut cvals = collections.vec_i64(64);
+  let mut cstatic = collections.vec_bool(64);
+  let mut ctypes = collections.vec_str(64);
+  let mut cmuts = collections.vec_bool(64);
   let mut cexprs: []*Expr = make([]*Expr, 64);
   let mut nc: usize = 0;
   let mut structs: []*StructDef = make([]*StructDef, 32);
@@ -2406,8 +2411,12 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
         }
         eat_punct(mut c, 93);
       }
-      let mut vnames: []string = make([]string, 16);
-      let mut vslots: []i64 = make([]i64, 16);
+      // vnames/vslots ride std Vec (the old fixed-16 arrays wrote
+      // vnames[nv] unguarded — a 17-variant enum overflowed); the
+      // payload pool stays a local array with a per-variant grow (its
+      // writes are sparse: slot v*8+p, and Vec.set cannot extend)
+      let mut vnames = collections.vec_str(16);
+      let mut vslots = collections.vec_i64(16);
       let mut vtpool: []string = make([]string, 128);
       let mut nv: usize = 0;
       if eat_punct(mut c, 123) {
@@ -2418,8 +2427,18 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
           }
           let vt = tk(c);
           if vt.kind == lex.TK_IDENT || vt.kind == lex.TK_KEYWORD {
-            vnames[nv] = vt.text;
-            vslots[nv] = 0;
+            vnames.push(vt.text);
+            vslots.push(0);
+            if (nv + 1) * 8 > len(vtpool) {
+              let ovp: usize = len(vtpool);
+              let mut bigp: []string = make([]string, ovp * 2);
+              let mut gpi: usize = 0;
+              while gpi < ovp {
+                bigp[gpi] = vtpool[gpi];
+                gpi = gpi + 1;
+              }
+              vtpool = bigp;
+            }
             tkadv(mut c);
             let vbase: usize = nv * 8;
             let mut npt: usize = 0;
@@ -2443,7 +2462,7 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
                 }
               }
               eat_punct(mut c, 41);
-              vslots[nv] = nsl;
+              vslots.set(nv, nsl);
             } else {
               if is_punct(tk(c), 123) {
                 // struct payload: the named fields' types in order
@@ -2469,7 +2488,7 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
                   }
                 }
                 eat_punct(mut c, 125);
-                vslots[nv] = nsl2;
+                vslots.set(nv, nsl2);
               }
             }
             nv = nv + 1;
@@ -2482,8 +2501,8 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
           }
         }
       }
-      let ed = new EnumDef { name: ename, vnames: vnames[0..nv],
-                             vslots: vslots[0..nv],
+      let ed = new EnumDef { name: ename, vnames: vnames.view(),
+                             vslots: vslots.view(),
                              vtpool: vtpool[0..(nv * 8)], nv: nv,
                              tparams: etps[0..etp] };
       enums[ne] = ed;
@@ -2522,11 +2541,22 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
         }
         if eat_punct(mut c, 61) {
           let ie = parse_bin(mut c, 0);
-          cnames[nc] = nm;
-          cvals[nc] = fold_const(ie, cnames, cvals, nc);
-          cstatic[nc] = is_static;
-          ctypes[nc] = cty;
-          cmuts[nc] = is_smut;
+          let fc: i64 = fold_const(ie, cnames.view(), cvals.view(), nc);
+          cnames.push(nm);
+          cvals.push(fc);
+          cstatic.push(is_static);
+          ctypes.push(cty);
+          cmuts.push(is_smut);
+          if nc >= len(cexprs) {
+            let oce: usize = len(cexprs);
+            let mut bige: []*Expr = make([]*Expr, oce * 2 + 1);
+            let mut gei: usize = 0;
+            while gei < oce {
+              bige[gei] = cexprs[gei];
+              gei = gei + 1;
+            }
+            cexprs = bige;
+          }
           cexprs[nc] = ie;
           nc = nc + 1;
         }
@@ -2734,9 +2764,9 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
     tkadv(mut c);
   }
   let mut prog = new Prog { fns: fns[0..nf], main: nodes[0..n],
-                        consts: cnames[0..nc], cvals: cvals[0..nc],
-                        cstatic: cstatic[0..nc], ctypes: ctypes[0..nc],
-                        cmuts: cmuts[0..nc], cexprs: cexprs[0..nc],
+                        consts: cnames.view(), cvals: cvals.view(),
+                        cstatic: cstatic.view(), ctypes: ctypes.view(),
+                        cmuts: cmuts.view(), cexprs: cexprs[0..nc],
                         nconsts: nc, structs: structs[0..ns],
                         nstructs: ns, enums: enums[0..ne],
                         nenums: ne, traits: traits[0..ntr],
