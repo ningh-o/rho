@@ -3809,10 +3809,19 @@ fn optpt_of_scrutinee(sc: *Expr, mut env: *Env, mut prog: *Prog) -> string {
     return oet;
   }
   if sc.tag == parse.EX_CALL {
-    // a ?T-returning call: the payload text rides the rtype's tail
+    // a ?T-returning call: the payload text rides the rtype's tail;
+    // a Result[T, E]-returning call rides its first bracket arg (the
+    // Ok payload — read_file's string payload rode scalar once and
+    // every binder over it collapsed the pair lanes)
     let rt3: string = fn_rtype_of(prog, sc.name);
     if len(rt3) >= 2 && rt3[0] == 63 {
       return rt3[1..len(rt3)];
+    }
+    if len(rt3) > 8 && rt3[0..7] == "Result[" {
+      let tas: []string = split_type_args(rt3[7..(len(rt3) - 1)]);
+      if len(tas) > 0 {
+        return tas[0];
+      }
     }
   }
   if sc.tag == parse.EX_MCALL {
