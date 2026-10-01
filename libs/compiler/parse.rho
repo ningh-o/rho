@@ -2313,32 +2313,35 @@ pub fn fold_const(e: *Expr, names: []string, vals: []i64,
 }
 
 pub fn parse(toks: []*Tok, src: string) -> *Prog {
-  let mut fns: []*FnDef = make([]*FnDef, 16);
+  // the pointer tables ride the package Vec through the wall lift's
+  // explicit type arguments — vec_of[*T](cap) — the consumption the
+  // capability wall once forbade; push carries the growth law (the
+  // sweep's local doubling retired)
+  let mut fns = collections.vec_of[*FnDef](16);
   let mut nf: usize = 0;
-  let mut nodes: []*Stmt = make([]*Stmt, len(src) + 4);
+  let mut nodes = collections.vec_of[*Stmt](len(src) + 4);
   let mut n: usize = 0;
   let mut c = new PCur { toks: toks, pos: 0, perrs: 0,
                     impl_type: "" };
   // the five value tables ride std Vec (grow by *2+1 — the old
   // fixed-64 arrays were written unguarded, and parse.rho itself
-  // already rode 33 of the 64); the init expressions stay a local
-  // doubled array — []*Expr cannot ride the package Vec while boot
-  // cannot name generic types at call sites
+  // already rode 33 of the 64); the init expressions ride vec_of
+  // beside the other pointer tables
   let mut cnames = collections.vec_str(64);
   let mut cvals = collections.vec_i64(64);
   let mut cstatic = collections.vec_bool(64);
   let mut ctypes = collections.vec_str(64);
   let mut cmuts = collections.vec_bool(64);
-  let mut cexprs: []*Expr = make([]*Expr, 64);
+  let mut cexprs = collections.vec_of[*Expr](64);
   let mut nc: usize = 0;
-  let mut structs: []*StructDef = make([]*StructDef, 32);
+  let mut structs = collections.vec_of[*StructDef](32);
   let mut ns: usize = 0;
-  let mut enums: []*EnumDef = make([]*EnumDef, 32);
+  let mut enums = collections.vec_of[*EnumDef](32);
   let mut ne: usize = 0;
-  let mut traits: []*TraitDef = make([]*TraitDef, 16);
-  let mut uses: []string = make([]string, 32);
-  let mut ualias: []string = make([]string, 32);
-  let mut upub: []bool = make([]bool, 32);
+  let mut traits = collections.vec_of[*TraitDef](16);
+  let mut uses = collections.vec_str(32);
+  let mut ualias = collections.vec_str(32);
+  let mut upub = collections.vec_bool(32);
   let mut nu: usize = 0;
   let mut pending_pub: bool = false;
   let mut ntr: usize = 0;
@@ -2407,18 +2410,7 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
       let td = new TraitDef { name: trname, methods: tms[0..ntm],
                               rtypes: trts[0..ntm],
                               nmethods: ntm };
-      if ntr == len(traits) {
-        // the trait table grows on demand (the fn-table law — the old
-        // fixed 16 wrote traits[ntr] unguarded)
-        let mut bigger: []*TraitDef = make([]*TraitDef, len(traits) * 2);
-        let mut gi: usize = 0;
-        while gi < len(traits) {
-          bigger[gi] = traits[gi];
-          gi = gi + 1;
-        }
-        traits = bigger;
-      }
-      traits[ntr] = td;
+      traits.push(td);
       ntr = ntr + 1;
       continue;
     }
@@ -2532,18 +2524,7 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
       let sd = new StructDef { name: sname, fields: fnames[0..nfl],
                                types: ftypes[0..nfl],
                                tparams: tps[0..ntp] };
-      if ns == len(structs) {
-        // the struct table grows on demand (the fn-table law — the old
-        // fixed 32 wrote structs[ns] unguarded)
-        let mut bigger: []*StructDef = make([]*StructDef, len(structs) * 2);
-        let mut gi: usize = 0;
-        while gi < len(structs) {
-          bigger[gi] = structs[gi];
-          gi = gi + 1;
-        }
-        structs = bigger;
-      }
-      structs[ns] = sd;
+      structs.push(sd);
       ns = ns + 1;
       continue;
     }
@@ -2672,18 +2653,7 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
                              vslots: vslots.view(),
                              vtpool: vtpool[0..(nv * 8)], nv: nv,
                              tparams: etps[0..etp] };
-      if ne == len(enums) {
-        // the enum table grows on demand (the fn-table law — the old
-        // fixed 32 wrote enums[ne] unguarded)
-        let mut bigger: []*EnumDef = make([]*EnumDef, len(enums) * 2);
-        let mut gi: usize = 0;
-        while gi < len(enums) {
-          bigger[gi] = enums[gi];
-          gi = gi + 1;
-        }
-        enums = bigger;
-      }
-      enums[ne] = ed;
+      enums.push(ed);
       ne = ne + 1;
       continue;
     }
@@ -2725,17 +2695,7 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
           cstatic.push(is_static);
           ctypes.push(cty);
           cmuts.push(is_smut);
-          if nc >= len(cexprs) {
-            let oce: usize = len(cexprs);
-            let mut bige: []*Expr = make([]*Expr, oce * 2 + 1);
-            let mut gei: usize = 0;
-            while gei < oce {
-              bige[gei] = cexprs[gei];
-              gei = gei + 1;
-            }
-            cexprs = bige;
-          }
-          cexprs[nc] = ie;
+          cexprs.push(ie);
           nc = nc + 1;
         }
         eat_punct(mut c, 59);
@@ -2801,29 +2761,10 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
         }
       }
       eat_punct(mut c, 59);
-      if nu == len(uses) {
-        // the use tables grow on demand (three parallel tables move
-        // together — the old fixed 32 silently DROPPED the 33rd use,
-        // a miscompile by omission)
-        let ou: usize = len(uses);
-        let mut bu: []string = make([]string, ou * 2);
-        let mut ba: []string = make([]string, ou * 2);
-        let mut bp: []bool = make([]bool, ou * 2);
-        let mut gi: usize = 0;
-        while gi < ou {
-          bu[gi] = uses[gi];
-          ba[gi] = ualias[gi];
-          bp[gi] = upub[gi];
-          gi = gi + 1;
-        }
-        uses = bu;
-        ualias = ba;
-        upub = bp;
-      }
       if seg > 0 {
-        uses[nu] = path;
-        ualias[nu] = al;
-        upub[nu] = pending_pub;
+        uses.push(path);
+        ualias.push(al);
+        upub.push(pending_pub);
         nu = nu + 1;
       }
       pending_pub = false;
@@ -2860,18 +2801,7 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
               tkadv(mut c);
               break;
             }
-            if n == len(nodes) {
-              // the statement table grows on demand (sizing from the
-              // source length was safe by arithmetic, not by law)
-              let mut bigger: []*Stmt = make([]*Stmt, len(nodes) * 2);
-              let mut gi: usize = 0;
-              while gi < len(nodes) {
-                bigger[gi] = nodes[gi];
-                gi = gi + 1;
-              }
-              nodes = bigger;
-            }
-            nodes[n] = parse_stmt(mut c);
+            nodes.push(parse_stmt(mut c));
             n = n + 1;
           }
         }
@@ -2948,18 +2878,7 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
                            tparams: tparams[0..ntp],
                            body: body, ispub: pending_pub };
       pending_pub = false;
-      if nf == len(fns) {
-        // the fn table grows on demand (the float cluster alone rides
-        // 19 fns through this parser)
-        let mut bigger: []*FnDef = make([]*FnDef, len(fns) * 2);
-        let mut gi: usize = 0;
-        while gi < len(fns) {
-          bigger[gi] = fns[gi];
-          gi = gi + 1;
-        }
-        fns = bigger;
-      }
-      fns[nf] = fd;
+      fns.push(fd);
       nf = nf + 1;
       if len(c.impl_type) > 0 && is_punct(tk(c), 125) {
         // the impl block closes: further fns are plain again
@@ -2971,16 +2890,16 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
     }
     tkadv(mut c);
   }
-  let mut prog = new Prog { fns: fns[0..nf], main: nodes[0..n],
+  let mut prog = new Prog { fns: fns.view(), main: nodes.view(),
                         consts: cnames.view(), cvals: cvals.view(),
                         cstatic: cstatic.view(), ctypes: ctypes.view(),
-                        cmuts: cmuts.view(), cexprs: cexprs[0..nc],
-                        nconsts: nc, structs: structs[0..ns],
-                        nstructs: ns, enums: enums[0..ne],
-                        nenums: ne, traits: traits[0..ntr],
+                        cmuts: cmuts.view(), cexprs: cexprs.view(),
+                        nconsts: nc, structs: structs.view(),
+                        nstructs: ns, enums: enums.view(),
+                        nenums: ne, traits: traits.view(),
                         ntraits: ntr, perrs: c.perrs,
-                        usepath: uses[0..nu], usealias: ualias[0..nu],
-                        usepub: upub[0..nu], nuses: nu,
+                        usepath: uses.view(), usealias: ualias.view(),
+                        usepub: upub.view(), nuses: nu,
                         modcan: make([]string, 16), nmods: 0,
                         xown: make([]string, 128),
                         xitem: make([]string, 128),

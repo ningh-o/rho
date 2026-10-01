@@ -1330,6 +1330,18 @@ section — no placeholder stages. boot is the reference compiler.
       GREEN; suites 573/0; gate green. NEXT (W4): the compiler's
       pointer tables consume vec_of — the payoff that was waiting on
       this wall.
+      W4 LANDED — THE PAYOFF (2026-10-02): parse()'s accumulation
+      tables consume the package Vec through explicit type arguments
+      — fns/nodes/structs/enums/traits/cexprs ride
+      `collections.vec_of[*T](cap)`, the use tables ride
+      vec_str/vec_bool — and every local growth block the cap sweep
+      added retired: push IS the growth law now. The chain carries
+      six cross-package instantiations (Vec[*FnDef], Vec[*Stmt],
+      Vec[*StructDef], Vec[*EnumDef], Vec[*TraitDef], Vec[*Expr])
+      through all three levels byte-identically — the compiler eats
+      its own extraction through the deepest differential there is.
+      T4.3 is CLOSED: extraction, consumption, and the wall are all
+      on the record. Suites 573/0; corpus 116; gate green.
       CONSUMPTION WAVE 1 LANDED (2026-10-01, after the deep hunt):
       parse_pat's binders ride std.collections' Vec[string] — the
       fixed cap (make([]string, 8), never grown) is gone — and the
