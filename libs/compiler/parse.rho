@@ -2977,7 +2977,13 @@ fn mods_qual_expr(mut e: *Expr, mp: *Prog, canon: string,
   // rides EX_MCALL with the binding as the receiver — rewrite to the
   // qualified plain call (map.rho's ordering law was the witness: the
   // qualifier only self-qualified, and the checker then met a bare
-  // binding name where no variable exists)
+  // binding name where no variable exists). A FACADE re-export sells
+  // under the item's own name but registers under the OWNER's canon —
+  // consult the export table first and land on the registered target
+  // (the compiler's own parse.rho consuming std.collections was the
+  // first module-level witness: the half-qualified
+  // std.collections.vec_str met a checker that knew the fn only as
+  // std.collections.vec.vec_str)
   if e.tag == EX_MCALL {
     match e.lhs {
       Option.Some(rb) => {
@@ -2985,9 +2991,23 @@ fn mods_qual_expr(mut e: *Expr, mp: *Prog, canon: string,
           let mut qb: usize = 0;
           while qb < nb {
             if bnames[qb] == rb.name {
-              e.tag = EX_CALL;
-              e.name = bcans[qb] + "." + e.name;
-              e.lhs = Option.None;
+              let mut sold: bool = false;
+              let mut ei: usize = 0;
+              while ei < prog.nx {
+                if prog.xown[ei] == bcans[qb] &&
+                    prog.xitem[ei] == e.name {
+                  e.tag = EX_CALL;
+                  e.name = prog.xtar[ei];
+                  e.lhs = Option.None;
+                  sold = true;
+                }
+                ei = ei + 1;
+              }
+              if !sold {
+                e.tag = EX_CALL;
+                e.name = bcans[qb] + "." + e.name;
+                e.lhs = Option.None;
+              }
             }
             qb = qb + 1;
           }

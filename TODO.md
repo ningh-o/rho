@@ -1240,6 +1240,41 @@ section — no placeholder stages. boot is the reference compiler.
       REMAINING for T4.3: the literal extraction review (std.
       collections vs the compiler's own growth tables) and the
       compiler consuming the packages.
+      CONSUMPTION WAVE 1 BLOCKED, WITH FINDINGS (2026-10-01, the
+      first slice reverted): converting parse_pat's binders to
+      Vec[string] (a real fixed-cap — make([]string, 8) never grows —
+      and the smallest container) reddened leg 4. Three findings
+      stand on their own:
+      - CAPABILITY WALL: the compiler's pointer-element tables
+        ([]*Stmt/[]*Expr/[]*Tok…) cannot consume std Vec yet — boot
+        cannot name a package's generic type at a call site, and std
+        cannot reference compiler types (Vec[*Tok] is unspellable on
+        both sides). String/int tables and a keyword map can consume
+        today. Wall lift = a boot evolution item (call-site generic
+        naming, or make's type-arg riding instantiation).
+      - LOADER GAP, FIXED: a std-using MODULE (its own text carries
+        use std.collections) through the baked-MODS path failed — the
+        module-load qualifier half-qualified facade re-exports
+        (std.collections.vec_str) where the checker knows the fn only
+        under the owner's canon (std.collections.vec.vec_str); the
+        root-level path resolved via the export table, the module
+        path never consulted it. The qualifier now lands on the
+        export table's registered target first. Boot's disk path
+        handled the same shape all along.
+      - THE PARADOX FINGERPRINT IS REAL: with std riding the bake,
+        leg 4 diverged — the grand emitted 50 clones and the canonical
+        std templates the child skipped (gstruct_method_skip: the
+        child's st_index("Vec") found si=2, the grand's missed), AND
+        the skip probe's own eprintf — its string argument a SLICE
+        VIEW (base = fd.name[i..j]) — printed NOTHING at the grand
+        while the drain probe printed: the zero-length-write
+        phenomenon the old chain-paradox record described, now on
+        fresh artifacts. The grand's runtime corrupts (or loses) a
+        struct-name lookup between merge and drain. Next round's hunt:
+        instrument st_index at the grand; suspect a capacity/launder
+        bug in the emission-phase heap (the $w_app in-place law under
+        the std-enlarged bake) before touching the consumption slice
+        again.
 - [ ] **T4.4** std.io: read_line, file read/write wrappers over the raw
       LANDED 2026-09-27 (t44, reviewed and merged): fd_read/fd_close/path_open + four raw wrappers in the wasi tail; the prelude carries std.io's private __ window; read_line/read_file/write_file over Result; the verb gains // in: and --dir; the prelude's generic-instance chains reset per program (a real in-process compile fix the review caught); eleven io fixtures.
       tails.
