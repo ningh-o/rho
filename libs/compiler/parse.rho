@@ -4,6 +4,7 @@
 // literals, variables, and + - * / % with parentheses. The AST is a
 // tagged struct per node — boxes make the tree recursive.
 use lex;
+use std.collections;
 
 pub const EX_LIT: i32 = 0;
 pub const EX_VAR: i32 = 1;
@@ -1377,8 +1378,7 @@ fn parse_pat(mut c: *PCur) -> *Pat {
       let mut p = mk_pat(2);
       p.ename = en;
       p.vname = vt;
-      let mut binders: []string = make([]string, 8);
-      let mut nb: usize = 0;
+      let mut binders = collections.vec_str(8);
       if is_punct(tk(c), 40) {
         // tuple payload binders
         tkadv(mut c);
@@ -1389,8 +1389,7 @@ fn parse_pat(mut c: *PCur) -> *Pat {
           }
           let bt = tk(c);
           if bt.kind == lex.TK_IDENT || bt.kind == lex.TK_KEYWORD {
-            binders[nb] = bt.text;
-            nb = nb + 1;
+            binders.push(bt.text);
             tkadv(mut c);
           } else {
             tkadv(mut c);
@@ -1419,14 +1418,12 @@ fn parse_pat(mut c: *PCur) -> *Pat {
                 let bnd = tk(c);
                 if bnd.kind == lex.TK_IDENT ||
                     bnd.kind == lex.TK_KEYWORD {
-                  binders[nb] = bnd.text;
-                  nb = nb + 1;
+                  binders.push(bnd.text);
                   tkadv(mut c);
                 }
               } else {
                 // a bare name binds itself (the field's own name)
-                binders[nb] = bt.text;
-                nb = nb + 1;
+                binders.push(bt.text);
               }
             } else {
               tkadv(mut c);
@@ -1438,7 +1435,8 @@ fn parse_pat(mut c: *PCur) -> *Pat {
           }
         }
       }
-      p.binders = binders[0..nb];
+      let vs: []string = binders.view();
+      p.binders = vs;
       return p;
     }
     // a bare name: a wildcard-like binder — treated as wildcard

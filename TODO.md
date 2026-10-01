@@ -1240,41 +1240,42 @@ section — no placeholder stages. boot is the reference compiler.
       REMAINING for T4.3: the literal extraction review (std.
       collections vs the compiler's own growth tables) and the
       compiler consuming the packages.
-      CONSUMPTION WAVE 1 BLOCKED, WITH FINDINGS (2026-10-01, the
-      first slice reverted): converting parse_pat's binders to
-      Vec[string] (a real fixed-cap — make([]string, 8) never grows —
-      and the smallest container) reddened leg 4. Three findings
-      stand on their own:
-      - CAPABILITY WALL: the compiler's pointer-element tables
-        ([]*Stmt/[]*Expr/[]*Tok…) cannot consume std Vec yet — boot
-        cannot name a package's generic type at a call site, and std
-        cannot reference compiler types (Vec[*Tok] is unspellable on
-        both sides). String/int tables and a keyword map can consume
-        today. Wall lift = a boot evolution item (call-site generic
-        naming, or make's type-arg riding instantiation).
-      - LOADER GAP, FIXED: a std-using MODULE (its own text carries
-        use std.collections) through the baked-MODS path failed — the
-        module-load qualifier half-qualified facade re-exports
-        (std.collections.vec_str) where the checker knows the fn only
-        under the owner's canon (std.collections.vec.vec_str); the
-        root-level path resolved via the export table, the module
-        path never consulted it. The qualifier now lands on the
-        export table's registered target first. Boot's disk path
-        handled the same shape all along.
-      - THE PARADOX FINGERPRINT IS REAL: with std riding the bake,
-        leg 4 diverged — the grand emitted 50 clones and the canonical
-        std templates the child skipped (gstruct_method_skip: the
-        child's st_index("Vec") found si=2, the grand's missed), AND
-        the skip probe's own eprintf — its string argument a SLICE
-        VIEW (base = fd.name[i..j]) — printed NOTHING at the grand
-        while the drain probe printed: the zero-length-write
-        phenomenon the old chain-paradox record described, now on
-        fresh artifacts. The grand's runtime corrupts (or loses) a
-        struct-name lookup between merge and drain. Next round's hunt:
-        instrument st_index at the grand; suspect a capacity/launder
-        bug in the emission-phase heap (the $w_app in-place law under
-        the std-enlarged bake) before touching the consumption slice
-        again.
+      CONSUMPTION WAVE 1 LANDED (2026-10-01, after the deep hunt):
+      parse_pat's binders ride std.collections' Vec[string] — the
+      fixed cap (make([]string, 8), never grown) is gone — and the
+      chain's MODS bake carries the std/ tree. Two findings first
+      recorded as blockers, now resolved:
+      - CAPABILITY WALL (still standing): the compiler's
+        pointer-element tables ([]*Stmt/[]*Expr/[]*Tok…) cannot
+        consume std Vec yet — boot cannot name a package's generic
+        type at a call site, and std cannot reference compiler types
+        (Vec[*Tok] is unspellable on both sides). String/int tables
+        and a keyword map can consume today. Wall lift = a boot
+        evolution item (call-site generic naming, or make's type-arg
+        riding instantiation).
+      - LOADER GAP, FIXED earlier this round: a std-using MODULE
+        through the baked-MODS path half-qualified facade re-exports;
+        the module-load qualifier now lands on the export table's
+        registered target (boot's disk path handled the shape all
+        along).
+      - THE PARADOX FINGERPRINT RESOLVED: the leg-4 red under the std
+        bake was NOT corruption — gstruct_method_skip's
+        `base = fd.name[i..j]` is a slice view over a STRING FIELD,
+        and the ST_LET EX_SLICE2 field-base deduction only fired for
+        "[]T" fields. A string field fell to the env path, which
+        resolved the base through the env by the FIELD's NAME
+        ("name", unbound → the encoded local 0 = the fd pointer),
+        built the view at fd+lo*8, and read its "elements" as i64
+        pairs from inside the FnDef struct (b0=856896): st_index
+        missed, skip=false, the grand emitted the canonical templates
+        (+50 fns), and the probe's own eprintf with that view as a
+        string hole printed garbage/zero — the zero-length-write
+        phenomenon. The expression-position twin already handled
+        string fields; the ST_LET path now does too (byte stride 1,
+        kind 1, no element text). The dormant-bug lesson: the
+        compiler's own two-segment fn names kept the view code
+        unparsed-by-this-shape until std's three-segment names
+        activated it.
 - [ ] **T4.4** std.io: read_line, file read/write wrappers over the raw
       LANDED 2026-09-27 (t44, reviewed and merged): fd_read/fd_close/path_open + four raw wrappers in the wasi tail; the prelude carries std.io's private __ window; read_line/read_file/write_file over Result; the verb gains // in: and --dir; the prelude's generic-instance chains reset per program (a real in-process compile fix the review caught); eleven io fixtures.
       tails.

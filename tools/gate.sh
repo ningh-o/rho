@@ -55,6 +55,13 @@ for f in libs/compiler/*.rho; do
 $(cat "$f")
 "
 done
+# the reserved std/ tree rides the bake too (repo-relative paths) —
+# the compiler's own sources consume std.collections (T4.3)
+for f in std/*.rho std/*/*.rho std/*/*/*.rho; do
+  [ -f "$f" ] && CMODS="$CMODS@MOD@ $f
+$(cat "$f")
+"
+done
 cap 600 "$RHO" build libs/compiler/main.rho -o /tmp/gate-mirror.wasm \
     --set "SRC=$(modsrc)" --set "MODS=$CMODS" >/dev/null 2>&1 \
   || fail "mirror build"
