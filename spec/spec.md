@@ -15,6 +15,10 @@ Reference counting with weak references. Every heap block carries a
   which releases owned fields, then the block dies.
 - `wrc` — weak count. While `wrc > 0` the (dead) header stays alive so
   weak references can observe death (`weak.get()` returns `?*T`).
+  The weak handle's own representation is implementation-defined (a
+  boxed handle or the pointer itself); the law is only what
+  `weak.get()` observes — death, never resurrection, never another
+  object.
 - Managed values: `*T` (structs/enums behind pointers), `string`,
   `[]T` slices, `dyn Trait`. Integers, floats, bools, and inline
   structs/enums are unmanaged.

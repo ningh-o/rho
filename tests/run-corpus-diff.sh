@@ -31,7 +31,13 @@ RHO=${RHO:-./build/rho}
 # now rides the self-host twin too — imports, the four wrappers, and
 # __string_from as a build_string_pair face; the differential grades
 # both compilers on stdin/window/write behavior.
-PINNED=111
+#
+# 111 → 112 with n15_weak_reuse: the weak probe observes death, not
+# reuse — the node dies, a same-size churn runs, and weak.get() still
+# reads None (§1.1's wrc-keeps-headers law, graded on both compilers;
+# the case goes red the day either allocator starts recycling blocks
+# without honoring the weak header).
+PINNED=112
 
 # one file's differential; echoes "pass" or the failure label
 check_one() {

@@ -133,7 +133,10 @@ checked an Option does not refine the type in the branch; unwrap via
 `match` or methods (`Option.get_or`, `Result.unwrap_or` … per the
 prelude). `Option[T]` and `Result[T, E]` are ordinary generic enums
 from the prelude; user code may match on them, and `?` (§12) is the
-propagation sugar.
+propagation sugar. The **memory layout** of an Option/Result value is
+implementation-defined — the spec pins behavior only (matching,
+comparability, propagation); a flat inline representation and a heap
+box are both conforming.
 
 `dyn Trait` is the existential: a `dyn Show` value is a pointer to a
 value of some type satisfying `Show`, plus its vtable. Coercion

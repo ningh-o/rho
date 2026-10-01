@@ -1059,15 +1059,29 @@ section — no placeholder stages. boot is the reference compiler.
         the scalar lane rides the address). io scratch locals $sfa/
         $sfl joined every function prologue. n14_io_stdin pins the
         differential (floor 111).
-      - DIVERGENCE, ruling pending: weak handles. boot = a handle box
+      - DIVERGENCE, RESOLVED 2026-10-01 (user ruling: implementation-
+        defined, prove equivalence): weak handles. boot = a handle box
         + a weak count at payload-16 (rho_weak_from/alive/payload);
         the self-host = the identity pointer, get() probes the rc
-        header. Observably equivalent on the corpus (alive = rc>0),
-        but the ABIs differ; pick one law (the identity handle is
-        simpler — boot would shed the weak-count slot).
-      - DIVERGENCE, ruling pending: ?T layout. boot = flat 3-slot;
-        the self-host = a heap box. Programs see one compiler, so
-        nothing mixes today; the corpus would catch drift.
+        header. Both allocators are bump kernels that never recycle
+        ("keeps memory for 0.1.0 bring-up"), so the probe reads the
+        dead header's rc=0 forever and the two are observably equal.
+        The dangerous shape — die, then a same-size churn (the shape
+        any recycling allocator would serve from the freed block),
+        then weak.get() — is now a corpus case (n15_weak_reuse, floor
+        112): both compilers read None after the churn and Some for a
+        fresh node. The spec (§1.1) now declares the handle's own
+        representation implementation-defined; the law is what
+        weak.get() observes. The day either allocator starts
+        recycling, this case goes red unless the weak header is
+        honored.
+      - DIVERGENCE, RESOLVED 2026-10-01 (user ruling): ?T layout.
+        boot = flat 3-slot; the self-host = a heap box. The spec
+        (type-system §9) now declares Option/Result memory layout
+        implementation-defined — the spec pins behavior only
+        (matching, comparability, propagation); both representations
+        conform. Programs see one compiler, so nothing mixes today;
+        the corpus would catch drift.
       - Strategy note: name-for-name diffs between the two preludes
         are the wrong lens (the fb_* format family vs the write_fd
         piece strategy is deliberate); audit by mechanism, then by

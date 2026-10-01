@@ -1,0 +1,4 @@
+dead w1=-1
+churn acc=0
+post-churn w1=-1
+fresh w2=7
