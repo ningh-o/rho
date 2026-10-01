@@ -240,7 +240,6 @@ pub fn mk_arm(p: *Pat, body: []*Stmt, val: ?*Expr) -> *MatchArm {
 }
 
 pub fn mk_pat(kind: i32) -> *Pat {
-  eprintf("DBG mkpat {}\n", kind);
   return new Pat { kind: kind, lit: 0, ename: "", vname: "",
                    binders: make([]string, 0) };
 }
@@ -1378,7 +1377,6 @@ fn parse_pat(mut c: *PCur) -> *Pat {
       let mut p = mk_pat(2);
       p.ename = en;
       p.vname = vt;
-      eprintf("DBG pat: {}.{}\n", p.ename, p.vname);
       let mut binders: []string = make([]string, 8);
       let mut nb: usize = 0;
       if is_punct(tk(c), 40) {

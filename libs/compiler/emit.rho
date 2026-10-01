@@ -6137,10 +6137,6 @@ fn arm_cond(a: *MatchArm, mut prog: *Prog, dslot: i64) -> string {
       // consts table's qualified entry — en_index("parse") is -1 and
       // the tag once folded to -1, killing every arm after it
       tag = const_i64(mut prog, a.pat.ename + "." + a.pat.vname);
-      if tag == 0 - 1 {
-        eprintf("DBG armfold: {}.{} kind={}\n", a.pat.ename,
-                a.pat.vname, a.pat.kind);
-      }
     }
   }
   return "(i64.eq (local.get $d) (i64.const " + tag.to_str() + "))";
@@ -9849,13 +9845,37 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                 Option.None => {
                   if e.tag == parse.EX_VAR &&
                       env_kind_of(env, e.name) >= 0 {
-                    // a let over another string/slice name SHARES its
-                    // binding — a slice copy is the same fat view, and
-                    // a string copy the same live pair
-                    env_str_bind_runtime(mut env, st.name,
-                        (0 - env_str_look(env, e.name)) - 1,
-                        env_str_len_slot(env, e.name),
-                        env_kind_of(env, e.name));
+                    // a let over another string/slice name: a MUT let
+                    // materializes its own pair (the rebind writes
+                    // these slots in place — sharing the source's
+                    // live pair would let the rebind clobber the
+                    // source and every name bound to it; boot's
+                    // NT_LET gives every let a fresh register). An
+                    // immutable view keeps the shared binding (the
+                    // same fat view, the same live pair).
+                    if st.ret == 1 {
+                      let sa: i64 = env_str_look(env, e.name);
+                      let sl: i64 = env_str_len_slot(env, e.name);
+                      let a1: i64 = nl.v;
+                      nl.v = nl.v + 1;
+                      let l1: i64 = nl.v;
+                      nl.v = nl.v + 1;
+                      body = body + "    (local.get " +
+                             ((0 - sa) - 1).to_str() + ")\n";
+                      body = body + "    (local.set " + a1.to_str() +
+                             ")\n";
+                      body = body + "    (local.get " + sl.to_str() +
+                             ")\n";
+                      body = body + "    (local.set " + l1.to_str() +
+                             ")\n";
+                      env_str_bind_runtime(mut env, st.name, a1, l1,
+                                           env_kind_of(env, e.name));
+                    } else {
+                      env_str_bind_runtime(mut env, st.name,
+                          (0 - env_str_look(env, e.name)) - 1,
+                          env_str_len_slot(env, e.name),
+                          env_kind_of(env, e.name));
+                    }
                   } else {
                   if e.tag == parse.EX_ARR {
                     let aa: i64 = nl.v;

@@ -1182,16 +1182,24 @@ section — no placeholder stages. boot is the reference compiler.
       TRUNCATES folded-form bodies — use balanced-paren scanning
       (verified: parse_pat is genuinely 865 complete lines at both
       levels) — and treat wat text-grep as unreliable (data segments
-      escape inconsistently). THE PARADOX TO SIT WITH: parse_pat's
-      emitted body (balanced-extract, both levels) contains NO io
-      writes and NO printer calls — its only calls are tkadv/tk/
-      rel_Tok/is_punct/mk_pat/panic/streq/eat_punct — yet the child's
-      runtime printed 438 `DBG pat: Option.Some` lines and the
-      grand's printed zero. Either the prints originate from a call
-      whose target is not a literal `$name` in the body (a computed
-      call_indirect?), or the probe line at parse.rho:1383 is not in
-      the function the child executes. Check parse_arms/clone paths
-      and call_indirect sites next.
+      escape inconsistently). RESOLVED 2026-10-01: the paradox was an
+      ARTIFACT — every cross-level probe comparison compared runs of
+      stale artifacts (a grand assembled from a pre-probe wat, a
+      "child" that was actually the mirror). The real red was
+      ordinary: leg 4 diverged at clone_expr's first `match e.lhs`
+      (v1 tag 1, v2 tag -1) and v2 didn't even assemble (8 undefined
+      `call $u_len` in emit_stmts). ROOT (bisect: fd8f3bd): a mut
+      string/slice let over another name SHARED the source's live
+      slot pair (emit.rho's ST_LET EX_VAR path), while boot's NT_LET
+      gives every let a fresh register — the ambient-variant
+      restructure then added `let mut vt/en: string = name0` to
+      parse_pat, and the in-place ST_SET rebind made vt, en, AND
+      name0 one slot pair: p.ename = en read vt's dotted text, so
+      every pattern spelled bare `Some.Some`, arm_cond fell to
+      const_i64's -1, and the len() classifications fell through to
+      the undefined $u_len. FIX: a MUT let materializes its own pair
+      (copy the source's slots); an immutable view keeps the shared
+      binding. Leg 4 green, suite/corpus green.
 - [ ] **T4.4** std.io: read_line, file read/write wrappers over the raw
       LANDED 2026-09-27 (t44, reviewed and merged): fd_read/fd_close/path_open + four raw wrappers in the wasi tail; the prelude carries std.io's private __ window; read_line/read_file/write_file over Result; the verb gains // in: and --dir; the prelude's generic-instance chains reset per program (a real in-process compile fix the review caught); eleven io fixtures.
       tails.
