@@ -1240,6 +1240,24 @@ section — no placeholder stages. boot is the reference compiler.
       REMAINING for T4.3: the literal extraction review (std.
       collections vs the compiler's own growth tables) and the
       compiler consuming the packages.
+      CONSUMPTION WAVE 2 LANDED (2026-10-01 late): std grows Vec[bool]
+      (push + the vec_bool factory + the facade re-export — the facade
+      test names every binding, so the new line is pinned), and the
+      match-binder hole classification learns bool payloads: a
+      Some binder over a ?bool scrutinee records its type in the env,
+      so printf spells true/false through the binder (a bare binder
+      once printed the box tag — 1/0 — because neither the binder nor
+      any let chain recorded bool). The build_string_pair gate and
+      hole_boolish route share match_is_bool_payload (the ?bool
+      scrutinee via method_rtype), so a bool-payload match is never
+      claimed as a string build. Suites 573, corpus 113, GATE all
+      legs with the std-consuming sources on the chain. NEXT: the
+      no-grow const table (cnames/cvals/... fixed 64, unguarded —
+      parse.rho itself already rides 33/64) migrates to Vec in wave 3;
+      the enum variant tables (vnames/vslots fixed 16, vtpool 128 per
+      8-payload slot — a 17-variant enum overflows) ride the same
+      wave; pointer-element tables wait for the boot capability wall
+      (call-site generic naming) to lift.
       CONSUMPTION WAVE 1 LANDED (2026-10-01, after the deep hunt):
       parse_pat's binders ride std.collections' Vec[string] — the
       fixed cap (make([]string, 8), never grown) is gone — and the

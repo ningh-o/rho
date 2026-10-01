@@ -187,6 +187,21 @@ fn Vec.push(mut self: *Vec[string], v: string) {
   self.n = self.n + 1;
 }
 
+fn Vec.push(mut self: *Vec[bool], v: bool) {
+  if self.n == self.cap {
+    let mut big: []bool = make([]bool, self.cap * 2 + 1);
+    let mut i: usize = 0;
+    while i < self.n {
+      big[i] = self.data[i];
+      i = i + 1;
+    }
+    self.data = big;
+    self.cap = self.cap * 2 + 1;
+  }
+  self.data[self.n] = v;
+  self.n = self.n + 1;
+}
+
 // insert at i, shifting the tail right; i <= n (i == n appends)
 fn Vec.insert(mut self: *Vec[i32], i: usize, v: i32) {
   if i > self.n {
@@ -278,6 +293,10 @@ pub fn vec_u8(cap: usize) -> *Vec[u8] {
 
 pub fn vec_str(cap: usize) -> *Vec[string] {
   return new Vec[string] { data: make([]string, cap), n: 0, cap: cap };
+}
+
+pub fn vec_bool(cap: usize) -> *Vec[bool] {
+  return new Vec[bool] { data: make([]bool, cap), n: 0, cap: cap };
 }
 
 // ------------------------------------------------------------ tests

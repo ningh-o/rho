@@ -17,6 +17,7 @@ pub use vec.vec_i64;
 pub use vec.vec_usize;
 pub use vec.vec_u8;
 pub use vec.vec_str;
+pub use vec.vec_bool;
 
 pub use map.smap_str;
 pub use map.smap_i32;

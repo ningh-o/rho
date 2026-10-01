@@ -6042,6 +6042,12 @@ fn match_chain_m(mut pool: *Pool, arms: []*MatchArm, i: usize, bx: i64,
           // its fields reachable
           env_bind_ptr(mut env, a.pat.binders[k], bslot, optpt);
         } else {
+          if optpt == "bool" {
+            // a bool payload binder records its type — the hole
+            // classifiers read it to spell true/false (a bare binder
+            // once printed the box tag as 1/0)
+            env_bool_bind(mut env, a.pat.binders[k]);
+          }
           env_bind(mut env, a.pat.binders[k], bslot);
         }
       }
@@ -7031,7 +7037,7 @@ fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
                 na = na + 1;
                 nl.v = nl.v + 2;
               } else {
-              if hole_boolish(arg, env, prog) {
+              if hole_boolish(arg, env, mut prog) {
                 text = text + emit_expr(mut pool, arg, mut env, mut prog, mut nl);
                 text = text + "    call $w_bool\n";
                 text = text + "    (local.set $l)\n";
@@ -7179,6 +7185,17 @@ fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
   }
   if e.tag == parse.EX_MATCH {
     // a string-valued match: every arm's tail must be string-buildable
+    // (a ?bool-payload match is NOT one — the bare-binder arms ride
+    // on trust and once claimed the whole match as a string build,
+    // printing the box tag through the pair lanes)
+    match e.lhs {
+      Option.Some(scq) => {
+        if match_is_bool_payload(scq, env, mut prog) {
+          return bad;
+        }
+      },
+      Option.None => {},
+    }
     let mut allstr: bool = len(e.marms) > 0;
     let mut k0: usize = 0;
     while k0 < len(e.marms) {
@@ -7527,7 +7544,7 @@ fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
     }
     let isstr9: bool = is_stringy(recv9, env, mut prog);
     let fk9: i64 = expr_fkind(recv9, env, mut prog);
-    let bl9: bool = hole_boolish(recv9, env, prog);
+    let bl9: bool = hole_boolish(recv9, env, mut prog);
     if !isstr9 || fk9 > 0 || bl9 {
       let ta9: i64 = nl.v;
       let tl9: i64 = nl.v + 1;
@@ -7784,7 +7801,30 @@ fn emit_eprintf(mut pool: *Pool, fmt: string, args: []*Expr, mut env: *Env,
 // a print/format hole holding a bool prints its word: comparisons and
 // logicals (incl. the ! desugar's eq-0, op 12), vars bound from one,
 // bool consts/statics by their written type, and the literals
-fn hole_boolish(arg: *Expr, env: *Env, prog: *Prog) -> bool {
+// a match over a ?bool/Result-bool scrutinee (Vec.pop()'s binders):
+// its value is the payload itself, not a string build
+fn match_is_bool_payload(sc: *Expr, env: *Env, mut prog: *Prog) -> bool {
+  if sc.tag != parse.EX_MCALL {
+    return false;
+  }
+  let et3: string = expr_enum_type(sc, env, mut prog);
+  if et3 != "Option" && et3 != "Result" {
+    return false;
+  }
+  let mut rc3: *Expr = parse.lit(0);
+  match sc.lhs {
+    Option.Some(r3c) => {
+      rc3 = r3c;
+    },
+    Option.None => {},
+  }
+  let rt3: string = method_rtype(mut prog,
+                                 expr_ptr_type(rc3, env, mut prog),
+                                 sc.name);
+  return opt_payload(rt3) == "bool";
+}
+
+fn hole_boolish(arg: *Expr, env: *Env, mut prog: *Prog) -> bool {
   if arg.tag == parse.EX_BIN &&
       ((arg.op >= 5 && arg.op <= 10) || arg.op == 12 ||
        arg.op == 13 || arg.op == 14) {
@@ -7808,13 +7848,23 @@ fn hole_boolish(arg: *Expr, env: *Env, prog: *Prog) -> bool {
     return true;
   }
   if arg.tag == parse.EX_MATCH {
-    // a match whose every arm spells a bool word prints its word
+    // a match whose every arm spells a bool word prints its word; a
+    // match on a ?bool scrutinee is bool even when the arms are bare
+    // binders (the arm tail IS the payload — Vec.pop()'s binder)
+    match arg.lhs {
+      Option.Some(sc2) => {
+        if match_is_bool_payload(sc2, env, mut prog) {
+          return true;
+        }
+      },
+      Option.None => {},
+    }
     let mut allb: bool = len(arg.marms) > 0;
     let mut k3: usize = 0;
     while k3 < len(arg.marms) {
       match arg.marms[k3].val {
         Option.Some(av3) => {
-          if !hole_boolish(av3, env, prog) {
+          if !hole_boolish(av3, env, mut prog) {
             allb = false;
           }
         },
@@ -9220,13 +9270,14 @@ fn emit_print_fd(mut pool: *Pool, fmt: string, args: []*Expr, mut env: *Env,
           kinds[q] = 4;
         } else {
         let sp = build_string_pair(arg, mut pool, mut env, mut prog, mut nl);
+        eprintf("DBG disp sp={}\n", sp.ok);
         if sp.ok {
           pre = pre + sp.text;
           t_a[q] = sp.a;
           t_l[q] = sp.l;
           kinds[q] = 4;
         } else {
-          if hole_boolish(arg, env, prog) {
+          if hole_boolish(arg, env, mut prog) {
             // a comparison or logical — or a var bound from one —
             // prints its spelled word
             pre = pre + emit_expr(mut pool, arg, mut env, mut prog, mut nl);
