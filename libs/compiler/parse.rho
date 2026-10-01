@@ -961,6 +961,108 @@ pub fn fmt_pieces(s: string) -> []string {
 // postfix: [e] indexes, [a..b] slices (either end open), .name reads
 // a field, .name(args) calls a method — all bind tighter than every
 // binary level
+// does a '[' here open an explicit type-argument list? It does when
+// the matching ']' is followed by '(': rho has no index-then-call, so
+// a call parenthesis after the bracket close can only be a call on a
+// type-argumented name (the wall lift: callers name generic types)
+fn targs_ahead(mut c: *PCur) -> bool {
+  let mut i: usize = c.pos;
+  let mut depth: i64 = 0;
+  while i < len(c.toks) {
+    if is_punct(c.toks[i], 91) {
+      depth = depth + 1;
+    } else {
+      if is_punct(c.toks[i], 93) {
+        depth = depth - 1;
+        if depth == 0 {
+          return i + 1 < len(c.toks) && is_punct(c.toks[i + 1], 40);
+        }
+      } else {
+        if c.toks[i].kind == lex.TK_EOF {
+          return false;
+        }
+      }
+    }
+    i = i + 1;
+  }
+  return false;
+}
+
+// the callee's name minus an explicit type-argument tail: the wall
+// lift folds the targs into the name text (the new T[A, B] law), and
+// these three split it back apart for the qualifier, the checker, and
+// the emitter's instantiation key
+pub fn has_targs(name: string) -> bool {
+  let mut i: usize = 0;
+  let mut seen: bool = false;
+  while i < len(name) {
+    if name[i] == 91 {
+      seen = true;
+    }
+    i = i + 1;
+  }
+  return seen && name[len(name) - 1..len(name)] == "]";
+}
+
+pub fn targs_base(name: string) -> string {
+  let mut i: usize = 0;
+  while i < len(name) {
+    if name[i] == 91 {
+      return name[0..i];
+    }
+    i = i + 1;
+  }
+  return name;
+}
+
+// the folded type arguments, split on depth-0 commas, spaces trimmed
+pub fn targs_args(name: string) -> []string {
+  let mut ob: usize = 0;
+  while ob < len(name) {
+    if name[ob] == 91 {
+      break;
+    }
+    ob = ob + 1;
+  }
+  let inner: string = name[(ob + 1)..(len(name) - 1)];
+  let mut out = collections.vec_str(4);
+  let mut cur: string = "";
+  let mut depth: i64 = 0;
+  let mut i: usize = 0;
+  while i < len(inner) {
+    let ch: u8 = inner[i];
+    if ch == 91 {
+      depth = depth + 1;
+    }
+    if ch == 93 {
+      depth = depth - 1;
+    }
+    if ch == 44 && depth == 0 {
+      out.push(targs_trim(cur));
+      cur = "";
+    } else {
+      cur = cur + inner[i..(i + 1)];
+    }
+    i = i + 1;
+  }
+  if len(cur) > 0 {
+    out.push(targs_trim(cur));
+  }
+  return out.view();
+}
+
+fn targs_trim(s: string) -> string {
+  let mut a: usize = 0;
+  let mut b: usize = len(s);
+  while a < b && s[a] == 32 {
+    a = a + 1;
+  }
+  while b > a && s[b - 1] == 32 {
+    b = b - 1;
+  }
+  return s[a..b];
+}
+
 fn parse_postfix(mut c: *PCur, e0: *Expr) -> *Expr {
   let mut e: *Expr = e0;
   while true {
@@ -1011,8 +1113,27 @@ fn parse_postfix(mut c: *PCur, e0: *Expr) -> *Expr {
       // (a following '.' means this is a range's '..' — never a field)
       tkadv(mut c); // .
       let ft = tk(c);
-      let fname: string = ft.text;
+      let mut fname: string = ft.text;
       tkadv(mut c);
+      // name[T1, T2](…) — a qualified call with explicit type
+      // arguments: the targs fold into the method name text; the
+      // qualification runs on the base and the suffix survives to the
+      // emitter's instantiation key
+      if is_punct(tk(c), 91) && targs_ahead(mut c) {
+        tkadv(mut c); // [
+        let mut gargs2: string = "";
+        while tk(c).kind != lex.TK_EOF && !is_punct(tk(c), 93) {
+          if len(gargs2) > 0 {
+            gargs2 = gargs2 + ", ";
+          }
+          gargs2 = gargs2 + eat_type(mut c);
+          if !eat_punct(mut c, 44) {
+            break;
+          }
+        }
+        eat_punct(mut c, 93);
+        fname = fname + "[" + gargs2 + "]";
+      }
       if is_punct(tk(c), 40) {
         tkadv(mut c); // (
         let mut anames: []string = make([]string, 8);
@@ -1267,6 +1388,30 @@ fn parse_atom(mut c: *PCur) -> *Expr {
         }
       }
       return new_expr(sname, fnames[0..nf], fargs[0..nf]);
+    }
+    // name[T1, T2](args…) — a call with explicit type arguments; the
+    // targs fold into the callee's name text (the new T[A, B] law:
+    // the qualifier, the checker, and the emitter all split the same
+    // spelling)
+    if is_punct(tk(c), 91) && targs_ahead(mut c) {
+      tkadv(mut c); // [
+      let mut gargs: string = "";
+      while tk(c).kind != lex.TK_EOF && !is_punct(tk(c), 93) {
+        if len(gargs) > 0 {
+          gargs = gargs + ", ";
+        }
+        gargs = gargs + eat_type(mut c);
+        if !eat_punct(mut c, 44) {
+          break;
+        }
+      }
+      eat_punct(mut c, 93);
+      let mut cname: string = t.text + "[" + gargs + "]";
+      if is_punct(tk(c), 40) {
+        tkadv(mut c);
+        let mut args = parse_args(mut c);
+        return call(cname, args);
+      }
     }
     // name(args…) — a call
     if is_punct(tk(c), 40) {
@@ -3020,6 +3165,18 @@ fn mods_fn_in(mp: *Prog, nm: string) -> bool {
     }
     i = i + 1;
   }
+  // name[T1, T2] — an explicitly-typed call names the base fn (the
+  // targs fold into the text; the fn table knows the base)
+  if has_targs(nm) {
+    let base: string = targs_base(nm);
+    let mut j: usize = 0;
+    while j < len(mp.fns) {
+      if mp.fns[j].name == base {
+        return true;
+      }
+      j = j + 1;
+    }
+  }
   return false;
 }
 
@@ -3101,10 +3258,20 @@ fn mods_qual_expr(mut e: *Expr, mp: *Prog, canon: string,
               let mut sold: bool = false;
               let mut ei: usize = 0;
               while ei < prog.nx {
-                if prog.xown[ei] == bcans[qb] &&
-                    prog.xitem[ei] == e.name {
+                // the export table sells the base item; an
+                // explicitly-typed call carries a [T] suffix that must
+                // survive onto the registered target
+                let xit: string = prog.xitem[ei];
+                let xhit: bool = xit == e.name ||
+                    (has_targs(e.name) && xit == targs_base(e.name));
+                if prog.xown[ei] == bcans[qb] && xhit {
                   e.tag = EX_CALL;
-                  e.name = prog.xtar[ei];
+                  if xit == e.name {
+                    e.name = prog.xtar[ei];
+                  } else {
+                    e.name = prog.xtar[ei] +
+                        e.name[len(xit)..len(e.name)];
+                  }
                   e.lhs = Option.None;
                   sold = true;
                 }
@@ -3581,10 +3748,21 @@ fn mods_resolve_expr(mut e: *Expr, mut prog: *Prog, bnames: []string,
             if bnames[bi] == r3.name {
               let mut ei: usize = 0;
               while ei < prog.nx {
-                if prog.xown[ei] == bcans[bi] &&
-                    prog.xitem[ei] == e.name {
+                // the export table sells the base item; an
+                // explicitly-typed call carries a [T] suffix that
+                // must survive onto the registered target (the twin
+                // law lives in mods_qual_expr)
+                let xit2: string = prog.xitem[ei];
+                let xhit2: bool = xit2 == e.name ||
+                    (has_targs(e.name) && xit2 == targs_base(e.name));
+                if prog.xown[ei] == bcans[bi] && xhit2 {
                   e.tag = EX_CALL;
-                  e.name = prog.xtar[ei];
+                  if xit2 == e.name {
+                    e.name = prog.xtar[ei];
+                  } else {
+                    e.name = prog.xtar[ei] +
+                        e.name[len(xit2)..len(e.name)];
+                  }
                   e.lhs = Option.None;
                 }
                 ei = ei + 1;

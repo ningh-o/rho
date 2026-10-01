@@ -171,20 +171,30 @@ static bool lookup(FnCtx *c, const char *name, Look *out) {
   return false;
 }
 
+// substitute generic parameters through a type (deep)
+typedef struct TBind {
+  const char **names;
+  Type **tys;
+  size_t n;
+} TBind;
+
 // resolve a type node inside a function context (generic params of the
-// enclosing fn are in scope); inside a generic INSTANCE the names map
-// to the instance's concrete binds
+// enclosing fn are in scope); inside a generic INSTANCE every name —
+// bare or nested inside a slice/pointer/struct application — maps to
+// the instance's concrete binds
 static Type *check_type_in_ctx(FnCtx *c, NodeRef tr, GScope *g) {
   (void)g;
   extern Type *resolve_type_pub(Module *, NodeRef, GScope *);
   GScope gs = {c->gparams, c->ngparams, NULL};
   Type *t = resolve_type_pub(c->mod, tr, &gs);
-  if (c->gbinds && t && t->kind == TY_PARAM) {
-    for (size_t i = 0; i < c->ngparams; i++)
-      if (strcmp(c->gparams[i], t->pname) == 0)
-        return c->gbinds[i] ? c->gbinds[i] : t;
-  }
-  return t;
+  if (!c->gbinds || !t)
+    return t;
+  // deep substitution: an instance body's composite type spellings
+  // (make([]T), new Vec[T], *Vec[T]) carry params inside — the
+  // bare-param check missed those leaves (the make-in-factory gap,
+  // probed 2026-10-02)
+  TBind tb = {c->gparams, c->gbinds, c->ngparams};
+  return tsubst(t, &tb);
 }
 
 // ---------------------------------------------------------------- literals
@@ -812,13 +822,6 @@ static const char **edef_gnames(EnumDef *ed) {
   return names;
 }
 
-// substitute generic parameters through a type (deep)
-typedef struct TBind {
-  const char **names;
-  Type **tys;
-  size_t n;
-} TBind;
-
 // does the type mention a generic parameter (deep)?
 static bool ty_has_param(Type *t) {
   if (!t)
@@ -1096,8 +1099,7 @@ static Type *check_call(FnCtx *c, NodeRef er, Type *expected) {
         // type-argument form: make([]T, n) — the parser stashed the
         // element type on the marker arg
         Node *targ = node_get(node_get(reflist_at(args, 0))->a);
-        GScope g2 = {0};
-        Type *el = resolve_type_pub(c->mod, targ->a, &g2);
+        Type *el = check_type_in_ctx(c, targ->a, NULL);
         // the parser consumed the outer `[]` prefix: el IS the element
         // type, even when the element is itself a slice ([][]T)
         Type *st = el ? type_slice(el) : NULL;
@@ -1124,6 +1126,62 @@ static Type *check_call(FnCtx *c, NodeRef er, Type *expected) {
         err_at(c, call, "len takes a string or slice, got %s",
                type_name(vt));
       return ty_usize;
+    }
+    // explicit type arguments (the wall lift — callers name generic
+    // types): name[T1, T2](args). The targs ride call->b as an NT_APP
+    // holder; the callee must be generic with the same arity, and the
+    // targs seed the instantiation directly (no inference — a
+    // factory's T appears only in the return type, so inference can
+    // never bind it)
+    if (call->b != NO_REF) {
+      Node *th = node_get(call->b);
+      size_t ntargs = reflist_len(th->list);
+      FnDef *g = NULL;
+      for (FnDef *cand = lk.fns; cand; cand = cand->next_overload)
+        if (cand->ngparams == ntargs) {
+          g = cand;
+          break;
+        }
+      if (!g) {
+        err_at(c, call, "no generic '%s' takes %zu type argument(s)",
+               callee->name, ntargs);
+        return ty_unit;
+      }
+      Type **seed = arena_alloc(g_arena, ntargs * sizeof(Type *), 8);
+      for (size_t ti = 0; ti < ntargs; ti++) {
+        Type *tt = check_type_in_ctx(c, reflist_at(th->list, ti), NULL);
+        if (!tt) {
+          err_at(c, call, "bad type argument %zu of %s", ti + 1,
+                 callee->name);
+          return ty_unit;
+        }
+        seed[ti] = tt;
+      }
+      FnDef *inst =
+          instantiate_generic_seeded(c, g, call, expected, seed);
+      if (!inst)
+        return ty_unit;
+      node_get(er)->sem2 = inst;
+      // §18 pairing against the instantiated signature
+      pair_arg_markers(c, call->list, inst->sig, 0, inst->name);
+      // re-check the args against the substituted signature
+      for (size_t i = 0; i < reflist_len(call->list); i++) {
+        Node *aw = node_get(reflist_at(call->list, i));
+        if (aw->kind != NT_POSARG)
+          continue;
+        size_t fixed = inst->sig->nparams;
+        bool variadic2 =
+            fixed > 0 && inst->sig->params[fixed - 1].variadic;
+        Type *pt = NULL;
+        if (variadic2 && i >= fixed - 1) {
+          pt = inst->sig->params[fixed - 1].ty;
+          if (pt && pt->kind == TY_SLICE)
+            pt = pt->base;
+        } else if (i < fixed)
+          pt = inst->sig->params[i].ty;
+        check_expr(c, aw->a, pt);
+      }
+      return inst->sig->ret;
     }
     FnDef *f = resolve_overload(c, lk.fns, er, false, callee->name);
     if (!f)
@@ -1438,6 +1496,50 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
   if (qm) {
     Sym *s = qm->syms ? symtab_get(qm->syms, m->name) : NULL;
     if (s && s->kind == SYM_FN && s->pub) {
+      // explicit type arguments on a qualified call (the wall lift):
+      // seed the instantiation directly — a factory's T rides only
+      // its return, so inference can never bind it
+      if (m->b != NO_REF && node_get(m->b)->list) {
+        Node *th = node_get(m->b);
+        size_t ntargs = reflist_len(th->list);
+        FnDef *g = NULL;
+        for (FnDef *cand = s->u.fns; cand; cand = cand->next_overload)
+          if (cand->ngparams == ntargs) {
+            g = cand;
+            break;
+          }
+        if (!g) {
+          err_at(c, m, "no generic '%s' takes %zu type argument(s)",
+                 m->name, ntargs);
+          return ty_unit;
+        }
+        Type **seed = arena_alloc(g_arena, ntargs * sizeof(Type *), 8);
+        for (size_t ti = 0; ti < ntargs; ti++) {
+          Type *tt =
+              check_type_in_ctx(c, reflist_at(th->list, ti), NULL);
+          if (!tt) {
+            err_at(c, m, "bad type argument %zu of %s", ti + 1,
+                   m->name);
+            return ty_unit;
+          }
+          seed[ti] = tt;
+        }
+        FnDef *inst =
+            instantiate_generic_seeded(c, g, node_get(er), NULL, seed);
+        if (!inst)
+          return ty_unit;
+        pair_arg_markers(c, m->list, inst->sig, 0, inst->name);
+        for (size_t i = 0; i < reflist_len(m->list); i++) {
+          Node *aw = node_get(reflist_at(m->list, i));
+          if (aw->kind == NT_POSARG)
+            check_expr(c, aw->a,
+                       i < inst->sig->nparams ? inst->sig->params[i].ty
+                                              : NULL);
+        }
+        node_get(er)->op = 5; // a plain call on the module's namespace
+        node_get(er)->sem2 = inst;
+        return inst->sig->ret;
+      }
       FnDef *f = resolve_overload(c, s->u.fns, er, false, m->name);
       if (!f)
         return ty_unit;
@@ -1602,6 +1704,21 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
                         f->sig->params[nparams - 1].variadic;
         size_t nfixed = variadic ? nparams - 1 : nparams;
         bool ok = variadic ? nargv + 1 >= nfixed : nargv + 1 == nfixed;
+        // the implicit binds apply here too: the diagnostic's arg
+        // check reads the SUBSTITUTED param (the generic push once
+        // reported "expected T, found string" where the law says the
+        // receiver's element type)
+        TBind itb2 = {0};
+        if (ok && f->nimplicit &&
+            (rbase->kind == TY_STRUCT || rbase->kind == TY_ENUM) &&
+            rbase->nargs == f->nimplicit) {
+          itb2.names = f->gparams;
+          itb2.tys =
+              arena_alloc(g_arena, f->nimplicit * sizeof(Type *), 8);
+          for (size_t b = 0; b < f->nimplicit; b++)
+            itb2.tys[b] = rbase->args[b];
+          itb2.n = f->nimplicit;
+        }
         for (size_t j = 0; ok && j < nargv; j++) {
           Node *aw = node_get(reflist_at(m->list, j));
           if (aw->kind != NT_POSARG) {
@@ -1610,6 +1727,8 @@ static Type *check_method(FnCtx *c, NodeRef er, Type *expected) {
           }
           Type *pt = j < nfixed ? f->sig->params[j + 1].ty
                                 : f->sig->params[nfixed].ty;
+          if (itb2.n)
+            pt = tsubst(pt, &itb2);
           Node *arg = node_get(aw->a);
           if (arg->kind == NT_INT || arg->kind == NT_FLOAT) {
             if (!literal_adapts_to(c, arg, pt))

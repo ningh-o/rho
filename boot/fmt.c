@@ -339,6 +339,17 @@ static void fmt_expr(F *f, Node *e) {
     return;
   case NT_CALL:
     fmt_expr(f, NG(e->a));
+    if (e->b != NO_REF && node_get(e->b)->list) {
+      // explicit type arguments: name[T1, T2](…)
+      fp(f, "[");
+      RefList *tl = node_get(e->b)->list;
+      for (size_t i = 0; i < reflist_len(tl); i++) {
+        if (i)
+          fp(f, ", ");
+        fmt_type(f, NG(reflist_at(tl, i)));
+      }
+      fp(f, "]");
+    }
     fmt_args(f, e->list);
     return;
   case NT_METHOD:

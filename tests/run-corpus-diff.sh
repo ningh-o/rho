@@ -68,7 +68,20 @@ RHO=${RHO:-./build/rho}
 # was a miscompile by omission), the module-canon table (a skipped
 # registration reloaded the module), and the export tables (a refused
 # row left the name unknown to the checker).
-PINNED=115
+#
+# 115 → 116 with n19_targs: THE WALL LIFTS — call-site type
+# arguments. name[T1, T2](args) names a generic at the call site (a
+# factory's T rides only its return, so argument inference can never
+# bind it); boot gained the grammar (parse lookahead to ']' + '(' on
+# both the plain and the dotted call), the seeded instantiation, and
+# the deep substitution that maps make([]T)/new Vec[T] inside an
+# instance body (the bare-param check missed composite spellings).
+# std grows the generic factory vec_of[T], and the twelve concrete
+# push/insert overloads collapse into one generic form each (the
+# make-substitution law they were waiting for). The case pins the
+# compiler-consumption shape: vec_of[*Pt] instantiates over a type
+# the PROGRAM owns, and the generic push serves it.
+PINNED=116
 
 # one file's differential; echoes "pass" or the failure label
 check_one() {

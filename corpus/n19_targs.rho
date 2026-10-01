@@ -1,0 +1,46 @@
+// n19 — call-site type arguments (the wall lift): a factory's T rides
+// only its return type, so argument inference can never bind it; the
+// explicit name[T] spelling binds. std.collections' vec_of
+// instantiates over a type the PROGRAM owns (the compiler-consumption
+// shape), the collapsed generic push serves element types std cannot
+// name, and inference keeps working where it can (box_of(true)).
+use std.collections;
+
+struct Pt {
+  x: i64,
+  y: i64,
+}
+
+struct Box[T] {
+  v: T,
+}
+
+fn box_of[T](x: T) -> *Box[T] {
+  return new Box[T] { v: x };
+}
+
+fn zeros[T](n: usize) -> []T {
+  return make([]T, n);
+}
+
+fn main() -> i32 {
+  let b = box_of[i64](41);
+  printf("{}\n", b.v + 1);
+  let s = box_of[string]("hi");
+  printf("{}\n", s.v);
+  let c = box_of(true);
+  printf("{}\n", c.v);
+  let mut z = zeros[i64](3);
+  z[0] = 7;
+  printf("{}\n", z[0]);
+  let mut vp = collections.vec_of[*Pt](2);
+  let p1: *Pt = new Pt { x: 3, y: 4 };
+  vp.push(p1);
+  let got: *Pt = vp.get(0);
+  printf("{}\n", got.x + got.y);
+  let mut vi = collections.vec_of[i64](4);
+  vi.push(9);
+  vi.push(10);
+  printf("{}\n", vi.get(1));
+  return 0;
+}

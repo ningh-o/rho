@@ -2494,7 +2494,12 @@ fn expr_ptr_type(e: *Expr, env: *Env, mut prog: *Prog) -> string {
     }
     let bt: string = expr_ptr_type(recv, env, mut prog);
     if len(bt) > 0 {
-      return type_ptr_target(fn_rtype_of(prog, bt + "." + e.name));
+      // the method's return substitutes through the receiver's
+      // instantiation (a bare fn_rtype_of lookup returns the raw
+      // template text — Vec.get's `T` — and every field read off the
+      // call collapsed to constant 0; method_rtype is the wave-2
+      // resolver that binds T from the receiver's bracket args)
+      return type_ptr_target(method_rtype(mut prog, bt, e.name));
     }
     return "";
   }
@@ -5552,7 +5557,7 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
       pout = pout + "    (i64.const 0)\n";
       return pout;
     }
-    let fd7: *FnDef = resolve_call_fd(prog, e, env);
+    let fd7: *FnDef = call_fd_explicit(prog, e, env);
     let mut out: string = "";
     out = out + emit_call_args(mut pool, mut prog, fd7, e, mut env, mut nl);
     out = out + "    call ";
@@ -7400,7 +7405,7 @@ fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
   if e.tag == parse.EX_CALL &&
       rtype_is_pair(call_fn_rtype(prog, e, env)) {
     let mut text: string = "";
-    let fd8: *FnDef = resolve_call_fd(prog, e, env);
+    let fd8: *FnDef = call_fd_explicit(prog, e, env);
     text = text + emit_call_args(mut pool, mut prog, fd8, e, mut env, mut nl);
     text = text + "    call ";
     text = text + ginst_call_name(mut pool, prog, e, env);
@@ -7843,6 +7848,30 @@ fn hole_boolish(arg: *Expr, env: *Env, mut prog: *Prog) -> bool {
     }
     return false;
   }
+  if arg.tag == parse.EX_FIELD {
+    // a field read prints its DECLARED field type: a bool field
+    // spells the word (box_of(true).v — the inferred generic's
+    // payload printed 1/0 once, the bare-tag law again)
+    let mut b5: *Expr = parse.lit(0);
+    match arg.lhs {
+      Option.Some(b6) => {
+        b5 = b6;
+      },
+      Option.None => {},
+    }
+    let bt5: string = field_base_type(b5, env, mut prog);
+    if len(bt5) > 0 {
+      let si5: i64 = st_index(mut prog, st_name_of(bt5));
+      if si5 >= 0 {
+        let fi5: i64 = st_field_index(prog, si5, arg.name);
+        if fi5 >= 0 {
+          return prog.structs[si5 as usize].types[fi5 as usize] ==
+              "bool";
+        }
+      }
+    }
+    return false;
+  }
   if arg.tag == parse.EX_LIT &&
       (arg.name == "true" || arg.name == "false") {
     return true;
@@ -8205,6 +8234,13 @@ fn subst_in_expr(mut e: *Expr, tps: []string, tys: []string) {
     // new Pair[T,T] — the instantiation's args substitute
     e.name = tsub_type(e.name, tps, tys);
   }
+  if e.tag == parse.EX_MAKE {
+    // make([]T, n) — the element type rides the name; a cloned
+    // generic body allocates the CONCRETE element (the wall lift's
+    // collapse law: the concrete push/insert sets retired the day
+    // this line landed)
+    e.name = tsub_type(e.name, tps, tys);
+  }
   match e.lhs {
     Option.Some(l11) => {
       let mut l11R = l11;
@@ -8440,40 +8476,80 @@ fn ginst_bind_tys(fd: *FnDef, e: *Expr, env: *Env,
   return tys;
 }
 
-// a call's return type, overload-aware
+// a call's return type, overload-aware; an explicitly-typed call
+// (name[T1, T2], the wall lift) substitutes its return from the
+// folded spelling — a factory's T appears only here
 fn call_fn_rtype(prog: *Prog, e: *Expr, env: *Env) -> string {
-  if fn_overload_count(prog, e.name) > 1 {
-    let fd3: *FnDef = resolve_call_fd(prog, e, env);
+  let mut cname: string = e.name;
+  let mut explicit: []string = make([]string, 0);
+  if parse.has_targs(cname) {
+    explicit = parse.targs_args(cname);
+    cname = parse.targs_base(cname);
+  }
+  if fn_overload_count(prog, cname) > 1 {
+    // the overload chain resolves on the bare name (the targs ride
+    // outside matching)
+    let fd3: *FnDef = call_fd_explicit(prog, e, env);
     if len(fd3.rtype) > 0 {
       return fd3.rtype;
     }
   }
-  if user_fn_exists(prog, e.name) {
+  if user_fn_exists(prog, cname) {
     // a user fn; a generic's return rides its instantiation's bind
-    let fd0: *FnDef = fn_def_of(prog, e.name);
+    let fd0: *FnDef = fn_def_of(prog, cname);
     if len(fd0.tparams) > 0 {
       let mut tys: []string = ginst_bind_tys(fd0, e, env, prog);
+      if len(explicit) > 0 {
+        tys = explicit;
+      }
       return tsub_type(fd0.rtype, fd0.tparams, tys);
     }
   }
-  return fn_rtype_of(prog, e.name);
+  return fn_rtype_of(prog, cname);
+}
+
+// the call's resolved fn def, on the bare name for explicitly-typed
+// calls (the targs ride outside overload resolution; a bracketed name
+// must never reach the fn-table lookup — the miss indexes prog.fns
+// with best = -1)
+fn call_fd_explicit(prog: *Prog, e: *Expr, env: *Env) -> *FnDef {
+  if parse.has_targs(e.name) {
+    let mut e2: *Expr = parse.call(parse.targs_base(e.name), e.args);
+    return resolve_call_fd(prog, e2, env);
+  }
+  return resolve_call_fd(prog, e, env);
 }
 
 // the wasm callee for a call: a plain user fn emits under its own
 // name; a generic fn instantiates per distinct type binding (the
-// argument types bind T in declaration order) and emits the clone
+// argument types bind T in declaration order) and emits the clone.
+// Explicit type arguments folded into the name (name[T1, T2], the
+// wall lift) bind directly — a factory's T rides only its return
+// type, so argument inference can never bind it
 fn ginst_call_name(mut pool: *Pool, prog: *Prog, e: *Expr,
                    env: *Env) -> string {
-  if !user_fn_exists(prog, e.name) {
-    return "$u_" + sym_name(e.name);
+  let mut cname: string = e.name;
+  let mut explicit: []string = make([]string, 0);
+  if parse.has_targs(cname) {
+    explicit = parse.targs_args(cname);
+    cname = parse.targs_base(cname);
   }
-  let fd: *FnDef = resolve_call_fd(prog, e, env);
+  if !user_fn_exists(prog, cname) {
+    return "$u_" + sym_name(cname);
+  }
+  let mut fd: *FnDef = call_fd_explicit(prog, e, env);
+  if len(explicit) > 0 && len(fd.tparams) != len(explicit) {
+    panic("type-argument arity");
+  }
   let nt: usize = len(fd.tparams);
   if nt == 0 {
     return wasm_fn_name(prog, fd);
   }
   // bind each T from the call's arguments
   let mut tys: []string = ginst_bind_tys(fd, e, env, prog);
+  if len(explicit) > 0 {
+    tys = explicit;
+  }
   let mut key: string = "";
   let mut ki: usize = 0;
   while ki < nt {
@@ -8483,14 +8559,14 @@ fn ginst_call_name(mut pool: *Pool, prog: *Prog, e: *Expr,
   }
   let mut i: usize = 0;
   while i < pool.gi.n {
-    if pool.gi.bases[i] == e.name && pool.gi.keys[i] == key {
-      return "$u_" + sym_name(e.name) + pool.gi.sufs[i];
+    if pool.gi.bases[i] == cname && pool.gi.keys[i] == key {
+      return "$u_" + sym_name(cname) + pool.gi.sufs[i];
     }
     i = i + 1;
   }
   // clone with the binding and enqueue
   let mut clone = parse.clone_fndef(fd);
-  clone.name = e.name + key;
+  clone.name = cname + key;
   let npt: usize = len(fd.ptypes);
   let mut ntypes: []string = make([]string, npt);
   let mut npstr: []bool = make([]bool, npt);
@@ -8518,12 +8594,12 @@ fn ginst_call_name(mut pool: *Pool, prog: *Prog, e: *Expr,
     subst_in_stmt(mut clone.body[ci], fd.tparams, tys);
     ci = ci + 1;
   }
-  pool.gi.bases[pool.gi.n] = e.name;
+  pool.gi.bases[pool.gi.n] = cname;
   pool.gi.keys[pool.gi.n] = key;
   pool.gi.sufs[pool.gi.n] = key;
   pool.gi.fds[pool.gi.n] = clone;
   pool.gi.n = pool.gi.n + 1;
-  return "$u_" + sym_name(e.name) + key;
+  return "$u_" + sym_name(cname) + key;
 }
 
 // a method on a generic type instantiates per receiver binding: the
@@ -9270,7 +9346,6 @@ fn emit_print_fd(mut pool: *Pool, fmt: string, args: []*Expr, mut env: *Env,
           kinds[q] = 4;
         } else {
         let sp = build_string_pair(arg, mut pool, mut env, mut prog, mut nl);
-        eprintf("DBG disp sp={}\n", sp.ok);
         if sp.ok {
           pre = pre + sp.text;
           t_a[q] = sp.a;

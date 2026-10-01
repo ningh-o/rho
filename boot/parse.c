@@ -704,14 +704,57 @@ static NodeRef parse_primary(Parser *p) {
   }
 }
 
+// does a '[' here open an explicit type-argument list? It does when
+// the matching ']' is followed by '(': rho has no index-then-call, so
+// a call parenthesis after the bracket close can only be a call on a
+// type-argumented name (the wall lift: callers name generic types)
+static bool targs_ahead(Parser *p) {
+  size_t i = p->pos; // at '['
+  int depth = 0;
+  while (i < p->m->ntoks) {
+    TokKind k = p->m->toks[i].kind;
+    if (k == T_LBRACK) {
+      depth++;
+    } else if (k == T_RBRACK) {
+      depth--;
+      if (depth == 0)
+        return i + 1 < p->m->ntoks &&
+               p->m->toks[i + 1].kind == T_LPAREN;
+    } else if (k == T_EOF) {
+      return false;
+    }
+    i++;
+  }
+  return false;
+}
+
 static NodeRef parse_postfix(Parser *p) {
   NodeRef e = parse_primary(p);
+  NodeRef targ_holder = NO_REF; // explicit type arguments (NT_APP holder)
   for (;;) {
+    if (e != NO_REF && node_get(e)->kind == NT_PATH && is(p, T_LBRACK) &&
+        targs_ahead(p)) {
+      // name[T1, T2](args) — the targs ride the call's b slot as an
+      // NT_APP holder (list = the type nodes); the argument list
+      // stays positional
+      eat(p); // '['
+      NodeRef th = nnew(p, NT_APP);
+      node_get(th)->list = reflist();
+      for (;;) {
+        reflist_add(node_get(th)->list, parse_type(p));
+        if (!accept(p, T_COMMA))
+          break;
+      }
+      expect(p, T_RBRACK, "to close the type-argument list");
+      targ_holder = th;
+    }
     if (is(p, T_LPAREN)) {
       eat(p);
       NodeRef r = nnew(p, NT_CALL);
       Node *n = node_get(r);
       n->a = e;
+      n->b = targ_holder;
+      targ_holder = NO_REF; // consumed: a chained call carries no targs
       n->list = reflist();
       // builtin make([]T, n): first argument is a type
       if (node_get(e)->kind == NT_PATH &&
@@ -772,12 +815,28 @@ static NodeRef parse_postfix(Parser *p) {
       eat(p);
       Token *t = expect(p, T_IDENT, "as field or method name");
       const char *name = intern(t->text.p, t->text.n);
+      // name[T1, T2](…) — a qualified call with explicit type
+      // arguments (the wall lift): the targs ride the method call's
+      // b slot exactly like a plain call's
+      NodeRef mtarg = NO_REF;
+      if (is(p, T_LBRACK) && targs_ahead(p)) {
+        eat(p); // '['
+        mtarg = nnew(p, NT_APP);
+        node_get(mtarg)->list = reflist();
+        for (;;) {
+          reflist_add(node_get(mtarg)->list, parse_type(p));
+          if (!accept(p, T_COMMA))
+            break;
+        }
+        expect(p, T_RBRACK, "to close the type-argument list");
+      }
       if (is(p, T_LPAREN)) {
         eat(p);
         NodeRef r = nnew(p, NT_METHOD);
         Node *n = node_get(r);
         n->a = e;
         n->name = name;
+        n->b = mtarg;
         n->list = reflist();
         if (!is(p, T_RPAREN)) {
           for (;;) {

@@ -7,15 +7,15 @@
 // compiler's bare *2 — the factories accept capacity 0, and doubling
 // zero stays zero forever.
 //
-// Boot capability note (2026-09-27 probes, see WORKTREE-NOTES.md):
-// `make([]T, n)` cannot be spelled inside a body that gets
-// instantiated (the make intrinsic resolves its bracket type-arg in
-// module scope), and callers cannot name a package's generic type.
-// So the element-type-specific, allocating methods (push, insert)
-// land as concrete per-instantiation overloads beside one
-// struct-parameter method set for everything that does not allocate.
-// When boot carries the make type-arg through instantiation, the
-// concrete sets collapse into the generic forms unchanged.
+// Wall-lift note (2026-10-02): the 2026-09-27 capability wall —
+// `make([]T, n)` unspellable inside an instantiated body, callers
+// unable to name a package's generic type — is gone. Boot (and the
+// self-host behind it) now carries explicit call-site type arguments
+// (`name[T1, T2](args)`) through instantiation and substitutes
+// composite spellings (make([]T), new Vec[T]) inside instance
+// bodies. The concrete push/insert sets collapsed into the generic
+// forms unchanged, exactly as this note once promised, and vec_of[T]
+// below is the generic factory the wall once forbade.
 //
 // Iteration order (D3): a Vec keeps insertion order — index i holds
 // the i-th pushed element until insert/remove shift it. `view` hands
@@ -106,90 +106,16 @@ fn Vec.pop(mut self: *Vec) -> ?T {
 
 // --------------------------------------------- per-element-type layer
 //
-// The allocating methods, concretized for the value element types the
-// tree instantiates today. Each body is the compiler's growth idiom
-// with the *2 + 1 factor (see the header): when the buffer is full,
-// carve one of double-plus-one the capacity and copy the live prefix.
-// Amortized O(1) push, O(n) insert.
+// The allocating methods ride ONE generic form each (the collapse
+// law, 2026-10-02): the receiver instantiation binds T, and the
+// cloned body's make([]T) allocates the concrete element — boot and
+// the self-host both substitute make's element through the instance's
+// binds now, so the twelve concrete per-type overloads retired. The
+// growth factor stays *2 + 1 (see the header: capacity 0 must grow).
 
-fn Vec.push(mut self: *Vec[i32], v: i32) {
+fn Vec.push(mut self: *Vec, v: T) {
   if self.n == self.cap {
-    let mut big: []i32 = make([]i32, self.cap * 2 + 1);
-    let mut i: usize = 0;
-    while i < self.n {
-      big[i] = self.data[i];
-      i = i + 1;
-    }
-    self.data = big;
-    self.cap = self.cap * 2 + 1;
-  }
-  self.data[self.n] = v;
-  self.n = self.n + 1;
-}
-
-fn Vec.push(mut self: *Vec[i64], v: i64) {
-  if self.n == self.cap {
-    let mut big: []i64 = make([]i64, self.cap * 2 + 1);
-    let mut i: usize = 0;
-    while i < self.n {
-      big[i] = self.data[i];
-      i = i + 1;
-    }
-    self.data = big;
-    self.cap = self.cap * 2 + 1;
-  }
-  self.data[self.n] = v;
-  self.n = self.n + 1;
-}
-
-fn Vec.push(mut self: *Vec[usize], v: usize) {
-  if self.n == self.cap {
-    let mut big: []usize = make([]usize, self.cap * 2 + 1);
-    let mut i: usize = 0;
-    while i < self.n {
-      big[i] = self.data[i];
-      i = i + 1;
-    }
-    self.data = big;
-    self.cap = self.cap * 2 + 1;
-  }
-  self.data[self.n] = v;
-  self.n = self.n + 1;
-}
-
-fn Vec.push(mut self: *Vec[u8], v: u8) {
-  if self.n == self.cap {
-    let mut big: []u8 = make([]u8, self.cap * 2 + 1);
-    let mut i: usize = 0;
-    while i < self.n {
-      big[i] = self.data[i];
-      i = i + 1;
-    }
-    self.data = big;
-    self.cap = self.cap * 2 + 1;
-  }
-  self.data[self.n] = v;
-  self.n = self.n + 1;
-}
-
-fn Vec.push(mut self: *Vec[string], v: string) {
-  if self.n == self.cap {
-    let mut big: []string = make([]string, self.cap * 2 + 1);
-    let mut i: usize = 0;
-    while i < self.n {
-      big[i] = self.data[i];
-      i = i + 1;
-    }
-    self.data = big;
-    self.cap = self.cap * 2 + 1;
-  }
-  self.data[self.n] = v;
-  self.n = self.n + 1;
-}
-
-fn Vec.push(mut self: *Vec[bool], v: bool) {
-  if self.n == self.cap {
-    let mut big: []bool = make([]bool, self.cap * 2 + 1);
+    let mut big: []T = make([]T, self.cap * 2 + 1);
     let mut i: usize = 0;
     while i < self.n {
       big[i] = self.data[i];
@@ -203,59 +129,7 @@ fn Vec.push(mut self: *Vec[bool], v: bool) {
 }
 
 // insert at i, shifting the tail right; i <= n (i == n appends)
-fn Vec.insert(mut self: *Vec[i32], i: usize, v: i32) {
-  if i > self.n {
-    panic("index out of bounds");
-  }
-  self.push(v);
-  let mut j: usize = self.n - 1;
-  while j > i {
-    self.data[j] = self.data[j - 1];
-    j = j - 1;
-  }
-  self.data[i] = v;
-}
-
-fn Vec.insert(mut self: *Vec[i64], i: usize, v: i64) {
-  if i > self.n {
-    panic("index out of bounds");
-  }
-  self.push(v);
-  let mut j: usize = self.n - 1;
-  while j > i {
-    self.data[j] = self.data[j - 1];
-    j = j - 1;
-  }
-  self.data[i] = v;
-}
-
-fn Vec.insert(mut self: *Vec[usize], i: usize, v: usize) {
-  if i > self.n {
-    panic("index out of bounds");
-  }
-  self.push(v);
-  let mut j: usize = self.n - 1;
-  while j > i {
-    self.data[j] = self.data[j - 1];
-    j = j - 1;
-  }
-  self.data[i] = v;
-}
-
-fn Vec.insert(mut self: *Vec[u8], i: usize, v: u8) {
-  if i > self.n {
-    panic("index out of bounds");
-  }
-  self.push(v);
-  let mut j: usize = self.n - 1;
-  while j > i {
-    self.data[j] = self.data[j - 1];
-    j = j - 1;
-  }
-  self.data[i] = v;
-}
-
-fn Vec.insert(mut self: *Vec[string], i: usize, v: string) {
+fn Vec.insert(mut self: *Vec, i: usize, v: T) {
   if i > self.n {
     panic("index out of bounds");
   }
@@ -297,6 +171,16 @@ pub fn vec_str(cap: usize) -> *Vec[string] {
 
 pub fn vec_bool(cap: usize) -> *Vec[bool] {
   return new Vec[bool] { data: make([]bool, cap), n: 0, cap: cap };
+}
+
+// the generic factory (the wall lift's payoff, 2026-10-02): a caller
+// names any element type it owns with explicit type arguments at the
+// call site — vec_of[*Expr](64) — because a factory's T rides only
+// its return type and argument inference can never bind it. The body
+// instantiates Vec[T] with T bound by this fn's own parameter; boot
+// substitutes make([]T) and new Vec[T] through the instance's binds.
+pub fn vec_of[T](cap: usize) -> *Vec[T] {
+  return new Vec[T] { data: make([]T, cap), n: 0, cap: cap };
 }
 
 // ------------------------------------------------------------ tests

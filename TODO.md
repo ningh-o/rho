@@ -1300,6 +1300,36 @@ section — no placeholder stages. boot is the reference compiler.
       pointers, not content). Every divergence is documented in the
       package headers themselves; nothing to reconcile. T4.3's
       remaining scope is now exactly the capability wall.
+      THE WALL LIFTS (2026-10-02, the product-language ruling):
+      call-site type arguments — `name[T1, T2](args)` — land in both
+      compilers, and the compiler can now name package generic types.
+      Boot: the grammar (a '[' after a callee opens the type-argument
+      list when the matching ']' is followed by '(' — rho has no
+      index-then-call; both the plain and the dotted call spell it),
+      the seeded instantiation (a factory's T rides only its return,
+      so argument inference can never bind it), and the DEEP
+      substitution that maps make([]T)/new Vec[T] inside an instance
+      body (the bare-param check missed composite spellings — the
+      make-in-factory gap). The method diagnostic's mut-blind retry
+      learned the same substitution (the generic push once reported
+      "expected T, found string" where the law says the element
+      type). The self-host rides the same law spelled the new-T[A,B]
+      way: the targs fold into the callee's name text and the
+      qualifier (both walkers), the checker, and the emitter's
+      instantiation key split the same spelling; method returns off
+      instantiated receivers resolve through method_rtype (a bare
+      fn_rtype_of once collapsed every field read off a targs call to
+      constant 0), and hole_boolish learned EX_FIELD (a bool field
+      printed 1/0 — the bare-tag law again). std grows the generic
+      factory vec_of[T], and the twelve concrete push/insert
+      overloads collapse into one generic form each — the collapse
+      the old capability note promised the day make substitutes.
+      Corpus 115 → 116 with n19_targs: the compiler-consumption shape
+      (vec_of[*Pt] over a type the PROGRAM owns, the generic push
+      serving it, inference still binding where it can). Chain LEG4
+      GREEN; suites 573/0; gate green. NEXT (W4): the compiler's
+      pointer tables consume vec_of — the payoff that was waiting on
+      this wall.
       CONSUMPTION WAVE 1 LANDED (2026-10-01, after the deep hunt):
       parse_pat's binders ride std.collections' Vec[string] — the
       fixed cap (make([]string, 8), never grown) is gone — and the

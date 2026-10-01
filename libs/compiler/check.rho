@@ -30,7 +30,50 @@ pub fn name_known(prog: *Prog, name: string) -> bool {
     }
     i = i + 1;
   }
+  // name[T1, T2] — a generic fn named with explicit type arguments
+  // (the wall lift: callers name generic types): the base must be a
+  // fn and the argument count must match its declaration (the emitter
+  // instantiates from the folded spelling)
+  if parse.has_targs(name) {
+    let base: string = parse.targs_base(name);
+    let mut j: usize = 0;
+    while j < len(prog.fns) {
+      if prog.fns[j].name == base && len(prog.fns[j].tparams) > 0 {
+        let mut ob: usize = 0;
+        while ob < len(name) {
+          if name[ob] == 91 {
+            break;
+          }
+          ob = ob + 1;
+        }
+        return targs_arg_count(name, ob) ==
+            (len(prog.fns[j].tparams) as i64);
+      }
+      j = j + 1;
+    }
+  }
   return false;
+}
+
+// depth-0 commas inside name[(ob+1)..len-1], plus one — the folded
+// type-argument count
+fn targs_arg_count(name: string, ob: usize) -> i64 {
+  let mut n: i64 = 1;
+  let mut depth: i64 = 0;
+  let mut i: usize = ob + 1;
+  while i + 1 < len(name) {
+    if name[i] == 91 {
+      depth = depth + 1;
+    }
+    if name[i] == 93 {
+      depth = depth - 1;
+    }
+    if name[i] == 44 && depth == 0 {
+      n = n + 1;
+    }
+    i = i + 1;
+  }
+  return n;
 }
 
 pub fn enum_known(prog: *Prog, name: string) -> bool {
