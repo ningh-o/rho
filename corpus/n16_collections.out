@@ -1,0 +1,15 @@
+v len=3 get1=10 has20=true
+pop=20
+after-pop len=2 first=30
+view sum=10
+str0=alpha strn=2
+old1=none
+old2=2
+keys=abc len=3
+has_a=true
+get b=5
+get zz=none
+rm a=1
+after-rm len=2 has_a=false
+ikeys -2 0 7
+isum=100

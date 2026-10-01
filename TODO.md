@@ -1214,6 +1214,32 @@ section — no placeholder stages. boot is the reference compiler.
       the undefined $u_len. FIX: a MUT let materializes its own pair
       (copy the source's slots); an immutable view keeps the shared
       binding. Leg 4 green, suite/corpus green.
+      STD DIFFERENTIAL PIN (2026-10-01, user ruling: prove, don't
+      assume): n16_collections puts std.collections through the
+      differential — the loader's MODS bake now carries the std/ tree
+      (repo-relative paths), and the program pins the Vec and Map
+      surfaces through the clones (push/get/contains/remove/pop, the
+      ?V option matches, bool words, D3's ascending-key iteration).
+      Four emitter gaps fell out, all the same family (a method
+      return resolved only by the exact receiver spelling): (1) the
+      ST_LET slice-call gate read EX_CALL only — v.view() bound
+      scalar and len(xs) fell through to an undefined $u_len (the
+      same symptom as the chain red above); (2) the ST_LET enum arm
+      and expr_enum_type's method arm missed ?V returns (norm_enum
+      does not read the ? spelling — ?T is Option sugar, §9), so a
+      let bound from m.insert(...) fell scalar and its match loaded
+      the box pointer as the tag and matched nothing; (3)
+      build_string_pair's method arm resolved the declared return
+      star-blind and targeted the template — it now routes through
+      method_rtype and ginst_method_target; (4) ginst_method_target
+      cloned the FIRST overload sharing the method name (StringMap.
+      insert has one concrete overload per value type — the [string]
+      body landed under the _i32 key, 5 params vs 4) — the overload
+      whose receiver instantiation matches the call now wins, and
+      method_rtype's scan sees bare-registered methods. Floor 113.
+      REMAINING for T4.3: the literal extraction review (std.
+      collections vs the compiler's own growth tables) and the
+      compiler consuming the packages.
 - [ ] **T4.4** std.io: read_line, file read/write wrappers over the raw
       LANDED 2026-09-27 (t44, reviewed and merged): fd_read/fd_close/path_open + four raw wrappers in the wasi tail; the prelude carries std.io's private __ window; read_line/read_file/write_file over Result; the verb gains // in: and --dir; the prelude's generic-instance chains reset per program (a real in-process compile fix the review caught); eleven io fixtures.
       tails.

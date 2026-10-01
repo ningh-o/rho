@@ -1,0 +1,78 @@
+// exit: 0
+// tranche-3: std.collections through BOTH compilers (T4.3). The Vec
+// and Map surfaces the generics wave proved at the probe now pin the
+// differential: push/get/contains/remove/pop through the clones, the
+// ?V option matches, bool words, and D3's ascending-key iteration.
+use std.collections;
+
+fn main() -> i32 {
+  // the Vec half
+  let mut v = collections.vec_i32(2);
+  v.push(30);
+  v.push(10);
+  v.push(20);
+  printf("v len={} get1={} has20={}\n", v.len(), v.get(1), v.contains(20));
+  match v.pop() {
+    Option.Some(x) => printf("pop={}\n", x),
+    Option.None => printf("pop=none\n"),
+  }
+  printf("after-pop len={} first={}\n", v.len(), v.remove(0));
+  let xs = v.view();
+  let mut sum: i32 = 0;
+  let mut i: usize = 0;
+  while i < len(xs) {
+    sum += xs[i];
+    i += 1;
+  }
+  printf("view sum={}\n", sum);
+  let mut sv = collections.vec_str(2);
+  sv.push("alpha");
+  sv.push("beta");
+  printf("str0={} strn={}\n", sv.get(0), sv.len());
+
+  // the map half: D3 — ascending by key regardless of insertion order
+  let mut m = collections.smap_i32(2);
+  let old1 = m.insert("b", 2);
+  m.insert("a", 1);
+  m.insert("c", 3);
+  let old2 = m.insert("b", 5);
+  match old1 {
+    Option.Some(prev) => printf("old1={}\n", prev),
+    Option.None => printf("old1=none\n"),
+  }
+  match old2 {
+    Option.Some(prev) => printf("old2={}\n", prev),
+    Option.None => printf("old2=none\n"),
+  }
+  printf("keys={}{}{} len={}\n", m.key_at(0), m.key_at(1), m.key_at(2),
+         m.len());
+  printf("has_a={}\n", m.contains("a"));
+  match m.get("b") {
+    Option.Some(x) => printf("get b={}\n", x),
+    Option.None => printf("get b=none\n"),
+  }
+  match m.get("zz") {
+    Option.Some(x) => printf("get zz={}\n", x),
+    Option.None => printf("get zz=none\n"),
+  }
+  match m.remove("a") {
+    Option.Some(x) => printf("rm a={}\n", x),
+    Option.None => printf("rm a=none\n"),
+  }
+  printf("after-rm len={} has_a={}\n", m.len(), m.contains("a"));
+
+  // the i64 map: negative keys order below positives
+  let mut im = collections.imap_i64(2);
+  im.insert(7, 70);
+  im.insert(0 - 2, 20);
+  im.insert(0, 10);
+  printf("ikeys {} {} {}\n", im.key_at(0), im.key_at(1), im.key_at(2));
+  let mut acc: i64 = 0;
+  let mut j: usize = 0;
+  while j < im.len() {
+    acc += im.val_at(j);
+    j += 1;
+  }
+  printf("isum={}\n", acc);
+  return 0;
+}

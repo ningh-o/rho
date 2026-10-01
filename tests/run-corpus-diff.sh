@@ -37,7 +37,20 @@ RHO=${RHO:-./build/rho}
 # reads None (§1.1's wrc-keeps-headers law, graded on both compilers;
 # the case goes red the day either allocator starts recycling blocks
 # without honoring the weak header).
-PINNED=112
+#
+# 112 → 113 with n16_collections: std.collections rides the
+# differential — the loader bakes the std/ tree into MODS, and the
+# program pins the Vec and Map surfaces through the clones (push/
+# get/contains/remove/pop, the ?V option matches, bool words, D3's
+# ascending-key iteration). Four emitter gaps fell out: the ST_LET
+# slice-call gate and enum arm now read method returns through the
+# instantiation (an EX_MCALL init bound scalar once — len(view) fell
+# through to an undefined $u_len and a ?V let's match matched
+# nothing), build_string_pair's method arm resolves the declared
+# return via method_rtype and targets the per-instantiation clone,
+# ginst_method_target picks the overload whose receiver instantiation
+# matches the call, and method_rtype sees bare-registered methods.
+PINNED=113
 
 # one file's differential; echoes "pass" or the failure label
 check_one() {
@@ -47,11 +60,20 @@ check_one() {
   sets=()
   src=$(cat "$f")
   # the module tree rides MODS for the self-host side (boot reads the
-  # same tree from disk): every rho file under the corpus's packages
+  # same tree from disk): every rho file under the corpus's packages,
+  # plus the reserved std/ tree (paths stay repo-relative — the
+  # loader's std resolution looks up "std/..." in the baked tree)
   mods=""
   for mf in corpus/geom/*.rho(N) corpus/geom/*/*.rho(N) corpus/web/*.rho(N) corpus/pk/*.rho(N) corpus/pk/*/*.rho(N) corpus/pk/*/*/*.rho(N); do
     if [ -f "$mf" ]; then
       mods="$mods@MOD@ ${mf#corpus/}
+$(cat "$mf")
+"
+    fi
+  done
+  for mf in std/*.rho(N) std/*/*.rho(N) std/*/*/*.rho(N); do
+    if [ -f "$mf" ]; then
+      mods="$mods@MOD@ ${mf}
 $(cat "$mf")
 "
     fi

@@ -2053,9 +2053,17 @@ fn method_rtype(mut prog: *Prog, bt: string, mname: string) -> string {
     let nm3: string = prog.fns[fi3].name;
     let nl3: i64 = len(nm3) as i64;
     let ml3: i64 = len(mfull) as i64;
-    if nl3 > ml3 {
-      if nm3[((nl3 - ml3 - 1) as usize)..(nl3 as usize)] == "." + mfull {
-        hit = fi3 as i64;
+    if nm3 == mfull {
+      // bare registration (the concrete per-value-type overloads in
+      // std/collections ride their bare dotted names) — without this
+      // arm the scan only saw module-qualified spellings and every
+      // ?V these methods returned went unseen
+      hit = fi3 as i64;
+    } else {
+      if nl3 > ml3 {
+        if nm3[((nl3 - ml3 - 1) as usize)..(nl3 as usize)] == "." + mfull {
+          hit = fi3 as i64;
+        }
       }
     }
     fi3 = fi3 + 1;
@@ -2122,9 +2130,18 @@ fn expr_enum_type(e: *Expr, env: *Env, mut prog: *Prog) -> string {
     }
     let bt: string = expr_ptr_type(recv, env, mut prog);
     if len(bt) > 0 {
-      let rt: string = fn_rtype_of(prog, bt + "." + e.name);
-      if en_index(mut prog, rt) >= 0 {
+      // the declared return resolves through the instantiation (the
+      // method_rtype law) — the star-blind dotted lookup once hid
+      // every ?V a clone method returned, and a let bound from it
+      // fell to the scalar lane (its match then matched nothing)
+      let rt: string = norm_enum(method_rtype(mut prog, bt, e.name));
+      if len(rt) > 0 && (en_index(mut prog, rt) >= 0 || rt == "Option" ||
+          rt == "Result") {
         return rt;
+      }
+      if len(rt) > 1 && rt[0] == 63 {
+        // ?T is Option sugar (type-system §9) — the option-box face
+        return "Option";
       }
     }
     return "";
@@ -7615,7 +7632,11 @@ fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
         text = text + emit_expr(mut pool, recv, mut env, mut prog, mut nl);
       }
     }
-    if !rtype_is_pair(fn_rtype_of(prog, tname + "." + e.name)) {
+    // the declared return resolves through the instantiation (the
+    // method_rtype law — the star-blind dotted lookup once returned
+    // "" for every *Vec[i32] receiver and the pair never parked)
+    let mrty2: string = method_rtype(mut prog, tname, e.name);
+    if !rtype_is_pair(mrty2) {
       return bad;
     }
     let mut k: usize = 0;
@@ -7623,10 +7644,22 @@ fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
       text = text + emit_arg(mut pool, e.args[k], mut env, mut prog, mut nl);
       k = k + 1;
     }
-    text = text + "    call $u_";
-    text = text + tname;
-    text = text + "_";
-    text = text + e.name;
+    // the call target: a generic-instantiation receiver rides its
+    // clone (ginst_method_target already spells the $u_ name), a
+    // plain receiver the template
+    let mut callyn2: string = "";
+    if open_bracket(tname) >= 0 {
+      let gi_s: string = ginst_method_target(mut pool, mut prog, tname,
+                                             e.name);
+      if len(gi_s) > 0 {
+        callyn2 = gi_s;
+      }
+    }
+    if len(callyn2) == 0 {
+      callyn2 = "$u_" + tname + "_" + e.name;
+    }
+    text = text + "    call ";
+    text = text + callyn2;
     text = text + "\n";
     text = text + "    (local.set ";
     text = text + (nl.v + 1).to_str();
@@ -8571,7 +8604,32 @@ fn ginst_method_target(mut pool: *Pool, mut prog: *Prog, rtype: string,
     }
     i = i + 1;
   }
-  let fdm: *FnDef = fn_def_of(prog, dfull);
+  // the overload whose receiver instantiation matches the call's:
+  // the concrete per-value-type overloads share the name, and the
+  // first match once cloned the [string] body for an [i32] call
+  // (the pair lanes of the wrong value type — 5 params vs 4)
+  let args0: string = rt[((ob as usize) + 1)..(len(rt) - 1)];
+  let mut fdm: *FnDef = fn_def_of(prog, dfull);
+  let mut fi4: usize = 0;
+  while fi4 < len(prog.fns) {
+    let cand: *FnDef = prog.fns[fi4];
+    let cn: string = cand.name;
+    let cok: bool = cn == mfull ||
+        (len(cn) > len(mfull) &&
+         cn[((len(cn) - len(mfull) - 1) as usize)..len(cn)] ==
+             "." + mfull);
+    if cok && len(cand.ptypes) > 0 {
+      let rcp: string = cand.ptypes[0];
+      let rob: i64 = open_bracket(rcp);
+      if rob >= 0 {
+        let rargs: string = rcp[((rob as usize) + 1)..(len(rcp) - 1)];
+        if rargs == args0 {
+          fdm = cand;
+        }
+      }
+    }
+    fi4 = fi4 + 1;
+  }
   let mut clone = parse.clone_fndef(fdm);
   clone.name = mfull + key;
   let npt: usize = len(fdm.ptypes);
@@ -9973,6 +10031,11 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                     nl.v = nl.v + 1;
                   } else {
                   let mut es: string = norm_enum(st.fmt);
+                  if len(es) > 1 && es[0] == 63 {
+                    // an annotated ?T let rides the option-box face
+                    // (the ? spelling is Option sugar, §9)
+                    es = "Option";
+                  }
                   if len(es) == 0 || (en_index(mut prog, es) < 0 &&
                       es != "Option" && es != "Result") {
                     es = expr_enum_type(e, env, mut prog);
@@ -10121,6 +10184,28 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                     scrt = call_fn_rtype(prog, e, env);
                     if len(scrt) >= 2 && scrt[0] == 91 && scrt[1] == 93 {
                       is_slice_call = true;
+                    }
+                  } else {
+                    if e.tag == parse.EX_MCALL {
+                      // a method call's slice return resolves through
+                      // the instantiation (the method_rtype law) —
+                      // v.view() bound scalar once and len(xs) fell
+                      // through to an undefined $u_len
+                      let mut sr0: *Expr = parse.lit(0);
+                      match e.lhs {
+                        Option.Some(r0) => {
+                          sr0 = r0;
+                        },
+                        Option.None => {},
+                      }
+                      let bt0: string = expr_ptr_type(sr0, env, mut prog);
+                      if len(bt0) > 0 {
+                        scrt = method_rtype(mut prog, bt0, e.name);
+                        if len(scrt) >= 2 && scrt[0] == 91 &&
+                            scrt[1] == 93 {
+                          is_slice_call = true;
+                        }
+                      }
                     }
                   }
                   if is_slice_call {
