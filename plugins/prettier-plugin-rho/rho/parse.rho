@@ -94,6 +94,8 @@ pub struct Stmt {
   sub: ?*Stmt,     // defer: the deferred statement
   path: []string,  // fstore: the dotted field path
   marms: []*MatchArm, // match arms (ST_MATCH)
+  line: i32,       // the first token's line (fmt replays comments above)
+  end_line: i32,   // the last consumed token's line (fmt rides the tail)
 }
 
 fn mk_stmt(tag: i32) -> *Stmt {
@@ -101,7 +103,7 @@ fn mk_stmt(tag: i32) -> *Stmt {
                     name: "", val: Option.None, ret: 0,
                     body: make([]*Stmt, 0), body2: make([]*Stmt, 0),
                     sub: Option.None, path: make([]string, 0),
-                    marms: make([]*MatchArm, 0) };
+                    marms: make([]*MatchArm, 0), line: 0, end_line: 0 };
 }
 
 // verbatim deep clones (other modules rebind type texts over them)
@@ -158,7 +160,8 @@ pub fn clone_stmt(st: *Stmt) -> *Stmt {
                        body: make([]*Stmt, len(st.body)),
                        body2: make([]*Stmt, len(st.body2)),
                        sub: st.sub, path: st.path,
-                       marms: st.marms };
+                       marms: st.marms, line: st.line,
+                       end_line: st.end_line };
   let mut k: usize = 0;
   while k < len(st.args) {
     out.args[k] = clone_expr(st.args[k]);
@@ -200,7 +203,8 @@ pub fn clone_fndef(fd: *FnDef) -> *FnDef {
                      pstr: fd.pstr, pslc: fd.pslc,
                      ptypes: fd.ptypes, pvar: fd.pvar,
                      rtype: fd.rtype,
-                     tparams: fd.tparams, body: nbody };
+                     tparams: fd.tparams, body: nbody,
+                     line: fd.line, end_line: fd.end_line };
 }
 
 pub fn clo_expr(params: []string, body: []*Stmt,
@@ -375,6 +379,8 @@ pub struct FnDef {
   tparams: []string, // the [T]/[T: Bound] type parameters (names only)
   body: []*Stmt,
   ispub: bool,      // `pub fn` — the module export surface
+  line: i32,        // the fn token's line (fmt replays comments above)
+  end_line: i32,    // the last consumed token's line (fmt rides the tail)
 }
 
 pub struct Prog {
@@ -408,6 +414,16 @@ pub struct Prog {
   xitem: []string,
   xtar: []string,
   nx: usize,
+  // the file's comments, in source order (the formatter replays
+  // them — fmt may not drop any comment); empty when the caller
+  // lexed through lex() instead of scan(). Two parallel arrays —
+  // the const-table idiom — because a cross-module struct type
+  // cannot spell itself in the consumer's annotations
+  ctexts: []string,
+  clines: []i64,
+  ncmts: usize,
+  cline: []i64, // each const/static's first-token line (fmt replay)
+  clend: []i64, // its last-consumed-token line
 }
 
 pub fn make_expr(count: *Expr) -> *Expr {
@@ -1690,7 +1706,20 @@ fn parse_block(mut c: *PCur) -> []*Stmt {
 }
 
 // one statement: printf/let/return/if/while
+// the statement entry stamps the replay lines: fmt may not drop a
+// comment, and a comment above a statement rides its first token's
+// line while a same-line note rides the last consumed token's line
 fn parse_stmt(mut c: *PCur) -> *Stmt {
+  let line0: i32 = tk(c).line;
+  let mut st: *Stmt = parse_stmt_i(mut c);
+  st.line = line0;
+  if c.pos > 0 {
+    st.end_line = c.toks[c.pos - 1].line;
+  }
+  return st;
+}
+
+fn parse_stmt_i(mut c: *PCur) -> *Stmt {
   let t = tk(c);
   if t.kind == lex.TK_KEYWORD && t.text == "return" {
     tkadv(mut c);
@@ -2313,6 +2342,13 @@ pub fn fold_const(e: *Expr, names: []string, vals: []i64,
 }
 
 pub fn parse(toks: []*Tok, src: string) -> *Prog {
+  // the module-load path carries no comment table (modules never
+  // ride the formatter; the FMT face lexes through scan())
+  return parse_full(toks, src, make([]string, 0), make([]i64, 0));
+}
+
+pub fn parse_full(toks: []*Tok, src: string, ctexts: []string,
+                  clines: []i64) -> *Prog {
   // the pointer tables ride the package Vec through the wall lift's
   // explicit type arguments — vec_of[*T](cap) — the consumption the
   // capability wall once forbade; push carries the growth law (the
@@ -2332,6 +2368,9 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
   let mut cstatic = collections.vec_bool(64);
   let mut ctypes = collections.vec_str(64);
   let mut cmuts = collections.vec_bool(64);
+  // the replay lines: fmt rides them to place comments
+  let mut cline = collections.vec_i64(64);
+  let mut clend = collections.vec_i64(64);
   let mut cexprs = collections.vec_of[*Expr](64);
   let mut nc: usize = 0;
   let mut structs = collections.vec_of[*StructDef](32);
@@ -2660,6 +2699,7 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
     if (t.kind == lex.TK_KEYWORD && t.text == "const") ||
        (t.kind == lex.TK_KEYWORD && t.text == "static") {
       let is_static: bool = t.text == "static";
+      let cline0: i32 = t.line;
       tkadv(mut c);
       // static mut NAME — the mut is a soft word here too
       let mut is_smut: bool = false;
@@ -2696,6 +2736,14 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
           ctypes.push(cty);
           cmuts.push(is_smut);
           cexprs.push(ie);
+          // the replay lines: the const token opened the line, the
+          // initializer's last token closes it
+          cline.push(cline0 as i64);
+          if c.pos > 0 {
+            clend.push(c.toks[c.pos - 1].line as i64);
+          } else {
+            clend.push(cline0 as i64);
+          }
           nc = nc + 1;
         }
         eat_punct(mut c, 59);
@@ -2771,6 +2819,7 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
       continue;
     }
     if t.kind == lex.TK_KEYWORD && t.text == "fn" {
+      let fnline: i32 = t.line;
       tkadv(mut c);
       let nm = tk(c);
       if nm.kind == lex.TK_KEYWORD || nm.kind == lex.TK_IDENT {
@@ -2869,6 +2918,10 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
         }
         body = bstmts[0..bn];
       }
+      let mut endl: i32 = 0;
+      if c.pos > 0 {
+        endl = c.toks[c.pos - 1].line;
+      }
       let fd = new FnDef { name: fname, params: params,
                            pstr: pstr[0..len(params)],
                            pslc: pslc[0..len(params)],
@@ -2876,7 +2929,8 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
                            pvar: pvar[0..len(params)],
                            rtype: rtype,
                            tparams: tparams[0..ntp],
-                           body: body, ispub: pending_pub };
+                           body: body, ispub: pending_pub,
+                           line: fnline, end_line: endl };
       pending_pub = false;
       fns.push(fd);
       nf = nf + 1;
@@ -2900,6 +2954,9 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
                         ntraits: ntr, perrs: c.perrs,
                         usepath: uses.view(), usealias: ualias.view(),
                         usepub: upub.view(), nuses: nu,
+                        ctexts: ctexts, clines: clines,
+                        ncmts: len(ctexts),
+                        cline: cline.view(), clend: clend.view(),
                         modcan: make([]string, 16), nmods: 0,
                         xown: make([]string, 128),
                         xitem: make([]string, 128),

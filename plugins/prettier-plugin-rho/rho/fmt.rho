@@ -352,7 +352,37 @@ fn ind_of(depth: usize) -> string {
   return out;
 }
 
-pub fn fmt_line(st: *Stmt, depth: usize) -> string {
+// ---- the comment replay (boot's fmt.c law: fmt may not drop a
+// comment) ---- the cursor walks the Prog's comment table in source
+// order; flush prints everything above a line at the current indent,
+// and a comment on a construct's own last line rides as its trailing
+// note. The monotonic cursor mirrors boot's g_ci.
+pub struct CmtCur {
+  i: usize,
+}
+
+fn cmt_flush(prog: *Prog, mut cur: *CmtCur, before_line: i64,
+             depth: usize) -> string {
+  let mut out: string = "";
+  let ind: string = ind_of(depth);
+  while cur.i < prog.ncmts && prog.clines[cur.i] < before_line {
+    out = out + ind + prog.ctexts[cur.i] + "\n";
+    cur.i = cur.i + 1;
+  }
+  return out;
+}
+
+// the block's last replay line: its final statement's end (an empty
+// block has nothing riding above its closer)
+fn block_end(nodes: []*Stmt) -> i64 {
+  if len(nodes) == 0 {
+    return 0 - 1;
+  }
+  return nodes[len(nodes) - 1].end_line as i64;
+}
+
+pub fn fmt_line(prog: *Prog, mut cur: *CmtCur, st: *Stmt,
+                depth: usize) -> string {
   let ind: string = ind_of(depth);
   if st.tag == parse.ST_LET {
     let mut out: string = ind + "let ";
@@ -446,7 +476,8 @@ pub fn fmt_line(st: *Stmt, depth: usize) -> string {
   }
   if st.tag == parse.ST_BLOCK {
     let mut out: string = ind + "{\n";
-    out = out + fmt_block(st.body, depth + 1);
+    out = out + fmt_block(prog, mut cur, st.body, depth + 1);
+    out = out + cmt_flush(prog, mut cur, block_end(st.body), depth + 1);
     return out + ind + "}\n";
   }
   if st.tag == parse.ST_IF {
@@ -458,7 +489,8 @@ pub fn fmt_line(st: *Stmt, depth: usize) -> string {
       Option.None => {},
     }
     out = out + " {\n";
-    out = out + fmt_block(st.body, depth + 1);
+    out = out + fmt_block(prog, mut cur, st.body, depth + 1);
+    out = out + cmt_flush(prog, mut cur, block_end(st.body), depth + 1);
     out = out + ind;
     out = out + "}";
     // else-if chains ride inline; a plain else takes one space
@@ -474,14 +506,16 @@ pub fn fmt_line(st: *Stmt, depth: usize) -> string {
         Option.None => {},
       }
       out = out + " {\n";
-      out = out + fmt_block(nx.body, d + 1);
+      out = out + fmt_block(prog, mut cur, nx.body, d + 1);
+      out = out + cmt_flush(prog, mut cur, block_end(nx.body), d + 1);
       out = out + ind_of(d);
       out = out + "}";
       tail = nx.body2;
     }
     if len(tail) > 0 {
       out = out + " else {\n";
-      out = out + fmt_block(tail, depth + 1);
+      out = out + fmt_block(prog, mut cur, tail, depth + 1);
+      out = out + cmt_flush(prog, mut cur, block_end(tail), depth + 1);
       out = out + ind;
       out = out + "}";
     }
@@ -501,7 +535,8 @@ pub fn fmt_line(st: *Stmt, depth: usize) -> string {
       Option.None => {},
     }
     out = out + " {\n";
-    out = out + fmt_block(st.body, depth + 1);
+    out = out + fmt_block(prog, mut cur, st.body, depth + 1);
+    out = out + cmt_flush(prog, mut cur, block_end(st.body), depth + 1);
     return out + ind + "}\n";
   }
   if st.tag == parse.ST_LOOP {
@@ -511,7 +546,8 @@ pub fn fmt_line(st: *Stmt, depth: usize) -> string {
       out = out + ": ";
     }
     out = out + "loop {\n";
-    out = out + fmt_block(st.body, depth + 1);
+    out = out + fmt_block(prog, mut cur, st.body, depth + 1);
+    out = out + cmt_flush(prog, mut cur, block_end(st.body), depth + 1);
     return out + ind + "}\n";
   }
   if st.tag == parse.ST_BREAK {
@@ -529,7 +565,7 @@ pub fn fmt_line(st: *Stmt, depth: usize) -> string {
   if st.tag == parse.ST_DEFER {
     match st.sub {
       Option.Some(inner) => {
-        let inner_text: string = fmt_line(inner, 0);
+        let inner_text: string = fmt_line(prog, mut cur, inner, 0);
         // the inner carries its own newline; swap its indent for the
         // defer prefix on the first line
         let mut body: string = inner_text;
@@ -546,17 +582,30 @@ pub fn fmt_line(st: *Stmt, depth: usize) -> string {
   return ind + "\n";
 }
 
-pub fn fmt_block(nodes: []*Stmt, depth: usize) -> string {
+pub fn fmt_block(prog: *Prog, mut cur: *CmtCur, nodes: []*Stmt,
+                 depth: usize) -> string {
   let mut out: string = "";
   let mut i: usize = 0;
   while i < len(nodes) {
-    out = out + fmt_line(nodes[i], depth);
+    let st: *Stmt = nodes[i];
+    // comments above the statement print at this depth
+    out = out + cmt_flush(prog, mut cur, st.line as i64, depth);
+    let mut line: string = fmt_line(prog, mut cur, st, depth);
+    // a comment on the statement's own last line rides as a
+    // trailing note: back over the newline, append, restore
+    if st.end_line > 0 && cur.i < prog.ncmts &&
+        prog.clines[cur.i] == (st.end_line as i64) {
+      let cut: usize = len(line) - 1;
+      line = line[0..cut] + "  " + prog.ctexts[cur.i] + "\n";
+      cur.i = cur.i + 1;
+    }
+    out = out + line;
     i = i + 1;
   }
   return out;
 }
 
-fn fmt_fn(fd: *FnDef) -> string {
+fn fmt_fn(prog: *Prog, mut cur: *CmtCur, fd: *FnDef) -> string {
   let mut out: string = "fn " + fd.name + "(";
   let mut k: usize = 0;
   while k < len(fd.params) {
@@ -576,36 +625,74 @@ fn fmt_fn(fd: *FnDef) -> string {
     out = out + fd.rtype;
   }
   out = out + " {\n";
-  out = out + fmt_block(fd.body, 1);
+  out = out + fmt_block(prog, mut cur, fd.body, 1);
+  out = out + cmt_flush(prog, mut cur, fd.end_line as i64, 1);
+  // a same-line note rides the closing brace (boot's tail_back:
+  // back over the newline, append, restore)
+  if fd.end_line > 0 && cur.i < prog.ncmts &&
+      prog.clines[cur.i] == (fd.end_line as i64) {
+    let cut: usize = len(out) - 1;
+    out = out[0..cut] + "  " + prog.ctexts[cur.i] + "\n";
+    cur.i = cur.i + 1;
+  }
   return out + "}\n";
 }
 
 pub fn fmt_prog(prog: *Prog) -> string {
+  let mut cur = new CmtCur { i: 0 };
   let mut out: string = "";
   let mut c: usize = 0;
   while c < prog.nconsts {
+    // comments above this const print at file depth
+    out = out + cmt_flush(prog, mut cur, prog.cline[c], 0);
+    let mut ct: string = "";
     if prog.cstatic[c] {
-      out = out + "static ";
+      ct = ct + "static ";
       if prog.cmuts[c] {
-        out = out + "mut ";
+        ct = ct + "mut ";
       }
-      out = out + prog.consts[c];
+      ct = ct + prog.consts[c];
     } else {
-      out = out + "const ";
-      out = out + prog.consts[c];
+      ct = ct + "const ";
+      ct = ct + prog.consts[c];
     }
     if len(prog.ctypes[c]) > 0 {
-      out = out + ": ";
-      out = out + prog.ctypes[c];
+      ct = ct + ": ";
+      ct = ct + prog.ctypes[c];
     }
-    out = out + " = " + fmt_expr(prog.cexprs[c]) + ";\n\n";
+    ct = ct + " = " + fmt_expr(prog.cexprs[c]) + ";\n\n";
+    // a same-line note rides on the NEXT line, indented, and takes
+    // the blank separator's place (boot's decl tail: the comment
+    // leads the next construct's air)
+    if prog.clend[c] > 0 && cur.i < prog.ncmts &&
+        prog.clines[cur.i] == prog.clend[c] {
+      let cut: usize = len(ct) - 1;
+      ct = ct[0..cut] + "  " + prog.ctexts[cur.i] + "\n";
+      cur.i = cur.i + 1;
+    }
+    out = out + ct;
     c = c + 1;
   }
   let mut f: usize = 0;
   while f < len(prog.fns) {
-    out = out + fmt_fn(prog.fns[f]);
+    // comments above this fn print at file depth
+    out = out + cmt_flush(prog, mut cur, prog.fns[f].line as i64, 0);
+    out = out + fmt_fn(prog, mut cur, prog.fns[f]);
     f = f + 1;
   }
-  return out + "fn main() -> i32 {\n" + fmt_block(prog.main, 1) +
-         "}\n";
+  // comments between the last declaration and main ride above main's
+  // signature (main is not a prog.fns member — without this flush
+  // the file header landed inside main's body); the file tail's own
+  // comments flush inside (above the brace) and after it (boot's
+  // trailing flush)
+  let mut mainline: i64 = 2147483647;
+  if len(prog.main) > 0 {
+    mainline = prog.main[0].line as i64;
+  }
+  out = out + cmt_flush(prog, mut cur, mainline, 0);
+  out = out + "fn main() -> i32 {\n" +
+        fmt_block(prog, mut cur, prog.main, 1);
+  out = out + cmt_flush(prog, mut cur, 2147483647, 1);
+  out = out + "}\n";
+  return out + cmt_flush(prog, mut cur, 2147483647, 0);
 }

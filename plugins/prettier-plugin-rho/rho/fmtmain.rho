@@ -40,8 +40,11 @@ fn main() -> i32 {
     n += 1;
   }
   let src: string = INPUT[0..n];
-  let mut toks: []*Tok = lex.lex(src);
-  let mut prog: *Prog = parse.parse(toks, src);
+  // the FMT face lexes through scan(): the formatter replays the
+  // file's comments, so the Prog must carry the comment tables
+  let lx = lex.scan(src);
+  let mut prog: *Prog = parse.parse_full(lx.toks, src, lx.ctexts,
+                                         lx.clines);
   if prog.perrs > 0 {
     eprintf("parse: {} unresolved form(s)\n", prog.perrs);
     return 1;

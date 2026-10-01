@@ -157,10 +157,29 @@ fn scan_string_span(mut c: *Cur) -> usize {
   return len(c.src);
 }
 
+// the scan's full yield: the token stream plus the file's comments,
+// in source order — the comments ride two parallel arrays (the
+// const-table idiom) because a cross-module struct type cannot spell
+// itself in the consumer's annotations
+pub struct Lexed {
+  toks: []*Tok,
+  ctexts: []string, // from // to end of line, no newline
+  clines: []i64,    // each comment's line
+}
+
 pub fn lex(src: string) -> []*Tok {
-  // every token eats at least one source byte: len(src) bounds the run
+  return scan(src).toks;
+}
+
+pub fn scan(src: string) -> *Lexed {
+  // every token eats at least one source byte: len(src) bounds the
+  // token run; a comment eats at least two, so the same bound covers
+  // the comment tables
   let mut toks: []*Tok = make([]*Tok, len(src) + 1);
+  let mut ctexts: []string = make([]string, len(src) + 1);
+  let mut clines: []i64 = make([]i64, len(src) + 1);
   let mut n: usize = 0;
+  let mut m: usize = 0;
   let mut c = new Cur { src: src, pos: 0, line: 1 };
   while c.pos < len(src) {
     let b: u8 = at(c);
@@ -173,11 +192,15 @@ pub fn lex(src: string) -> []*Tok {
       adv(mut c);
       continue;
     }
-    // comments: // to end of line
+    // comments: // to end of line, recorded verbatim (no newline)
     if b == 47 && c.pos + 1 < len(src) && src[c.pos + 1] == 47 {
+      let start: usize = c.pos;
       while c.pos < len(src) && at(c) != 10 {
         adv(mut c);
       }
+      ctexts[m] = src[start..c.pos];
+      clines[m] = c.line as i64;
+      m = m + 1;
       continue;
     }
     let line: i32 = c.line;
@@ -323,5 +346,6 @@ pub fn lex(src: string) -> []*Tok {
   }
   toks[n] = new Tok { kind: TK_EOF, text: "", ival: 0, line: c.line };
   n = n + 1;
-  return toks[0..n];
+  return new Lexed { toks: toks[0..n], ctexts: ctexts[0..m],
+                     clines: clines[0..m] };
 }

@@ -93,8 +93,13 @@ describe("honest failures", () => {
 });
 
 describe("capacity boundary (usable capacity = rawBytes - 1: the last slot byte is reserved; the host writes the NUL at run time)", () => {
-  // a comment-padded file sized to exactly N bytes
-  const tail = "fn main() -> i32 { return 0; }\n";
+  // a comment-padded file sized to exactly N bytes. The tail is
+  // already-canonical: the formatter replays the pad comment
+  // byte-for-byte and leaves the tail alone, so the output is the
+  // input's exact size and the boundary under test stays the INPUT
+  // slot (the old tail grew under canonicalization, which measured
+  // the output gate instead)
+  const tail = "fn main() -> i32 {\n  return 0;\n}\n";
   const sized = (total) => {
     const pad = "// " + "y".repeat(total - tail.length - 4) + "\n";
     return pad + tail;

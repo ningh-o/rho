@@ -1,6 +1,6 @@
 {
-  "generation": "dd06e2a6da0f63c72b5435dc8feec96b90638be88ac407ccf70f02dc03e7d3fb",
-  "generationShort": "dd06e2a6da0f",
+  "generation": "f49582188695330ae2592f1243a4085968244a5996696da3513c665762afb265",
+  "generationShort": "f49582188695",
   "chain": "boot (build/rho) + libs/compiler fmt pipeline (vendored: lex, parse, fmt) + rho/fmtmain.rho",
   "build": "./build/rho build plugins/prettier-plugin-rho/rho/fmtmain.rho -o fmt.wasm  # in the worktree root",
   "inputSlot": {
@@ -12,10 +12,10 @@
     "semantics": "capacity = usable source bytes = rawBytes - 1: the raw data literal is the full folded const (marker + fill) and carries no NUL; its last byte is reserved — the host writes the NUL there at run time — so source + terminator never write past the literal"
   },
   "inputs": {
-    "rho/lex.rho": "2003e9e43e7a904f0ac317d4642f04c1b4dde644315e69475d549ba0e1c43d06",
-    "rho/parse.rho": "16aa9e029f08c9d885f6450eb375f5aa3ca9eaee3e13b8ed0668ec52af95ff4a",
-    "rho/fmt.rho": "17542267169f6f779c7bb1922e0f5acfc074525e1b5d65ae94c17235f802d622",
-    "rho/fmtmain.rho": "a3555f247c69f669d35982f37e2541e21151b63255f77ba5133d97337397f1cc",
+    "rho/lex.rho": "ddbf125477a6194e4bc0cf210922b238fb0ef00e53c7e9be020611556632d318",
+    "rho/parse.rho": "491138d4943d8a4786660ef21beb012e031ff9730a183a6c242dc8a1a56fd11b",
+    "rho/fmt.rho": "0fc3ec8e0d06e02f7d392cc2319961eb98bc551e26ef727d0bc0a581ec583cd2",
+    "rho/fmtmain.rho": "c24f75df98d397c65744f163096b265a019b907914f2712aefc9273715997076",
     "boot/check.c": "2b9a79eb066fc65ec0fdb6deb2a7867b4abfc9a67f77a11104581c0176e5804e",
     "boot/check2.c": "22da137e5d24a947dca82d0aa5e6683742eb5e8ea35d962577f36671c292a579",
     "boot/check3.c": "34bf769d8b4b48b5a97116560ffa11adedd4c1b1e7d48d50d1e667f6be56cef3",

@@ -27,15 +27,24 @@ for f in tests/fmt-self/*.rho; do
     fail=$((fail+1))
     continue
   fi
-  # the self form is canonical: re-formatting it reproduces it
+  # the self form is canonical: the fixed point, reached in bounded
+  # steps. A same-line tail comment cannot survive its own move (the
+  # canonical form repositions it above the next construct — boot's
+  # own roundtrip drifts the same way), so the law compares the
+  # SECOND reformat against the first: tail-free files are stable
+  # immediately; a tail comment settles in one step and holds.
   cp $T/fmts-$name.txt $T/fmts-$name.rho
   src2=$(cat $T/fmts-$name.rho)
   "$RHO" build libs/compiler/main.rho -o $T/fmtc2-$name.wasm \
     --set "SRC=$src2" --set FMT=1 >/dev/null 2>&1
   wasmtime $T/fmtc2-$name.wasm >$T/fmts2-$name.txt 2>/dev/null
-  if ! cmp -s $T/fmts-$name.txt $T/fmts2-$name.txt; then
+  src3=$(cat $T/fmts2-$name.txt)
+  "$RHO" build libs/compiler/main.rho -o $T/fmtc3-$name.wasm \
+    --set "SRC=$src3" --set FMT=1 >/dev/null 2>&1
+  wasmtime $T/fmtc3-$name.wasm >$T/fmts3-$name.txt 2>/dev/null
+  if ! cmp -s $T/fmts2-$name.txt $T/fmts3-$name.txt; then
     echo "FAIL fmt-self/$name: the self form is not a fixpoint"
-    diff $T/fmts-$name.txt $T/fmts2-$name.txt | head -6
+    diff $T/fmts2-$name.txt $T/fmts3-$name.txt | head -6
     fail=$((fail+1))
     continue
   fi

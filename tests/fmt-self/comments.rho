@@ -1,0 +1,19 @@
+// the comment replay fixture: every comment prints — the file
+// header, the notes above declarations, the same-line tails, and
+// the notes above block closers
+const K: i64 = 5; // the answer
+
+// a fn with an interior comment
+fn f(x: i64) -> i64 {
+  // above the return
+  return x + K; // the tail note
+}
+
+fn main() -> i32 {
+  let v: i64 = f(1);
+  if v > 0 {
+    // inside the if
+    printf("{}\n", v);
+  }
+  return 0;
+}

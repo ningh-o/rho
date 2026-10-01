@@ -19,8 +19,11 @@ const MODS: string = ""; // the module tree: "@MOD@ <path>\n<text>" blocks
 const FMT: i64 = 0; // 1 = print the canonical formatting instead
 
 fn main() -> i32 {
-  let mut toks: []*Tok = lex.lex(SRC);
-  let mut prog: *Prog = parse.parse(toks, SRC);
+  // the FMT face lexes through scan(): the formatter replays the
+  // file's comments, so the Prog must carry the comment tables
+  let lx = lex.scan(SRC);
+  let mut prog: *Prog = parse.parse_full(lx.toks, SRC, lx.ctexts,
+                                         lx.clines);
   if prog.perrs > 0 {
     eprintf("parse: {} unresolved form(s)\n", prog.perrs);
     return 1;

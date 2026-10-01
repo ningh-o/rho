@@ -1371,6 +1371,37 @@ section — no placeholder stages. boot is the reference compiler.
       block closers, at the file tail) with the same monotonic
       cursor. Witness when landed: the plugin's owed set drains to
       zero and its guard test retires.
+      THE COMMENT REPLAY PORT LANDED (2026-10-02, the same day): the
+      lexer records the file's comments beside the tokens (lex.scan
+      returns Lexed { toks, ctexts, clines } — two parallel arrays,
+      the const-table idiom, because a cross-module struct type
+      cannot spell itself in the consumer's annotations); Stmt and
+      FnDef carry line/end_line stamps (mk_stmt is the single
+      construction point; the parse_stmt wrapper stamps from the
+      first and last consumed tokens; the fn and const branches
+      stamp their declarations — consts ride two more parallel Vec
+      tables); fmt walks a monotonic cursor over the tables at
+      boot's site families (above each statement and declaration,
+      above block closers by the block's last statement's end line,
+      above main's signature — main is not a prog.fns member, and
+      without that flush the file header landed inside main's body —
+      and at the file tail). Two boot behaviors the port had to
+      match byte-for-byte: a declaration's same-line tail comment
+      prints on the NEXT line indented and takes the blank
+      separator's place; a fn's closing-brace note stays on the
+      brace's line. The fixpoint law grew one allowance: a tail
+      comment cannot survive its own repositioning (boot's own
+      roundtrip drifts identically), so run-fmt-self compares the
+      SECOND reformat — the fixed point, reached in bounded steps —
+      and tests/fmt-self/comments.rho pins the whole shape set.
+      The plugin's owed set drained to zero: the identity suite
+      runs every corpus file (comment-bearing ones included) live
+      against boot byte-identically, the skip machinery and its
+      guard retired, and the vendored fmtmain lexes through scan()
+      with a rebuilt artifact + bumped generation pin. The plugin's
+      capacity-boundary test now sizes its pad with an
+      already-canonical tail: the old premise (output smaller than
+      input) held only while comments were dropped.
       rho-lsp, vite-plugin-rho, and tools/bench stay ON THEIR
       BRANCHES (in-flight, not superseded): their uncommitted state
       is committed branch-side (no node_modules), the worktrees
