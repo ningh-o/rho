@@ -62,7 +62,16 @@ fn map_err(neg: i32) -> IoError {
 // open under the preopen: mode 0 = read, mode 1 = write (create +
 // truncate); the kernel pins fd 3 as the preopen
 fn open_fd(path: string, mode: i32) -> Result[i32, IoError] {
-  let fd: i32 = __path_open(path, mode);
+  // wasi's path_open resolves relative to the preopen fd: a leading
+  // slash names a subdirectory of it, so "/main.rho" under a
+  // dir::/-mapped preopen read as a missing "/-inside" path (the
+  // site's app-face contract rides the absolute spelling — strip it
+  // here, where the guest-relative law lives)
+  let mut rel: string = path;
+  if len(rel) > 0 && rel[0] == 47 {
+    rel = rel[1..len(rel)];
+  }
+  let fd: i32 = __path_open(rel, mode);
   if fd < 0 {
     return Result.Err(map_err(fd));
   }

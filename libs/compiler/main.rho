@@ -13,12 +13,77 @@ use parse;
 use check;
 use emit;
 use fmt;
+use std.io;
 
 const SRC: string = "fn main() -> i32 { printf(\"hello, self\\n\"); return 0; }";
 const MODS: string = ""; // the module tree: "@MOD@ <path>\n<text>" blocks
 const FMT: i64 = 0; // 1 = print the canonical formatting instead
+// the app face's module tree (the site's artifact bakes the std tree
+// here; the chain's own build leaves it empty)
+const MODS_APP: string = "";
+
+// the app face (the site's playground and corpus): the host writes
+// the source to /main.rho and the verb to /mode ("build" default,
+// "check", "fmt"); the module tree rides MODS_APP. Absent files →
+// the baked self-compile path (§7's chain law stays untouched).
+fn app_compile(src: string) -> i32 {
+  let mut mode: string = "build";
+  match io.read_file("/mode") {
+    Result.Ok(m) => {
+      mode = m;
+    },
+    Result.Err(_) => {},
+  }
+  let lx = lex.scan(src);
+  let mut prog: *Prog = parse.parse_full(lx.toks, src, lx.ctexts,
+                                         lx.clines);
+  if prog.perrs > 0 {
+    eprintf("parse: {} unresolved form(s)\n", prog.perrs);
+    return 1;
+  }
+  if len(MODS_APP) > 0 && !parse.load_mods(mut prog, MODS_APP) {
+    eprintf("mods: unresolved module path(s)\n");
+    return 1;
+  }
+  if prog.perrs > 0 {
+    eprintf("parse: {} unresolved form(s)\n", prog.perrs);
+    return 1;
+  }
+  let mut errs: i64 = check.check(prog);
+  if errs > 0 {
+    eprintf("check: {} error(s)\n", errs);
+    return 1;
+  }
+  if mode == "check" {
+    return 0;
+  }
+  let mut text: string = "";
+  if mode == "fmt" {
+    text = fmt.fmt_prog(prog);
+  } else {
+    text = emit.emit(mut prog);
+  }
+  let mut off: usize = 0;
+  while off < len(text) {
+    let mut end: usize = off + 512;
+    if end > len(text) {
+      end = len(text);
+    }
+    printf("{}", text[off..end]);
+    off = end;
+  }
+  return 0;
+}
 
 fn main() -> i32 {
+  // the app face: the host's /main.rho wins; absent → the baked
+  // self-compile
+  match io.read_file("/main.rho") {
+    Result.Ok(src) => {
+      return app_compile(src);
+    },
+    Result.Err(_) => {},
+  }
   // the FMT face lexes through scan(): the formatter replays the
   // file's comments, so the Prog must carry the comment tables
   let lx = lex.scan(SRC);

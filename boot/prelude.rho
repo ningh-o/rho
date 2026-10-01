@@ -41,6 +41,37 @@ pub enum Result[T, E] {
   Err(E),
 }
 
+// the absence faces: the match-free question form (the course teaches
+// them as Option/Result's first verbs; the match form stays the
+// payload extractor)
+fn Option.is_some(self: Option[T]) -> bool {
+  return match self {
+    Option.Some(_) => true,
+    Option.None => false,
+  };
+}
+
+fn Option.is_none(self: Option[T]) -> bool {
+  return match self {
+    Option.Some(_) => false,
+    Option.None => true,
+  };
+}
+
+fn Result.is_ok(self: Result[T, E]) -> bool {
+  return match self {
+    Result.Ok(_) => true,
+    Result.Err(_) => false,
+  };
+}
+
+fn Result.is_err(self: Result[T, E]) -> bool {
+  return match self {
+    Result.Ok(_) => false,
+    Result.Err(_) => true,
+  };
+}
+
 fn i8.to_str(self: i8) -> string {
   return format("{}", self);
 }
