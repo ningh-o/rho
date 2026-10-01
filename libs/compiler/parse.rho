@@ -2262,6 +2262,17 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
       let td = new TraitDef { name: trname, methods: tms[0..ntm],
                               rtypes: trts[0..ntm],
                               nmethods: ntm };
+      if ntr == len(traits) {
+        // the trait table grows on demand (the fn-table law — the old
+        // fixed 16 wrote traits[ntr] unguarded)
+        let mut bigger: []*TraitDef = make([]*TraitDef, len(traits) * 2);
+        let mut gi: usize = 0;
+        while gi < len(traits) {
+          bigger[gi] = traits[gi];
+          gi = gi + 1;
+        }
+        traits = bigger;
+      }
       traits[ntr] = td;
       ntr = ntr + 1;
       continue;
@@ -2376,6 +2387,17 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
       let sd = new StructDef { name: sname, fields: fnames[0..nfl],
                                types: ftypes[0..nfl],
                                tparams: tps[0..ntp] };
+      if ns == len(structs) {
+        // the struct table grows on demand (the fn-table law — the old
+        // fixed 32 wrote structs[ns] unguarded)
+        let mut bigger: []*StructDef = make([]*StructDef, len(structs) * 2);
+        let mut gi: usize = 0;
+        while gi < len(structs) {
+          bigger[gi] = structs[gi];
+          gi = gi + 1;
+        }
+        structs = bigger;
+      }
       structs[ns] = sd;
       ns = ns + 1;
       continue;
@@ -2505,6 +2527,17 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
                              vslots: vslots.view(),
                              vtpool: vtpool[0..(nv * 8)], nv: nv,
                              tparams: etps[0..etp] };
+      if ne == len(enums) {
+        // the enum table grows on demand (the fn-table law — the old
+        // fixed 32 wrote enums[ne] unguarded)
+        let mut bigger: []*EnumDef = make([]*EnumDef, len(enums) * 2);
+        let mut gi: usize = 0;
+        while gi < len(enums) {
+          bigger[gi] = enums[gi];
+          gi = gi + 1;
+        }
+        enums = bigger;
+      }
       enums[ne] = ed;
       ne = ne + 1;
       continue;
@@ -2623,7 +2656,26 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
         }
       }
       eat_punct(mut c, 59);
-      if nu < len(uses) && seg > 0 {
+      if nu == len(uses) {
+        // the use tables grow on demand (three parallel tables move
+        // together — the old fixed 32 silently DROPPED the 33rd use,
+        // a miscompile by omission)
+        let ou: usize = len(uses);
+        let mut bu: []string = make([]string, ou * 2);
+        let mut ba: []string = make([]string, ou * 2);
+        let mut bp: []bool = make([]bool, ou * 2);
+        let mut gi: usize = 0;
+        while gi < ou {
+          bu[gi] = uses[gi];
+          ba[gi] = ualias[gi];
+          bp[gi] = upub[gi];
+          gi = gi + 1;
+        }
+        uses = bu;
+        ualias = ba;
+        upub = bp;
+      }
+      if seg > 0 {
         uses[nu] = path;
         ualias[nu] = al;
         upub[nu] = pending_pub;
@@ -2662,6 +2714,17 @@ pub fn parse(toks: []*Tok, src: string) -> *Prog {
             if is_punct(tk(c), 125) {
               tkadv(mut c);
               break;
+            }
+            if n == len(nodes) {
+              // the statement table grows on demand (sizing from the
+              // source length was safe by arithmetic, not by law)
+              let mut bigger: []*Stmt = make([]*Stmt, len(nodes) * 2);
+              let mut gi: usize = 0;
+              while gi < len(nodes) {
+                bigger[gi] = nodes[gi];
+                gi = gi + 1;
+              }
+              nodes = bigger;
             }
             nodes[n] = parse_stmt(mut c);
             n = n + 1;
@@ -2909,8 +2972,24 @@ fn mods_const_in(prog: *Prog, nm: string) -> bool {
 // an export row: (owner, item, target)
 fn mods_export_add(mut prog: *Prog, own: string, item: string,
                    tar: string) {
-  if prog.nx >= len(prog.xown) {
-    return;
+  if prog.nx == len(prog.xown) {
+    // the export tables grow on demand (three parallel tables — the
+    // old fixed 128 silently refused the row, leaving the name
+    // unknown to the checker)
+    let ox: usize = len(prog.xown);
+    let mut bo: []string = make([]string, ox * 2);
+    let mut bi: []string = make([]string, ox * 2);
+    let mut bt: []string = make([]string, ox * 2);
+    let mut gi: usize = 0;
+    while gi < ox {
+      bo[gi] = prog.xown[gi];
+      bi[gi] = prog.xitem[gi];
+      bt[gi] = prog.xtar[gi];
+      gi = gi + 1;
+    }
+    prog.xown = bo;
+    prog.xitem = bi;
+    prog.xtar = bt;
   }
   prog.xown[prog.nx] = own;
   prog.xitem[prog.nx] = item;
@@ -3213,10 +3292,21 @@ fn mods_load(mut prog: *Prog, mods: string, path: string,
     prog.perrs = prog.perrs + mp.perrs;
     return "";
   }
-  if prog.nmods < len(prog.modcan) {
-    prog.modcan[prog.nmods] = canon;
-    prog.nmods = prog.nmods + 1;
+  if prog.nmods == len(prog.modcan) {
+    // the canon table grows on demand (the old fixed 16 silently
+    // skipped the registration — the module would reload and its
+    // exports re-registered every time it was used)
+    let om: usize = len(prog.modcan);
+    let mut bm: []string = make([]string, om * 2);
+    let mut gi: usize = 0;
+    while gi < om {
+      bm[gi] = prog.modcan[gi];
+      gi = gi + 1;
+    }
+    prog.modcan = bm;
   }
+  prog.modcan[prog.nmods] = canon;
+  prog.nmods = prog.nmods + 1;
   // the module's own uses bind names (alias or last segment), loaded
   // relative to the module's directory: a facade X/lib.rho owns the
   // directory X; a loose file X.rho owns its parent (the root here)

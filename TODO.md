@@ -1276,6 +1276,30 @@ section — no placeholder stages. boot is the reference compiler.
       for the capability wall to lift (a boot evolution item); the
       compiler consumes std for its value tables everywhere that
       matters today.
+      CAP SWEEP + EXTRACTION REVIEW (2026-10-02): a whole-compiler
+      sweep for the const-table bug class found six more sites —
+      traits (fixed 16), structs (32), enums (32) wrote their tables
+      UNGUARDED (OOB corruption class), and the use tables (32), the
+      module-canon table (16), and the export tables (128) silently
+      DROPPED/REFUSED on overflow (miscompile-by-omission class: a
+      dropped use, a reloaded module, a name unknown to the checker).
+      All now grow on demand under the fn-table law, and
+      n18_table_grow pins the declaration-table growth through both
+      compilers (33 structs / 17 traits / 33 enums, first and last
+      entries constructed, matched, and called). Floor 115. THE
+      EXTRACTION REVIEW (T4.3's other stated remainder) closes with a
+      verdict: Vec is the genuine extraction — its growth idiom is
+      the compiler's own tables with one documented divergence (std
+      grows *2+1 because its factories accept capacity 0; the
+      compiler's tables never start at zero and grow *2); the ordered
+      Maps are NOT compiler extractions — the compiler has no
+      binary-search literal — they are new code written under the D3
+      order law (sorted parallel arrays, binary search, ascending
+      iteration), with strutil carrying its own documented reasons
+      (the len-overload ambiguity; boot's `<` comparing data
+      pointers, not content). Every divergence is documented in the
+      package headers themselves; nothing to reconcile. T4.3's
+      remaining scope is now exactly the capability wall.
       CONSUMPTION WAVE 1 LANDED (2026-10-01, after the deep hunt):
       parse_pat's binders ride std.collections' Vec[string] — the
       fixed cap (make([]string, 8), never grown) is gone — and the

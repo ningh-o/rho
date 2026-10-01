@@ -59,7 +59,16 @@ RHO=${RHO:-./build/rho}
 # slots. Boot strictness pinned in passing: main must return i32,
 # statics are always `static mut`, and the last enum variant takes no
 # trailing semicolon.
-PINNED=114
+#
+# 114 → 115 with n18_table_grow: the declaration tables grow — 33
+# structs, 17 traits, 33 enums ride parse()'s tables past the old
+# fixed caps (32/16/32; the fn table already grew, and the const and
+# enum-variant tables moved to std Vec the wave before). The same
+# sweep lifted the silent caps: the use tables (a dropped 33rd use
+# was a miscompile by omission), the module-canon table (a skipped
+# registration reloaded the module), and the export tables (a refused
+# row left the name unknown to the checker).
+PINNED=115
 
 # one file's differential; echoes "pass" or the failure label
 check_one() {
