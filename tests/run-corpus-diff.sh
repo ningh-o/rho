@@ -137,7 +137,20 @@ RHO=${RHO:-./build/rho}
 # refusal face is pinned boot-side (lang/mv_marker_nonmut_root_field)
 # and mirror-side (run-selfhost.sh's mutmarker case, boot's exact
 # diagnostic line).
-PINNED=95
+#
+# 94 → 95 with the statement-match spelling closure (T3.18's
+# residue): the mirror read a trailing ';' after a statement match as
+# optional — boot's statement match shares the expression form's
+# parser and refuses it (the suite pin
+# stmt_match_trailing_semi_expect_test holds the refusal; the mirror's
+# parse now refuses with boot's wording). t13 pins the legal
+# neighborhood the closure guards — statement match mid-function,
+# inside control flow, nested in a block arm — so the surface stays
+# graded on both compilers.
+#
+# 95 → 96 at the residue integration: both closures land together, so
+# both t13 pins ride the differential and the floor rises by two.
+PINNED=96
 
 # one file's differential; echoes "pass" or the failure label
 check_one() {

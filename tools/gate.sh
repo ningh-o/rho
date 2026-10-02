@@ -200,7 +200,18 @@ EOF
 cat > /tmp/gate-par/b.rho <<'EOF'
 fn main() -> i32 { let x: i32 = 1; printf("{}", y); return 0; }
 EOF
+cat > /tmp/gate-par/c.rho <<'EOF'
+fn main() -> i32 {
+  let x: i32 = 1;
+  match x {
+    1 => printf("one\n"),
+    _ => printf("other\n"),
+  };
+  return 0;
+}
+EOF
 par /tmp/gate-par/a.rho "unknown fn"
 par /tmp/gate-par/b.rho "unknown name"
+par /tmp/gate-par/c.rho "expected an expression, found ';'"
 
 echo "GATE GREEN — every leg passed"
