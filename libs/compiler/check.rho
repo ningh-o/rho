@@ -184,6 +184,12 @@ fn method_known(prog: *Prog, mname: string) -> bool {
     // weak.get() — the absence probe over the header's rc
     return true;
   }
+  if mname == "is_some" || mname == "is_none" || mname == "is_ok" ||
+      mname == "is_err" {
+    // the absence faces over Option/Result boxes — the emitter reads
+    // the tag slot natively (the boot prelude's match arms, twinned)
+    return true;
+  }
   let mut i: usize = 0;
   while i < len(prog.fns) {
     let n: string = prog.fns[i].name;
@@ -486,6 +492,28 @@ fn stmts_walk(nodes: []*Stmt, prog: *Prog, mut bound: []string,
           expr_walk(e, prog, mut bound, nb, mut errs);
         },
         Option.None => {},
+      }
+      if st.tag == parse.ST_LET {
+        // the literal lanes: a string literal cannot initialize a
+        // non-string binding, a bool literal a non-bool one — the
+        // boot-exact primary diagnostic, pointed at the value
+        match st.val {
+          Option.Some(e2) => {
+            let ty: string = st.fmt;
+            if len(ty) > 0 && e2.tag == parse.EX_STR && ty != "string" {
+              eprintf("main.rho:{}:{}: error: expected {}, found string\n",
+                      st.init_line as i64, st.init_col as i64, ty);
+              errs.n = errs.n + 1;
+            }
+            if len(ty) > 0 && e2.tag == parse.EX_LIT &&
+                (e2.name == "true" || e2.name == "false") && ty != "bool" {
+              eprintf("main.rho:{}:{}: error: expected {}, found bool\n",
+                      st.init_line as i64, st.init_col as i64, ty);
+              errs.n = errs.n + 1;
+            }
+          },
+          Option.None => {},
+        }
       }
       if st.tag == parse.ST_LET || st.tag == parse.ST_SET {
         if nb < len(bound) {

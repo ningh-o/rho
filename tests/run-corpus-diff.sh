@@ -91,7 +91,13 @@ RHO=${RHO:-./build/rho}
 # declared return types — now carry their payload text through
 # eat_type, and optpt_of_scrutinee reads it off the first bracket
 # arg.
-PINNED=117
+#
+# 117 → 118 with n21_absence_faces: the absence faces over the
+# builtin boxes (is_ok/is_err/is_some/is_none — the constructors'
+# hardcoded tags decide), the bool match (true/false are literal
+# patterns, not wildcards), and the printf hole lanes for method
+# results (f64 rides method_rtype).
+PINNED=118
 
 # one file's differential; echoes "pass" or the failure label
 check_one() {

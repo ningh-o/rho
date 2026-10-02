@@ -96,6 +96,8 @@ pub struct Stmt {
   marms: []*MatchArm, // match arms (ST_MATCH)
   line: i32,       // the first token's line (fmt replays comments above)
   end_line: i32,   // the last consumed token's line (fmt rides the tail)
+  init_line: i32,  // the init expr's first token — the literal lanes'
+  init_col: i32,   //   diagnostics point at the value, boot-exact
 }
 
 fn mk_stmt(tag: i32) -> *Stmt {
@@ -103,7 +105,8 @@ fn mk_stmt(tag: i32) -> *Stmt {
                     name: "", val: Option.None, ret: 0,
                     body: make([]*Stmt, 0), body2: make([]*Stmt, 0),
                     sub: Option.None, path: make([]string, 0),
-                    marms: make([]*MatchArm, 0), line: 0, end_line: 0 };
+                    marms: make([]*MatchArm, 0), line: 0, end_line: 0,
+                    init_line: 0, init_col: 0 };
 }
 
 // verbatim deep clones (other modules rebind type texts over them)
@@ -161,7 +164,8 @@ pub fn clone_stmt(st: *Stmt) -> *Stmt {
                        body2: make([]*Stmt, len(st.body2)),
                        sub: st.sub, path: st.path,
                        marms: st.marms, line: st.line,
-                       end_line: st.end_line };
+                       end_line: st.end_line,
+                       init_line: st.init_line, init_col: st.init_col };
   let mut k: usize = 0;
   while k < len(st.args) {
     out.args[k] = clone_expr(st.args[k]);
@@ -1520,6 +1524,17 @@ fn parse_pat(mut c: *PCur) -> *Pat {
   }
   if t.kind == lex.TK_IDENT || t.kind == lex.TK_KEYWORD {
     let name0: string = t.text;
+    // the bool words are LITERAL patterns (boot parity: they compare
+    // against the scrutinee's 0/1) — as bare names they once fell to
+    // the wildcard fallback and every bool match took its first arm
+    if name0 == "true" || name0 == "false" {
+      tkadv(mut c);
+      let mut bp = mk_pat(1);
+      if name0 == "true" {
+        bp.lit = 1;
+      }
+      return bp;
+    }
     tkadv(mut c);
     // the prelude's variants ride bare (Some(x) / None / Ok(v) / Err(e)
     // — ambient like boot's, which consults the prelude table): they
@@ -1766,11 +1781,14 @@ fn parse_stmt_i(mut c: *PCur) -> *Stmt {
       bad.ret = 0 - 21;
       return bad;
     }
+    let i0 = tk(c);
     let mut e = parse_bin(mut c, 0);
     eat_punct(mut c, 59);
     let mut st = mk_stmt(ST_LET);
     st.name = nm;
     st.fmt = tyname;
+    st.init_line = i0.line;
+    st.init_col = i0.col;
     if is_mut {
       st.ret = 1; // the mut flag rides the ret slot (unused for lets)
     }

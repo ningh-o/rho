@@ -1,0 +1,39 @@
+// n21 — the absence faces and the bool match: is_ok/is_err/is_some/
+// is_none over the builtin boxes (the tag constants are the
+// constructors' law), a match on a bool scrutinee (the bool words
+// are literal patterns, not wildcards), and a bool-typed let fed
+// from a method's absence face (the printf hole spells the word).
+fn show(r: Result[i32, string]) -> string {
+  return match r.is_ok() {
+    true => "ok",
+    false => "bad",
+  };
+}
+fn main() -> i32 {
+  let r: Result[i32, string] = Result.Ok(5);
+  let e: Result[i32, string] = Result.Err("nope");
+  let o: Option[string] = Option.Some("x");
+  let n: Option[string] = Option.None;
+  printf("{} {} {} {}\n", r.is_ok(), e.is_err(), o.is_some(), n.is_none());
+  printf("{} {}\n", show(r), show(e));
+  let mut acc: i64 = 0;
+  if r.is_ok() {
+    acc += 1;
+  }
+  if e.is_err() {
+    acc += 10;
+  }
+  if o.is_some() {
+    acc += 100;
+  }
+  if n.is_none() {
+    acc += 1000;
+  }
+  printf("{}\n", acc);
+  let flag: bool = 3 > 9;
+  match flag {
+    true => printf("bigger\n"),
+    false => printf("smaller\n"),
+  }
+  return 0;
+}

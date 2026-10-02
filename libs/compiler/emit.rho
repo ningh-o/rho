@@ -689,8 +689,27 @@ const ALLOC_BODY: string = """
     (local.get $n)
   )
   (func $w_panic (param $m i32) (param $l i32)
+    ;; the kernel law: "panic: <msg>\n" to stderr, exit 101 — three
+    ;; one-iovec writes (wasmtime 40 drops trailing iovs); the prefix
+    ;; is store8'd into scratch so the data section stays pool-owned
+    (i32.store8 (i32.const 128) (i32.const 112))
+    (i32.store8 (i32.const 129) (i32.const 97))
+    (i32.store8 (i32.const 130) (i32.const 110))
+    (i32.store8 (i32.const 131) (i32.const 105))
+    (i32.store8 (i32.const 132) (i32.const 99))
+    (i32.store8 (i32.const 133) (i32.const 58))
+    (i32.store8 (i32.const 134) (i32.const 32))
+    (i32.store (i32.const 64) (i32.const 128))
+    (i32.store (i32.const 68) (i32.const 7))
+    (drop (call $fd_write (i32.const 2) (i32.const 64)
+                          (i32.const 1) (i32.const 96)))
     (i32.store (i32.const 64) (local.get $m))
     (i32.store (i32.const 68) (local.get $l))
+    (drop (call $fd_write (i32.const 2) (i32.const 64)
+                          (i32.const 1) (i32.const 96)))
+    (i32.store8 (i32.const 135) (i32.const 10))
+    (i32.store (i32.const 64) (i32.const 135))
+    (i32.store (i32.const 68) (i32.const 1))
     (drop (call $fd_write (i32.const 2) (i32.const 64)
                           (i32.const 1) (i32.const 96)))
     (call $proc_exit (i32.const 101))
@@ -2009,6 +2028,56 @@ fn expr_fkind(e: *Expr, env: *Env, mut prog: *Prog) -> i64 {
     }
     if rt == "f32" {
       return 2;
+    }
+  }
+  if e.tag == parse.EX_MCALL {
+    // a method result's declared width decides (a.dist2(b) — the
+    // field lanes alone once read the 3-4-5 triangle as raw bits)
+    match e.lhs {
+      Option.Some(r9) => {
+        let bt9: string = expr_ptr_type(r9, env, mut prog);
+        if len(bt9) > 0 {
+          let rt9: string = method_rtype(mut prog, bt9, e.name);
+          if rt9 == "f64" {
+            return 1;
+          }
+          if rt9 == "f32" {
+            return 2;
+          }
+        }
+      },
+      Option.None => {},
+    }
+  }
+  if e.tag == parse.EX_MATCH {
+    // a match whose every arm spells the same float width rides it
+    let mut allf: i64 = 0;
+    let mut mixed: bool = false;
+    let mut k8: usize = 0;
+    while k8 < len(e.marms) {
+      match e.marms[k8].val {
+        Option.Some(av8) => {
+          let af8: i64 = expr_fkind(av8, env, mut prog);
+          if af8 == 0 {
+            mixed = true;
+          } else {
+            if allf == 0 {
+              allf = af8;
+            } else {
+              if af8 != allf {
+                mixed = true;
+              }
+            }
+          }
+        },
+        Option.None => {
+          mixed = true;
+        },
+      }
+      k8 = k8 + 1;
+    }
+    if !mixed && allf > 0 {
+      return allf;
     }
   }
   return 0;
@@ -4583,6 +4652,29 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
         e.name == "from" && len(e.args) >= 1 {
       return emit_expr(mut pool, e.args[0], mut env, mut prog, mut nl);
     }
+    // the absence faces over Option/Result: the box's tag slot alone
+    // decides, under the constructors' hardcoded tags (Some/Ok = 1,
+    // None = 0, Err = 2) — the same constants the match dispatch
+    // reads, anchored like printf's names (the boot prelude spells
+    // them as match arms; the names here are the twins)
+    if e.name == "is_some" || e.name == "is_ok" || e.name == "is_none" ||
+        e.name == "is_err" {
+      let mut want: i64 = 1;
+      if e.name == "is_none" {
+        want = 0;
+      } else {
+        if e.name == "is_err" {
+          want = 2;
+        }
+      }
+      let mut outa: string = emit_expr(mut pool, recv, mut env, mut prog,
+                                       mut nl);
+      outa = outa + "    (i64.load (i32.wrap_i64))\n";
+      outa = outa + "    (i64.eq (i64.const " + want.to_str() + "))\n";
+      // the scalar bool lane rides i64 (0/1) — the tag test is i32
+      outa = outa + "    (i64.extend_i32_u)\n";
+      return outa;
+    }
     // DISABLED with the dyn emit (084's crash); re-lands with the
     // coercion above
     if recv.tag == parse.EX_VAR &&
@@ -6092,13 +6184,44 @@ fn match_chain_m(mut pool: *Pool, arms: []*MatchArm, i: usize, bx: i64,
           // was the first witness)
           env_bind_ptr(mut env, a.pat.binders[k], bslot, optpt);
         } else {
-          if optpt == "bool" {
-            // a bool payload binder records its type — the hole
-            // classifiers read it to spell true/false (a bare binder
-            // once printed the box tag as 1/0)
-            env_bool_bind(mut env, a.pat.binders[k]);
+          // an enum-ish builtin payload — ?T sugar over a non-struct,
+          // or a spelled Option/Result (read_line's Result[?string,
+          // IoError]): the binder holds the OPTION box's address, so
+          // its enum name AND payload text must register or the inner
+          // match reads the address as the tag (every arm fell through)
+          if (a.pat.ename == "Option" || a.pat.ename == "Result") &&
+              len(optpt) > 0 &&
+              st_index(mut prog, st_name_of(optpt)) < 0 &&
+              (optpt[0] == 63 || starts_open(optpt, "Option") ||
+               starts_open(optpt, "Result")) {
+            let mut ben: string = "Option";
+            if optpt[0] != 63 && starts_open(optpt, "Result") {
+              ben = "Result";
+            }
+            env_bind_enum(mut env, a.pat.binders[k], bslot, ben);
+            let mut bpay: string = optpt[1..len(optpt)];
+            if optpt[0] != 63 {
+              let ob2: i64 = open_bracket(optpt);
+              if ob2 >= 0 {
+                let tas2: []string = split_type_args(
+                    optpt[((ob2 as usize) + 1)..(len(optpt) - 1)]);
+                if len(tas2) > 0 {
+                  bpay = tas2[0];
+                }
+              }
+            }
+            if len(bpay) > 0 {
+              env_bind_sliceelem(mut env, a.pat.binders[k], bpay);
+            }
+          } else {
+            if optpt == "bool" {
+              // a bool payload binder records its type — the hole
+              // classifiers read it to spell true/false (a bare binder
+              // once printed the box tag as 1/0)
+              env_bool_bind(mut env, a.pat.binders[k]);
+            }
+            env_bind(mut env, a.pat.binders[k], bslot);
           }
-          env_bind(mut env, a.pat.binders[k], bslot);
         }
       }
     }
@@ -7806,7 +7929,7 @@ fn emit_panic(mut pool: *Pool, call: *Expr) -> string {
 fn emit_assert(mut pool: *Pool, call: *Expr, mut env: *Env,
                mut prog: *Prog, mut nl: *NextLocal) -> string {
   let mut cond: *Expr = parse.lit(1);
-  let mut msg: *Expr = parse.strlit("assert failed");
+  let mut msg: *Expr = parse.strlit("assertion failed");
   if len(call.args) > 0 {
     cond = call.args[0];
   }
@@ -7914,6 +8037,25 @@ fn hole_boolish(arg: *Expr, env: *Env, mut prog: *Prog) -> bool {
               "bool";
         }
       }
+    }
+    return false;
+  }
+  if arg.tag == parse.EX_MCALL {
+    // the absence faces spell their word; so does any user method
+    // whose declared return is bool
+    if arg.name == "is_some" || arg.name == "is_none" ||
+        arg.name == "is_ok" || arg.name == "is_err" {
+      return true;
+    }
+    match arg.lhs {
+      Option.Some(r13) => {
+        let bt13: string = expr_ptr_type(r13, env, mut prog);
+        if len(bt13) > 0 {
+          let rt13: string = method_rtype(mut prog, bt13, arg.name);
+          return rt13 == "bool";
+        }
+      },
+      Option.None => {},
     }
     return false;
   }
@@ -9301,14 +9443,18 @@ fn opt_payload(fmt: string) -> string {
   if len(fmt) >= 1 && fmt[0] == 63 {
     return fmt[1..len(fmt)];
   }
-  if len(fmt) >= 7 && fmt[0] == 79 && fmt[7] == 91 {
-    // Option[..]: find the matching close bracket
-    let mut i: usize = 8;
-    while i < len(fmt) {
-      if fmt[i] == 93 {
-        return fmt[8..i];
+  // Option[..] / Result[T, E]: the payload is the FIRST bracket arg
+  // — the matching-bracket law split_type_args reads (a first-']'
+  // scan once returned the whole "?string, IoError" tail for a
+  // two-arg Result)
+  if starts_open(fmt, "Option") || starts_open(fmt, "Result") {
+    let ob: i64 = open_bracket(fmt);
+    if ob >= 0 {
+      let tas: []string = split_type_args(
+          fmt[((ob as usize) + 1)..(len(fmt) - 1)]);
+      if len(tas) > 0 {
+        return tas[0];
       }
-      i = i + 1;
     }
   }
   return "";
@@ -10259,8 +10405,33 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
                     }
                     env_bind_enum(mut env, st.name, nl.v, es);
                     // an Option binding records its payload text so
-                    // Some binders keep the pointer lane
-                    let opay: string = opt_payload(st.fmt);
+                    // Some binders keep the pointer lane; an inferred
+                    // let takes its payload off the value's spelled
+                    // return type (read_line's Result[?string,
+                    // IoError] binds ?string binders below)
+                    let mut opay: string = opt_payload(st.fmt);
+                    if len(opay) == 0 && len(st.fmt) == 0 {
+                      if e.tag == parse.EX_CALL {
+                        // the module-qualified law: the registered
+                        // name is the mangled std_io_read_line — the
+                        // plain e.name lookup misses it
+                        opay = opt_payload(call_fn_rtype(prog, e, env));
+                      } else {
+                        if e.tag == parse.EX_MCALL {
+                          match e.lhs {
+                            Option.Some(r0) => {
+                              let bt0: string =
+                                  expr_ptr_type(r0, env, mut prog);
+                              if len(bt0) > 0 {
+                                opay = opt_payload(
+                                    method_rtype(mut prog, bt0, e.name));
+                              }
+                            },
+                            Option.None => {},
+                          }
+                        }
+                      }
+                    }
                     if len(opay) > 0 {
                                             env_bind_sliceelem(mut env, st.name, opay);
                     }

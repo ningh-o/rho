@@ -8,6 +8,7 @@ pub struct Tok {
   text: string,
   ival: i64,
   line: i32,
+  col: i32,    // 1-based byte column on the line (diagnostics point here)
 }
 
 pub const TK_EOF: i32 = 0;
@@ -23,6 +24,7 @@ struct Cur {
   src: string,
   pos: usize,
   line: i32,
+  lstart: usize, // the byte offset where the current line began (cols)
 }
 
 fn at(c: *Cur) -> u8 {
@@ -180,7 +182,7 @@ pub fn scan(src: string) -> *Lexed {
   let mut clines: []i64 = make([]i64, len(src) + 1);
   let mut n: usize = 0;
   let mut m: usize = 0;
-  let mut c = new Cur { src: src, pos: 0, line: 1 };
+  let mut c = new Cur { src: src, pos: 0, line: 1, lstart: 0 };
   while c.pos < len(src) {
     let b: u8 = at(c);
     if b == 32 || b == 9 || b == 13 {
@@ -190,6 +192,7 @@ pub fn scan(src: string) -> *Lexed {
     if b == 10 {
       c.line = c.line + 1;
       adv(mut c);
+      c.lstart = c.pos;
       continue;
     }
     // comments: // to end of line, recorded verbatim (no newline)
@@ -204,6 +207,7 @@ pub fn scan(src: string) -> *Lexed {
       continue;
     }
     let line: i32 = c.line;
+    let col: i32 = (c.pos - c.lstart) as i32 + 1;
     if is_ident_start(b) {
       let start: usize = c.pos;
       while c.pos < len(src) && is_ident(at(c)) {
@@ -211,7 +215,8 @@ pub fn scan(src: string) -> *Lexed {
       }
       let word: string = src[start..c.pos];
       let k: i32 = if is_keyword(word) { TK_KEYWORD } else { TK_IDENT };
-      toks[n] = new Tok { kind: k, text: word, ival: 0, line: line };
+      toks[n] = new Tok { kind: k, text: word, ival: 0, line: line,
+                          col: col };
       n = n + 1;
       continue;
     }
@@ -286,12 +291,12 @@ pub fn scan(src: string) -> *Lexed {
       }
       if isf {
         toks[n] = new Tok { kind: TK_FLOAT, text: src[start..c.pos],
-                            ival: 0, line: line };
+                            ival: 0, line: line, col: col };
         n = n + 1;
         continue;
       }
       toks[n] = new Tok { kind: TK_INT, text: src[start..c.pos],
-                          ival: v, line: line };
+                          ival: v, line: line, col: col };
       n = n + 1;
       continue;
     }
@@ -307,14 +312,14 @@ pub fn scan(src: string) -> *Lexed {
         let vend: usize = scan_verbatim_end(mut c);
         toks[n] = new Tok { kind: TK_STR,
                             text: verbatim_text(src, vstart, vend),
-                            ival: 0, line: line };
+                            ival: 0, line: line, col: col };
         n = n + 1;
         continue;
       }
       let start: usize = c.pos + 1;
       let end: usize = scan_string_span(mut c);
       toks[n] = new Tok { kind: TK_STR, text: src[start..end],
-                          ival: 0, line: line };
+                          ival: 0, line: line, col: col };
       n = n + 1;
       continue;
     }
@@ -341,10 +346,11 @@ pub fn scan(src: string) -> *Lexed {
       adv(mut c);
     }
     toks[n] = new Tok { kind: TK_PUNCT, text: src[pstart..c.pos],
-                        ival: 0, line: line };
+                        ival: 0, line: line, col: col };
     n = n + 1;
   }
-  toks[n] = new Tok { kind: TK_EOF, text: "", ival: 0, line: c.line };
+  toks[n] = new Tok { kind: TK_EOF, text: "", ival: 0, line: c.line,
+                      col: 1 };
   n = n + 1;
   return new Lexed { toks: toks[0..n], ctexts: ctexts[0..m],
                      clines: clines[0..m] };
