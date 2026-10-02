@@ -1599,17 +1599,37 @@ only when their listed dependencies close.
       mirror leg. Both sites exist and build: the language home (T5.1)
       and the course app (T5.2, prerender verified on every make).
       T5.3's deploy workflow + push remain the owner's call.
-- [ ] **T6.2** Tag `v0.1.0` — the one and only version. Release zip:
+- [x] **T6.2** Tag `v0.1.0` — the one and only version. Release zip:
       `rho-0.1.0-wasm32-wasi.zip`, binary named `rho.wasm`, SHA256SUMS,
       English RELEASE.md. Push/tag/deploy timing belongs to the owner.
-- [ ] **T6.3** **Freeze.** boot and the language freeze together. From
+      **Landed 2026-10-01** (tag local, unpushed — push = publish, the
+      owner's call). `tools/release.sh` assembles everything from the
+      repo at the tag: the compiler is the app-face build (std baked
+      in) with NO wasm-opt — the shrinker is the site-asset law, and a
+      foreign wasm-opt version would break the published byte hashes;
+      the release binary stays gate-reproducible byte-for-byte. Zip =
+      rho.wasm + README (the RELEASE) + LICENSE; smoke probe runs the
+      greet through the extracted, zipped binary before the sums are
+      printed. The zip is written by hand (node, fixed timestamps,
+      fixed order) after a rebuild-with-`zip` came out with different
+      bytes — the archive stores mtimes — so the published SHA holds
+      on any machine, any day: two consecutive runs hash identically.
+      Local artifacts land in build/release/. The retired
+      world's local-only tag series (v0.1.0 … v0.2.1+, pointing 303
+      commits back at the pre-rewrite language, never pushed — origin
+      carries no tags) is cleared so the name means what §10 says:
+      one version, no other tags.
+- [x] **T6.3** **Freeze.** boot and the language freeze together. From
       here the language grows no more; 0.1.0-era growth is libraries
       (utf-8, collections, io, net) and tooling quality (operand-stack
       emission, string pooling, linear-scan register allocation, escape
       analysis / rc-pair elimination — ordering decided when the freeze
       lands; the §13 in-compiler optimizer's finish line includes
       retiring binaryen from the site pipeline once its effect is
-      matched).
+      matched). **Frozen 2026-10-01 at the v0.1.0 tag** — the state
+      spec.md §10 has promised all along (one version, no evolution
+      after the freeze); the ledgered follow-ups (T3.18's two form
+      gaps aside) are now std/tooling work, never language surface.
 - [ ] **T6.4** Corpus dissolution (after T6.3). corpus's historical
       role — behavioral memory of the pre-rewrite language — expires at
       the freeze; spec + suites own truth from there. Retire the
