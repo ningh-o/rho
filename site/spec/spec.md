@@ -193,15 +193,17 @@ std-library components) and tooling quality — never language surface.
 
 ## 11. Conformance map — every rule → the test that holds it
 
-Suites live in `tests/` (each a directory of `.rho` programs with
-expected stdout+exit, run through the full compiler); corpus programs
-live in `corpus/`. Rule ids: §n = section of this document, S/T/M =
+Suites live in `tests/suites/` (each a `*_test.rho` program whose
+headers pin behavior, judged by `rho test`); whole-program pins live
+in `tests/suites/programs/` (the differential base; dissolved from
+the retired `corpus/` at the freeze, T6.4), and the user-facing
+teaching programs live in `examples/` (gated, cannot rot). Rule ids: §n = section of this document, S/T/M =
 syntax/type/module document.
 
 | rule | test |
 | ---- | ---- |
-| S2.2 int literals, defaults | `tests/lang/literals_int.rho`, corpus 001/002 |
-| S2.5 verbatim triple-quoted | `tests/multiline/*`, corpus 031 (adapted: escapes verbatim) |
+| S2.2 int literals, defaults | `tests/suites/lang/`, programs/001_hello_test |
+| S2.5 verbatim triple-quoted | `tests/suites/multiline/*`, programs/031_multiline_test |
 | S2.5 escape set exact | `tests/lang/escapes.rho` |
 | S4.1 overloads parse | `tests/lang/overload_parse.rho` |
 | S4.4 use one form / pub use four | `tests/modsys/use_forms.rho`, `tests/modsys/facade_reexport.rho` |
@@ -212,13 +214,13 @@ syntax/type/module document.
 | S6.1 precedence table | `tests/lang/precedence.rho` |
 | T1 consumer-typed literals | `tests/lang/literal_consumers.rho` |
 | T2 const inference/pin | `tests/lang/const_infer.rho` |
-| T3 `as` unified truncation (const == var) | `tests/lang/as_const_var.rho`, corpus 048–055 |
+| T3 `as` unified truncation (const == var) | `tests/suites/lang/`, programs/048–055_test |
 | T5 overload exact-match-unique | `tests/lang/overload_resolve.rho`, `tests/diag/overload_ambig.rho` |
 | T6 method visibility import-scoped | `tests/modsys/method_visibility.rho` |
-| T8 bounds per instantiation | `tests/lang/generic_bounds.rho`, corpus 081 |
+| T8 bounds per instantiation | `tests/suites/lang/`, programs/081_generics_bounds_test |
 | T9 `?T` sugar, non-null | `tests/lang/opt_sugar.rho`, `tests/diag/null_use.rho` |
-| T10 `==` law | `tests/eq/*`, corpus 056–058 |
-| T12 `?` on both | corpus 077 (adapted), `tests/lang/qmark_mix.rho` (must fail) |
+| T10 `==` law | `tests/suites/eq/*`, programs/056/058_test |
+| T12 `?` on both | programs/077_qmark_chain_test, `tests/suites/` qmark-mix (must fail) |
 | T15 Eq default + impl override | `tests/eq/trait_eq_override.rho` |
 | T15 Ord explicit-impl-only | `tests/eq/trait_ord.rho`, `tests/eq/ord_without_impl.rho` (must fail) |
 | T15 Hash default byte law + impl | `tests/eq/hash_default.rho`, `tests/eq/hash_impl.rho` |
@@ -229,17 +231,17 @@ syntax/type/module document.
 | T1 float literal fit | `tests/lang/float_literal_fit.rho` (must fail) |
 | S7 pattern form law | `tests/diag/pattern_form_named_on_tuple.rho`, `tests/diag/pattern_form_positional_on_struct.rho` (must fail) |
 | S6.8 mut value-type capture refused, mut handle captured | `tests/diag/capture_mut_value.rho` (must fail), `tests/lang/capture_mut_handle.rho` |
-| §1.1 rc/weak header | corpus 090/091/099 (adapted) |
-| §1.3 zeroed allocations | corpus 102 (adapted), `tests/lang/make_zero.rho` |
-| §1.4 counting insertion | corpus 090/092/093 (adapted) |
-| §2/§3 panic catalog | corpus 043/044/094, `tests/lang/panic_stack.rho` |
-| §4 wrap/MIN/shift-mask/IEEE | corpus 040–047, 013 |
-| §5 strings byte semantics | corpus 060–069 (adapted), `tests/strops/*` |
+| §1.1 rc/weak header | programs/090/091/099_test |
+| §1.3 zeroed allocations | examples/102_make_zero, `tests/suites/lang/` make-zero |
+| §1.4 counting insertion | programs/090/092/093_test |
+| §2/§3 panic catalog | programs/043/044_test, programs/015_panic_oob_test, `tests/suites/lang/` panic-stack |
+| §4 wrap/MIN/shift-mask/IEEE | programs/040–047_test, examples/013_floats |
+| §5 strings byte semantics | programs/066_escapes_text_test, `tests/suites/strops/*` |
 | §6 --set widened face | `tests/params/*` |
 | §6 comptime folding + pruning | `tests/params/fold_dead_branch.rho` |
 | §7 wasm32-wasi only | gate legs (gate.sh) |
 | §8 byte-identical determinism | gate: seed rebuild vs canary |
-| §8 cross-compiler behavioral | gate: corpus differential |
+| §8 cross-compiler behavioral | gate: the programs differential (tests/run-corpus-diff.sh) |
 | §9 kernel exact set | audit test `tests/kernel_audit.rho` (negative: no extra symbols) |
 | §10 one version | release check in gate |
 
