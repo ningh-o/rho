@@ -5773,6 +5773,36 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
     // the closure value: (table idx, capture box) on the lane
     return emit_closure_value(e, mut pool, env, prog, mut nl);
   }
+  if e.tag == parse.EX_CALL && len(e.name) == 0 {
+    // call-on-call: the callee is an expression whose value is a fn
+    // value (table idx, capture box) — park both in fresh slots, then
+    // the same indirect call the binding path uses
+    match e.lhs {
+      Option.Some(callee) => {
+        let ci3: i64 = nl.v;
+        let cb3: i64 = nl.v + 1;
+        nl.v = nl.v + 2;
+        let mut out3: string =
+            emit_expr(mut pool, callee, mut env, mut prog, mut nl) +
+            "    (local.set " + cb3.to_str() + ")\n" +
+            "    (local.set " + ci3.to_str() + ")\n" +
+            "    (local.get " + cb3.to_str() + ")\n";
+        let mut k4: usize = 0;
+        while k4 < len(e.args) {
+          out3 = out3 + emit_arg(mut pool, e.args[k4], mut env, mut prog,
+                                 mut nl);
+          k4 = k4 + 1;
+        }
+        out3 = out3 + "    (i32.wrap_i64 (local.get " + ci3.to_str() +
+               "))\n";
+        out3 = out3 + "    call_indirect (type $cl" +
+               ((len(e.args) as i64) + 1).to_str() + ")\n";
+        clo_ty_need(mut pool.gi, (len(e.args) as i64) + 1, 1);
+        return out3;
+      },
+      Option.None => {},
+    }
+  }
   if e.tag == parse.EX_CALL {
     // a closure-typed binding calls through the table
     if e.tag == parse.EX_CALL && env_kind_of(env, e.name) == 3 {
@@ -9445,9 +9475,11 @@ fn emit_closure_value(e: *Expr, mut pool: *Pool, env: *Env,
   pool.gi.bases[gi_n] = "clo:" + wat;
   pool.gi.keys[gi_n] = "";
   pool.gi.sufs[gi_n] = "";
-  pool.gi.fds[gi_n] = prog.fns[0];
-  let mut carrier = parse.clone_fndef(prog.fns[0]);
-  carrier.body = e.marms[0].body;
+  // the carrier needs only its body — a synthetic FnDef. The old
+  // clone_fndef(prog.fns[0]) crashed on a program with no non-main
+  // fns (prog.fns empty: main rides prog.main) and deep-copied a body
+  // that the very next line overwrote anyway.
+  let carrier = parse.new_fndef(e.marms[0].body);
   pool.gi.clo_fds[gi_n] = carrier;
   let idx: i64 = pool.gi.cfn as i64;
   pool.gi.ids[gi_n] = idx;

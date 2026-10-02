@@ -213,6 +213,17 @@ pub fn clone_fndef(fd: *FnDef) -> *FnDef {
                      line: fd.line, end_line: fd.end_line };
 }
 
+// a minimal FnDef carrying just a body — the closure literal is
+// synthesized directly instead of deep-cloning an unrelated template
+pub fn new_fndef(body: []*Stmt) -> *FnDef {
+  return new FnDef { name: "", params: make([]string, 0),
+                     pstr: make([]bool, 0), pslc: make([]bool, 0),
+                     ptypes: make([]string, 0),
+                     pvar: make([]bool, 0), pmut: make([]bool, 0),
+                     rtype: "", tparams: make([]string, 0),
+                     body: body, ispub: false, line: 0, end_line: 0 };
+}
+
 pub fn clo_expr(params: []string, body: []*Stmt,
                 rtype: string) -> *Expr {
   let mut arm = new MatchArm { pat: mk_pat(0), body: body,
@@ -471,6 +482,16 @@ pub fn slice_expr(base: *Expr, lo: *Expr, hi: *Expr,
 pub fn call(name: string, args: []*Expr) -> *Expr {
   return new Expr { tag: EX_CALL, lit: 0, name: name, op: 0,
                      lhs: Option.None, rhs: Option.None,
+                     args: args, fnames: make([]string, 0),
+                     marms: make([]*MatchArm, 0) };
+}
+
+// a call ON the postfix chain: the callee is an expression whose
+// value is a fn value (mk()(7) — call-on-call). The callee rides lhs
+// with an empty name; the emitter indirect-calls the value.
+pub fn call_value(callee: *Expr, args: []*Expr) -> *Expr {
+  return new Expr { tag: EX_CALL, lit: 0, name: "", op: 0,
+                     lhs: Option.Some(callee), rhs: Option.None,
                      args: args, fnames: make([]string, 0),
                      marms: make([]*MatchArm, 0) };
 }
@@ -1171,6 +1192,16 @@ fn parse_postfix(mut c: *PCur, e0: *Expr) -> *Expr {
       } else {
         e = field_expr(e, fname);
       }
+      continue;
+    }
+    if is_punct(tk(c), 40) {
+      // f(args) — a bare call suffix: the callee is whatever the chain
+      // built (call-on-call, an indexed fn value). Name rides empty;
+      // the emitter indirect-calls the value.
+      tkadv(mut c); // (
+      let mut anames2: []string = make([]string, 8);
+      let args2 = parse_args_named(mut c, mut anames2);
+      e = call_value(e, args2);
       continue;
     }
     break;

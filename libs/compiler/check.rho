@@ -377,6 +377,21 @@ fn expr_walk(e: *Expr, prog: *Prog, mut bound: []string, mut muts: []bool,
     return;
   }
   if e.tag == parse.EX_CALL {
+    // call-on-call: the callee is an expression, not a name — walk it
+    if len(e.name) == 0 {
+      match e.lhs {
+        Option.Some(callee) => {
+          expr_walk(callee, prog, mut bound, mut muts, nb, mut errs);
+        },
+        Option.None => {},
+      }
+      let mut k3: usize = 0;
+      while k3 < len(e.args) {
+        expr_walk(e.args[k3], prog, mut bound, mut muts, nb, mut errs);
+        k3 = k3 + 1;
+      }
+      return;
+    }
     // a locally-bound name (a closure value) is callable
     let mut isbound: bool = false;
     let mut b: usize = 0;

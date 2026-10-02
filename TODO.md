@@ -1060,7 +1060,7 @@ section — no placeholder stages. boot is the reference compiler.
       whole re-adaptation wave; this round proved the point twice
       (the f32 lanes and the fold signs both predated the mirror's
       adaptation).
-- [ ] **T3.18** The site's truth leg found the mirror's remaining form
+- [x] **T3.18** The site's truth leg found the mirror's remaining form
       gaps (2026-10-01, opened with T5.1): the verify-site-examples
       mirror leg refused to ship a site example the mirror cannot take,
       and two legal shapes fell out of the tour's first draft —
@@ -1069,16 +1069,27 @@ section — no placeholder stages. boot is the reference compiler.
       the mirror's own wasm panic `index out of bounds` mid-compile —
       a compiler-side memory bug in the EX_CLO init path, the worst
       class there is; (b) a call-on-call postfix (`make_adder(5)(0)`)
-      falls to the parse-fallback counter and refuses. Both compile
-      under boot; both stay out of the shipped site examples until the
-      mirror grows them. Related residue, same law family: the §18
-      call-site mut marker (`f(mut t)` requiring a `let mut t` root —
-      boot refuses, the mirror accepts) and boot's parse being
-      stricter than the mirror's on one statement-match spelling (the
-      reverse direction; corpus clean, no case carries it). The
-      closures chapter teaches the forms the mirror DOES take
-      (return-a-closure, call-init, var-call) — verified on both
-      compilers.
+      falls to the parse-fallback counter and refuses. **Both closed
+      2026-10-01.** (a) was `clone_fndef(prog.fns[0])` in
+      emit_closure_value — the carrier template read the first
+      non-main fn, and a program with ONLY main (main rides
+      prog.main) has an empty fns table: index out of bounds. The
+      carrier needs only its body; parse.new_fndef synthesizes it
+      (the old clone deep-copied a body the next line overwrote
+      anyway). The phase-probe hunt (eprintf marks at CV/LET/ST/GD/CF)
+      also exposed the debug discipline trap: a use-after-free print
+      reads freed bytes and names the wrong suspect. (b) was the
+      postfix loop having no bare-call suffix — ident+`(` was eaten
+      once in the atom, so the second `(` of `mk()(7)` had no owner.
+      The loop grew the suffix with parse.call_value (the callee rides
+      EX_CALL.lhs with an empty name), the emitter indirect-calls the
+      parked (idx, box) pair through the $clN types the closure
+      registered, and the checker's unknown-fn scan skips nameless
+      calls. `mk()(7)` now compiles and prints 7 on both compilers;
+      the two probes that found the gaps (tour's chain and the
+      closure-init) are the regression shapes. Still open, law family:
+      the §18 call-site mut marker and boot's stricter statement-match
+      spelling (both noted below the closures chapter).
 
 ## Phase 4 — kernel boundary and the std library
 
