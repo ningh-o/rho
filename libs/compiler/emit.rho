@@ -534,15 +534,17 @@ fn alloc_wat(pool_top: i64) -> string {
 const ALLOC_BODY: string = """
   (func $w_alloc (param $n i32) (result i32)
     (local $p i32) (local $k i32) (local $old i32) (local $g i32)
-    (global.set $w_alloc_top
-      (i32.sub (global.get $w_alloc_top)
-               (i32.mul (i32.add (local.get $n) (i32.const 2))
-                        (i32.const 8))))
-    (if (i32.lt_u (global.get $w_alloc_top) (global.get $w_floor))
+    (if (i32.gt_u
+          (i32.mul (i32.add (local.get $n) (i32.const 2))
+                   (i32.const 8))
+          (i32.sub (global.get $w_alloc_top) (global.get $w_floor)))
       (then
-        ;; the bump would cross the floor: grow, then carve ONLY the
+        ;; the request exceeds the room: grow, then carve ONLY the
         ;; fresh pages (the floor rises to the old end — a downward
-        ;; march from the new top must never reenter lived-in pages)
+        ;; march from the new top must never reenter lived-in pages).
+        ;; The room is judged as a DISTANCE — testing the wrapped top
+        ;; after the subtract once read a huge unsigned and skipped the
+        ;; grow (the 4GiB-wrap class boot fixed in 0.4.1)
         (local.set $old (memory.size))
         (local.set $k
           (i32.add
@@ -561,6 +563,11 @@ const ALLOC_BODY: string = """
           (i32.mul (local.get $old) (i32.const 65536)))
         (global.set $w_alloc_top
           (i32.sub (i32.mul (memory.size) (i32.const 65536))
+                   (i32.mul (i32.add (local.get $n) (i32.const 2))
+                            (i32.const 8)))))
+      (else
+        (global.set $w_alloc_top
+          (i32.sub (global.get $w_alloc_top)
                    (i32.mul (i32.add (local.get $n) (i32.const 2))
                             (i32.const 8))))))
     (local.set $p (global.get $w_alloc_top))
@@ -2098,6 +2105,27 @@ fn method_rtype(mut prog: *Prog, bt: string, mname: string) -> string {
   if len(r1) > 0 {
     return r1;
   }
+  // a dyn receiver: the declared return rides the trait table (the
+  // dispatch itself resolves there — a dyn-typed method result once
+  // read as "" and every f64 hole printed its raw bits)
+  if is_dyn_type(bt) {
+    let trt: string = dyn_trait(bt);
+    let mut t9: usize = 0;
+    while t9 < prog.ntraits {
+      if prog.traits[t9].name == trt {
+        let mut m9: usize = 0;
+        while m9 < prog.traits[t9].nmethods {
+          if prog.traits[t9].methods[m9] == mname &&
+              m9 < len(prog.traits[t9].rtypes) {
+            return prog.traits[t9].rtypes[m9];
+          }
+          m9 = m9 + 1;
+        }
+      }
+      t9 = t9 + 1;
+    }
+    return "";
+  }
   let mut rt: string = bt;
   if len(rt) > 0 && rt[0] == 42 {
     rt = rt[1..len(rt)];
@@ -2507,6 +2535,12 @@ fn expr_ptr_type(e: *Expr, env: *Env, mut prog: *Prog) -> string {
       if st_index(mut prog, et) >= 0 {
         return et;
       }
+      // a dyn-typed element: its methods resolve through the trait
+      // table (method_rtype's dyn arm) — a struct-only law once left
+      // every dyn method result untyped and the f64 holes raw
+      if is_dyn_type(et) {
+        return et;
+      }
     }
     // an indexed field (p.tbl[i]): the element text rides the
     // owner's declared field type — a pointer element's target is
@@ -2521,6 +2555,9 @@ fn expr_ptr_type(e: *Expr, env: *Env, mut prog: *Prog) -> string {
       }
     }
     if st_index(mut prog, et9) >= 0 {
+      return et9;
+    }
+    if is_dyn_type(et9) {
       return et9;
     }
     return "";
@@ -4667,12 +4704,57 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
           want = 2;
         }
       }
+      // a FRESH receiver (w.get(), read_line()) builds a box whose
+      // payload the live branch retained — after the tag test the box
+      // must die here, or the condition lane leaks the retain (the
+      // object outlived its last owner through a bare is_some probe)
+      let fresh: bool = expr_is_fresh(recv);
       let mut outa: string = emit_expr(mut pool, recv, mut env, mut prog,
                                        mut nl);
-      outa = outa + "    (i64.load (i32.wrap_i64))\n";
+      if !fresh {
+        outa = outa + "    (i64.load (i32.wrap_i64))\n";
+        outa = outa + "    (i64.eq (i64.const " + want.to_str() + "))\n";
+        // the scalar bool lane rides i64 (0/1) — the tag test is i32
+        outa = outa + "    (i64.extend_i32_u)\n";
+        return outa;
+      }
+      let bx: i64 = nl.v;
+      nl.v = nl.v + 1;
+      let bb: i64 = nl.v;
+      nl.v = nl.v + 1;
+      outa = outa + "    (local.set " + bx.to_str() + ")\n";
+      outa = outa + "    (i64.load (i32.wrap_i64 (local.get " +
+             bx.to_str() + ")))\n";
       outa = outa + "    (i64.eq (i64.const " + want.to_str() + "))\n";
-      // the scalar bool lane rides i64 (0/1) — the tag test is i32
       outa = outa + "    (i64.extend_i32_u)\n";
+      outa = outa + "    (local.set " + bb.to_str() + ")\n";
+      let mut pay: string = optpt_of_scrutinee(recv, mut env, mut prog);
+      if recv.tag == parse.EX_MCALL && recv.name == "get" {
+        // w.get(): the payload is the weak's target (the same law the
+        // match dispatch reads for its binder)
+        match recv.lhs {
+          Option.Some(rw) => {
+            if rw.tag == parse.EX_VAR {
+              let wtg: string = weak_target(env_ptr_of(env, rw.name));
+              if len(wtg) > 0 {
+                pay = "?*" + wtg;
+              }
+            }
+          },
+          Option.None => {},
+        }
+      }
+      if len(pay) > 0 && pay[0] != 63 {
+        pay = "?" + pay;
+      }
+      if len(pay) > 0 {
+        let rele: string = rel_callee(mut pool, mut prog, pay);
+        if len(rele) > 0 {
+          outa = outa + "    (local.get " + bx.to_str() + ")\n";
+          outa = outa + "    call " + rele + "\n";
+        }
+      }
+      outa = outa + "    (local.get " + bb.to_str() + ")\n";
       return outa;
     }
     // DISABLED with the dyn emit (084's crash); re-lands with the
@@ -9788,7 +9870,10 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
       }
     }
     if st.tag == parse.ST_RET && !in_fn {
-      // main's return: the value lands in the exit slot (i32)
+      // main's return: the value lands in the exit slot (i32), the
+      // open scopes' defers unwind (the same law a fn's return obeys),
+      // and the branch leaves for the exit block — a bare slot write
+      // once fell through the enclosing if-block and ran the tail
       match st.val {
         Option.Some(rv) => {
           body = body + emit_expr(mut pool, rv, mut env, mut prog, mut nl);
@@ -9796,6 +9881,8 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
           body = body + "    (local.set ";
           body = body + ret_slot.to_str();
           body = body + ")\n";
+          body = body + dunwind_emit(mut dstack);
+          body = body + "    (br $w_exit)\n";
         },
         Option.None => {},
       }
@@ -12559,7 +12646,9 @@ pub fn emit(mut prog: *Prog) -> string {
     }
     fsi = fsi + 1;
   }
+  out = out + "    block $w_exit\n";
   out = out + body;
+  out = out + "    end\n";
   out = out + "    (call $proc_exit (i32.and (local.get 2) ";
   out = out + "(i32.const 255)))\n";
   out = out + "  )\n";
