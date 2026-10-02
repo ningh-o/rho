@@ -307,7 +307,11 @@ section — no placeholder stages. boot is the reference compiler.
       truncations die — bare unary `*` parses (only `(*e)` did; the
       fallback ate the star and the leaked field block's `}` closed
       the enclosing fn early), bare `{ stmts }` blocks parse (boot's
-      T_LBRACE form), the match statement eats its trailing `;`, and
+      T_LBRACE form), the match statement eats its trailing `;`
+      (CORRECTED 2026-10-03, the T3.18 residue closure: that was the
+      mirror alone — boot's statement match shares the expression
+      form's parser and never ate it; the mirror now refuses it with
+      boot's exact wording), and
       every parse fallback counts PCur.perrs which main refuses
       before emitting — a clean exit-1 refusal instead of a hollow
       program; the match-arm tail probe restores the count on rewind
@@ -1087,9 +1091,23 @@ section — no placeholder stages. boot is the reference compiler.
       registered, and the checker's unknown-fn scan skips nameless
       calls. `mk()(7)` now compiles and prints 7 on both compilers;
       the two probes that found the gaps (tour's chain and the
-      closure-init) are the regression shapes. Still open, law family:
-      the §18 call-site mut marker and boot's stricter statement-match
-      spelling (both noted below the closures chapter).
+      closure-init) are the regression shapes. The law-family residues
+      both CLOSED 2026-10-03 (the residue integration): the §18
+      call-site mut marker (residue/mut-call-marker — the mirror now
+      pairs a marked argument with a mut root binding, boot's exact
+      diagnostic, walking EX_FIELD/EX_IDX chains to the path the way
+      boot's root_binding_mut does; derefs and temporaries are their
+      own mut roots) and boot's stricter statement-match spelling
+      (residue/stmt-match-spelling — a statement match's trailing ';'
+      now refuses with boot's wording `expected an expression,
+      found ';'`; the old "eats its trailing `;`" note in the
+      fifty-fifth/sixth cuts was the mirror alone and boot-false).
+      Both t13 pins ride the differential; PINNED 94 → 96. The
+      integration also rebaked the seed canary (1,484,341 bytes):
+      the mut-marker closure had changed the mirror and closed on
+      make test alone, so the canary leg caught its stale pin — the
+      gate's own law (re-pin in the commit that changes the
+      compiler) applied at the merge.
 
 ## Phase 4 — kernel boundary and the std library
 
