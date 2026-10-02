@@ -129,7 +129,15 @@ RHO=${RHO:-./build/rho}
 # defer_exit_paths, bool_condition, if_match_expr — and printf itself,
 # the body of every suite case). The differential's base is the
 # programs tier now; the pin is its size.
-PINNED=94
+#
+# 94 → 95 with t13_mut_call_marker: the call-site mut marker law
+# closes on the mirror (the last §18 residue) — the legal face rides
+# the differential (marked arguments on mut roots: plain calls, a
+# mut-view method's second view, a relay chain, the slice store); the
+# refusal face is pinned boot-side (lang/mv_marker_nonmut_root_field)
+# and mirror-side (run-selfhost.sh's mutmarker case, boot's exact
+# diagnostic line).
+PINNED=95
 
 # one file's differential; echoes "pass" or the failure label
 check_one() {

@@ -1,0 +1,40 @@
+// programs tier — the call-site mut marker (§18): marked arguments
+// ride write-through views whose root bindings are `let mut`; the
+// differential grades both compilers on the law's legal face (plain
+// calls, a mut-view method with a marked second view, a relay chain,
+// and the slice store the views protect).
+// out: 6
+// out: 22 16 6
+// out: 9 3 3
+// exit: 0
+struct S { v: i64, }
+fn bump(mut p: *S) -> i64 {
+  p.v = p.v + 1;
+  return p.v;
+}
+fn fill(mut xs: []i32, k: i32) -> i64 {
+  xs[0] = k;
+  return xs[0] as i64;
+}
+fn relay(mut xs: []i32) -> i64 {
+  return fill(mut xs, 3);
+}
+fn S.swap(mut self: *S, mut other: *S) -> i64 {
+  let t = self.v;
+  self.v = other.v;
+  other.v = t;
+  return self.v + other.v;
+}
+fn main() -> i32 {
+  let mut s: *S = new S { v: 5 };
+  let mut r: *S = new S { v: 16 };
+  let a = bump(mut s);
+  printf("{}\n", a);
+  let b = s.swap(mut r);
+  printf("{} {} {}\n", b, s.v, r.v);
+  let mut xs: []i32 = [7, 8, 9];
+  let c = fill(mut xs, 9);
+  let d = relay(mut xs);
+  printf("{} {} {}\n", c, xs[0], d);
+  return 0;
+}

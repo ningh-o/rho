@@ -115,6 +115,32 @@ else
   echo "FAIL selfhost/badsrc: rc=$brc err=[$berr]"
   FAILED=1
 fi
+# §18's call-site tail: a marked argument whose root binding is not
+# mut is refused with boot's exact diagnostic, anchored at the token
+# after the argument
+"$RHO" build libs/compiler/main.rho -o $T/rhoc-mut.wasm \
+  --set 'SRC=fn f(mut xs: []i32) -> i32 {
+  xs[0] = 1;
+  return xs[0];
+}
+fn main() -> i32 {
+  let a: []i32 = [1, 2];
+  return f(mut a);
+}' >/dev/null 2>&1
+if [ $? -ne 0 ]; then
+  echo "FAIL selfhost/mutmarker: boot could not build the compiler"
+  FAILED=1
+else
+  wasmtime $T/rhoc-mut.wasm 2>$T/mut.err >/dev/null
+  mrc=$?
+  merr=$(head -1 $T/mut.err)
+  if [ "$mrc" -eq 1 ] && [ "$merr" = "main.rho:7:17: error: the marked argument needs a mut root binding (declare the binding with let mut)" ]; then
+    echo "  mutmarker: ok (the marker law refuses, boot-exact)"
+  else
+    echo "FAIL selfhost/mutmarker: rc=$mrc err=[$merr]"
+    FAILED=1
+  fi
+fi
 # by-value structs: nested layout, *new field inits, chain reads,
 # by-value params/returns, struct-element slices, string-element
 # compares, two slices with different element types in one scope
