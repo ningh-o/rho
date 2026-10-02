@@ -95,6 +95,8 @@ pub struct Stmt {
   path: []string,  // fstore: the dotted field path
   marms: []*MatchArm, // match arms (ST_MATCH)
   line: i32,       // the first token's line (fmt replays comments above)
+  col: i32,        // the first token's column — the assignment law's
+                   //   diagnostics point at the lvalue, boot-exact
   end_line: i32,   // the last consumed token's line (fmt rides the tail)
   init_line: i32,  // the init expr's first token — the literal lanes'
   init_col: i32,   //   diagnostics point at the value, boot-exact
@@ -105,8 +107,8 @@ fn mk_stmt(tag: i32) -> *Stmt {
                     name: "", val: Option.None, ret: 0,
                     body: make([]*Stmt, 0), body2: make([]*Stmt, 0),
                     sub: Option.None, path: make([]string, 0),
-                    marms: make([]*MatchArm, 0), line: 0, end_line: 0,
-                    init_line: 0, init_col: 0 };
+                    marms: make([]*MatchArm, 0), line: 0, col: 0,
+                    end_line: 0, init_line: 0, init_col: 0 };
 }
 
 // verbatim deep clones (other modules rebind type texts over them)
@@ -163,7 +165,7 @@ pub fn clone_stmt(st: *Stmt) -> *Stmt {
                        body: make([]*Stmt, len(st.body)),
                        body2: make([]*Stmt, len(st.body2)),
                        sub: st.sub, path: st.path,
-                       marms: st.marms, line: st.line,
+                       marms: st.marms, line: st.line, col: st.col,
                        end_line: st.end_line,
                        init_line: st.init_line, init_col: st.init_col };
   let mut k: usize = 0;
@@ -205,7 +207,7 @@ pub fn clone_fndef(fd: *FnDef) -> *FnDef {
   }
   return new FnDef { name: fd.name, params: fd.params,
                      pstr: fd.pstr, pslc: fd.pslc,
-                     ptypes: fd.ptypes, pvar: fd.pvar,
+                     ptypes: fd.ptypes, pvar: fd.pvar, pmut: fd.pmut,
                      rtype: fd.rtype,
                      tparams: fd.tparams, body: nbody,
                      line: fd.line, end_line: fd.end_line };
@@ -379,6 +381,7 @@ pub struct FnDef {
   pslc: []bool, // true where that pair is a slice (vs a string)
   ptypes: []string, // each param's written type ("" when absent)
   pvar: []bool, // true where the parameter is variadic (rest: T...)
+  pmut: []bool, // true where the parameter is a mut view (§18)
   rtype: string,    // the written return type ("" when absent)
   tparams: []string, // the [T]/[T: Bound] type parameters (names only)
   body: []*Stmt,
@@ -1193,7 +1196,8 @@ fn parse_atom(mut c: *PCur) -> *Expr {
     let mut pslc2: []bool = make([]bool, cap2);
     let mut ptypes2: []string = make([]string, cap2);
     let mut pvar2: []bool = make([]bool, cap2);
-    let params = parse_params2(mut c, mut pstr2, mut pslc2, mut ptypes2, mut pvar2);
+    let mut pmut2: []bool = make([]bool, cap2);
+    let params = parse_params2(mut c, mut pstr2, mut pslc2, mut ptypes2, mut pvar2, mut pmut2);
     let rtype2: string = eat_arrow_typed(mut c);
     let mut body2: []*Stmt = make([]*Stmt, 0);
     if eat_punct(mut c, 123) {
@@ -1858,6 +1862,8 @@ fn parse_stmt_i(mut c: *PCur) -> *Stmt {
     eat_punct(mut c, 59);
     let mut st = mk_stmt(ST_ISTORE);
     st.name = t.text;
+    st.line = t.line;
+    st.col = t.col;
     let mut a: []*Expr = make([]*Expr, 1);
     a[0] = idx;
     st.args = a;
@@ -1883,6 +1889,8 @@ fn parse_stmt_i(mut c: *PCur) -> *Stmt {
     eat_punct(mut c, 59);
     let mut st = mk_stmt(ST_SET);
     st.name = t.text;
+    st.line = t.line;
+    st.col = t.col;
     st.val = Option.Some(e);
     return st;
   }
@@ -1902,6 +1910,8 @@ fn parse_stmt_i(mut c: *PCur) -> *Stmt {
     eat_punct(mut c, 59);
     let mut st = mk_stmt(ST_SET);
     st.name = t.text;
+    st.line = t.line;
+    st.col = t.col;
     st.fmt = opspell; // the two-char token already carries its =
     let code: i64 = match opt {
       43 => 0,
@@ -1935,6 +1945,8 @@ fn parse_stmt_i(mut c: *PCur) -> *Stmt {
     eat_punct(mut c, 59);
     let mut st = mk_stmt(ST_SET);
     st.name = t.text;
+    st.line = t.line;
+    st.col = t.col;
     st.fmt = opspell + "=";
     st.val = Option.Some(bin(code, var(t.text), rhs));
     return st;
@@ -2062,6 +2074,8 @@ fn parse_stmt_i(mut c: *PCur) -> *Stmt {
     eat_punct(mut c, 59);
     let mut st = mk_stmt(ST_FSTORE);
     st.name = base;
+    st.line = t.line;
+    st.col = t.col;
     st.path = names[0..nn];
     if index_first {
       st.ret = 1;
@@ -2191,7 +2205,8 @@ fn parse_stmt_i(mut c: *PCur) -> *Stmt {
 // ( params ) — names plus a string flag per parameter (': string');
 // everything else is i64
 fn parse_params2(mut c: *PCur, mut pstr: []bool, mut pslc: []bool,
-                 mut ptypes: []string, mut pvar: []bool) -> []string {
+                 mut ptypes: []string, mut pvar: []bool,
+                 mut pmut: []bool) -> []string {
   let cap: usize = count_params(c) + 1;
   let mut names: []string = make([]string, cap);
   let mut n: usize = 0;
@@ -2203,12 +2218,14 @@ fn parse_params2(mut c: *PCur, mut pstr: []bool, mut pslc: []bool,
       tkadv(mut c);
       break;
     }
-    // §18: a mut-view param carries the 'mut' prefix — permission
-    // only, never layout, so the flag parses and rides no table
+    // §18: a mut-view param carries the 'mut' prefix — the flag now
+    // rides pmut (the checker's immutable law reads it; layout never)
     // ('mut' rides the ident lane in this lexer — match by text)
+    let mut was_mut: bool = false;
     if tk(c).text == "mut" &&
         (tk(c).kind == lex.TK_IDENT || tk(c).kind == lex.TK_KEYWORD) {
       tkadv(mut c);
+      was_mut = true;
     }
     let pt = tk(c);
     if pt.kind == lex.TK_IDENT || pt.kind == lex.TK_KEYWORD {
@@ -2216,6 +2233,7 @@ fn parse_params2(mut c: *PCur, mut pstr: []bool, mut pslc: []bool,
       pstr[n] = false;
       pslc[n] = false;
       pvar[n] = false;
+      pmut[n] = was_mut;
       n = n + 1;
       tkadv(mut c);
       // optional : type ([]T and *T ride composed text; string and
@@ -2923,7 +2941,8 @@ pub fn parse_full(toks: []*Tok, src: string, ctexts: []string,
       let mut pslc: []bool = make([]bool, cap3);
       let mut ptypes: []string = make([]string, cap3);
       let mut pvar: []bool = make([]bool, cap3);
-      let params = parse_params2(mut c, mut pstr, mut pslc, mut ptypes, mut pvar);
+      let mut pmut: []bool = make([]bool, cap3);
+      let params = parse_params2(mut c, mut pstr, mut pslc, mut ptypes, mut pvar, mut pmut);
       let rtype: string = eat_arrow_typed(mut c);
       let mut body: []*Stmt = make([]*Stmt, 0);
       if eat_punct(mut c, 123) {
@@ -2951,6 +2970,7 @@ pub fn parse_full(toks: []*Tok, src: string, ctexts: []string,
                            pslc: pslc[0..len(params)],
                            ptypes: ptypes[0..len(params)],
                            pvar: pvar[0..len(params)],
+                           pmut: pmut[0..len(params)],
                            rtype: rtype,
                            tparams: tparams[0..ntp],
                            body: body, ispub: pending_pub,

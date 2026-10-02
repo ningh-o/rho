@@ -49,10 +49,15 @@ fn app_compile(src: string) -> i32 {
     eprintf("parse: {} unresolved form(s)\n", prog.perrs);
     return 1;
   }
-  let mut errs: i64 = check.check(prog);
-  if errs > 0 {
-    eprintf("check: {} error(s)\n", errs);
-    return 1;
+  // fmt is syntax-level law: it formats whatever parses, no semantic
+  // checks (boot's fmt formats a file the checker would refuse — the
+  // fmt-self suite pins that). build and check run the checker.
+  if mode != "fmt" {
+    let mut errs: i64 = check.check(prog);
+    if errs > 0 {
+      eprintf("check: {} error(s)\n", errs);
+      return 1;
+    }
   }
   if mode == "check" {
     return 0;
@@ -105,10 +110,13 @@ fn main() -> i32 {
     eprintf("parse: {} unresolved form(s)\n", prog.perrs);
     return 1;
   }
-  let mut errs: i64 = check.check(prog);
-  if errs > 0 {
-    eprintf("check: {} error(s)\n", errs);
-    return 1;
+  // fmt is syntax-level law here too (boot's fmt checks nothing)
+  if FMT != 1 {
+    let mut errs: i64 = check.check(prog);
+    if errs > 0 {
+      eprintf("check: {} error(s)\n", errs);
+      return 1;
+    }
   }
   if FMT == 1 {
     let text: string = fmt.fmt_prog(prog);

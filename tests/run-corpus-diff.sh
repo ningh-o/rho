@@ -111,6 +111,13 @@ RHO=${RHO:-./build/rho}
 # i8 wrap: (-14)*(-32) folded 448 while the runtime read -64, and a
 # zero-extend-only wrap read the i8 -64 as 192). Each case names its
 # seed in the header — the file outlives the bug as a regression.
+#
+# The floor stays 122 through the assignment-law wave: the mirror's
+# checker grew the §18 mut law (let-without-mut, non-mut params, match
+# binders, and consts refuse their writes with boot's exact
+# diagnostics; fmt stays syntax-level and checks nothing), which turns
+# refusals the corpus never carried — every pinned case already spoke
+# the law, so all 122 hold.
 PINNED=122
 
 # one file's differential; echoes "pass" or the failure label

@@ -12,6 +12,9 @@
 # Usage: tools/build-app-artifact.sh <out.wasm>
 set -u
 OUT=${1:?usage: build-app-artifact.sh <out.wasm>}
+# the smoke probe runs from a tmp room — the out path must survive it
+OUT=$(perl -e 'use Cwd "abs_path"; print abs_path($ARGV[0])' "$OUT" 2>/dev/null \
+  || perl -e 'use Cwd "abs_path"; use File::Basename; my $d = dirname(abs_path($ARGV[0])); mkdir $d unless -d $d; print abs_path("$ARGV[0]")' "$OUT")
 RHO=${RHO:-./build/rho}
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 
