@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tutorial — rho</title>
+  <meta name="description" content="Learn rho in seventeen chapters, right here: every example is compiled and executed by the real compiler, cross-compiled to WebAssembly, running in your browser.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <header class="site">
+    <div class="wrap">
+      <a class="mark" href="index.html">ρ<small>rho</small></a>
+      <nav>
+        <a href="tutorial.html" class="active">tutorial</a>
+        <a href="playground.html">playground</a>
+        <a href="spec.html">spec</a>
+        <a href="https://github.com/ningh-o/rho">source</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="wrap page-head">
+    <h1>The tutorial</h1>
+    <p>
+      Seventeen chapters from hello world to the memory model. Every example
+      below is compiled and executed by the real compiler — the same binary
+      the <a href="playground.html">playground</a> runs — and the same
+      programs are pinned against the native toolchain on every test run, so
+      nothing here can quietly rot. Edit anything; Run recompiles.
+    </p>
+  </div>
+
+  <main class="wrap">
+    <section class="chapter" id="ch-hello">
+      <h2><span class="num">01</span>Hello, rho</h2>
+      <p>
+        A program is a tree of modules; <code>main.rho</code> is the entry,
+        and <code>main</code> returns the exit code. <code>printf</code> takes
+        a literal format string — every <code>{}</code> is checked at compile
+        time, and a count mismatch is refused before anything runs.
+      </p>
+      <template data-example="hello"></template>
+    </section>
+
+    <section class="chapter" id="ch-values">
+      <h2><span class="num">02</span>Numbers that stay defined</h2>
+      <p>
+        Integers are two's complement and <em>wrap</em> — adding one to the
+        biggest i32 gives the smallest, deterministically, on every platform.
+        There is no undefined behavior to optimize around. Float literals that
+        would round to infinity are compile errors, never silent
+        <code>inf</code>.
+      </p>
+      <template data-example="values"></template>
+    </section>
+
+    <section class="chapter" id="ch-bindings">
+      <h2><span class="num">03</span>let and mut</h2>
+      <p>
+        Bindings are immutable by default; <code>mut</code> is the one write
+        switch, and the compiler holds you to it — assigning through a binding
+        without <code>mut</code> is refused with a pointed diagnostic, not a
+        warning.
+      </p>
+      <template data-example="bindings"></template>
+    </section>
+
+    <section class="chapter" id="ch-control">
+      <h2><span class="num">04</span>Control flow</h2>
+      <p>
+        <code>if</code> is an expression (both arms produce a value),
+        <code>while</code> and <code>loop</code> are the loops, and
+        <code>break</code>/<code>continue</code> take optional labels when
+        nesting gets deep. Conditions are <code>bool</code> — there is no
+        truthiness.
+      </p>
+      <template data-example="control"></template>
+    </section>
+
+    <section class="chapter" id="ch-functions">
+      <h2><span class="num">05</span>Functions and recursion</h2>
+      <p>
+        Functions are declared with <code>fn</code>, and recursion just works
+        — deep recursion ends in a <em>defined</em> <code>panic: stack
+        overflow</code> (exit 101), never a raw trap.
+      </p>
+      <template data-example="functions"></template>
+    </section>
+
+    <section class="chapter" id="ch-structs">
+      <h2><span class="num">06</span>Structs on the heap</h2>
+      <p>
+        <code>new</code> allocates a zeroed, reference-counted object. A
+        function whose first parameter is <code>self</code> is a method, and a
+        <code>to_str</code> method makes the type printable — the
+        <code>{}</code> hole calls it for you.
+      </p>
+      <template data-example="structs"></template>
+    </section>
+
+    <section class="chapter" id="ch-enums">
+      <h2><span class="num">07</span>Enums and match</h2>
+      <p>
+        Enums are tagged unions — tuple payloads or named fields, either
+        spelling constructs. <code>match</code> must be exhaustive: a match
+        that misses a variant is a compile error, not a runtime surprise.
+        Payload binders arrive already typed.
+      </p>
+      <template data-example="enums"></template>
+    </section>
+
+    <section class="chapter" id="ch-slices">
+      <h2><span class="num">08</span>Slices, safely</h2>
+      <p>
+        <code>make([]T, n)</code> allocates a zeroed slice; <code>a..b</code>
+        slices share the buffer. Every index is bounds-checked — the bad one
+        panics with <code>index out of bounds</code>, it never reads
+        neighboring memory. Writing through a slice needs <code>let mut</code>
+        on the binding.
+      </p>
+      <template data-example="slices"></template>
+    </section>
+
+    <section class="chapter" id="ch-errors">
+      <h2><span class="num">09</span>Result, Option and ?</h2>
+      <p>
+        There are two absence types and no null: <code>Option[T]</code>
+        (spelled <code>?T</code>) for maybe-missing values,
+        <code>Result[T, E]</code> for recoverable errors. The <code>?</code>
+        operator propagates early; <code>match</code> consumes. Panics are for
+        programmer bugs — no catch, ever.
+      </p>
+      <template data-example="errors"></template>
+    </section>
+
+    <section class="chapter" id="ch-closures">
+      <h2><span class="num">10</span>Closures</h2>
+      <p>
+        An anonymous <code>fn</code> is a value like any other; it captures
+        its locals by copy. A <code>mut</code> value can't be captured two
+        ways at once — the compiler refuses the ambiguity — but a
+        <code>mut</code> handle shares its heap object just fine.
+      </p>
+      <template data-example="closures"></template>
+    </section>
+
+    <section class="chapter" id="ch-generics">
+      <h2><span class="num">11</span>Generics, monomorphized</h2>
+      <p>
+        Type parameters ride square brackets — on functions, structs and
+        call sites. Each instantiation specializes: an <code>i32</code> use
+        and an <code>i64</code> use compile to separate, exact code.
+      </p>
+      <template data-example="generics"></template>
+    </section>
+
+    <section class="chapter" id="ch-traits">
+      <h2><span class="num">12</span>Traits and dyn</h2>
+      <p>
+        A <code>trait</code> declares methods; <code>impl Trait for
+        Type</code> satisfies it. A <code>[]dyn Trait</code> holds mixed
+        implementations behind one interface — dispatch through a vtable, the
+        dynamic escape hatch next to the monomorphized default.
+      </p>
+      <template data-example="traits"></template>
+    </section>
+
+    <section class="chapter" id="ch-variadics">
+      <h2><span class="num">13</span>Variadic functions</h2>
+      <p>
+        A last parameter spelled <code>ns: T...</code> accepts any number of
+        arguments and reads as a <code>[]T</code> inside. The <code>xs...</code>
+        spread passes a whole slice where the variadic goes — how
+        <code>printf</code> itself takes its values.
+      </p>
+      <template data-example="variadics"></template>
+    </section>
+
+    <section class="chapter" id="ch-defer">
+      <h2><span class="num">14</span>defer runs on every exit</h2>
+      <p>
+        <code>defer</code> schedules its action for the enclosing scope's
+        exit — every exit path (return, break, the end of the block), LIFO
+        across defers. The one exception is a panic: there is no unwinding to
+        run it through.
+      </p>
+      <template data-example="defer"></template>
+    </section>
+
+    <section class="chapter" id="ch-greet">
+      <h2><span class="num">15</span>Input: read_line</h2>
+      <p>
+        Input lives in <code>std.io</code>, imported by dot path.
+        <code>io.read_line()</code> returns
+        <code>Result[?string, IoError]</code> — both absence layers at once,
+        and <code>match</code> peels them. Press Run and type into the
+        terminal row that appears.
+      </p>
+      <template data-example="greet"></template>
+    </section>
+
+    <section class="chapter" id="ch-memory">
+      <h2><span class="num">16</span>Ownership you can hold</h2>
+      <p>
+        Every heap object carries a reference count. Copying the pointer bumps
+        it; the last reference dying frees the object — deterministically, no
+        garbage collector, no pauses, no use-after-free. Weak references
+        observe death without keeping anything alive.
+      </p>
+      <template data-example="memory"></template>
+    </section>
+
+    <section class="chapter" id="ch-toolchain">
+      <h2><span class="num">17</span>The toolchain</h2>
+      <p>
+        One binary, five verbs. <code>rho build</code> emits a wasm32-wasi
+        module; <code>rho run</code> executes in-process; <code>rho fmt</code>
+        prints the canonical form — its own output re-parses byte-for-byte
+        identically; <code>rho check</code> is the diagnostics face the
+        editor squiggles ride; <code>rho test</code> runs <code>test "name" {
+        … }</code> blocks, whose <code>assert</code>s are the judging law.
+      </p>
+      <p>
+        And the compiler itself: <code>libs/compiler</code> is rho written in
+        rho, built by the C seed (<code>boot</code>), and graded against boot
+        across the whole corpus on every change. Determinism is a tested
+        invariant: the same source through the same compiler yields
+        <b>byte-identical</b> output, and a pinned canary in the repo fails
+        the gate the day that drifts. The playground you used above runs this
+        exact self-hosted compiler, cross-compiled to WebAssembly.
+      </p>
+      <p>
+        The full story — the memory model, the counting law, the panic
+        catalog, the conformance map — is in the
+        <a href="spec.html">language specification</a>.
+      </p>
+    </section>
+  </main>
+
+  <footer class="site">
+    <div class="wrap">
+      ρ — the site ships the self-hosted compiler; boot remains the C seed it grows from.
+      <a href="https://github.com/ningh-o/rho">source</a>
+      · <a href="spec.html">spec</a>
+      · <a href="tutorial.html">tutorial</a>
+      · <a href="playground.html">playground</a>
+    </div>
+  </footer>
+
+  <script type="module" src="assets/tutorial.js"></script>
+</body>
+</html>

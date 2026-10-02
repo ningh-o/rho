@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Playground — rho</title>
+  <meta name="description" content="Write and run rho programs in your browser — the self-hosted compiler itself runs as WebAssembly.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body class="play">
+  <header class="site">
+    <div class="wrap">
+      <a class="mark" href="index.html">ρ<small>rho</small></a>
+      <nav>
+        <a href="tutorial.html">tutorial</a>
+        <a href="playground.html" class="active">playground</a>
+        <a href="spec.html">spec</a>
+        <a href="https://github.com/ningh-o/rho">source</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="play-main">
+    <section class="pane">
+      <div class="pane-head">
+        <span class="chip" id="lspchip" title="editor language features">lsp loading</span>
+        <select id="example">
+          <option value="">examples…</option>
+        </select>
+        <span class="grow"></span>
+        <span>main.rho</span>
+      </div>
+      <div class="editor" id="editor"></div>
+      <textarea id="stdin" class="stdin" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off"
+        placeholder="stdin — one line per read_line(); reads past the end see EOF"></textarea>
+    </section>
+
+    <section class="pane">
+      <div class="pane-head">
+        <span>output</span>
+        <span class="grow"></span>
+        <button class="panebtn" id="fmt">Format</button>
+        <button class="panebtn primary" id="run">Run</button>
+      </div>
+      <div class="output" id="output">
+        <span class="hint">the output of your program appears here</span>
+      </div>
+      <div class="loadbar" id="loadbar" hidden><i></i></div>
+      <div class="status" id="status"></div>
+    </section>
+  </main>
+
+  <script type="module" src="assets/playground.js"></script>
+</body>
+</html>

@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>rho — a small, hand-forged systems language</title>
+  <meta name="description" content="rho (ρ): statically typed, reference-counted, zero undefined behavior. One compiler, one file, one 0.1.0 — the language is its own spec, and the site runs the real self-hosted compiler in your browser.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <header class="site">
+    <div class="wrap">
+      <a class="mark" href="index.html">ρ<small>rho</small></a>
+      <nav>
+        <a href="tutorial.html">tutorial</a>
+        <a href="playground.html">playground</a>
+        <a href="spec.html">spec</a>
+        <a href="https://github.com/ningh-o/rho">source</a>
+      </nav>
+    </div>
+  </header>
+
+  <section class="hero">
+    <div class="wrap">
+      <div class="glyph">ρ</div>
+      <h1>A small, hand-forged systems language</h1>
+      <p class="lede">
+        Statically typed. Reference-counted, with no garbage collector and no
+        use-after-free. Integer overflow wraps, slices are bounds-checked —
+        <b style="color:var(--ink)">zero undefined behavior</b>, and a panic
+        catalog you can count on one hand. One backend (wasm32-wasi), one
+        version (0.1.0), and a compiler that is written in its own language.
+      </p>
+      <div class="cta">
+        <a class="btn primary" href="playground.html">Open the playground</a>
+        <a class="btn" href="tutorial.html">Read the tutorial</a>
+      </div>
+    </div>
+  </section>
+
+  <main class="wrap">
+    <section class="chapter" id="taste">
+      <div class="duo">
+        <div class="example">
+          <div class="bar"><span>tour.rho</span><span class="spacer"></span>
+            <a class="runlink" href="playground.html?example=tour">run it ▸</a></div>
+          <pre class="code"><span class="com">// Algebraic data, exhaustively matched.</span>
+<span class="kw">enum</span> <span class="ty">Shape</span> {
+  <span class="ty">Circle</span>(<span class="ty">f64</span>),
+  <span class="ty">Rect</span> { w: <span class="ty">f64</span>, h: <span class="ty">f64</span> },
+}
+
+<span class="kw">fn</span> area(s: <span class="ty">Shape</span>) -&gt; <span class="ty">f64</span> {
+  <span class="kw">return</span> <span class="kw">match</span> s {
+    <span class="ty">Shape</span>.<span class="ty">Circle</span>(r) =&gt; <span class="num">3.14159</span> * r * r,
+    <span class="ty">Shape</span>.<span class="ty">Rect</span> { w, h } =&gt; w * h,
+  };
+}
+
+<span class="com">// Heap objects are reference-counted: freed the moment</span>
+<span class="com">// the last reference dies. Absence is Option — there is</span>
+<span class="com">// no null.</span>
+<span class="kw">struct</span> <span class="ty">Node</span> {
+  value: <span class="ty">i32</span>,
+  next: ?*<span class="ty">Node</span>,
+}
+
+<span class="kw">fn</span> total(n: *<span class="ty">Node</span>) -&gt; <span class="ty">i32</span> {
+  <span class="kw">let mut</span> sum: <span class="ty">i32</span> = <span class="num">0</span>;
+  <span class="kw">let mut</span> cur: ?*<span class="ty">Node</span> = <span class="ty">Option</span>.<span class="ty">Some</span>(n);
+  <span class="kw">loop</span> {
+    <span class="kw">match</span> cur {
+      <span class="ty">Option</span>.<span class="ty">None</span> =&gt; { <span class="kw">break</span>; },
+      <span class="ty">Option</span>.<span class="ty">Some</span>(node) =&gt; {
+        sum += node.value;
+        cur = node.next;
+      },
+    }
+  }
+  <span class="kw">return</span> sum;
+}
+
+<span class="com">// Closures capture by copy.</span>
+<span class="kw">fn</span> make_adder(n: <span class="ty">i32</span>) -&gt; <span class="kw">fn</span>(<span class="ty">i32</span>) -&gt; <span class="ty">i32</span> {
+  <span class="kw">return</span> <span class="kw">fn</span>(x: <span class="ty">i32</span>) -&gt; <span class="ty">i32</span> { <span class="kw">return</span> x + n; };
+}
+
+<span class="kw">fn</span> main() -&gt; <span class="ty">i32</span> {
+  printf(<span class="str">"{}\n"</span>, area(<span class="ty">Shape</span>.<span class="ty">Rect</span>(w: <span class="num">3.0</span>, h: <span class="num">4.0</span>)));
+  printf(<span class="str">"{}\n"</span>, area(<span class="ty">Shape</span>.<span class="ty">Circle</span>(<span class="num">2.0</span>)));
+  printf(<span class="str">"{}\n"</span>, total(<span class="kw">new</span> <span class="ty">Node</span> { value: <span class="num">10</span>, next: <span class="ty">Option</span>.<span class="ty">None</span> }));
+
+  <span class="kw">let</span> add6: <span class="kw">fn</span>(<span class="ty">i32</span>) -&gt; <span class="ty">i32</span> = make_adder(<span class="num">6</span>);
+  printf(<span class="str">"{}\n"</span>, add6(<span class="num">9</span>));
+
+  <span class="kw">let</span> b: *<span class="ty">Node</span> = <span class="kw">new</span> <span class="ty">Node</span> { value: <span class="num">5</span>, next: <span class="ty">Option</span>.<span class="ty">None</span> };
+  printf(<span class="str">"{}\n"</span>, b.value);
+  <span class="kw">return</span> <span class="num">0</span>;
+}</pre>
+        </div>
+        <div class="example">
+          <div class="bar"><span>stdout</span></div>
+          <pre class="code">12.0
+12.56636
+10
+15
+5</pre>
+        </div>
+      </div>
+      <p class="caption">
+        This exact program is compiled and executed on every test run by the
+        real toolchain — and the playground runs the same compiler, the
+        self-hosted one, cross-compiled to WebAssembly, producing the same
+        behavior in your browser.
+      </p>
+    </section>
+
+    <section class="chapter" id="why">
+      <h2>Why rho</h2>
+      <div class="pillars">
+        <div class="pillar"><b>One binary toolchain</b><span>build, run, test, fmt, check — no build system, no headers, no ceremony.</span></div>
+        <div class="pillar"><b>Zero undefined behavior</b><span>overflow wraps, indexing is checked, /0 panics — every violation is a defined panic, exit 101.</span></div>
+        <div class="pillar"><b>Reference counting</b><span>deterministic cleanup, weak refs for cycles, zero GC pauses. There is no null — absence is <code>Option</code>.</span></div>
+        <div class="pillar"><b>Determinism</b><span>same source, same compiler → byte-identical output. A canary in the repo proves it on every gate run.</span></div>
+      </div>
+    </section>
+
+    <section class="chapter" id="selfhost">
+      <h2>The compiler eats its own cooking</h2>
+      <p>
+        <b>boot</b> — the seed compiler — is one C program: a C compiler and
+        <code>make</code> are the only requirements. The full compiler
+        (<code>libs/compiler</code>) is written <em>in rho itself</em>, built
+        by boot, and graded against boot across the whole corpus on every
+        change: same program in, same stdout and exit code out. The site ships
+        that self-hosted compiler — the same bytes the gate pins.
+      </p>
+    </section>
+
+    <section class="chapter" id="quickstart">
+      <h2>Build it in a minute</h2>
+      <div class="example">
+        <div class="bar"><span>sh</span></div>
+        <pre class="code">$ git clone https://github.com/ningh-o/rho
+$ cd rho
+$ make
+$ echo 'fn main() -> i32 {
+    printf("hello, world\n");
+    return 0;
+  }' > hello.rho
+$ ./build/rho run hello.rho
+hello, world
+$ ./build/rho build hello.rho   # a.wasm — runs on any WASI runtime</pre>
+      </div>
+      <p>
+        One binary does everything — <b>rho build</b> emits a wasm32-wasi
+        module, <b>rho run</b> and <b>rho test</b> execute in-process,
+        <b>rho fmt</b> prints the canonical form (its own output is a fixed
+        point), and <b>rho check</b> is the diagnostics face. The full story —
+        the memory model, the counting law, the bootstrap — is in the
+        <a href="spec.html">language specification</a>.
+      </p>
+    </section>
+  </main>
+
+  <footer class="site">
+    <div class="wrap">
+      ρ — this site ships the self-hosted compiler; boot remains the C seed it grows from.
+      <a href="https://github.com/ningh-o/rho">source</a>
+      · <a href="spec.html">spec</a>
+      · <a href="tutorial.html">tutorial</a>
+      · <a href="playground.html">playground</a>
+    </div>
+  </footer>
+</body>
+</html>

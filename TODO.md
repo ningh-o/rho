@@ -1060,6 +1060,25 @@ section — no placeholder stages. boot is the reference compiler.
       whole re-adaptation wave; this round proved the point twice
       (the f32 lanes and the fold signs both predated the mirror's
       adaptation).
+- [ ] **T3.18** The site's truth leg found the mirror's remaining form
+      gaps (2026-10-01, opened with T5.1): the verify-site-examples
+      mirror leg refused to ship a site example the mirror cannot take,
+      and two legal shapes fell out of the tour's first draft —
+      (a) a closure literal in a let initializer
+      (`let add10: fn(i32) -> i32 = fn(x: i32) -> i32 { … };`) makes
+      the mirror's own wasm panic `index out of bounds` mid-compile —
+      a compiler-side memory bug in the EX_CLO init path, the worst
+      class there is; (b) a call-on-call postfix (`make_adder(5)(0)`)
+      falls to the parse-fallback counter and refuses. Both compile
+      under boot; both stay out of the shipped site examples until the
+      mirror grows them. Related residue, same law family: the §18
+      call-site mut marker (`f(mut t)` requiring a `let mut t` root —
+      boot refuses, the mirror accepts) and boot's parse being
+      stricter than the mirror's on one statement-match spelling (the
+      reverse direction; corpus clean, no case carries it). The
+      closures chapter teaches the forms the mirror DOES take
+      (return-a-closure, call-init, var-call) — verified on both
+      compilers.
 
 ## Phase 4 — kernel boundary and the std library
 
@@ -1515,7 +1534,7 @@ section — no placeholder stages. boot is the reference compiler.
 
 ## Phase 5 — sites and course
 
-- [ ] **T5.1** Language home (site/): hero, tour, playground, spec
+- [x] **T5.1** Language home (site/): hero, tour, playground, spec
       reader — rebuilt around the new compiler; playground = compile on
       the main thread, execute in a worker (V8 worker-context miscompile
       still unreported — minimize and report upstream); phase-split caps
@@ -1528,6 +1547,25 @@ section — no placeholder stages. boot is the reference compiler.
       EXCEED, not a template to trace; tutorials may run either
       compiler — boot or the self-hosted one — and anything boot does
       not support is surfaced as a hint from T3.13's capability face.
+      **Landed 2026-10-01** (unpushed; push = deploy, the owner's call).
+      Four pages, zero framework: hero (tour output pinned by make
+      test), a seventeen-chapter tutorial (sixteen live editors, every
+      example run-capable in place), the playground (examples, live
+      check squiggles, fmt, stdin with the terminal row, shareable
+      #code= hashes), the spec reader over committed copies of the four
+      documents. The compiler artifact = the mirror app face shrunk by
+      `wasm-opt -Oz --enable-bulk-memory --enable-multivalue` (843 KB →
+      418 KB, smoke-probed after the shrink); WAT assembly rides wabt in
+      the browser — one assembler concept, the same text the repo's own
+      chain feeds wat2wasm. The editor bundle rebuilds from source via
+      esbuild, and its completion tables now speak the real surface
+      (std packages, weak[T], the operator traits; null is not
+      offered). The truth law: tools/verify-site-examples.mjs runs
+      every example through boot AND the self-hosted mirror in make
+      test — the site's copy cannot say anything the compilers do not.
+      Walkthrough (real browser): tour auto-run exit 0 with the pinned
+      stdout, the hello chapter compiles and runs in place, the reader
+      renders. Two finds from the mirror leg are ledgered as T3.18.
 - [x] **T5.2** Course (the bilingual app): all live blocks re-pinned to
       the new language (suite 133/138 green, 5 skipped on the absent
       bench record); the honest-limitation notes rewrite (`?T` non-null

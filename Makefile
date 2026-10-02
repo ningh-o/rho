@@ -34,7 +34,13 @@ test: selftest
 	./tests/run-corpus-repo.sh
 	./tests/run-robust.sh
 	node tools/fuzz/gen.mjs --from 1 --to 150 --budget 780 --step 15
+	node tools/verify-site-examples.mjs
 	./build/rho test tests/suites
+
+# the language home (site/): the compiler artifact (wasm-opt'd) + spec
+# copies; run before committing site changes — site/ is committed whole
+site:
+	zsh tools/build-site.sh
 
 clean:
 	rm -rf build
