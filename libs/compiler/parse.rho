@@ -42,6 +42,9 @@ pub struct Expr {
   args: []*Expr, // call arguments
   fnames: []string, // new T {..}: the field names, in order
   marms: []*MatchArm, // match arms (EX_MATCH)
+  amut: bool,    // §18: the call-site 'mut' marker rode this argument
+  aline: i32,    // the token after the argument — the marker law's
+  acol: i32,     //   diagnostic anchors there, boot-exact
 }
 
 // one match arm: a pattern, its statements, and the arm's final
@@ -113,11 +116,12 @@ fn mk_stmt(tag: i32) -> *Stmt {
 
 // verbatim deep clones (other modules rebind type texts over them)
 pub fn clone_expr(e: *Expr) -> *Expr {
-  let mut out = new Expr { tag: e.tag, lit: e.lit, name: e.name, op: e.op,
-                       lhs: Option.None, rhs: Option.None,
-                       args: make([]*Expr, len(e.args)),
-                       fnames: e.fnames,
-                       marms: make([]*MatchArm, len(e.marms)) };
+  let mut out = new Expr { amut: e.amut, aline: e.aline, acol: e.acol,
+                           tag: e.tag, lit: e.lit, name: e.name, op: e.op,
+                           lhs: Option.None, rhs: Option.None,
+                           args: make([]*Expr, len(e.args)),
+                           fnames: e.fnames,
+                           marms: make([]*MatchArm, len(e.marms)) };
   match e.lhs {
     Option.Some(l12) => {
       out.lhs = Option.Some(clone_expr(l12));
@@ -230,7 +234,8 @@ pub fn clo_expr(params: []string, body: []*Stmt,
                            val: Option.None };
   let mut arms: []*MatchArm = make([]*MatchArm, 1);
   arms[0] = arm;
-  return new Expr { tag: EX_CLO, lit: 0, name: rtype, op: 0,
+  return new Expr { amut: false, aline: 0, acol: 0,
+                    tag: EX_CLO, lit: 0, name: rtype, op: 0,
                     lhs: Option.None, rhs: Option.None,
                     args: make([]*Expr, 0), fnames: params,
                     marms: arms };
@@ -243,7 +248,8 @@ pub fn ret_stmt(v: *Expr) -> *Stmt {
 }
 
 pub fn lit(v: i64) -> *Expr {
-  return new Expr { tag: EX_LIT, lit: v, name: "", op: 0,
+  return new Expr { amut: false, aline: 0, acol: 0,
+                    tag: EX_LIT, lit: v, name: "", op: 0,
                      lhs: Option.None, rhs: Option.None ,
                      args: make([]*Expr, 0), fnames: make([]string, 0),
                      marms: make([]*MatchArm, 0) };
@@ -267,7 +273,8 @@ pub fn mk_pat(kind: i32) -> *Pat {
 }
 
 pub fn var(name: string) -> *Expr {
-  return new Expr { tag: EX_VAR, lit: 0, name: name, op: 0,
+  return new Expr { amut: false, aline: 0, acol: 0,
+                    tag: EX_VAR, lit: 0, name: name, op: 0,
                      lhs: Option.None, rhs: Option.None ,
                      args: make([]*Expr, 0), fnames: make([]string, 0),
                      marms: make([]*MatchArm, 0) };
@@ -308,7 +315,8 @@ pub fn override_root_str(mut prog: *Prog, nm: string, text: string) -> bool {
 }
 
 pub fn strlit(text: string) -> *Expr {
-  return new Expr { tag: EX_STR, lit: 0, name: text, op: 0,
+  return new Expr { amut: false, aline: 0, acol: 0,
+                    tag: EX_STR, lit: 0, name: text, op: 0,
                      lhs: Option.None, rhs: Option.None ,
                      args: make([]*Expr, 0), fnames: make([]string, 0),
                      marms: make([]*MatchArm, 0) };
@@ -379,7 +387,8 @@ pub fn op_code(t: *Tok) -> i64 {
 }
 
 pub fn bin(op: i64, lhs: *Expr, rhs: *Expr) -> *Expr {
-  return new Expr { tag: EX_BIN, lit: 0, name: "", op: op,
+  return new Expr { amut: false, aline: 0, acol: 0,
+                    tag: EX_BIN, lit: 0, name: "", op: op,
                      lhs: Option.Some(lhs), rhs: Option.Some(rhs) ,
                      args: make([]*Expr, 0), fnames: make([]string, 0),
                      marms: make([]*MatchArm, 0) };
@@ -447,14 +456,16 @@ pub struct Prog {
 pub fn make_expr(count: *Expr) -> *Expr {
   let mut args: []*Expr = make([]*Expr, 1);
   args[0] = count;
-  return new Expr { tag: EX_MAKE, lit: 0, name: "", op: 0,
+  return new Expr { amut: false, aline: 0, acol: 0,
+                    tag: EX_MAKE, lit: 0, name: "", op: 0,
                     lhs: Option.None, rhs: Option.None, args: args,
                     fnames: make([]string, 0),
                     marms: make([]*MatchArm, 0) };
 }
 
 pub fn idx_expr(base: *Expr, index: *Expr) -> *Expr {
-  return new Expr { tag: EX_IDX, lit: 0, name: "", op: 0,
+  return new Expr { amut: false, aline: 0, acol: 0,
+                    tag: EX_IDX, lit: 0, name: "", op: 0,
                     lhs: Option.Some(base), rhs: Option.Some(index),
                     args: make([]*Expr, 0), fnames: make([]string, 0),
                     marms: make([]*MatchArm, 0) };
@@ -473,14 +484,16 @@ pub fn slice_expr(base: *Expr, lo: *Expr, hi: *Expr,
   if has_hi {
     flags = flags | 2;
   }
-  return new Expr { tag: EX_SLICE2, lit: 0, name: "", op: flags,
+  return new Expr { amut: false, aline: 0, acol: 0,
+                    tag: EX_SLICE2, lit: 0, name: "", op: flags,
                     lhs: Option.Some(base), rhs: Option.None, args: args,
                     fnames: make([]string, 0),
                     marms: make([]*MatchArm, 0) };
 }
 
 pub fn call(name: string, args: []*Expr) -> *Expr {
-  return new Expr { tag: EX_CALL, lit: 0, name: name, op: 0,
+  return new Expr { amut: false, aline: 0, acol: 0,
+                    tag: EX_CALL, lit: 0, name: name, op: 0,
                      lhs: Option.None, rhs: Option.None,
                      args: args, fnames: make([]string, 0),
                      marms: make([]*MatchArm, 0) };
@@ -490,21 +503,24 @@ pub fn call(name: string, args: []*Expr) -> *Expr {
 // value is a fn value (mk()(7) — call-on-call). The callee rides lhs
 // with an empty name; the emitter indirect-calls the value.
 pub fn call_value(callee: *Expr, args: []*Expr) -> *Expr {
-  return new Expr { tag: EX_CALL, lit: 0, name: "", op: 0,
+  return new Expr { amut: false, aline: 0, acol: 0,
+                    tag: EX_CALL, lit: 0, name: "", op: 0,
                      lhs: Option.Some(callee), rhs: Option.None,
                      args: args, fnames: make([]string, 0),
                      marms: make([]*MatchArm, 0) };
 }
 
 pub fn field_expr(base: *Expr, fname: string) -> *Expr {
-  return new Expr { tag: EX_FIELD, lit: 0, name: fname, op: 0,
+  return new Expr { amut: false, aline: 0, acol: 0,
+                    tag: EX_FIELD, lit: 0, name: fname, op: 0,
                     lhs: Option.Some(base), rhs: Option.None,
                     args: make([]*Expr, 0), fnames: make([]string, 0),
                     marms: make([]*MatchArm, 0) };
 }
 
 pub fn arr_expr(args: []*Expr) -> *Expr {
-  return new Expr { tag: EX_ARR, lit: 0, name: "", op: 0,
+  return new Expr { amut: false, aline: 0, acol: 0,
+                    tag: EX_ARR, lit: 0, name: "", op: 0,
                     lhs: Option.None, rhs: Option.None,
                     args: args, fnames: make([]string, 0),
                     marms: make([]*MatchArm, 0) };
@@ -514,35 +530,40 @@ pub fn if_expr(cond: *Expr, thenv: *Expr, elsev: *Expr) -> *Expr {
   let mut args: []*Expr = make([]*Expr, 2);
   args[0] = thenv;
   args[1] = elsev;
-  return new Expr { tag: EX_IF, lit: 0, name: "", op: 0,
+  return new Expr { amut: false, aline: 0, acol: 0,
+                    tag: EX_IF, lit: 0, name: "", op: 0,
                     lhs: Option.Some(cond), rhs: Option.None,
                     args: args, fnames: make([]string, 0),
                     marms: make([]*MatchArm, 0) };
 }
 
 pub fn flit(text: string) -> *Expr {
-  return new Expr { tag: EX_FLIT, lit: 0, name: text, op: 0,
+  return new Expr { amut: false, aline: 0, acol: 0,
+                    tag: EX_FLIT, lit: 0, name: text, op: 0,
                     lhs: Option.None, rhs: Option.None,
                     args: make([]*Expr, 0), fnames: make([]string, 0),
                     marms: make([]*MatchArm, 0) };
 }
 
 pub fn q_expr(inner: *Expr) -> *Expr {
-  return new Expr { tag: EX_Q, lit: 0, name: "", op: 0,
+  return new Expr { amut: false, aline: 0, acol: 0,
+                    tag: EX_Q, lit: 0, name: "", op: 0,
                     lhs: Option.Some(inner), rhs: Option.None,
                     args: make([]*Expr, 0), fnames: make([]string, 0),
                     marms: make([]*MatchArm, 0) };
 }
 
 pub fn match_expr(scrut: *Expr, arms: []*MatchArm) -> *Expr {
-  return new Expr { tag: EX_MATCH, lit: 0, name: "", op: 0,
+  return new Expr { amut: false, aline: 0, acol: 0,
+                    tag: EX_MATCH, lit: 0, name: "", op: 0,
                     lhs: Option.Some(scrut), rhs: Option.None,
                     args: make([]*Expr, 0), fnames: make([]string, 0),
                     marms: arms };
 }
 
 pub fn mcall_expr(recv: *Expr, name: string, args: []*Expr) -> *Expr {
-  return new Expr { tag: EX_MCALL, lit: 0, name: name, op: 0,
+  return new Expr { amut: false, aline: 0, acol: 0,
+                    tag: EX_MCALL, lit: 0, name: name, op: 0,
                     lhs: Option.Some(recv), rhs: Option.None,
                     args: args, fnames: make([]string, 0),
                     marms: make([]*MatchArm, 0) };
@@ -550,14 +571,16 @@ pub fn mcall_expr(recv: *Expr, name: string, args: []*Expr) -> *Expr {
 
 pub fn mcall_named(recv: *Expr, name: string, args: []*Expr,
                    fnames: []string) -> *Expr {
-  return new Expr { tag: EX_MCALL, lit: 0, name: name, op: 0,
+  return new Expr { amut: false, aline: 0, acol: 0,
+                    tag: EX_MCALL, lit: 0, name: name, op: 0,
                     lhs: Option.Some(recv), rhs: Option.None,
                     args: args, fnames: fnames,
                     marms: make([]*MatchArm, 0) };
 }
 
 pub fn deref_expr(inner: *Expr) -> *Expr {
-  return new Expr { tag: EX_DEREF, lit: 0, name: "", op: 0,
+  return new Expr { amut: false, aline: 0, acol: 0,
+                    tag: EX_DEREF, lit: 0, name: "", op: 0,
                     lhs: Option.Some(inner), rhs: Option.None,
                     args: make([]*Expr, 0), fnames: make([]string, 0),
                     marms: make([]*MatchArm, 0) };
@@ -565,7 +588,8 @@ pub fn deref_expr(inner: *Expr) -> *Expr {
 
 pub fn new_expr(sname: string, fnames: []string,
                 args: []*Expr) -> *Expr {
-  return new Expr { tag: EX_NEW, lit: 0, name: sname, op: 0,
+  return new Expr { amut: false, aline: 0, acol: 0,
+                    tag: EX_NEW, lit: 0, name: sname, op: 0,
                     lhs: Option.None, rhs: Option.None, args: args,
                     fnames: fnames, marms: make([]*MatchArm, 0) };
 }
@@ -826,10 +850,13 @@ fn parse_args_named(mut c: *PCur, mut anames: []string) -> []*Expr {
     }
     anames[na] = "";
     // §18: the call-site 'mut' marker prefixes its argument —
-    // permission only, never layout; parse and drop it
+    // permission only, never layout; parse and keep it (the marker
+    // law's checker reads it off the argument)
+    let mut amarked: bool = false;
     if tk(c).text == "mut" &&
         (tk(c).kind == lex.TK_IDENT || tk(c).kind == lex.TK_KEYWORD) {
       tkadv(mut c);
+      amarked = true;
     }
     let t = tk(c);
     if t.kind == lex.TK_IDENT && c.pos + 1 < len(c.toks) &&
@@ -839,6 +866,9 @@ fn parse_args_named(mut c: *PCur, mut anames: []string) -> []*Expr {
       tkadv(mut c); // :
     }
     args[na] = parse_bin(mut c, 0);
+    args[na].amut = amarked;
+    args[na].aline = tk(c).line;
+    args[na].acol = tk(c).col;
     na = na + 1;
     if !eat_punct(mut c, 44) {
       eat_punct(mut c, 41);
@@ -867,10 +897,13 @@ fn parse_args(mut c: *PCur) -> []*Expr {
       args = big;
     }
     // §18: the call-site 'mut' marker prefixes its argument —
-    // permission only, never layout; parse and drop it
+    // permission only, never layout; parse and keep it (the marker
+    // law's checker reads it off the argument)
+    let mut amarked: bool = false;
     if tk(c).text == "mut" &&
         (tk(c).kind == lex.TK_IDENT || tk(c).kind == lex.TK_KEYWORD) {
       tkadv(mut c);
+      amarked = true;
     }
     args[na] = parse_bin(mut c, 0);
     // xs... — the spread marker rides the argument's lit slot
@@ -882,6 +915,11 @@ fn parse_args(mut c: *PCur) -> []*Expr {
       tkadv(mut c);
       tkadv(mut c);
     }
+    // the token after the argument is the diagnostic's anchor (boot
+    // creates the argument node facing it)
+    args[na].amut = amarked;
+    args[na].aline = tk(c).line;
+    args[na].acol = tk(c).col;
     na = na + 1;
     if !eat_punct(mut c, 44) {
       eat_punct(mut c, 41);
