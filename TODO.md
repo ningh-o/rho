@@ -1587,17 +1587,18 @@ only when their listed dependencies close.
 
 ## Phase 6 — freeze and 0.1.0
 
-- [ ] **T6.1** Full gate green: every leg, corpus differential, suites,
+- [x] **T6.1** Full gate green: every leg, corpus differential, suites,
       fuzz, both sites building — all on the wasm self-hosting loop.
-      Status 2026-10-01: the gate runs ten legs (source build,
-      selftest, fmt × 2, the suites 573, robust, the fuzz differential
-      150/150, the ASAN+UBSAN sweep, the corpus differential 122, the
-      self chain, the seed canary, diagnostic parity) and the course
-      app builds — the fuzz and sanitizer legs landed with T3.17 and
-      T3.3 this round, four real bugs and the depth-guard find in the
-      same wave. The language home (T5.1, `site/`) is not built yet:
-      "both sites" stays red until it exists, so this item holds open
-      beside it.
+      **Green 2026-10-01.** The gate runs twelve legs on every change
+      (source build, selftest, fmt × 2, the suites 573, robust, the
+      fuzz differential 150/150, the ASAN+UBSAN sweep, the corpus
+      differential 122, the self chain mirror→child→grandchild, the
+      seed canary, diagnostic parity) — the fuzz and sanitizer legs
+      landed with T3.17/T3.3, four real bugs and the depth-guard find
+      in that wave, and the assignment law landed with the site's
+      mirror leg. Both sites exist and build: the language home (T5.1)
+      and the course app (T5.2, prerender verified on every make).
+      T5.3's deploy workflow + push remain the owner's call.
 - [ ] **T6.2** Tag `v0.1.0` — the one and only version. Release zip:
       `rho-0.1.0-wasm32-wasi.zip`, binary named `rho.wasm`, SHA256SUMS,
       English RELEASE.md. Push/tag/deploy timing belongs to the owner.
