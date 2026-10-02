@@ -1984,13 +1984,23 @@ fn parse_stmt_i(mut c: *PCur) -> *Stmt {
   }
   if t.text == "match" && (t.kind == lex.TK_IDENT ||
       t.kind == lex.TK_KEYWORD) {
-    // match scrut { arms } — the statement form (arm values drop);
-    // the trailing ';' is optional, like boot's
+    // match scrut { arms } — the statement form (arm values drop).
+    // Boot's statement match shares the expression form and takes no
+    // trailing ';': the semicolon becomes the next statement head and
+    // the expression fallback refuses it ("expected an expression,
+    // found ';'"). The old eat_punct read the spelling as optional —
+    // never boot's law, T3.18's residue — so the count rides here and
+    // the diagnostic spells boot's wording at the semicolon.
     tkadv(mut c);
     let mut st = mk_stmt(ST_MATCH);
     st.val = Option.Some(parse_bin(mut c, 0));
     st.marms = parse_arms(mut c);
-    eat_punct(mut c, 59);
+    if is_punct(tk(c), 59) {
+      eprintf("main.rho:{}:{}: error: expected an expression, found ';'\n",
+              tk(c).line as i64, tk(c).col as i64);
+      c.perrs = c.perrs + 1;
+      tkadv(mut c);
+    }
     return st;
   }
   let mut index_first: bool = false;

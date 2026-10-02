@@ -1,0 +1,67 @@
+// programs tier — whole-program pin, dissolved from
+// corpus/ at the freeze (T6.4).
+// out: one
+// out: two=2
+// out: block arm ran
+// out: nested inner
+// out: ran held
+// out: loop 0
+// out: loop 1
+// out: loop 2
+// out: bool true
+// out: tail other
+// spec: syntax.md §5 — the statement form of match sits anywhere a
+// statement does: mid-function, inside control flow, inside another
+// match's block arm. Arms ride for their effects (values drop) and
+// the form takes no trailing ';' — that refusal is the suite pin
+// stmt_match_trailing_semi_expect_test; this differential grades the
+// whole legal neighborhood on both compilers forever.
+enum Pick {
+  A(i32),
+  B,
+}
+fn main() -> i32 {
+  let x: i32 = 1;
+  match x {
+    1 => printf("one\n"),
+    _ => printf("not one\n"),
+  }
+  let p: Pick = Pick.A(2);
+  match p {
+    Pick.A(v) => printf("two={}\n", v),
+    Pick.B => printf("bee\n"),
+  }
+  let mut ran: bool = false;
+  match x {
+    0 => printf("zero\n"),
+    _ => {
+      ran = true;
+      printf("block arm ran\n");
+      match 9 {
+        9 => printf("nested inner\n"),
+        _ => printf("nested other\n"),
+      }
+    }
+  }
+  if ran {
+    printf("ran held\n");
+  }
+  let mut i: i32 = 0;
+  while i < 3 {
+    match i {
+      0 => printf("loop 0\n"),
+      _ => printf("loop {}\n", i),
+    }
+    i += 1;
+  }
+  let b: bool = x == 1;
+  match b {
+    true => printf("bool true\n"),
+    false => printf("bool false\n"),
+  }
+  match 5 {
+    4 => printf("four\n"),
+    _ => printf("tail other\n"),
+  }
+  return 0;
+}

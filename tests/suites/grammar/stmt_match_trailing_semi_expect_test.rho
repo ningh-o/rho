@@ -1,0 +1,17 @@
+// expect: expected an expression, found ';'
+// spec: syntax.md §5
+// The statement form of match carries no trailing ';': the stmt
+// grammar's ';' rides `expr ';'` only, and boot's statement match
+// shares the expression form's parser, so the semicolon becomes the
+// next statement head and the expression fallback refuses it. The
+// self-hosted mirror read the spelling as optional ("like boot's", it
+// never was — T3.18's residue) and baked what boot refuses; it now
+// refuses with this wording at the semicolon.
+fn main() -> i32 {
+  let x: i32 = 1;
+  match x {
+    1 => printf("one\n"),
+    _ => printf("other\n"),
+  };
+  return 0;
+}
