@@ -76,6 +76,10 @@ static Vec g_tests; // of TestCase
 
 typedef struct {
   Vec out;    // of const char* — expected stdout lines (each + '\n')
+  const char *rawout; // expected stdout TAIL without the trailing
+                      // newline (// rawout: — a program whose last
+                      // printf deliberately ends mid-line; appended
+                      // after the out: lines, no '\n' added)
   bool has_exit;
   long exit_code;
   Vec sets;   // of const char* — "name=value"
@@ -110,6 +114,8 @@ static void parse_headers(const char *path, Headers *h) {
       size_t rlen = len - 3;
       if (rlen > 5 && strncmp(rest, "out: ", 5) == 0) {
         *VPUSH(h->out, const char *) = xstrdup(rest + 5);
+      } else if (rlen > 8 && strncmp(rest, "rawout: ", 8) == 0) {
+        h->rawout = xstrdup(rest + 8);
       } else if (rlen > 6 && strncmp(rest, "exit: ", 6) == 0) {
         h->has_exit = true;
         h->exit_code = strtol(rest + 6, NULL, 10);
@@ -426,10 +432,14 @@ static bool judge_case(const TestCase *tc, const Headers *h, char **reason,
     *detail = err_s;
     return false;
   }
-  // expected stdout: each `// out:` line pins one full output line
+  // expected stdout: each `// out:` line pins one full output line;
+  // an optional `// rawout:` tail is appended verbatim with NO trailing
+  // newline (a program whose last printf deliberately ends mid-line)
   size_t want_n = 0;
   for (size_t i = 0; i < VLEN(h->out); i++)
     want_n += strlen(*VAT(h->out, const char *, i)) + 1;
+  if (h->rawout)
+    want_n += strlen(h->rawout);
   char *want = malloc(want_n + 1);
   size_t at = 0;
   for (size_t i = 0; i < VLEN(h->out); i++) {
@@ -438,13 +448,18 @@ static bool judge_case(const TestCase *tc, const Headers *h, char **reason,
     at += l;
     want[at++] = '\n';
   }
+  if (h->rawout) {
+    size_t l = strlen(h->rawout);
+    memcpy(want + at, h->rawout, l);
+    at += l;
+  }
   want[at] = 0;
   bool ok = out_n == want_n && memcmp(out_s, want, want_n) == 0;
-  free(want);
   if (!ok) {
     *reason = xstrdup("stdout mismatch");
     *detail = out_s;
   }
+  free(want);
   return ok;
 }
 

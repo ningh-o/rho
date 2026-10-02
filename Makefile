@@ -35,6 +35,7 @@ test: selftest
 	./tests/run-robust.sh
 	node tools/fuzz/gen.mjs --from 1 --to 150 --budget 780 --step 15
 	node tools/verify-site-examples.mjs
+	node tools/verify-examples.mjs
 	./build/rho test tests/suites
 
 # the language home (site/): the compiler artifact (wasm-opt'd) + spec

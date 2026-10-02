@@ -1,0 +1,7 @@
+// programs tier — whole-program pin, dissolved from
+// corpus/ at the freeze (T6.4).
+// exit: 101
+fn main() -> i32 {
+  let zero: i32 = 0;
+  return 5 / zero;
+}

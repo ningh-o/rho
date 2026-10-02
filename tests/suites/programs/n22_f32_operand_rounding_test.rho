@@ -1,0 +1,25 @@
+// programs tier — whole-program pin, dissolved from
+// corpus/ at the freeze (T6.4).
+// out: t3=0.0
+// out: t5=3.0
+// out: t6=4.5
+// out: t7=122.956001
+// n22 — f32 arithmetic rounds every OPERAND to f32 (fuzz seed 1): the
+// compound assign once ran in f64 and demoted only the result, so
+// 123.456f32 - 123.456 left the f64 residue 1.28e-06 instead of 0.0.
+// f64 holds every f32 exactly, so per-operand demote-promote is
+// bit-exact f32 semantics.
+fn main() -> i32 {
+  let mut t3: f32 = 123.456;
+  t3 -= 123.456;
+  printf("t3={}\n", t3);
+  let mut t5: f32 = 2.5;
+  t5 += 0.5;
+  printf("t5={}\n", t5);
+  let mut t6: f32 = 1.5;
+  t6 *= 3.0;
+  printf("t6={}\n", t6);
+  let t7: f32 = 123.456 - 0.5;
+  printf("t7={}\n", t7);
+  return 0;
+}

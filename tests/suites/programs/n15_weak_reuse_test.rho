@@ -1,0 +1,53 @@
+// programs tier — whole-program pin, dissolved from
+// corpus/ at the freeze (T6.4).
+// out: dead w1=-1
+// out: churn acc=0
+// out: post-churn w1=-1
+// out: fresh w2=7
+// exit: 0
+// tranche-3: the weak probe observes DEATH, not reuse — the node
+// dies, a same-size churn runs (the shape any recycling allocator
+// would serve from the freed block), and the weak still reads None
+// while a fresh node reads Some (§1.1: wrc keeps headers)
+struct Node {
+  v: i32,
+}
+
+fn observe(w: weak[Node]) -> i32 {
+  return match w.get() {
+    Option.Some(p) => p.v,
+    Option.None => 0 - 1,
+  };
+}
+
+fn churn() -> i32 {
+  let mut acc: i32 = 0;
+  let mut i: i32 = 0;
+  while i < 2000 {
+    let nd: *Node = new Node { v: i };
+    acc = acc + nd.v - i;
+    i += 1;
+  }
+  return acc;
+}
+
+fn main() -> i32 {
+  let mut n: ?*Node = Option.Some(new Node { v: 5 });
+  let w1: weak[Node] = weak.from(deref(n));
+  n = Option.None;
+  printf("dead w1={}\n", observe(w1));
+  let acc: i32 = churn();
+  printf("churn acc={}\n", acc);
+  printf("post-churn w1={}\n", observe(w1));
+  let n2: *Node = new Node { v: 7 };
+  let w2: weak[Node] = weak.from(n2);
+  printf("fresh w2={}\n", observe(w2));
+  return 0;
+}
+
+fn deref(o: ?*Node) -> *Node {
+  return match o {
+    Option.Some(p) => p,
+    Option.None => new Node { v: 0 },
+  };
+}

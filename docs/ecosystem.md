@@ -50,7 +50,7 @@ build cache keyed by compiler generation, flags shared with the CLI.
 One compiler generation, one plugin release.
 
 **Acceptance law.** The plugin's wasm is byte-identical to the CLI's
-for every corpus program (same compiler, same flags); the consuming
+for every programs-tier program (same compiler, same flags); the consuming
 sites' own suites stay green.
 
 ## 3. prettier-plugin-rho
@@ -69,7 +69,7 @@ the compiler's fmt wasm and hands prettier the canonical text
 verbatim. The LSP (below) rides the same wasm fmt — one formatting
 truth, two clients.
 
-**Acceptance law.** Formatting every corpus program through the plugin
+**Acceptance law.** Formatting every programs-tier program through the plugin
 is byte-identical to `rho fmt`; the fixpoint law holds through the
 plugin path; a plugin release pins the compiler generation it embeds.
 

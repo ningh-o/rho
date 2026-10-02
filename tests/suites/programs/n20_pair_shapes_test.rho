@@ -1,0 +1,59 @@
+// programs tier — whole-program pin, dissolved from
+// corpus/ at the freeze (T6.4).
+// out: one
+// out: many
+// out: got 3
+// out: no
+// out: not-found
+// out: code-9
+// n20 — the pair-lane shapes: a string fn returning a match (the
+// arms ride the pair lanes through the return), a string param fed
+// from an Option binder (the payload text rides the call), and a
+// value-enum's to_str concat (the method-call arm is stringy by
+// law). The std-era full spellings — Option[string] / Result[T, E]
+// as declared return types — carry their payload text now; the ?T
+// sugar always did.
+fn pick(n: i64) -> string {
+  return match n {
+    1 => "one",
+    _ => "many",
+  };
+}
+
+fn take(s: string) -> usize {
+  return len(s);
+}
+
+fn maybe(n: i64) -> Option[string] {
+  if n > 0 {
+    return Option.Some("yes");
+  }
+  return Option.None;
+}
+
+fn main() -> i32 {
+  printf("{}\n", pick(1));
+  printf("{}\n", pick(7));
+  match maybe(1) {
+    Option.Some(s) => { printf("got {}\n", take(s)); },
+    Option.None => { printf("no\n"); }
+  }
+  match maybe(0) {
+    Option.Some(s) => { printf("got {}\n", take(s)); },
+    Option.None => { printf("no\n"); }
+  }
+  printf("{}\n", e2s(E.NotFound));
+  printf("{}\n", e2s(E.Other(9)));
+  return 0;
+}
+enum E {
+  NotFound,
+  Other(i32),
+}
+
+fn e2s(e: E) -> string {
+  return match e {
+    E.NotFound => "not-found",
+    E.Other(n) => "code-" + n.to_str(),
+  };
+}

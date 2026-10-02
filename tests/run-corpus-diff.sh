@@ -118,7 +118,18 @@ RHO=${RHO:-./build/rho}
 # diagnostics; fmt stays syntax-level and checks nothing), which turns
 # refusals the corpus never carried — every pinned case already spoke
 # the law, so all 122 hold.
-PINNED=122
+#
+# 122 → 94 at the corpus dissolution (T6.4): corpus/ retires and the
+# whole-program pins re-home as tests/suites/programs/ — the textual
+# goldens re-anchored as // out: headers judged by the suite verb, one
+# byte golden (n11) riding its .out beside the runner that judges it,
+# fourteen teaching programs promoted to examples/ (gated by
+# tools/verify-examples.mjs), and fourteen smoke shapes retired under
+# confirmed suite holders (divrem_trunc, int_wrap, labels,
+# defer_exit_paths, bool_condition, if_match_expr — and printf itself,
+# the body of every suite case). The differential's base is the
+# programs tier now; the pin is its size.
+PINNED=94
 
 # one file's differential; echoes "pass" or the failure label
 check_one() {
@@ -132,9 +143,9 @@ check_one() {
   # plus the reserved std/ tree (paths stay repo-relative — the
   # loader's std resolution looks up "std/..." in the baked tree)
   mods=""
-  for mf in corpus/geom/*.rho(N) corpus/geom/*/*.rho(N) corpus/web/*.rho(N) corpus/pk/*.rho(N) corpus/pk/*/*.rho(N) corpus/pk/*/*/*.rho(N); do
+  for mf in tests/suites/programs/geom/*.rho(N) tests/suites/programs/geom/*/*.rho(N) tests/suites/programs/web/*.rho(N) tests/suites/programs/pk/*.rho(N) tests/suites/programs/pk/*/*.rho(N) tests/suites/programs/pk/*/*/*.rho(N); do
     if [ -f "$mf" ]; then
-      mods="$mods@MOD@ ${mf#corpus/}
+      mods="$mods@MOD@ ${mf#tests/suites/programs/}
 $(cat "$mf")
 "
     fi
@@ -187,7 +198,7 @@ $(cat "$mf")
 }
 
 pass=0; fail=0; failed=""
-for f in corpus/*.rho; do
+for f in tests/suites/programs/*.rho; do
   name=$(basename "$f" .rho)
   r=$(check_one "$f")
   if [ "$r" != "pass" ]; then

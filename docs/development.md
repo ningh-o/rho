@@ -29,7 +29,8 @@ codes pass through.
 | `boot/`          | the C seed compiler (the reference compiler)     |
 | `boot/wat/`      | kernel.wat — the runtime kernel, standalone-testable |
 | `spec/`          | the language law: syntax, types, modules, spec   |
-| `corpus/`        | behavioral corpus (programs + recorded goldens)  |
+| `tests/suites/programs/` | the whole-program pins (the differential base, T6.4) |
+| `examples/`      | the teaching programs (user-facing, gated)       |
 | `tests/`         | suites + the corpus/check/emit/fmt runners       |
 | `tools/`         | embed_prelude.py, embed_kernel.py (deterministic) |
 
@@ -45,11 +46,15 @@ never shared across instances).
 ## Testing law
 
 - Every commit carries its tests, and they pass (`make test`).
-- Corpus goldens are **regenerated from the seed**, never hand-written;
-  `tests/run-corpus-repo.sh` judges stdout byte-exact + exit code.
+- Programs-tier goldens are **regenerated from the seed**, never
+  hand-written; `tests/run-corpus-repo.sh` judges the byte goldens
+  (non-UTF8) byte-exact + exit code; the textual goldens are // out:
+  headers the suite verb judges. `examples/` rides
+  tools/verify-examples.mjs the same way.
 - When adapting an archive program (tranche 2), the arbiter is the
   ARCHIVE golden unless the new law changed the behavior — then the
-  adaptation note in `corpus/PLAN.md` records why.
+  adaptation note in the archive branch records why (corpus/ retired
+  at the freeze, T6.4).
 - Never record a golden from a run you haven't diffed against the
   archive's expectation (self-recorded goldens once masked a printf
   assembly bug).

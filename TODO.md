@@ -1630,7 +1630,7 @@ only when their listed dependencies close.
       spec.md §10 has promised all along (one version, no evolution
       after the freeze); the ledgered follow-ups (T3.18's two form
       gaps aside) are now std/tooling work, never language surface.
-- [ ] **T6.4** Corpus dissolution (after T6.3). corpus's historical
+- [x] **T6.4** Corpus dissolution (after T6.3). corpus's historical
       role — behavioral memory of the pre-rewrite language — expires at
       the freeze; spec + suites own truth from there. Retire the
       `corpus/` directory by the three-way split: cases the suites
@@ -1640,7 +1640,27 @@ only when their listed dependencies close.
       differential re-points there. What never retires: the
       whole-program integration layer, the differential base, byte
       goldens, the examples — only corpus's unanchored positives-only
-      form retires.
+      form retires. **Done 2026-10-01** (122 → 14 + 14 + 94): fourteen
+      smoke shapes died under confirmed suite holders (divrem_trunc,
+      int_wrap, labels, defer_exit_paths, bool_condition,
+      if_match_expr — and printf itself, the body of every suite
+      case); fourteen teaching programs promote to `examples/`, gated
+      by tools/verify-examples.mjs in `make test`; ninety-four pins
+      re-anchored as `tests/suites/programs/` — the textual goldens
+      became `// out:` headers the suite verb judges (93), and the one
+      byte golden (n11, non-UTF8) kept its `.out` beside the re-pointed
+      byte runner, because a text header cannot carry arbitrary bytes.
+      The pin is the tier's size: the differential re-points there and
+      reads 94. The verb grew `// rawout:` (the expected stdout tail
+      without the trailing newline) for programs whose last printf
+      deliberately ends mid-line — the old corpus runner compared
+      `$(…)` on both sides and silently stripped that difference; two
+      cases (100, n11) had been pinned fuzzier than they ran. The
+      canary's SRC was the retired 001_hello, so its exact bytes moved
+      into gate.sh — the canary input never changes, only the compiler
+      it bakes. run-corpus.sh (the archive-sweep runner) retires with
+      the corpus; run-corpus-repo.sh re-points as the byte-golden
+      runner; the spec's conformance map and docs re-point with it.
 
 ## Phase 7 — after 0.1.0: native compilation, in the std library
 

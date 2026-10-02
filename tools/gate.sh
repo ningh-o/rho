@@ -74,9 +74,13 @@ for f in tests/robust/*.rho(N); do
     asan_report "$verb" "robust/$(basename "$f")" "$out" $?
   done
 done
-for f in corpus/*.rho; do
+for f in tests/suites/programs/*.rho(N); do
   out=$(cap 60 ./build/rho-asan check "$f" 2>&1)
-  asan_report check "corpus/$(basename "$f")" "$out" $?
+  asan_report check "programs/$(basename "$f")" "$out" $?
+done
+for f in examples/*.rho(N); do
+  out=$(cap 60 ./build/rho-asan check "$f" 2>&1)
+  asan_report check "examples/$(basename "$f")" "$out" $?
 done
 i=0
 for f in build/gate/fuzz/*.rho(N); do
@@ -143,13 +147,20 @@ cmp -s /tmp/gate-grand.wat /tmp/gate-v3.wat \
 # --- leg 5: the seed canary (T3.2) — the pinned build/seed.wasm is
 # byte-compared against the mirror this run rebuilt; inequality is the
 # determinism alarm. Re-pin ONLY in the commit that changes the
-# compiler. ---
+# compiler. The canary's SRC is the old corpus/001_hello — the file
+# retired with corpus/ (T6.4), so its exact bytes live here: the
+# canary input must never change, only the compiler it bakes. ---
 echo "== gate: seed canary (pure-source rebuild, byte-exact)"
+CANARY_SRC='// exit: 0
+fn main() -> i32 {
+  printf("hello, world\n");
+  return 0;
+}'
 if [ -f build/seed.wasm ]; then
   cap 600 "$RHO" build libs/compiler/main.rho -o /tmp/gate-seed.wasm \
-      --set "SRC=$(cat corpus/001_hello.rho)" --set "MODS=" >/dev/null 2>&1
+      --set "SRC=$CANARY_SRC" --set "MODS=" >/dev/null 2>&1
   cap 600 "$RHO" build libs/compiler/main.rho -o /tmp/gate-seed2.wasm \
-      --set "SRC=$(cat corpus/001_hello.rho)" --set "MODS=" >/dev/null 2>&1
+      --set "SRC=$CANARY_SRC" --set "MODS=" >/dev/null 2>&1
   cmp -s /tmp/gate-seed.wasm /tmp/gate-seed2.wasm \
     || fail "two identical builds differ (nondeterminism alarm)"
   # the canary pins the compiler CHAIN product: the mirror rebuild
