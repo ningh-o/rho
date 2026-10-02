@@ -1508,10 +1508,17 @@ section — no placeholder stages. boot is the reference compiler.
       EXCEED, not a template to trace; tutorials may run either
       compiler — boot or the self-hosted one — and anything boot does
       not support is surfaced as a hint from T3.13's capability face.
-- [ ] **T5.2** Course (the bilingual app): all live blocks re-pinned to
-      the new language; the honest-limitation notes rewrite (aggregate
-      let-position now legal; `?T` non-null taught as the one true
-      absence form); editor stays single-source from the repo.
+- [x] **T5.2** Course (the bilingual app): all live blocks re-pinned to
+      the new language (suite 133/138 green, 5 skipped on the absent
+      bench record); the honest-limitation notes rewrite (`?T` non-null
+      taught as the one true absence form — every `null` teaching face
+      rewritten, `intrinsics.slice_string` retired from the course,
+      enum tags taught as declaration order); the editor sources
+      vendored into the app (the rewrite retired the submodule's site
+      assets). The runtime face grew what the course exercised: the
+      absence faces, the panic prefix, the bool match, the nested
+      Result[?string, E] read_line law, the wrap-safe allocator, main's
+      early return, and the dyn method read.
 - [ ] **T5.3** (owner's call, do not self-deploy) add the deploy
       workflow and deploy the course site.
 
