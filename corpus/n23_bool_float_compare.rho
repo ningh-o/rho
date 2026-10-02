@@ -1,0 +1,19 @@
+// n23 — a comparison's VALUE is bool whatever its operands' width
+// (fuzz seeds 26/40): `let t: bool = (0.1 == 1.5)` once bound a float
+// lane and every printf hole spelled 0.0 instead of the word. The
+// value classification is bool; only the op's execution rides the
+// operands' float path.
+fn main() -> i32 {
+  let t1: bool = (0.1 == 1.5);
+  printf("t1={}\n", t1);
+  let t2: bool = (1.5 == 1.5);
+  printf("t2={}\n", t2);
+  let t3: bool = (0.5 < 2.5);
+  printf("t3={}\n", t3);
+  let mut hit: bool = false;
+  if (2.25 >= 2.25) {
+    hit = true;
+  }
+  printf("hit={}\n", hit);
+  return 0;
+}

@@ -97,7 +97,21 @@ RHO=${RHO:-./build/rho}
 # hardcoded tags decide), the bool match (true/false are literal
 # patterns, not wildcards), and the printf hole lanes for method
 # results (f64 rides method_rtype).
-PINNED=118
+#
+# 118 → 122 with the fuzz campaign's first four finds (T3.17's
+# discovery leg, tools/fuzz/gen.mjs, seeds 1-150): n22 — f32
+# arithmetic rounds every OPERAND to f32 (the compound assign once ran
+# in f64 and demoted only the result); n23 — a comparison's value is
+# bool whatever its operands' width (a bool let fed from a float
+# compare once bound a float lane and printed 0.0); n24 — a divish op's
+# dividend parks in a fresh local (the shared $r scratch died to a
+# nested divish on the rhs: (a^b)/(c%38) read the rhs's lhs as the
+# dividend); n25 — the constant fold wraps AND sign-extends at the
+# operand width like the runtime (the if-condition fold skipped the
+# i8 wrap: (-14)*(-32) folded 448 while the runtime read -64, and a
+# zero-extend-only wrap read the i8 -64 as 192). Each case names its
+# seed in the header — the file outlives the bug as a regression.
+PINNED=122
 
 # one file's differential; echoes "pass" or the failure label
 check_one() {

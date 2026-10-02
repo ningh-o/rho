@@ -614,15 +614,26 @@ section — no placeholder stages. boot is the reference compiler.
       neighborhood). The field-init make now sizes by the element
       (16-byte pairs, struct slot blocks) like every other make
       site. The corpus differential stays 110/110.
-- [ ] **T3.2 Pure-source trust root**: every gate run rebuilds the seed
+- [x] **T3.2 Pure-source trust root**: every gate run rebuilds the seed
       from boot's C source on the spot. The pinned `seed.wasm` stays in
       the repo **as a canary**: rebuild, compare byte-for-byte (D1 makes
-      this exact), inequality = determinism alarm.
-- [ ] **T3.3** Differential fuzzing rebuilt for one implementation:
-      opt-on vs opt-off self-differential + golden corpus replay. (The
-      old boot-vs-mirror differential retired with the old code — the
-      fuzz framework is the price of the clean slate; rebuild it before
-      calling anything done.)
+      this exact), inequality = determinism alarm. **Landed 2026-10-01**:
+      `build/seed.wasm` pinned (gitignore exception — the one build/
+      artifact in the repo), gate leg 5 enforces the byte compare and
+      fails the gate when the pin is missing; re-pins ride the commit
+      that changes the compiler.
+- [x] **T3.3** Differential fuzzing rebuilt for one implementation:
+      the framework lives as `tools/fuzz/gen.mjs` (seeded LCG, fully
+      reproducible by seed — `--emit N` regenerates any program),
+      running the SAME random program through boot and the
+      self-hosted chain (a fresh per-program bake, run-corpus-diff's
+      construction) and comparing stdout + exit code; gate leg 2d
+      runs seeds 1..150 every gate. First campaign 2026-10-01: 150/150
+      green after four finds, each pinned as a corpus case (n22-n25
+      name their seeds). The golden corpus replay rides gate leg 3.
+      The opt-on vs opt-off arm is vacuous at 0.1.0 — there is no
+      optimizer to differ (§13 is post-freeze backlog); it joins when
+      the optimizer does.
 - [x] **T3.5** The test protocol (§17) — **lands before T3.4, so the
       suites are written directly on the real verb and no second runner
       ever exists.** boot grows the `test` block and rebuilds the
@@ -1021,25 +1032,34 @@ section — no placeholder stages. boot is the reference compiler.
       diagnostics context upgrade (anchor notes, candidate naming)
       so the server surfaces the checker's real face, not the bare
       one-liners.
-- [ ] **T3.17** Fuzz and sanitizer legs (ruled needed 2026-09-27;
+- [x] **T3.17** Fuzz and sanitizer legs (ruled needed 2026-09-27;
       three complementary probes and the discipline that glues them).
-      robust/ stays the deterministic leg: hand-written, readable
-      hostility under wall-clock caps. The archive's tools/fuzz
-      returns as the discovery leg: a grammar-aware, deterministically
-      seeded mutator, run time-boxed so every run is reproducible by
-      seed number. An ASAN+UBSAN build of boot becomes a gate leg
-      over robust/, the corpus, and a bounded fuzz batch — the
-      mechanical detector: the >16-parameter stack smash and the
-      comptime MIN/-1 UB would both have been caught by it instead of
-      by walking. The glue is the archive's repro discipline: every
-      fuzz- or sanitizer-found crash is minimized, pinned under
-      tools/repro/ named by its seed, and fixed — the file outlives
-      the bug as a permanent regression. Findings feed the counting
-      floors: a crash count is a floor exactly like the validation
-      census. Land early rather than late — T3.10's lesson is that
-      the mirror calibrates against boot's broken faces, so every
-      boot bug found before the mirror adapts to it saves a whole
-      re-adaptation wave.
+      **Landed 2026-10-01.** robust/ is gate leg 2c (the deterministic
+      leg: hand-written, readable hostility under wall-clock caps).
+      The discovery leg returned as `tools/fuzz/gen.mjs` — the
+      grammar-aware, seeded-LCG differential campaign, time-boxed and
+      reproducible by seed number (gate leg 2d). The ASAN+UBSAN build
+      (`make asan`) is gate leg 2e over robust/, the corpus, and the
+      saved fuzz programs — and it caught a real one on its first
+      gate run (`robust/wide_expr.rho`: the checker's unguarded
+      recursion smashed the 8 MB host stack under ASAN's fat frames;
+      the checker now carries CHECK_EXPR_DEPTH_CAP 4000, refusing
+      cleanly at the parser's own bound — the bang_deep_ok suite case
+      at 2017 levels pins the floor). The repro discipline is the
+      corpus itself: the campaign's four finds are minimized and
+      pinned as corpus cases n22-n25, each naming its seed in the
+      header, graded on both compilers by gate leg 3 forever — seeds
+      1 (f32 operand rounding), 26/40 (bool-vs-float hole
+      classification), 7 (the divish $r scratch clobber), and 114
+      (the fold's missing sign extension — a boot bug: the if-
+      condition fold skipped the i8 wrap and read (-14)*(-32) as 448
+      while the runtime read -64). Findings fed the counting floor:
+      PINNED 118 → 122. Land early rather than late — T3.10's lesson
+      is that the mirror calibrates against boot's broken faces, so
+      every boot bug found before the mirror adapts to it saves a
+      whole re-adaptation wave; this round proved the point twice
+      (the f32 lanes and the fold signs both predated the mirror's
+      adaptation).
 
 ## Phase 4 — kernel boundary and the std library
 
@@ -1531,6 +1551,15 @@ only when their listed dependencies close.
 
 - [ ] **T6.1** Full gate green: every leg, corpus differential, suites,
       fuzz, both sites building — all on the wasm self-hosting loop.
+      Status 2026-10-01: the gate runs ten legs (source build,
+      selftest, fmt × 2, the suites 573, robust, the fuzz differential
+      150/150, the ASAN+UBSAN sweep, the corpus differential 122, the
+      self chain, the seed canary, diagnostic parity) and the course
+      app builds — the fuzz and sanitizer legs landed with T3.17 and
+      T3.3 this round, four real bugs and the depth-guard find in the
+      same wave. The language home (T5.1, `site/`) is not built yet:
+      "both sites" stays red until it exists, so this item holds open
+      beside it.
 - [ ] **T6.2** Tag `v0.1.0` — the one and only version. Release zip:
       `rho-0.1.0-wasm32-wasi.zip`, binary named `rho.wasm`, SHA256SUMS,
       English RELEASE.md. Push/tag/deploy timing belongs to the owner.

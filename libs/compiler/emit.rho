@@ -1953,7 +1953,25 @@ fn starts_open(t: string, prefix: string) -> bool {
 }
 
 // the float kind of an expression: 0 int, 1 f64, 2 f32
+//
+// the value law: a comparison (op 5..10) is never float-valued — its
+// RESULT is bool whatever the operands' width. Consumers that need the
+// operands' execution width (the float op emission itself) call
+// expr_exec_fkind; everything classifying a value (let inference,
+// print holes, casts) sees the bool here (`let t: bool = (0.1 ==
+// 1.5)` once bound a float lane and printed 0.0 — the fuzz
+// differential caught it).
 fn expr_fkind(e: *Expr, env: *Env, mut prog: *Prog) -> i64 {
+  if e.tag == parse.EX_BIN && e.op >= 5 && e.op <= 10 {
+    return 0;
+  }
+  return expr_exec_fkind(e, env, mut prog);
+}
+
+// the execution width of an expression: the float kind its operands
+// make the op run at (comparisons included — a float compare runs the
+// float path and still yields a bool)
+fn expr_exec_fkind(e: *Expr, env: *Env, mut prog: *Prog) -> i64 {
   if e.tag == parse.EX_FLIT {
     return 1;
   }
@@ -5517,11 +5535,21 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
     return "    (i64.reinterpret_f64 (f64.const " + e.name + "))\n";
   }
   if e.tag == parse.EX_BIN && e.op >= 0 && e.op <= 10 &&
-      expr_fkind(e, env, mut prog) > 0 {
+      expr_exec_fkind(e, env, mut prog) > 0 {
     // float arithmetic and comparison: operands floatify (reinterpret
     // for float lanes, convert for int operands), the op runs in
     // f64, f32 results demote-and-promote back (exact f32 rounding)
-    let fk: i64 = expr_fkind(e, env, mut prog);
+    let fk: i64 = expr_exec_fkind(e, env, mut prog);
+    // f32 space rounds every OPERAND to f32 before the op — boot's
+    // arithmetic is f32, not f64 with a post-hoc result demote (the
+    // fuzz differential caught it: 123.456f32 - 123.456 must be 0.0,
+    // not the f64 residue). The demote-promote per operand is
+    // bit-exact f32 semantics: f64 holds every f32 exactly, and the
+    // result still rounds through the final demote.
+    let mut round_ops: string = "";
+    if fk == 2 {
+      round_ops = "    (f32.demote_f64)\n    (f64.promote_f32)\n";
+    }
     let mut out: string = "";
     match e.lhs {
       Option.Some(l8) => {
@@ -5535,6 +5563,7 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
             out = out + "    (f64.convert_i64_s)\n";
           }
         }
+        out = out + round_ops;
       },
       Option.None => {},
     }
@@ -5550,6 +5579,7 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
             out = out + "    (f64.convert_i64_s)\n";
           }
         }
+        out = out + round_ops;
       },
       Option.None => {},
     }
@@ -6034,9 +6064,17 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
     return out;
   }
   let divish: bool = e.op == 3 || e.op == 4;
+  let mut dslot: i64 = 0;
   if divish {
-    // the dividend parks in $r (each operand evaluates exactly once)
-    out = out + "    (local.set $r)\n";
+    // the dividend parks in a FRESH local (each operand evaluates
+    // exactly once). The shared $r scratch is NOT safe here: a nested
+    // divish on the rhs parks its own dividend in $r, and the outer
+    // op would read the rhs's lhs as its dividend (the fuzz
+    // differential's find: (a ^ b) / (c % 38) evaluated to
+    // (c % 38) / (c % 38)).
+    dslot = nl.v;
+    nl.v = nl.v + 1;
+    out = out + "    (local.set " + dslot.to_str() + ")\n";
   }
   match e.rhs {
     Option.Some(r) => {
@@ -6062,13 +6100,13 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
     out = out + " (i64.const -1))\n";
     if e.op == 3 {
       out = out + "      (then (i64.sub (i64.const 0) ";
-      out = out + "(local.get $r)))\n";
+      out = out + "(local.get " + dslot.to_str() + ")))\n";
     } else {
       out = out + "      (then (i64.const 0))\n";
     }
     out = out + "      (else (";
     out = out + wat_op(e.op);
-    out = out + " (local.get $r)";
+    out = out + " (local.get " + dslot.to_str() + ")";
     out = out + " (local.get $t))))\n";
     // the width wrap still applies below
     let mut w0: i64 = 0;

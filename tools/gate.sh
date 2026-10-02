@@ -40,6 +40,54 @@ done
 echo "== gate: the suites (rho test tests/suites)"
 cap 900 "$RHO" test tests/suites >/dev/null || fail "the suites"
 
+# --- leg 2c: robustness (T3.17 leg 1 — hostile inputs never crash
+# the compiler; the only acceptable outcomes are a clean refuse or a
+# clean compile, never a signal or a hang) ---
+echo "== gate: robust (hostile inputs under wall-clock caps)"
+cap 300 ./tests/run-robust.sh >/dev/null || fail "robust"
+
+# --- leg 2d: the fuzz differential (T3.3 + T3.17's discovery leg) —
+# seeded LCG random programs, boot vs the self-hosted chain, stdout +
+# exit must agree. Fully reproducible by seed; finds land pinned in
+# the corpus (n22-n25 name theirs). ---
+echo "== gate: fuzz differential (seeds 1..150, seeded LCG)"
+cap 900 node tools/fuzz/gen.mjs --from 1 --to 150 --budget 780 --step 15 \
+  >/dev/null || fail "fuzz differential"
+
+# --- leg 2e: the sanitizer build (T3.17's mechanical detector) —
+# ASAN+UBSAN boot over robust/, the corpus, and the saved fuzz
+# programs. A sanitizer report or a signal is a finding regardless of
+# the exit code (ASAN exits 1 on its own, indistinguishable from a
+# clean refuse — the stderr pattern is the detector). ---
+echo "== gate: asan+ubsan boot over robust/, corpus, fuzz batch"
+cap 300 make asan >/dev/null || fail "asan build"
+asan_report() { # verb file out rc
+  case "$3" in
+    *"AddressSanitizer"*|*"LeakSanitizer"*|*"runtime error"*)
+      fail "asan $1 $2: sanitizer report: $(printf '%s' "$3" | head -2)" ;;
+  esac
+  [ "$4" -le 1 ] || fail "asan $1 $2: exit $4 (crash or timeout)"
+}
+for f in tests/robust/*.rho(N); do
+  for verb in check build; do
+    out=$(cap 60 ./build/rho-asan $verb "$f" 2>&1)
+    asan_report "$verb" "robust/$(basename "$f")" "$out" $?
+  done
+done
+for f in corpus/*.rho; do
+  out=$(cap 60 ./build/rho-asan check "$f" 2>&1)
+  asan_report check "corpus/$(basename "$f")" "$out" $?
+done
+i=0
+for f in build/gate/fuzz/*.rho(N); do
+  i=$((i+1))
+  verb=check
+  [ $((i % 10)) -eq 0 ] && verb=build
+  out=$(cap 60 ./build/rho-asan $verb "$f" 2>&1)
+  asan_report "$verb" "fuzz/$(basename "$f")" "$out" $?
+done
+rm -f build/rho-asan
+
 # --- leg 3: the corpus differential (108/108, pinned) ---
 echo "== gate: corpus differential"
 cap 1800 ./tests/run-corpus-diff.sh >/dev/null || fail "corpus differential"
@@ -92,7 +140,10 @@ cap 600 wasmtime /tmp/gate-grand.wasm >/tmp/gate-v3.wat 2>/dev/null \
 cmp -s /tmp/gate-grand.wat /tmp/gate-v3.wat \
   || fail "v3 diverges (chain not closed at depth)"
 
-# --- leg 5: the seed canary (T3.2) ---
+# --- leg 5: the seed canary (T3.2) — the pinned build/seed.wasm is
+# byte-compared against the mirror this run rebuilt; inequality is the
+# determinism alarm. Re-pin ONLY in the commit that changes the
+# compiler. ---
 echo "== gate: seed canary (pure-source rebuild, byte-exact)"
 if [ -f build/seed.wasm ]; then
   cap 600 "$RHO" build libs/compiler/main.rho -o /tmp/gate-seed.wasm \
@@ -104,6 +155,8 @@ if [ -f build/seed.wasm ]; then
   # the canary pins the compiler CHAIN product: the mirror rebuild
   cmp -s /tmp/gate-mirror.wasm build/seed.wasm \
     || fail "seed canary mismatch — rebuild != pin (re-pin only in the commit that changes the compiler)"
+else
+  fail "build/seed.wasm missing — the canary pin is law (T3.2)"
 fi
 
 # --- leg 6: diagnostic parity ---

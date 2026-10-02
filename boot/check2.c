@@ -2839,8 +2839,34 @@ static void check_pattern(FnCtx *c, Node *p, Type *st) {
 
 // the public entry: annotate every expression node with its type so
 // the emitter reads types straight off the tree
+// The checker's guarded recursion (the parser's PARSE_DEPTH_CAP
+// pattern): a wide expression's AST is deeply left-nested and the
+// checker's frames — fatter still under a sanitizer build (~1 KB each
+// measured via the 7000-term chain's ASAN stack smash) — would smash
+// the host stack before any other bound. 4000 matches the parser's
+// own cap (anything the parser accepts, the checker attempts) and
+// keeps the sanitizer build's worst case near 4.5 MB of the 8 MB
+// host stack; the parser's chain cap lets wider trees through, which
+// refuse here cleanly. The bang_deep_ok suite case (2017 unary
+// levels) pins the floor.
+#define CHECK_EXPR_DEPTH_CAP 4000
+
 static Type *check_expr(FnCtx *c, NodeRef er, Type *expected) {
+  static int depth = 0;
+  static bool reported = false;
+  if (depth == 0)
+    reported = false;
+  if (depth >= CHECK_EXPR_DEPTH_CAP) {
+    if (!reported) {
+      reported = true;
+      err_at(c, node_get(er), "expression nests too deeply (over %d levels)",
+             CHECK_EXPR_DEPTH_CAP);
+    }
+    return ty_i32;
+  }
+  depth++;
   Type *t = check_expr_inner(c, er, expected);
+  depth--;
   if (er != NO_REF)
     node_get(er)->sem = t;
   // dyn coercion at every expected-type site: a *T whose T satisfies

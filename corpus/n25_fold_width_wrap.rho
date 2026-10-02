@@ -1,0 +1,27 @@
+// n25 — the constant fold wraps (and sign-extends) at the operand
+// width exactly like the runtime (fuzz seed 114): the if-condition
+// fold once skipped the i8 wrap and read (-14)*(-32) as 448 while the
+// runtime read -64 — the same expression disagreeing with itself. A
+// fold that only truncates also turns the i8 -64 into 192 (zero
+// extend); the signed view is part of the wrap.
+fn main() -> i32 {
+  let a: i8 = (-14 as i8);
+  let b: i8 = (-32 as i8);
+  let c: i8 = (a * b);
+  printf("c={}\n", c);
+  if (77 >= ((-14 as i8) * (-32 as i8))) {
+    printf("fold=then\n");
+  } else {
+    printf("fold=else\n");
+  }
+  let d: i8 = ((-14 as i8) * (-32 as i8));
+  printf("d={}\n", d);
+  let e: i8 = ((100 as i8) + (100 as i8));
+  printf("e={}\n", e);
+  let f: i16 = ((300 as i16) * (300 as i16));
+  printf("f={}\n", f);
+  if ((5 - 3) == 2) {
+    printf("anchor=ok\n");
+  }
+  return 0;
+}

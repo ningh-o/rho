@@ -1,4 +1,5 @@
 build/
+!build/seed.wasm
 # default build outputs (rho build writes a.wasm beside the source)
 /a.wasm
 /a.wasm.wat

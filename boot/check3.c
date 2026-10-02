@@ -82,6 +82,31 @@ static uint64_t trunc_to(uint64_t v, Type *t) {
   }
 }
 
+// trunc_to plus the SIGNED sign-extend view — the CVal convention for
+// signed types (fold_as sign-extends; a CVal of signed type carries
+// the sign-extended bit pattern in .u). A fold that only truncates
+// turns an i8 -64 into 192 and every later consumer misreads it.
+static uint64_t sext_to(uint64_t v, Type *t) {
+  v = trunc_to(v, t);
+  switch (t->kind) {
+  case TY_I8:
+    if ((v >> 7) & 1)
+      v |= UINT64_MAX << 8;
+    break;
+  case TY_I16:
+    if ((v >> 15) & 1)
+      v |= UINT64_MAX << 16;
+    break;
+  case TY_I32:
+    if ((v >> 31) & 1)
+      v |= UINT64_MAX << 32;
+    break;
+  default:
+    break;
+  }
+  return v;
+}
+
 static CVal fold_as(CVal v, Type *to) {
   if (!cv_ok(v))
     return v;
@@ -142,14 +167,15 @@ static CVal fold_binop(int op, CVal a, CVal b) {
   if (!cv_ok(a) || !cv_ok(b))
     return g_bad;
   // canonicalize integer operands to the LEFT operand's width/signedness
-  // (the same domain the runtime uses — spec §4)
+  // (the same domain the runtime uses — spec §4); sext_to keeps the
+  // signed sign-extend view the CVal convention promises
   if (a.kind != CV_FLOAT && b.kind != CV_FLOAT && a.kind != CV_STR &&
       type_is_int(a.ty)) {
-    uint64_t r = trunc_to(b.u, a.ty);
+    uint64_t r = sext_to(b.u, a.ty);
     b.u = r;
     b.i = (int64_t)r;
     b.ty = a.ty;
-    a.u = trunc_to(a.u, a.ty);
+    a.u = sext_to(a.u, a.ty);
     a.i = (int64_t)a.u;
   }
   // string concatenation folds
@@ -299,11 +325,12 @@ static CVal fold_binop(int op, CVal a, CVal b) {
   default:
     return g_bad;
   }
-  // wrap to the operand type width
+  // wrap to the operand type width (signed widths sign-extend — the
+  // CVal signed view; a zero-extended wrap read 192 for the i8 -64)
   Type *wide = a.ty->kind >= TY_I8 && a.ty->kind <= TY_I64
                    ? a.ty
                    : (rt->kind >= TY_I8 && rt->kind <= TY_I64 ? rt : a.ty);
-  v = trunc_to(v, wide ? wide : ty_i64);
+  v = sext_to(v, wide ? wide : ty_i64);
   CVal r;
   memset(&r, 0, sizeof r);
   r.ty = wide ? wide : ty_i64;
