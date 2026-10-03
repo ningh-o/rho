@@ -1356,7 +1356,11 @@ fn parse_atom(mut c: *PCur) -> *Expr {
       body2 = bstmts[0..bn];
     }
     let mut cx = clo_expr(params, body2, rtype2);
-    cx.marms[0].bend = clobend;
+    // the arm's brace line rides through an alias — the parser's
+    // fstore arm has no middle-index lane (base.f[i].g = e), so the
+    // direct two-level store would refuse the self-compile
+    let mut cxarm: *MatchArm = cx.marms[0];
+    cxarm.bend = clobend;
     {
       // the param types ride the idle args channel — fmt spells them
       // (fn(x: i32)); nothing else reads a closure's args
