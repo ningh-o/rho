@@ -1,0 +1,59 @@
+// programs tier — whole-program pin, dissolved from
+// corpus/ at the freeze (T6.4).
+// out: acc=309
+// out: expr=309
+// out: live=payload-pins
+// exit: 0
+// n26 — Some(bool) arms pin the payload, not just the tag (T3.9's
+// law, self-host side): the first Some(bool) arm used to swallow its
+// tag-mate (the chain decided on tag==1 alone — live code rode the
+// wrong arm; the gate's leg 4 caught the grand's emitter misfolding
+// comptime conditions). The pin rides the arm condition in every
+// form: statement match in a re-executing loop, expression match,
+// either arm order.
+fn pick(i: i32) -> ?bool {
+  if i % 3 == 0 { return Option.None; }
+  if i % 3 == 1 { return Option.Some(true); }
+  return Option.Some(false);
+}
+
+fn main() -> i32 {
+  // the statement form, captured in a loop whose iterations rotate
+  // through all three arms
+  let mut i: i32 = 0;
+  let mut acc: i32 = 0;
+  while i < 9 {
+    let b: ?bool = pick(i);
+    match b {
+      Option.Some(true) => { acc += 1; },
+      Option.Some(false) => { acc += 2; },
+      Option.None => { acc += 100; },
+    }
+    i += 1;
+  }
+  printf("acc={}\n", acc);
+  // the expression form, Some(false) listed first
+  let mut j: i32 = 0;
+  let mut acc2: i32 = 0;
+  while j < 9 {
+    let b: ?bool = pick(j);
+    acc2 += match b {
+      Option.Some(false) => 2,
+      Option.Some(true) => 1,
+      Option.None => 100,
+    };
+    j += 1;
+  }
+  printf("expr={}\n", acc2);
+  // a comptime-false face stays live under a Some(bool) dispatch:
+  // the tag-mate arm must not capture it
+  let t: ?bool = Option.Some(false);
+  let mut live: string = "dead";
+  match t {
+    Option.Some(true) => {},
+    Option.Some(false) => { live = "payload-pins"; },
+    Option.None => {},
+  }
+  printf("live={}\n", live);
+  return 0;
+}

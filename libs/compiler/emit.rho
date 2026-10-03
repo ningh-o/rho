@@ -6380,7 +6380,7 @@ fn match_chain_m(mut pool: *Pool, arms: []*MatchArm, i: usize, bx: i64,
     return "";
   }
   let mut a: *MatchArm = arms[i];
-  let cond: string = arm_cond(a, mut prog, 0);
+  let mut cond: string = arm_cond(a, mut prog, 0);
   // the arm's code: binders load from the box (a *T payload binds
   // as a struct pointer — its fields stay reachable), then the
   // statements, then the tail expression
@@ -6394,10 +6394,34 @@ fn match_chain_m(mut pool: *Pool, arms: []*MatchArm, i: usize, bx: i64,
   }
   let mut k: usize = 0;
   let mut sl: i64 = 1; // the box slot cursor (slot 0 = the tag)
+  // a literal payload pattern (Option.Some(true) / Some(false)) pins
+  // the payload word, not just the tag: its condition ANDs into the
+  // arm's test, or the first Some(bool) arm swallows its tag-mates
+  // (boot parity: payload literal patterns pin values, not just the
+  // tag). The parser hands the literal spellings over as binder
+  // names — "true"/"false" are keywords, so no real binder collides.
+  let mut pin: string = "";
   while k < len(a.pat.binders) {
     let mut pty: string = "";
     if k < len(ptys) {
       pty = ptys[k];
+    }
+    if a.pat.binders[k] == "true" || a.pat.binders[k] == "false" {
+      let mut pv: i64 = 0;
+      if a.pat.binders[k] == "true" {
+        pv = 1;
+      }
+      let mut pw: string = "(i64.eq (i64.load (i32.add (i32.wrap_i64 " +
+          "(local.get " + bx.to_str() + ")) (i32.const " +
+          (sl * 8).to_str() + "))) (i64.const " + pv.to_str() + "))";
+      if len(pin) > 0 {
+        pin = "(i32.and " + pin + " " + pw + ")";
+      } else {
+        pin = pw;
+      }
+      sl = sl + 1;
+      k = k + 1;
+      continue;
     }
     // a string payload binder reads the pair (two slots) and binds a
     // runtime string; Result.Err's binder does too — the string error
@@ -6510,6 +6534,9 @@ fn match_chain_m(mut pool: *Pool, arms: []*MatchArm, i: usize, bx: i64,
       }
     }
     k = k + 1;
+  }
+  if len(pin) > 0 {
+    cond = "(i32.and " + cond + " " + pin + ")";
   }
   armcode = armcode + emit_stmts(a.body, mut pool, mut env, mut nl, env.infn,
                                  env.retslot, mut prog, mut env.loops,mut 
