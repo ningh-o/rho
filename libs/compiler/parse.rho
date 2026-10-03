@@ -679,13 +679,6 @@ fn tk(c: *PCur) -> *Tok {
   return c.toks[c.pos];
 }
 
-fn tk2(c: *PCur, k: usize) -> *Tok {
-  if c.pos + k < len(c.toks) {
-    return c.toks[c.pos + k];
-  }
-  return c.toks[len(c.toks) - 1];
-}
-
 fn tkadv(mut c: *PCur) {
   c.pos = c.pos + 1;
 }
@@ -701,22 +694,6 @@ fn eat_punct(mut c: *PCur, ch: u8) -> bool {
 
 fn is_punct(t: *Tok, ch: u8) -> bool {
   return t.kind == lex.TK_PUNCT && len(t.text) == 1 && t.text[0] == ch;
-}
-
-// []T — the element type FOLLOWS the closed brackets (recursively
-// for [][]T); returns true when a bracketed type was eaten
-fn eat_slice_type(mut c: *PCur) -> bool {
-  if !is_punct(tk(c), 91) {
-    return false;
-  }
-  tkadv(mut c); // [
-  eat_punct(mut c, 93); // ]
-  if is_punct(tk(c), 91) {
-    eat_slice_type(mut c);
-  } else {
-    tkadv(mut c); // the element type name
-  }
-  return true;
 }
 
 // a written type, composed: ?*T, *T, []T (recursively), weak[T],
@@ -986,27 +963,6 @@ fn is_binop(t: *Tok) -> bool {
   let mut b: u8 = t.text[0];
   return b == 43 || b == 45 || b == 42 || b == 47 || b == 37 ||
          b == 60 || b == 62 || b == 38 || b == 124 || b == 94;
-}
-
-// the wasm compare for an operator pair (spelling, is_eq_family)
-fn cmp_wat(t: *Tok) -> string {
-  let mut a: u8 = t.text[0];
-  if len(t.text) == 2 {
-    if a == 61 {
-      return "i64.eq";
-    }
-    if a == 33 {
-      return "i64.ne";
-    }
-    if a == 60 {
-      return "i64.le_s";
-    }
-    return "i64.ge_s";
-  }
-  if a == 60 {
-    return "i64.lt_s";
-  }
-  return "i64.gt_s";
 }
 
 // split a format literal into its text pieces around {} holes;

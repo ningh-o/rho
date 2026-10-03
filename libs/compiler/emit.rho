@@ -844,11 +844,6 @@ fn oob_check_idx(mut pool: *Pool, idx_text: string, len_text: string) -> string 
          ") (i32.const 19))))\n";
 }
 
-// one fd_write of nbytes at addr: the iovec cell pair at 64/68
-fn write_call(addr: i64, nbytes: i64) -> string {
-  return write_fd(addr, nbytes, 1);
-}
-
 fn write_fd(addr: i64, nbytes: i64, fd: i64) -> string {
   let mut out: string = "    (i32.store (i32.const 64) (i32.const " +
                     addr.to_str() + "))\n" +
@@ -856,43 +851,6 @@ fn write_fd(addr: i64, nbytes: i64, fd: i64) -> string {
                     nbytes.to_str() + "))\n" +
                     "    (drop (call $fd_write (i32.const " + fd.to_str() +
                     ") " +
-                    "(i32.const 64) (i32.const 1) (i32.const 96)))\n";
-  return out;
-}
-
-// a 0/1 i64 rides the stack: route it through $w_bool and write the
-// spelled word (true/false) — the same capture pair write_int uses
-fn write_bool_top() -> string {
-  return "    call $w_bool\n" +
-         "    (local.set $l)\n" +
-         "    (local.set $a)\n" +
-         "    (i32.store (i32.const 64) (local.get $a))\n" +
-         "    (i32.store (i32.const 68) (local.get $l))\n" +
-         "    (drop (call $fd_write (i32.const 1) " +
-         "(i32.const 64) (i32.const 1) (i32.const 96)))\n";
-}
-
-// unsigned print: the value rides the stack into $w_u64
-fn write_uint() -> string {
-  return "    call $w_u64\n" +
-         "    (local.set $l)\n" +
-         "    (local.set $a)\n" +
-         "    (i32.store (i32.const 64) (local.get $a))\n" +
-         "    (i32.store (i32.const 68) (local.get $l))\n" +
-         "    (drop (call $fd_write (i32.const 1) " +
-         "(i32.const 64) (i32.const 1) (i32.const 96)))\n";
-}
-
-// one fd_write of a runtime-formatted integer: $w_i64 leaves
-// {addr, len} on the stack; the locals capture the pair
-fn write_int() -> string {
-  // flat call: the expression's i64 rides the stack below it
-  let mut out: string = "    call $w_i64\n" +
-                    "    (local.set $l)\n" +
-                    "    (local.set $a)\n" +
-                    "    (i32.store (i32.const 64) (local.get $a))\n" +
-                    "    (i32.store (i32.const 68) (local.get $l))\n" +
-                    "    (drop (call $fd_write (i32.const 1) " +
                     "(i32.const 64) (i32.const 1) (i32.const 96)))\n";
   return out;
 }
@@ -1001,19 +959,6 @@ fn env_str_is_runtime(e: *Env, name: string) -> bool {
     i = i - 1;
   }
   return false; // not a string at all
-}
-
-// one fd_write from a runtime {ptr, len} local pair
-fn write_runtime(a_slot: i64, l_slot: i64) -> string {
-  let mut out: string = "    (i32.store (i32.const 64) " +
-                    "(i32.wrap_i64 (local.get " + a_slot.to_str() +
-                    ")))\n" +
-                    "    (i32.store (i32.const 68) " +
-                    "(i32.wrap_i64 (local.get " + l_slot.to_str() +
-                    ")))\n" +
-                    "    (drop (call $fd_write (i32.const 1) " +
-                    "(i32.const 64) (i32.const 1) (i32.const 96)))\n";
-  return out;
 }
 
 // push a string expression's {addr, len} pair onto the i64 stack:
@@ -1322,32 +1267,6 @@ fn env_kind_of(e: *Env, name: string) -> i64 {
     i = i - 1;
   }
   return 0 - 1;
-}
-
-// decoded text of a raw span (for folding literal concatenations)
-fn decoded_text(raw: string) -> string {
-  let mut buf: []u8 = make([]u8, len(raw));
-  let mut o: usize = 0;
-  let mut i: usize = 0;
-  while i < len(raw) {
-    if raw[i] == 92 && i + 1 < len(raw) {
-      let e2: u8 = raw[i + 1];
-      buf[o] = match e2 {
-        110 => 10,
-        116 => 9,
-        92 => 92,
-        34 => 34,
-        _ => e2,
-      };
-      i = i + 2;
-    } else {
-      buf[o] = raw[i];
-      i = i + 1;
-    }
-    o = o + 1;
-  }
-  // re-encode as a raw span (identities round-trip)
-  return raw;
 }
 
 fn env_look(e: *Env, name: string) -> i64 {
@@ -6467,16 +6386,6 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
   return out;
 }
 
-// the arm chain from arm i on: (result i64) ifs for the expression
-// form, plain ifs for the statement form; the wildcard arm (or the
-// chain's end) closes with a zero value
-fn match_chain(mut pool: *Pool, arms: []*MatchArm, i: usize, bx: i64,
-               mut env: *Env, mut prog: *Prog, mut nl: *NextLocal,
-               as_expr: bool) -> string {
-  return match_chain_m(mut pool, arms, i, bx, mut env, mut prog, mut nl, as_expr,
-                       false, "");
-}
-
 // the Option/Result binder payload target (from the scrutinee's
 // element text) — "" leaves the plain lane
 
@@ -6736,19 +6645,6 @@ fn arm_cond(a: *MatchArm, mut prog: *Prog, dslot: i64) -> string {
     }
   }
   return "(i64.eq (local.get $d) (i64.const " + tag.to_str() + "))";
-}
-
-// the scrutinee's discriminator parks in $d; enum scrutinees load the
-// box's tag first
-fn emit_scrut(mut pool: *Pool, sc: *Expr, mut env: *Env, mut prog: *Prog,
-              mut nl: *NextLocal) -> string {
-  let et: string = expr_enum_type(sc, env, mut prog);
-  let mut out: string = emit_expr(mut pool, sc, mut env, mut prog, mut nl);
-  if len(et) > 0 {
-    out = out + "    (i64.load (i32.wrap_i64))\n";
-  }
-  out = out + "    (local.set $d)\n";
-  return out;
 }
 
 // a fresh slice literal: n zeroed slots, each element stored in
@@ -7054,17 +6950,6 @@ fn rtype_is_pair(rt: string) -> bool {
   }
   // a fn-typed return rides its (idx, box) pair
   return len(rt) >= 2 && rt[0] == 102 && rt[1] == 110;
-}
-
-fn fn_returns_string(prog: *Prog, name: string) -> bool {
-  let mut i: usize = 0;
-  while i < len(prog.fns) {
-    if prog.fns[i].name == name {
-      return rtype_is_pair(prog.fns[i].rtype);
-    }
-    i = i + 1;
-  }
-  return false;
 }
 
 fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
@@ -8805,14 +8690,6 @@ fn expr_type(e: *Expr, env: *Env, prog: *Prog) -> string {
   return "";
 }
 
-// substitute type texts over a verbatim deep clone (the walkers
-// mutate in place; parse owns the constructors)
-fn subst_expr(e: *Expr, tps: []string, tys: []string) -> *Expr {
-  let mut out = parse.clone_expr(e);
-  subst_in_expr(mut out, tps, tys);
-  return out;
-}
-
 fn subst_in_expr(mut e: *Expr, tps: []string, tys: []string) {
   if e.tag == parse.EX_BIN && e.op == 11 {
     e.name = tsub_type(e.name, tps, tys);
@@ -8864,13 +8741,6 @@ fn subst_in_expr(mut e: *Expr, tps: []string, tys: []string) {
     }
     m = m + 1;
   }
-}
-
-fn subst_stmt(st: *Stmt, tps: []string, tys: []string) -> *Stmt {
-  let mut out = parse.clone_stmt(st);
-  out.fmt = tsub_type(st.fmt, tps, tys);
-  subst_in_stmt(mut out, tps, tys);
-  return out;
 }
 
 fn subst_in_stmt(mut st: *Stmt, tps: []string, tys: []string) {
@@ -12951,7 +12821,6 @@ fn reach_scan(mut r: *Reach, text: string) {
   }
 }
 
-
 pub fn emit(mut prog: *Prog) -> string {
   let mut pool = new_pool();
   let mut env = env_new(1024);
@@ -13308,5 +13177,3 @@ pub fn emit(mut prog: *Prog) -> string {
   out = out + ")\n";
   return out;
 }
-
-
