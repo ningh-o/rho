@@ -5716,6 +5716,31 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
            "    (local.get " + a_slot2.to_str() + ")\n";
   }
   if e.tag == parse.EX_IF {
+    // a comptime condition folds whole: the live arm's value rides
+    // directly (float arms ride the same bits the (if (result i64))
+    // would carry)
+    let mut cf: ?bool = Option.None;
+    match e.lhs {
+      Option.Some(cond0) => {
+        cf = comptime_cond(prog, cond0);
+      },
+      Option.None => {},
+    }
+    match cf {
+      Option.Some(true) => {
+        if len(e.args) > 0 {
+          return emit_expr(mut pool, e.args[0], mut env, mut prog, mut nl);
+        }
+        return "    (i64.const 0)\n";
+      },
+      Option.Some(false) => {
+        if len(e.args) > 1 {
+          return emit_expr(mut pool, e.args[1], mut env, mut prog, mut nl);
+        }
+        return "    (i64.const 0)\n";
+      },
+      Option.None => {},
+    }
     // if c { a } else { b } as an expression: the arms ride one i64
     // (float arms ride bits — the lanes agree within one expression)
     let mut out: string = "";
@@ -11963,6 +11988,20 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
     if st.tag == parse.ST_IF {
       match st.val {
         Option.Some(cond) => {
+          // a comptime condition folds whole: only the live arm emits
+          // (the dead arm is unreachable code, skipped at the source)
+          let folded: ?bool = comptime_cond(prog, cond);
+          match folded {
+            Option.Some(true) => {
+              body = body + emit_stmts(st.body, mut pool, mut env, mut nl, in_fn, ret_slot, mut prog, mut loops, mut dstack, tfd);
+            },
+            Option.Some(false) => {
+              if len(st.body2) > 0 {
+                body = body + emit_stmts(st.body2, mut pool, mut env, mut nl,
+ in_fn, ret_slot, mut prog, mut loops, mut dstack, tfd);
+              }
+            },
+            Option.None => {
           // flat if: the condition's stack code precedes the keyword
           body = body + emit_expr(mut pool, cond, mut env, mut prog, mut nl);
           body = body + "    (i32.wrap_i64)\n    if\n";
@@ -11973,6 +12012,8 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
  in_fn, ret_slot, mut prog, mut loops, mut dstack, tfd);
           }
           body = body + "    end\n";
+            },
+          }
         },
         Option.None => {},
       }
@@ -12041,6 +12082,32 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
     if st.tag == parse.ST_WHILE {
       match st.val {
         Option.Some(cond) => {
+          // a comptime-false loop never runs: its body (and its defer
+          // frame) emits nothing. A comptime-true loop drops the
+          // always-passing check.
+          let wfolded: ?bool = comptime_cond(prog, cond);
+          match wfolded {
+            Option.Some(false) => {},
+            Option.Some(true) => {
+              let bk2: string = "$b" + loops.next_id.to_str();
+              let w2: string = "$w" + loops.next_id.to_str();
+              loops.next_id = loops.next_id + 1;
+              loops_push_with(mut loops, st.name, bk2, w2, dstack);
+              body = body + "    (block ";
+              body = body + bk2;
+              body = body + "\n";
+              body = body + "    (loop ";
+              body = body + w2;
+              body = body + "\n";
+              body = body + emit_stmts(st.body, mut pool, mut env, mut nl, in_fn, ret_slot, mut prog, mut loops, mut dstack, tfd);
+              body = body + "      (br ";
+              body = body + w2;
+              body = body + ")\n";
+              body = body + "    )\n";
+              body = body + "    )\n";
+              loops_pop(mut loops);
+            },
+            Option.None => {
           let bk: string = "$b" + loops.next_id.to_str();
           let w: string = "$w" + loops.next_id.to_str();
           loops.next_id = loops.next_id + 1;
@@ -12061,6 +12128,8 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
           body = body + "    )\n";
           body = body + "    )\n";
           loops_pop(mut loops);
+            },
+          }
         },
         Option.None => {},
       }
