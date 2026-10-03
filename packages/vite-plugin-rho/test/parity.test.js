@@ -39,7 +39,7 @@ test("programs-tier byte parity: plugin == CLI, every program", { timeout: 900_0
   const files = readdirSync(join(pkgDir, "..", "..", "tests", "suites", "programs"))
     .filter((f) => f.endsWith(".rho"))
     .sort();
-  assert.equal(files.length, 96, `the programs tier pins 96 cases (found ${files.length})`);
+  assert.equal(files.length, 99, `the programs tier pins 99 cases (found ${files.length})`);
 
   const results = [];
   const CONCURRENCY = 6;
@@ -71,7 +71,7 @@ test("programs-tier byte parity: plugin == CLI, every program", { timeout: 900_0
     console.log(`  RED ${r.name}: ${r.detail}`);
   }
   assert.equal(red.length, 0, `byte parity failed for: ${red.map((r) => r.name).join(", ")}`);
-  assert.equal(identical.length + refusals.length, 96);
+  assert.equal(identical.length + refusals.length, files.length, "every programs-tier case is classified exactly once");
 });
 
 async function parityOne(name, src) {

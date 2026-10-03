@@ -72,11 +72,10 @@ function faceUnstable(name) {
   return false;
 }
 
-// the gap pin: 48 programs-tier programs are outside the frozen
-// formatter's stable scope today. The number may only shrink — it
-// shrinks the day libs/compiler/fmt.rho grows to the full language
-// (post-freeze work); a rise is a formatter regression.
+// the gap pin closed: the full-layer boot-parity wave took the
+// formatter to every programs-tier program, so the unstable count is
+// zero. The number may only shrink — a rise is a formatter regression.
 test("programs-tier formatter-gap count (may only shrink)", () => {
   assert.equal(unstable + stable, programList().length, "every program is classified exactly once");
-  assert.equal(unstable, 48, "known unstable programs — bump DOWN as the formatter grows");
+  assert.equal(unstable, 0, "known unstable programs — bump DOWN as the formatter grows");
 });

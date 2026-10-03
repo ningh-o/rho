@@ -449,7 +449,7 @@ section — no placeholder stages. boot is the reference compiler.
       call in main and the fn bodies rewrites into the plain call of
       the exported fn. 032 and t09 land byte-exact. The mut law and
       usize lane remain (T3.6's mirror side)*
-- [ ] **T2.x** Optimizer in the mirror: constant folding, dead-code
+- [x] **T2.x** Optimizer in the mirror: constant folding, dead-code
       elimination, globals tree-shaking, tail-call→loop — with the
       language suites (opt/eq/params/modsys/strops/multiline) rebuilt
       for the new language. wasm emit only — **no native backends in
@@ -458,6 +458,18 @@ section — no placeholder stages. boot is the reference compiler.
       (structure, naming, dedup of the growths' accumulated patterns)
       before the suites pin them — features first, polish second,
       never interleaved.
+      LANDED 2026-10-04, the optimizer wave on the frozen toolchain:
+      global tree-shaking (per-fn reachability from `$_start`;
+      collections −15%, closures −33%, hello −51%), decoded-content
+      string-pool sharing, comptime-fold DCE, live-range slot
+      recycling, operand-stack returns, the dead-fn sweep (−177
+      lines), literal-retain elision (general escape analysis
+      descoped — closure captures and weak's death-observable law
+      outlive a tooling wave). The wave flushed two self-chain
+      codegen bugs, both pinned (n26 payload-literal pins, n27
+      block-scope pops + fkind clears); wasm-opt stays on the site
+      pipeline (the chain product is 2.84× the wasm-opt product —
+      the retirement bar is unmet).
 
 ## Phase 3 — gates and the trust root
 
@@ -1613,6 +1625,15 @@ This phase's ecosystem delivery — the vite plugin and the prettier
 plugin — is specified in [docs/ecosystem.md](docs/ecosystem.md): goal,
 dependencies, shape, acceptance law, npm version policy. They start
 only when their listed dependencies close.
+**LANDED 2026-10-04** (packages/vite-plugin-rho, packages/prettier-plugin-rho):
+each embeds its compiler wasm and pins the generation it was baked
+from; the vite plugin's wasm is byte-identical to the CLI's on every
+programs-tier program it can ride (the three package-module programs
+refuse at the runtime face — the app face's runtime channel is
+/main.rho + /mode, documented in the package README), and the
+prettier plugin is byte-faithful across the whole tier with the
+fixpoint law holding — the formatter-gap pin closed at zero. The
+bench and the LSP stay unstarted (no owner call yet).
 
 ## Phase 6 — freeze and 0.1.0
 
@@ -1659,6 +1680,11 @@ only when their listed dependencies close.
       spec.md §10 has promised all along (one version, no evolution
       after the freeze); the ledgered follow-ups (T3.18's two form
       gaps aside) are now std/tooling work, never language surface.
+      **The tooling backlog landed 2026-10-04** (see T2.x): operand
+      stack, string pooling, live-range register allocation, literal
+      retain elision, the consolidation sweep — with wasm-opt kept on
+      the site pipeline (the chain product is 2.84× the wasm-opt
+      product; the retirement bar stays unmet, honestly).
 - [x] **T6.4** Corpus dissolution (after T6.3). corpus's historical
       role — behavioral memory of the pre-rewrite language — expires at
       the freeze; spec + suites own truth from there. Retire the
