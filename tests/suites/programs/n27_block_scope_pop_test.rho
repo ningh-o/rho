@@ -1,0 +1,50 @@
+// programs tier — whole-program pin, dissolved from
+// corpus/ at the freeze (T6.4).
+// out: inner=13
+// out: outer=7
+// out: arm=99
+// out: v=4
+// out: base=21
+// out: loop=160
+// exit: 0
+// n27 — a block's bindings die with the block (the emitter's scope
+// law, boot's cx->scope pop mirrored): an inner let shadows its outer
+// name INSIDE the block only. The emitter's compile-time binding
+// stack never popped, so after the block every same-named read kept
+// resolving to the dead inner slot — invisible to boot's own products,
+// caught by the gate's leg 4 (the mirror-compiled emitter's P6
+// watermark reset read a dead slot and never fired).
+fn main() -> i32 {
+  // the shadow shape: inner let, outer read after the block
+  let x: i64 = 7;
+  if true {
+    let x: i64 = 13;
+    printf("inner={}\n", x);
+  }
+  printf("outer={}\n", x);
+  // the same through a match arm
+  let y: ?i32 = Option.Some(4);
+  let base: i64 = 21;
+  match y {
+    Option.Some(v) => {
+      let shadow: i64 = 999;
+      printf("arm={}\n", shadow - 900);
+      printf("v={}\n", v as i64);
+    },
+    Option.None => { printf("arm=0\n"); },
+  }
+  printf("base={}\n", base);
+  // the P6 face: a re-executing loop whose body rebinds a name every
+  // iteration — the body must read its own shadow, the next statement
+  // the outer one
+  let mut i: i32 = 0;
+  let mut acc: i64 = 0;
+  let t: i64 = 100;
+  while i < 5 {
+    let t: i64 = 3;
+    acc += t;
+    i += 1;
+  }
+  printf("loop={}\n", acc * 4 + t);
+  return 0;
+}

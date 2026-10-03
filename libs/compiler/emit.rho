@@ -1326,7 +1326,8 @@ fn env_bind_val(mut e: *Env, name: string, base: i64, sname: string) {
   e.senum[e.n] = "";
   e.sval[e.n] = sname;
   e.vbases[e.n] = base;
-  e.n = e.n + 1;
+    e.fkind[e.n] = 0;
+e.n = e.n + 1;
 }
 
 fn env_bind_w(mut e: *Env, name: string, slot: i64, w: i64) {
@@ -1337,7 +1338,8 @@ fn env_bind_w(mut e: *Env, name: string, slot: i64, w: i64) {
   e.senum[e.n] = "";
   e.sval[e.n] = "";
   e.vbases[e.n] = 0;
-  e.n = e.n + 1;
+    e.fkind[e.n] = 0;
+e.n = e.n + 1;
 }
 
 // a pointer binding: the slot holds a *SName heap address
@@ -1349,7 +1351,8 @@ fn env_bind_ptr(mut e: *Env, name: string, slot: i64, sname: string) {
   e.senum[e.n] = "";
   e.sval[e.n] = "";
   e.vbases[e.n] = 0;
-  e.n = e.n + 1;
+    e.fkind[e.n] = 0;
+e.n = e.n + 1;
 }
 
 // an enum-value binding: the slot holds the box address
@@ -1361,7 +1364,8 @@ fn env_bind_enum(mut e: *Env, name: string, slot: i64, ename: string) {
   e.senum[e.n] = ename;
   e.sval[e.n] = "";
   e.vbases[e.n] = 0;
-  e.n = e.n + 1;
+    e.fkind[e.n] = 0;
+e.n = e.n + 1;
 }
 
 fn env_enum_of(e: *Env, name: string) -> string {
@@ -11835,8 +11839,16 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
               }
             }
           }
+          // the arms' bindings die with the match (boot pops the arm
+          // scope; without the pop a same-named inner let kept shadowing
+          // every later read — P6's watermark `ssn` read a dead slot
+          // through the mirror-compiled emitter and its reset never
+          // fired, the leg-4 divergence)
+          // the arms' bindings die with the match (boot's scope law)
+          let mut sc_mark: usize = env.n;
           body = body + match_chain_m(mut pool, st.marms, 0, bx, mut env,
                                       mut prog, mut nl, false, false, optpt);
+          env.n = sc_mark;
           // a fresh scrutinee box dies with the match
           if expr_is_fresh(sc) {
             let scet2: string = expr_enum_type(sc, env, mut prog);
@@ -11881,11 +11893,15 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
           // flat if: the condition's stack code precedes the keyword
           body = body + emit_expr(mut pool, cond, mut env, mut prog, mut nl);
           body = body + "    (i32.wrap_i64)\n    if\n";
+          // each arm's bindings die at the arm's end (boot's scope law)
+          let mut if_mark: usize = env.n;
           body = body + emit_stmts(st.body, mut pool, mut env, mut nl, in_fn, ret_slot, mut prog, mut loops, mut dstack, tfd);
+          env.n = if_mark;
           if len(st.body2) > 0 {
             body = body + "    else\n";
             body = body + emit_stmts(st.body2, mut pool, mut env, mut nl,
  in_fn, ret_slot, mut prog, mut loops, mut dstack, tfd);
+            env.n = if_mark;
           }
           body = body + "    end\n";
         },
@@ -11895,9 +11911,11 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
     if st.tag == parse.ST_BLOCK {
       // a bare block: its statements inline; the nested emit_stmts
       // opens its own defer frame, so the block's defers unwind at
-      // its end
+      // its end. The block's bindings die with it (boot's scope law).
+      let mut bk_mark: usize = env.n;
       body = body + emit_stmts(st.body, mut pool, mut env, mut nl, in_fn,
                                ret_slot, mut prog, mut loops, mut dstack, tfd);
+      env.n = bk_mark;
     }
     if st.tag == parse.ST_DEFER {
       match st.sub {
@@ -11968,7 +11986,10 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
           body = body + "\n";
           body = body + emit_expr(mut pool, cond, mut env, mut prog, mut nl);
           body = body + "    (i32.wrap_i64)\n    if\n";
+          // the body's bindings die with the body (boot's scope law)
+          let mut wh_mark: usize = env.n;
           body = body + emit_stmts(st.body, mut pool, mut env, mut nl, in_fn, ret_slot, mut prog, mut loops, mut dstack, tfd);
+          env.n = wh_mark;
           body = body + "      (br ";
           body = body + w;
           body = body + ")\n";
