@@ -6419,12 +6419,12 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
     if mbits > 64 {
       mbits = 64;
     }
-    out = out + "    (local.set $t)\n";
-    out = out + "    (i64.and (local.get $t) (i64.const ";
+    // the count masks on the operand stack (the lhs waits below it —
+    // the old form parked the rhs in $t twice, ping-ponging)
+    out = out + "    (i64.const ";
     out = out + (mbits - 1).to_str();
-    out = out + "))\n";
-    out = out + "    (local.set $t)\n";
-    out = out + "    (local.get $t)\n";
+    out = out + ")\n";
+    out = out + "    (i64.and)\n";
     let mut sop: string = "i64.shl";
     if e.op == 19 {
       if w < 0 {
@@ -10164,11 +10164,18 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
             if rv.tag == parse.EX_VAR {
               skipn = rv.name;
             }
+            let unw: string = dunwind_emit_skip(mut dstack, skipn);
             body = body + emit_expr(mut pool, rv, mut env, mut prog, mut nl);
-            body = body + "    (local.set $r)\n";
-            body = body + dunwind_emit_skip(mut dstack, skipn);
-            body = body + "    (local.get $r)\n";
-            body = body + "    return\n";
+            if len(unw) == 0 {
+              // no defers to run: the value rides the operand stack
+              // home — the $r park-and-read is pure ping-pong here
+              body = body + "    return\n";
+            } else {
+              body = body + "    (local.set $r)\n";
+              body = body + unw;
+              body = body + "    (local.get $r)\n";
+              body = body + "    return\n";
+            }
           },
           Option.None => {
             body = body + dunwind_emit(mut dstack);
