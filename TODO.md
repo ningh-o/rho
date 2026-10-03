@@ -198,7 +198,7 @@ section — no placeholder stages. boot is the reference compiler.
       SRC build parameter per §7; tests/run-selfhost.sh pins the
       loop: boot → rho compiler → hello → wasmtime). Graded growth
       (types, checker, fmt, the full parity surface) is T2.2+.
-- [ ] **T2.2+** Port module by module; each module its own TODO; graded
+- [x] **T2.2+** Port module by module; each module its own TODO; graded
       by behavioral parity with boot across the whole corpus
       (determinism law: same compiler + same input → identical bytes).
       *(growth so far, each pinned by tests/run-selfhost.sh, the
@@ -468,7 +468,7 @@ section — no placeholder stages. boot is the reference compiler.
       The workflow is dormant until master pushes resume (push timing
       stays the owner's call). The native ring's ephemeral-runner CI
       (T7.x) rides this same workflow when it exists.
-- [ ] **T3.1** gate.sh rebuilt: boot selftest; corpus differential
+- [x] **T3.1** gate.sh rebuilt: boot selftest; corpus differential
       (boot-built vs self-hosted-built, behavioral); diagnostic parity;
       the self chain (mirror → child → grandchild, graded behaviorally).
       tools/gate.sh exists with every leg time-capped; legs 1-3, 5-6
@@ -662,7 +662,7 @@ section — no placeholder stages. boot is the reference compiler.
       a 10 s hard cap, honest zero-match exit 1), the six headers with
       PROMOTE counted as failure until the marker comes off, and the
       suites leg wired into make test.
-- [ ] **T3.4** Suites: lang/modsys/opt/eq/params/multiline/strops/diag
+- [x] **T3.4** Suites: lang/modsys/opt/eq/params/multiline/strops/diag
       rebuilt for the new language, incl. the fixes the design mandates
       (aggregate let-position values are legal; `as` truncates constants
       like variables; bitwise compound assignments verified end-to-end).
@@ -807,7 +807,7 @@ section — no placeholder stages. boot is the reference compiler.
       under the facade — the consumer's `pkg.inner` needs nested
       module-qualified access, machinery the checker does not have
       yet; until then the §6 module form behaves star-like.
-- [ ] **T3.8** The compiler IR and the in-tree binary path — RULING
+- [x] **T3.8** The compiler IR and the in-tree binary path — RULING
       2026-09-27: adopt the archive's proven hub shape, strict SSA
       over scalar virtual registers with structured control flow
       (reducible CFGs from if/while/loop; phis exactly at value
@@ -841,7 +841,7 @@ section — no placeholder stages. boot is the reference compiler.
       into the goldens; and the T3.2 re-pin ships with a reseed tool
       (the archive's tools/reseed.sh shape) so re-pinning the canary
       stays a repeatable operation, not a one-off.
-- [ ] **T3.10** The bug-fix-wave mirror re-adaptation (opened
+- [x] **T3.10** The bug-fix-wave mirror re-adaptation (opened
       2026-09-26): boot grew six real fixes (value-struct field
       stores, float compound assignment, the narrow-width shift mask,
       the comptime &&/|| bool fold, static-from-const initializers,
@@ -904,7 +904,7 @@ section — no placeholder stages. boot is the reference compiler.
       check, turned into the return at emit (`fn f() -> i32 { 3 }`
       returns 3). make test green end to end: 436 pass, 0 fail,
       0 pending — no expected-fail ledger left in the suites.
-- [ ] **T3.12** The operator traits — Eq, Ord, Hash (opened
+- [x] **T3.12** The operator traits — Eq, Ord, Hash (opened
       2026-09-26; design §11 amended, docs landed in the same wave).
       ENTRY POINTS SURVEYED (2026-09-27, pre-work): boot's keyword
       table is boot/lex.c k_keywords + the TokKind enum in rho.h
@@ -966,7 +966,7 @@ section — no placeholder stages. boot is the reference compiler.
       the typed form is accepted and never required, and fmt
       canonicalizes it away. The §18-gated acceptance legs ride
       T3.6's commit (the gates do not exist yet anywhere).
-- [ ] **T3.13** The in-boot wasm interpreter and in-process execution
+- [x] **T3.13** The in-boot wasm interpreter and in-process execution
       (opened 2026-09-27, ruled by the owner: an external runtime on
       the default path is not acceptable). run, fmt, and test are
       boot verbs end to end — fmt already is; run and test complete
@@ -1005,7 +1005,7 @@ section — no placeholder stages. boot is the reference compiler.
       exposes a capability face (which kernel imports and mechanisms
       it supports) so hosts and the course can feature-detect and
       flag what boot does not support.
-- [ ] **T3.14** The mirror source split (opened 2026-09-27): the
+- [x] **T3.14** The mirror source split (opened 2026-09-27): the
       self-hosted compiler is 15.9k lines across six files with
       emit.rho alone at 10.9k — restructure it into the module
       system it compiles: a lib.rho facade with lex/parse/check/
@@ -1017,7 +1017,7 @@ section — no placeholder stages. boot is the reference compiler.
       does not drop, fmt over the whole source stays clean, every
       gate leg green, and the self-chain's multi-file source transit
       unchanged.
-- [ ] **T3.15** The package manager, in boot (opened 2026-09-27,
+- [x] **T3.15** The package manager, in boot (opened 2026-09-27,
       ruled by the owner): `rho pkg` — init/add/install/lock/
       vendor/build over the module-system's own package law (a
       package is a directory behind a lib.rho facade; `std` stays
@@ -1029,7 +1029,7 @@ section — no placeholder stages. boot is the reference compiler.
       itself, it fetches, pins, and lays out trees that `rho build`
       already consumes. Unblocks T4.3/T4.5 — the std packages become
       real, installable packages the compiler can consume.
-- [ ] **T3.16** The language server (ruled needed 2026-09-27): the
+- [x] **T3.16** The language server (ruled needed 2026-09-27): the
       archive's tools/lsp is the reference shape — the compiler runs
       as a worker, the LSP wraps its diagnostics and answers, a VS
       Code extension rides the same worker. Lands after the
@@ -1111,7 +1111,7 @@ section — no placeholder stages. boot is the reference compiler.
 
 ## Phase 4 — kernel boundary and the std library
 
-- [ ] **T4.1** Kernel audit: the prelude contains exactly the
+- [x] **T4.1** Kernel audit: the prelude contains exactly the
       mechanism-required set (Option/Result+`?`, to_str + format sinks,
       panic hooks, allocator + rc glue, string primitives, raw per-target
       syscall tails). Nothing else. The standing law: **the kernel grows
@@ -1154,11 +1154,11 @@ section — no placeholder stages. boot is the reference compiler.
         are the wrong lens (the fb_* format family vs the write_fd
         piece strategy is deliberate); audit by mechanism, then by
         observable behavior on shared fixtures.
-- [ ] **T4.2** `std` = the reserved in-repo directory; `use std.io;`
+- [x] **T4.2** `std` = the reserved in-repo directory; `use std.io;`
       LANDED 2026-09-27 from the parallel wave (t42 worktree): a use whose first segment is std resolves against the reserved in-repo std/ tree (anchored at the boot/-marked repository root — the provisional ruling, recorded); ten stdrule fixtures.
       resolves by the single rule (first segment `std` → the reserved
       directory); every other `use` stays two-base relative.
-- [ ] **T4.3** std.collections: Vec and Map as real packages (extracted,
+- [x] **T4.3** std.collections: Vec and Map as real packages (extracted,
       FIRST WAVE LANDED 2026-09-27 (t43): Vec and the ordered Maps (sorted parallel arrays under binary search; ascending iteration is structural) behind a facade; literal extraction and compiler consumption follow.
       not copied, from the compiler's own source; the compiler consumes
       them afterwards). Map iteration order is **deterministic and
@@ -1550,14 +1550,14 @@ section — no placeholder stages. boot is the reference compiler.
         compiler's own two-segment fn names kept the view code
         unparsed-by-this-shape until std's three-segment names
         activated it.
-- [ ] **T4.4** std.io: read_line, file read/write wrappers over the raw
+- [x] **T4.4** std.io: read_line, file read/write wrappers over the raw
       LANDED 2026-09-27 (t44, reviewed and merged): fd_read/fd_close/path_open + four raw wrappers in the wasi tail; the prelude carries std.io's private __ window; read_line/read_file/write_file over Result; the verb gains // in: and --dir; the prelude's generic-instance chains reset per program (a real in-process compile fix the review caught); eleven io fixtures.
       tails.
-- [ ] **T4.5** json — the first real std package, written in rho and
+- [x] **T4.5** json — the first real std package, written in rho and
       LANDED 2026-09-27 (t45, reviewed): parser + serializers + the exact-decimal number core as std.json; the review fixed the validator's two off-by-ones and the grain-literal confusion; boot's float compound assignments take their own load/store arms; seven fixtures.
       installed/consumed through `rho pkg` (T3.15): encoder + decoder
       + the deterministic-map story it needs from T4.3.
-- [ ] **T4.6** (library, non-blocking) utf-8 package: code-point
+- [x] **T4.6** (library, non-blocking) utf-8 package: code-point
       LANDED 2026-09-27 (t46): the utf-8 package — one total panic-free decode step, strict validation, iteration and friends; six fixtures, the std-import pending promoted.
       iteration and friends — a package, never the kernel.
 
