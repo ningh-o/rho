@@ -786,12 +786,17 @@ fn fmt_arm_rhs(prog: *Prog, mut cur: *CmtCur, arm: *MatchArm,
       out = out + cmt_flush(prog, mut cur, arm.bend as i64, depth);
     }
     // a block arm can carry a tail expression beside its statements —
-    // it rides as the block's final `expr;` line
+    // it rides as the block's final line; an if-chain tail is boot's
+    // statement form (no trailing semicolon), any other expression
+    // spells one
     match arm.val {
       Option.Some(v) => {
         out = out + ind_of(depth + 1);
         out = out + fmt_expr(prog, mut cur, v, depth + 1);
-        out = out + ";\n";
+        if v.tag != parse.EX_IF {
+          out = out + ";";
+        }
+        out = out + "\n";
       },
       Option.None => {},
     }
@@ -1397,6 +1402,16 @@ pub fn fmt_line(prog: *Prog, mut cur: *CmtCur, st: *Stmt,
     match st.val {
       Option.Some(e) => {
         out = out + fmt_expr(prog, mut cur, e, depth);
+      },
+      Option.None => {},
+    }
+    // an if-chain wrapped as a statement keeps boot's bare brace (the
+    // statement match's law: no trailing semicolon on a construct)
+    match st.val {
+      Option.Some(e) => {
+        if e.tag == parse.EX_IF {
+          return out + "\n";
+        }
       },
       Option.None => {},
     }

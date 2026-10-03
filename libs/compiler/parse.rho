@@ -1250,6 +1250,7 @@ fn parse_primary(mut c: *PCur) -> *Expr {
 fn parse_if_arm(mut c: *PCur) -> *Expr {
   let mut last: *Expr = lit(0);
   let mut found: bool = false;
+  let mut had_stmt: bool = false;
   while !is_punct(tk(c), 125) && tk(c).kind != lex.TK_EOF {
     let save: usize = c.pos;
     let psave: i64 = c.perrs;
@@ -1267,11 +1268,19 @@ fn parse_if_arm(mut c: *PCur) -> *Expr {
     c.pos = save;
     c.perrs = psave;
     parse_stmt(mut c);
+    had_stmt = true;
   }
-  if !found {
-    // an arm with no value expression is not an §9 expression arm:
-    // the construct is boot's statement form — poison the parse so a
-    // speculative tail probe rewinds to parse_stmt
+  if !found || had_stmt {
+    // an arm that isn't ALL clean expression statements is not an §9
+    // expression arm: the construct is boot's statement form — poison
+    // the parse so a speculative tail probe rewinds to parse_stmt.
+    // The poison must fire even when a tail expression was found: an
+    // if/else CHAIN of statement blocks at an arm's tail (the emit-
+    // ter's own ST_LET lane cascade) used to parse as a degenerate
+    // if-expression here, and every lane's statements vanished from
+    // the AST — the self-compile then emitted calls whose string
+    // arguments had lost their registered pairs (leg 4's child
+    // wat2wasm refused the arity)
     c.perrs = c.perrs + 1;
   }
   return last;

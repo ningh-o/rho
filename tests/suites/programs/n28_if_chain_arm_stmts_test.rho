@@ -1,0 +1,65 @@
+// programs tier — whole-program pin, dissolved from
+// corpus/ at the freeze (T6.4).
+// out: lane=1 name_len=1 v=0 sn_len=10
+// out: total=64
+// exit: 0
+// n28 — a match arm whose block is a lone if/else-if/else chain of
+// STATEMENT blocks keeps every statement (the parse law behind leg
+// 4's self chain): the arm-tail probe used to swallow the whole
+// chain as a degenerate if-expression — parse_if_arm discarded any
+// line that was not a bare expression, so every lane's lets, guarded
+// rebinds, and calls vanished from the AST. The self-compile then
+// emitted calls whose string arguments had lost their registered
+// pairs (the gate's child wat2wasm refused the arity). The pin rides
+// the exact shape: lanes that bind a call-init string, rebind it
+// under a guard, and call with a literal+var concat argument; the
+// legitimate expression tail (a let, then an if-expression whose
+// arms are bare values) must keep parsing as the tail.
+fn tag_of(n: i64) -> string {
+  if n == 1 { return "alpha"; }
+  if n == 2 { return "beta"; }
+  return "";
+}
+
+fn report(kind: i64, nm: string, v: i64, sn: string) -> i64 {
+  printf("lane={} name_len={} v={} sn_len={}\n", kind, len(nm), v, len(sn));
+  return len(sn) as i64;
+}
+
+fn main() -> i32 {
+  let mut n: i64 = 0;
+  let mut total: i64 = 0;
+  while n < 3 {
+    match n {
+      0 => {
+        if n == 9 {
+          total += 100;
+        } else if n == 8 {
+          total += 200;
+        } else {
+          let mut w: string = tag_of(n);
+          if len(w) == 0 && n < 9 {
+            w = tag_of(1);
+          }
+          total += report(1, "s", n, "weak:" + w);
+        }
+      },
+      _ => {
+        total += 7;
+      },
+    }
+    n += 1;
+  }
+  // the expression tail law: a let rides the arm body, the trailing
+  // if-expression (bare-value arms) stays the arm's value
+  let e: i64 = match 1 {
+    1 => {
+      let stop: bool = true;
+      if stop { 40 } else { 4 }
+    },
+    _ => 0,
+  };
+  total += e;
+  printf("total={}\n", total);
+  return 0;
+}
