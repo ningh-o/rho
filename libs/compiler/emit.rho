@@ -1727,7 +1727,7 @@ pub fn st_index(mut prog: *Prog, name: string) -> i64 {
         j = j + 1;
       }
       let inst = parse.mk_structdef(name, sd.fields, ntypes,
-                                    make([]string, 0));
+                                    make([]string, 0), sd.line);
       return parse.reg_struct_inst(mut prog, inst);
     }
   }
@@ -1832,8 +1832,8 @@ pub fn en_index(mut prog: *Prog, name: string) -> i64 {
         nslots[v] = sl;
         v = v + 1;
       }
-      let inst = parse.mk_enumdef(name, ed.vnames, nslots, npool, nv,
-                                  make([]string, 0));
+      let inst = parse.mk_enumdef(name, ed.vnames, nslots, npool,
+                                  ed.vnpool, nv, make([]string, 0));
       return parse.reg_enum_inst(mut prog, inst);
     }
   }
@@ -8348,7 +8348,7 @@ fn tsub_type(t: string, tps: []string, tys: []string) -> string {
     let mut k2: usize = 0;
     while k2 < len(parts) {
       if k2 > 0 {
-        outp = outp + ",";
+        outp = outp + ", ";
       }
       outp = outp + tsub_type(parts[k2], tps, tys);
       k2 = k2 + 1;
@@ -8393,6 +8393,9 @@ fn split_type_args(s: string) -> []string {
       n = n + 1;
       cur = "";
       i = i + 1;
+      while i < len(s) && s[i] == 32 {
+        i = i + 1;
+      }
       continue;
     }
     cur = cur + s[i..(i + 1)];

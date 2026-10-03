@@ -41,6 +41,23 @@ fn app_compile(src: string) -> i32 {
     eprintf("parse: {} unresolved form(s)\n", prog.perrs);
     return 1;
   }
+  // fmt is syntax-level law: it formats whatever parses, no semantic
+  // checks, and it renders before any module load touches the tables
+  // (the file alone — the module tree is not the file's text). build
+  // and check run the checker.
+  if mode == "fmt" {
+    let text: string = fmt.fmt_prog(prog);
+    let mut off0: usize = 0;
+    while off0 < len(text) {
+      let mut end0: usize = off0 + 512;
+      if end0 > len(text) {
+        end0 = len(text);
+      }
+      printf("{}", text[off0..end0]);
+      off0 = end0;
+    }
+    return 0;
+  }
   if len(MODS_APP) > 0 && !parse.load_mods(mut prog, MODS_APP) {
     eprintf("mods: unresolved module path(s)\n");
     return 1;
@@ -49,25 +66,15 @@ fn app_compile(src: string) -> i32 {
     eprintf("parse: {} unresolved form(s)\n", prog.perrs);
     return 1;
   }
-  // fmt is syntax-level law: it formats whatever parses, no semantic
-  // checks (boot's fmt formats a file the checker would refuse — the
-  // fmt-self suite pins that). build and check run the checker.
-  if mode != "fmt" {
-    let mut errs: i64 = check.check(prog);
-    if errs > 0 {
-      eprintf("check: {} error(s)\n", errs);
-      return 1;
-    }
+  let mut errs: i64 = check.check(prog);
+  if errs > 0 {
+    eprintf("check: {} error(s)\n", errs);
+    return 1;
   }
   if mode == "check" {
     return 0;
   }
-  let mut text: string = "";
-  if mode == "fmt" {
-    text = fmt.fmt_prog(prog);
-  } else {
-    text = emit.emit(mut prog);
-  }
+  let mut text: string = emit.emit(mut prog);
   let mut off: usize = 0;
   while off < len(text) {
     let mut end: usize = off + 512;
@@ -102,6 +109,22 @@ fn main() -> i32 {
   // the compiled program — the child's SRC/MODS are ours (§7)
   parse.override_root_str(mut prog, "SRC", SRC);
   parse.override_root_str(mut prog, "MODS", MODS);
+  // fmt is syntax-level law here too (boot's fmt checks nothing), and
+  // it renders before any module load touches the tables — the file
+  // alone, module tree or not
+  if FMT == 1 {
+    let text: string = fmt.fmt_prog(prog);
+    let mut off0: usize = 0;
+    while off0 < len(text) {
+      let mut end0: usize = off0 + 512;
+      if end0 > len(text) {
+        end0 = len(text);
+      }
+      printf("{}", text[off0..end0]);
+      off0 = end0;
+    }
+    return 0;
+  }
   if !parse.load_mods(mut prog, MODS) {
     eprintf("mods: unresolved module path(s)\n");
     return 1;
@@ -110,26 +133,10 @@ fn main() -> i32 {
     eprintf("parse: {} unresolved form(s)\n", prog.perrs);
     return 1;
   }
-  // fmt is syntax-level law here too (boot's fmt checks nothing)
-  if FMT != 1 {
-    let mut errs: i64 = check.check(prog);
-    if errs > 0 {
-      eprintf("check: {} error(s)\n", errs);
-      return 1;
-    }
-  }
-  if FMT == 1 {
-    let text: string = fmt.fmt_prog(prog);
-    let mut off: usize = 0;
-    while off < len(text) {
-      let mut end: usize = off + 512;
-      if end > len(text) {
-        end = len(text);
-      }
-      printf("{}", text[off..end]);
-      off = end;
-    }
-    return 0;
+  let mut errs: i64 = check.check(prog);
+  if errs > 0 {
+    eprintf("check: {} error(s)\n", errs);
+    return 1;
   }
   let wat: string = emit.emit(mut prog);
   // stream in slices: the format scratch is bounded, programs are not

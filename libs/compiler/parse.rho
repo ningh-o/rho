@@ -413,6 +413,7 @@ pub struct FnDef {
 pub struct Prog {
   fns: []*FnDef,
   main: []*Stmt,
+  mainline: i32, // the fn main keyword's line (fmt's main-block anchor)
   consts: []string, // module-level const/static names
   cvals: []i64,     // their folded initializer values
   cstatic: []bool,  // true = a static mut (a wasm global), false = a const
@@ -599,8 +600,11 @@ pub struct EnumDef {
   vnames: []string,   // variant names, declaration order = tags
   vslots: []i64,      // per variant: the payload slot count
   vtpool: []string,  // payload types, 8 slots per variant in order
+  vnpool: []string,  // struct-form payloads' field names, 8 slots per
+                     // variant — an all-empty variant is tuple-form
   nv: usize,
   tparams: []string, // the declared type parameters, in order
+  line: i32,         // the decl keyword's line (fmt renders source order)
 }
 
 pub struct StructDef {
@@ -608,6 +612,7 @@ pub struct StructDef {
   fields: []string,
   types: []string,
   tparams: []string, // the declared type parameters, in order
+  line: i32,         // the decl keyword's line (fmt renders source order)
 }
 
 pub struct TraitDef {
@@ -617,22 +622,24 @@ pub struct TraitDef {
   rtypes: []string,  // each declared method's return type (the
                      // dispatch picks its calling type by it)
   nmethods: usize,
+  line: i32,         // the decl keyword's line (fmt renders source order)
 }
 
 // parse owns the constructors: the other modules build table entries
 // through these, never through raw new (the checker's new is the
 // user-struct surface)
 pub fn mk_structdef(name: string, fields: []string, types: []string,
-                    tparams: []string) -> *StructDef {
+                    tparams: []string, line: i32) -> *StructDef {
   return new StructDef { name: name, fields: fields, types: types,
-                         tparams: tparams };
+                         tparams: tparams, line: line };
 }
 
 pub fn mk_enumdef(name: string, vnames: []string, vslots: []i64,
-                  vtpool: []string, nv: usize,
+                  vtpool: []string, vnpool: []string, nv: usize,
                   tparams: []string) -> *EnumDef {
   return new EnumDef { name: name, vnames: vnames, vslots: vslots,
-                       vtpool: vtpool, nv: nv, tparams: tparams };
+                       vtpool: vtpool, vnpool: vnpool, nv: nv,
+                       tparams: tparams };
 }
 
 // append a table entry, growing the table when full (instantiations
@@ -744,19 +751,27 @@ fn eat_type(mut c: *PCur) -> string {
     // (captures and calls key on the 'fn' prefix)
     tkadv(mut c); // fn
     tkadv(mut c); // (
-    let mut depth: i64 = 1;
-    while tk(c).kind != lex.TK_EOF && depth > 0 {
-      if is_punct(tk(c), 40) {
-        depth = depth + 1;
+    // the signature rides the type text (boot spells fn types in
+    // full: fn(i32) -> i32)
+    let mut sig: string = "(";
+    let mut firstp: bool = true;
+    while tk(c).kind != lex.TK_EOF && !is_punct(tk(c), 41) {
+      if !firstp {
+        sig = sig + ", ";
       }
-      if is_punct(tk(c), 41) {
-        depth = depth - 1;
+      firstp = false;
+      sig = sig + eat_type(mut c);
+      if !eat_punct(mut c, 44) {
+        break;
       }
-      tkadv(mut c);
     }
-    eat_arrow(mut c);
-    eat_type(mut c);
-    return pre + "fn";
+    eat_punct(mut c, 41);
+    sig = sig + ")";
+    let rt: string = eat_arrow_typed(mut c);
+    if len(rt) > 0 {
+      return pre + "fn" + sig + " -> " + rt;
+    }
+    return pre + "fn" + sig;
   }
   if t.kind == lex.TK_IDENT || t.kind == lex.TK_KEYWORD {
     let name: string = t.text;
@@ -767,7 +782,7 @@ fn eat_type(mut c: *PCur) -> string {
       let mut wargs: string = "";
       while tk(c).kind != lex.TK_EOF && !is_punct(tk(c), 93) {
         if len(wargs) > 0 {
-          wargs = wargs + ",";
+          wargs = wargs + ", ";
         }
         wargs = wargs + eat_type(mut c);
         if !eat_punct(mut c, 44) {
@@ -811,7 +826,7 @@ fn eat_type(mut c: *PCur) -> string {
       let mut args: string = "";
       while tk(c).kind != lex.TK_EOF && !is_punct(tk(c), 93) {
         if len(args) > 0 {
-          args = args + ",";
+          args = args + ", ";
         }
         args = args + eat_type(mut c);
         if !eat_punct(mut c, 44) {
@@ -1285,16 +1300,34 @@ fn parse_atom(mut c: *PCur) -> *Expr {
       }
       body2 = bstmts[0..bn];
     }
-    return parse_postfix(mut c, clo_expr(params, body2, rtype2));
+    let mut cx = clo_expr(params, body2, rtype2);
+    {
+      // the param types ride the idle args channel — fmt spells them
+      // (fn(x: i32)); nothing else reads a closure's args
+      let mut tas: []*Expr = make([]*Expr, len(ptypes2));
+      let mut ti: usize = 0;
+      while ti < len(ptypes2) {
+        let mut tn = lit(0);
+        tn.name = ptypes2[ti];
+        tas[ti] = tn;
+        ti = ti + 1;
+      }
+      cx.args = tas;
+    }
+    return parse_postfix(mut c, cx);
   }
   if is_punct(t, 45) {
-    // -literal folds; -expr negates
+    // -literal folds; -expr negates — the desugar into bin(1, 0, x)
+    // leaves a marker in the binop's unused lit slot so fmt can spell
+    // boot's -(x) (a source `0 - x` binop carries no marker)
     tkadv(mut c);
     let inner = parse_primary(mut c);
     if inner.tag == EX_LIT {
       return lit(0 - inner.lit);
     }
-    return bin(1, lit(0), inner);
+    let mut nb = bin(1, lit(0), inner);
+    nb.lit = 1;
+    return nb;
   }
   if is_punct(t, 91) {
     // [a, b, c] — a fresh slice literal
@@ -1434,7 +1467,7 @@ fn parse_atom(mut c: *PCur) -> *Expr {
         let mut gargs: string = "";
         while tk(c).kind != lex.TK_EOF && !is_punct(tk(c), 93) {
           if len(gargs) > 0 {
-            gargs = gargs + ",";
+            gargs = gargs + ", ";
           }
           gargs = gargs + eat_type(mut c);
           if !eat_punct(mut c, 44) {
@@ -2504,6 +2537,7 @@ pub fn parse_full(toks: []*Tok, src: string, ctexts: []string,
   let mut upub = collections.vec_bool(32);
   let mut nu: usize = 0;
   let mut pending_pub: bool = false;
+  let mut mline: i32 = 0;
   let mut ntr: usize = 0;
   let mut break_to_fn: bool = false;
   while tk(c).kind != lex.TK_EOF {
@@ -2569,7 +2603,7 @@ pub fn parse_full(toks: []*Tok, src: string, ctexts: []string,
       }
       let td = new TraitDef { name: trname, methods: tms[0..ntm],
                               rtypes: trts[0..ntm],
-                              nmethods: ntm };
+                              nmethods: ntm, line: t.line };
       traits.push(td);
       ntr = ntr + 1;
       continue;
@@ -2683,7 +2717,7 @@ pub fn parse_full(toks: []*Tok, src: string, ctexts: []string,
       }
       let sd = new StructDef { name: sname, fields: fnames[0..nfl],
                                types: ftypes[0..nfl],
-                               tparams: tps[0..ntp] };
+                               tparams: tps[0..ntp], line: t.line };
       structs.push(sd);
       ns = ns + 1;
       continue;
@@ -2726,6 +2760,7 @@ pub fn parse_full(toks: []*Tok, src: string, ctexts: []string,
       let mut vnames = collections.vec_str(16);
       let mut vslots = collections.vec_i64(16);
       let mut vtpool: []string = make([]string, 128);
+      let mut vnpool: []string = make([]string, 128);
       let mut nv: usize = 0;
       if eat_punct(mut c, 123) {
         while tk(c).kind != lex.TK_EOF {
@@ -2746,6 +2781,13 @@ pub fn parse_full(toks: []*Tok, src: string, ctexts: []string,
                 gpi = gpi + 1;
               }
               vtpool = bigp;
+              let mut bign: []string = make([]string, ovp * 2);
+              let mut gni: usize = 0;
+              while gni < ovp {
+                bign[gni] = vnpool[gni];
+                gni = gni + 1;
+              }
+              vnpool = bign;
             }
             tkadv(mut c);
             let vbase: usize = nv * 8;
@@ -2785,6 +2827,7 @@ pub fn parse_full(toks: []*Tok, src: string, ctexts: []string,
                     let eaten2: string = eat_type(mut c);
                     if len(eaten2) > 0 && npt < 8 {
                       vtpool[vbase + npt] = eaten2;
+                      vnpool[vbase + npt] = ft.text;
                       npt = npt + 1;
                     }
                     nsl2 = nsl2 + 1;
@@ -2811,8 +2854,9 @@ pub fn parse_full(toks: []*Tok, src: string, ctexts: []string,
       }
       let ed = new EnumDef { name: ename, vnames: vnames.view(),
                              vslots: vslots.view(),
-                             vtpool: vtpool[0..(nv * 8)], nv: nv,
-                             tparams: etps[0..etp] };
+                             vtpool: vtpool[0..(nv * 8)],
+                             vnpool: vnpool[0..(nv * 8)], nv: nv,
+                             tparams: etps[0..etp], line: t.line };
       enums.push(ed);
       ne = ne + 1;
       continue;
@@ -2962,6 +3006,7 @@ pub fn parse_full(toks: []*Tok, src: string, ctexts: []string,
         }
       }
       if fname == "main" {
+        mline = fnline;
         eat_punct(mut c, 40);
         eat_punct(mut c, 41);
         eat_arrow(mut c);
@@ -3068,6 +3113,7 @@ pub fn parse_full(toks: []*Tok, src: string, ctexts: []string,
     tkadv(mut c);
   }
   let mut prog = new Prog { fns: fns.view(), main: nodes.view(),
+                        mainline: mline,
                         consts: cnames.view(), cvals: cvals.view(),
                         cstatic: cstatic.view(), ctypes: ctypes.view(),
                         cmuts: cmuts.view(), cexprs: cexprs.view(),

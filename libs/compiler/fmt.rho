@@ -1,11 +1,23 @@
 // fmt.rho — the self-hosted compiler's canonical formatter (T2.2
-// growth). Byte-identical to boot's fmt on the subset grammar: every
-// binary node parenthesized, unary ops as op(operand), conditions
-// spelled by the same expression rule (binaries carry their own
-// parens, atoms ride bare), compound assignments keep their operator,
-// consts/statics each close with a blank line, fns stack back to
-// back, verbatim strings re-emit as escaped single-line text with
-// printable bytes raw.
+// growth; the T6.3 full-layer boot-parity round). Boot's fmt.c is the
+// judge: one true spelling per construct, 2-space indent, trailing
+// commas on multiline lists, braces on every block, fmt output a
+// parse fixed point. The mirror rides the same spelling on the whole
+// grammar the parser keeps: expressions (floats re-spelled at %.17g
+// through f64.to_str, calls/fields/methods/new/closures/if/match),
+// statements (match, compound and indexed field stores), and the
+// declaration cascade in the parser's own table order — uses, traits,
+// consts/statics, structs, enums, fns, main. The comment replay
+// follows boot's law: a comment on a construct's own last line rides
+// as its trailing note, every other comment leads the next construct
+// at the current indent, the cursor monotonic.
+//
+// Three spellings the parser's tables cannot carry ride their
+// documented fallbacks (byte-exact on the corpus, best-effort off it):
+// a struct-form enum variant prints in the tuple spelling (the
+// variant's field names are not in the tables), a struct-form pattern
+// prints its binders parenthesized, and a bool pattern prints its
+// 0/1 literal.
 use lex;
 use parse;
 
@@ -62,8 +74,12 @@ fn canon_byte(b: u8) -> string {
   if b == 0 {
     return "\\x00";
   }
+  // boot's strlit: C0 controls and DEL ride hex, everything else raw
   if b < 32 {
     return "\\x" + lower_hex(b);
+  }
+  if b == 127 {
+    return "\\x7f";
   }
   return byte_char(b);
 }
@@ -188,15 +204,412 @@ fn op_spell(op: i64) -> string {
   return ">>";
 }
 
-// a literal is a bare positive, a negative folds as -(abs)
+// ---- integer literals ----
+
+// a negative literal folds at parse (the unary minus on a literal);
+// the canonical spelling is the parenthesized negation. The i64 floor
+// has no positive twin — its fold wrapped in place — so it spells the
+// magnitude the source token carried. The floor is detected by its
+// self-negation (0 - v == v holds for the floor alone), not by a
+// const comparison — the const's value rode the wrong lane once.
 fn fmt_lit(v: i64) -> string {
   if v >= 0 {
     return v.to_str();
   }
+  if 0 - v == v {
+    return "-(9223372036854775808)";
+  }
   return "-(" + (0 - v).to_str() + ")";
 }
 
-pub fn fmt_expr(e: *Expr) -> string {
+// a literal under an unsigned declared type: the lexer wrapped the
+// u64-range token into i64, and a signed negative cannot sit under an
+// unsigned let legally — the bits are the u64 value, spelled unsigned
+fn fmt_ulit(v: i64) -> string {
+  if v >= 0 {
+    return v.to_str();
+  }
+  return (v as u64).to_str();
+}
+
+fn is_unsigned_type(t: string) -> bool {
+  if len(t) == 0 {
+    return false;
+  }
+  if t[0] != 117 {
+    return false;
+  }
+  // u8 u16 u32 u64 usize — and guard against a user type named U..
+  if len(t) >= 2 && t[1] == 56 {
+    return true;
+  }
+  if len(t) == 3 && t[1] == 49 && t[2] == 54 {
+    return true;
+  }
+  if len(t) == 3 && t[1] == 51 && t[2] == 50 {
+    return true;
+  }
+  if len(t) == 3 && t[1] == 54 && t[2] == 52 {
+    return true;
+  }
+  if t == "usize" {
+    return true;
+  }
+  return false;
+}
+
+// ---- float literals: the raw token text back to a double, then the
+// canonical %.17g spelling through f64.to_str (the prelude rides
+// boot's own dtoa, so the spelling is the judge's by construction).
+// Exact for any mantissa <= 2^53 with |exponent| <= 22 (the mantissa
+// and the power of ten are exact doubles; the one divide/multiply is
+// correctly rounded = strtod). Wider mantissas and bigger exponents
+// scale a double-double pair by exact 1e9 chunks. ----
+
+struct DD {
+  hi: f64,
+  lo: f64,
+}
+
+// exact product of two doubles (Dekker's twoProduct, no fma needed)
+fn dd_two_prod(a: f64, b: f64) -> *DD {
+  let split: f64 = 134217729.0;
+  let ca: f64 = split * a;
+  let ahi: f64 = ca - (ca - a);
+  let alo: f64 = a - ahi;
+  let cb: f64 = split * b;
+  let bhi: f64 = cb - (cb - b);
+  let blo: f64 = b - bhi;
+  let p: f64 = a * b;
+  let err: f64 = ((ahi * bhi - p) + ahi * blo + alo * bhi) + alo * blo;
+  return new DD { hi: p, lo: err };
+}
+
+// exact sum of two doubles (Knuth's twoSum)
+fn dd_two_sum(a: f64, b: f64) -> *DD {
+  let s: f64 = a + b;
+  let bb: f64 = s - a;
+  let err: f64 = (a - (s - bb)) + (b - bb);
+  return new DD { hi: s, lo: err };
+}
+
+// (hi, lo) * y for an exact scalar y — a DDMul step, renormalized
+fn dd_scale(hi: f64, lo: f64, y: f64) -> *DD {
+  let p: *DD = dd_two_prod(hi, y);
+  let t: *DD = dd_two_sum(p.lo, lo * y);
+  let s: f64 = p.hi + t.hi;
+  // |s| >= |t.lo| holds here — the quick form renormalizes exactly
+  let z: f64 = s + t.lo;
+  let e: f64 = t.lo - (z - s);
+  return new DD { hi: z, lo: e };
+}
+
+// 10^k as an exact double, k <= 22
+fn pow10(k: i64) -> f64 {
+  if k == 0 { return 1.0; }
+  if k == 1 { return 10.0; }
+  if k == 2 { return 100.0; }
+  if k == 3 { return 1000.0; }
+  if k == 4 { return 10000.0; }
+  if k == 5 { return 100000.0; }
+  if k == 6 { return 1000000.0; }
+  if k == 7 { return 10000000.0; }
+  if k == 8 { return 100000000.0; }
+  if k == 9 { return 1000000000.0; }
+  if k == 10 { return 10000000000.0; }
+  if k == 11 { return 100000000000.0; }
+  if k == 12 { return 1000000000000.0; }
+  if k == 13 { return 10000000000000.0; }
+  if k == 14 { return 100000000000000.0; }
+  if k == 15 { return 1000000000000000.0; }
+  if k == 16 { return 10000000000000000.0; }
+  if k == 17 { return 100000000000000000.0; }
+  if k == 18 { return 1000000000000000000.0; }
+  if k == 19 { return 10000000000000000000.0; }
+  if k == 20 { return 100000000000000000000.0; }
+  if k == 21 { return 1000000000000000000000.0; }
+  return 10000000000000000000000.0;
+}
+
+// the double a decimal token spells: digits [.digits] [e[+-]digits]
+fn flit_value(text: string) -> f64 {
+  let mut i: usize = 0;
+  let mut mant: i64 = 0;
+  let mut seen: i64 = 0; // significant digits kept (the rest round)
+  let mut frac: i64 = 0; // fraction digits consumed
+  let mut overflow: bool = false; // an integer digit past the cap
+  while i < len(text) {
+    let c: u8 = text[i];
+    if c == 46 {
+      i = i + 1;
+      while i < len(text) {
+        let c2: u8 = text[i];
+        if c2 == 95 {
+          i = i + 1;
+          continue;
+        }
+        if c2 < 48 || c2 > 57 {
+          break;
+        }
+        if seen < 18 {
+          mant = mant * 10 + ((c2 as i64) - 48);
+          seen = seen + 1;
+        }
+        frac = frac + 1;
+        i = i + 1;
+      }
+      continue;
+    }
+    if c == 101 || c == 69 {
+      break;
+    }
+    if c < 48 || c > 57 {
+      break;
+    }
+    if seen < 18 {
+      mant = mant * 10 + ((c as i64) - 48);
+      seen = seen + 1;
+    } else {
+      overflow = true;
+    }
+    i = i + 1;
+  }
+  let mut exp: i64 = 0;
+  if i < len(text) && (text[i] == 101 || text[i] == 69) {
+    i = i + 1;
+    let mut neg: bool = false;
+    if i < len(text) && (text[i] == 45 || text[i] == 43) {
+      neg = text[i] == 45;
+      i = i + 1;
+    }
+    let mut v: i64 = 0;
+    while i < len(text) {
+      let c3: u8 = text[i];
+      if c3 == 95 {
+        i = i + 1;
+        continue;
+      }
+      if c3 < 48 || c3 > 57 {
+        break;
+      }
+      if v < 1000000000 {
+        v = v * 10 + ((c3 as i64) - 48);
+      }
+      i = i + 1;
+    }
+    if neg {
+      exp = 0 - v;
+    } else {
+      exp = v;
+    }
+  }
+  // value = mant * 10^k
+  let k: i64 = exp - frac;
+  let m: f64 = mant as f64;
+  if k >= 0 && k <= 22 && !overflow {
+    return m * pow10(k);
+  }
+  if k < 0 && k >= (0 - 22) && !overflow {
+    return m / pow10(0 - k);
+  }
+  // general path: the exact pair (m, err) — err is the rounding
+  // residue of the i64 mantissa, a small integer — scaled by exact
+  // 1e9 chunks (k < 0 beyond the exact window: the reciprocal is
+  // inexact, the corpus never lands here, best effort applies)
+  let mhi: i64 = m as i64;
+  let err: i64 = mant - mhi;
+  let mut hi: f64 = m;
+  let mut lo: f64 = err as f64;
+  let mut left: i64 = k;
+  if left < 0 {
+    // beyond the exact window the reciprocal is inexact — the
+    // corpus's decimals never land here, best effort applies
+    let mut neg: i64 = 0 - left;
+    if neg > 300 {
+      neg = 300;
+    }
+    return m / pow10(neg);
+  }
+  while left >= 9 {
+    let d: *DD = dd_scale(hi, lo, 1000000000.0);
+    hi = d.hi;
+    lo = d.lo;
+    left = left - 9;
+  }
+  if left > 0 {
+    let d2: *DD = dd_scale(hi, lo, pow10(left));
+    hi = d2.hi;
+    lo = d2.lo;
+    left = 0;
+  }
+  return hi + lo;
+}
+
+fn fmt_flit(text: string) -> string {
+  return flit_value(text).to_str();
+}
+
+// ---- expressions ----
+
+fn ind_of(depth: usize) -> string {
+  let mut out: string = "";
+  let mut k: usize = 0;
+  while k < depth {
+    out = out + "  ";
+    k = k + 1;
+  }
+  return out;
+}
+
+fn fmt_call_args(prog: *Prog, mut cur: *CmtCur, args: []*Expr,
+                 fnames: []string, depth: usize) -> string {
+  let mut out: string = "(";
+  let mut k: usize = 0;
+  while k < len(args) {
+    if k > 0 {
+      out = out + ", ";
+    }
+    if k < len(fnames) && len(fnames[k]) > 0 {
+      out = out + fnames[k] + ": ";
+    }
+    if args[k].amut {
+      out = out + "mut ";
+    }
+    out = out + fmt_expr(prog, mut cur, args[k], depth);
+    if args[k].lit == (0 - 99) {
+      out = out + "...";
+    }
+    k = k + 1;
+  }
+  return out + ")";
+}
+
+// one match arm's right-hand side: a block arm prints its statements
+// (the tail expression rides as the block's final `expr;` line), an
+// expression arm prints bare — then the trailing comma
+fn fmt_arm_rhs(prog: *Prog, mut cur: *CmtCur, arm: *MatchArm,
+               depth: usize) -> string {
+  let mut out: string = "";
+  if len(arm.body) > 0 {
+    out = out + " {";
+    out = out + "\n";
+    out = out + fmt_block(prog, mut cur, arm.body, depth + 1);
+    out = out + cmt_flush(prog, mut cur, block_end(arm.body), depth + 1);
+    // a block arm can carry a tail expression beside its statements —
+    // it rides as the block's final `expr;` line
+    match arm.val {
+      Option.Some(v) => {
+        out = out + ind_of(depth + 1);
+        out = out + fmt_expr(prog, mut cur, v, depth + 1);
+        out = out + ";\n";
+      },
+      Option.None => {},
+    }
+    out = out + ind_of(depth);
+    out = out + "}";
+  } else {
+    match arm.val {
+      Option.Some(v) => {
+        out = out + fmt_expr(prog, mut cur, v, depth);
+      },
+      Option.None => {
+        out = out + " {";
+        out = out + "\n";
+        out = out + ind_of(depth);
+        out = out + "}";
+      },
+    }
+  }
+  return out + ",";
+}
+
+pub fn fmt_pattern(prog: *Prog, p: *Pat) -> string {
+  if p.kind == 0 {
+    return "_";
+  }
+  if p.kind == 1 {
+    return fmt_lit(p.lit);
+  }
+  // a variant: Enum.Var(binders) tuple-form or Enum.Var{binders}
+  // struct-form — the form rides the declaration's field-name pool
+  // (a named payload spells its fields; a tuple payload's stay empty)
+  let mut struct_form: bool = false;
+  {
+    let mut ei: usize = 0;
+    while ei < len(prog.enums) {
+      if prog.enums[ei].name == p.ename {
+        let ed = prog.enums[ei];
+        let mut v: usize = 0;
+        while v < ed.nv {
+          if ed.vnames[v] == p.vname {
+            let mut q: usize = 0;
+            while q < (ed.vslots[v] as usize) {
+              if len(ed.vnpool[v * 8 + q]) > 0 {
+                struct_form = true;
+              }
+              q = q + 1;
+            }
+          }
+          v = v + 1;
+        }
+      }
+      ei = ei + 1;
+    }
+  }
+  let mut out: string = p.ename + "." + p.vname;
+  if len(p.binders) > 0 {
+    if struct_form {
+      out = out + " {";
+    } else {
+      out = out + "(";
+    }
+    let mut k: usize = 0;
+    while k < len(p.binders) {
+      if k > 0 {
+        out = out + ", ";
+      }
+      out = out + p.binders[k];
+      k = k + 1;
+    }
+    if struct_form {
+      out = out + "}";
+    } else {
+      out = out + ")";
+    }
+  }
+  return out;
+}
+
+// the match's arm list at depth: indented patterns, arms one per line
+fn fmt_arms(prog: *Prog, mut cur: *CmtCur, arms: []*MatchArm,
+            depth: usize) -> string {
+  let mut out: string = "";
+  let mut k: usize = 0;
+  while k < len(arms) {
+    let arm: *MatchArm = arms[k];
+    out = out + ind_of(depth);
+    out = out + fmt_pattern(prog, arm.pat);
+    out = out + " => ";
+    out = out + fmt_arm_rhs(prog, mut cur, arm, depth);
+    out = out + "\n";
+    k = k + 1;
+  }
+  return out;
+}
+
+// a match construct: scrutinee, brace, arms, closing indent
+fn fmt_match(prog: *Prog, mut cur: *CmtCur, scrut: *Expr,
+             arms: []*MatchArm, depth: usize) -> string {
+  let mut out: string = "match ";
+  out = out + fmt_expr(prog, mut cur, scrut, depth);
+  out = out + " {\n";
+  out = out + fmt_arms(prog, mut cur, arms, depth + 1);
+  out = out + ind_of(depth);
+  return out + "}";
+}
+
+pub fn fmt_expr(prog: *Prog, mut cur: *CmtCur, e: *Expr,
+                depth: usize) -> string {
   if e.tag == parse.EX_LIT {
     if len(e.name) > 0 {
       return e.name; // the true/false spelling the parser kept
@@ -209,37 +622,81 @@ pub fn fmt_expr(e: *Expr) -> string {
   if e.tag == parse.EX_STR {
     return canon_string(e.name);
   }
-  if e.tag == parse.EX_CALL {
-    let mut out: string = e.name + "(";
-    let mut k: usize = 0;
-    while k < len(e.args) {
-      if k > 0 {
-        out = out + ", ";
-      }
-      out = out + fmt_expr(e.args[k]);
-      k = k + 1;
-    }
-    return out + ")";
+  if e.tag == parse.EX_FLIT {
+    return fmt_flit(e.name);
   }
   if e.tag == parse.EX_MAKE {
     let mut cnt: *Expr = parse.lit(0);
     if len(e.args) > 0 {
       cnt = e.args[0];
     }
-    return "make([]" + e.name + ", " + fmt_expr(cnt) + ")";
+    return "make([]" + e.name + ", " +
+      fmt_expr(prog, mut cur, cnt, depth) + ")";
+  }
+  if e.tag == parse.EX_CALL {
+    let mut out: string = "";
+    if len(e.name) > 0 {
+      out = out + e.name;
+    } else {
+      // call-on-call: the callee rides the lhs (mk()(7))
+      match e.lhs {
+        Option.Some(b) => {
+          out = out + fmt_expr(prog, mut cur, b, depth);
+        },
+        Option.None => {},
+      }
+    }
+    return out + fmt_call_args(prog, mut cur, e.args, e.fnames, depth);
+  }
+  if e.tag == parse.EX_MCALL {
+    let mut out: string = "";
+    match e.lhs {
+      Option.Some(b) => {
+        out = out + fmt_expr(prog, mut cur, b, depth);
+      },
+      Option.None => {},
+    }
+    // explicit type arguments ride the call's name text; boot's
+    // method-call spelling omits them (they are inferred)
+    let mut nm: string = e.name;
+    {
+      let mut bi: usize = 0;
+      let mut cut: i64 = 0 - 1;
+      while bi < len(nm) {
+        if nm[bi] == 91 {
+          cut = bi as i64;
+        }
+        bi = bi + 1;
+      }
+      if cut >= 0 {
+        nm = nm[0..(cut as usize)];
+      }
+    }
+    out = out + "." + nm;
+    return out + fmt_call_args(prog, mut cur, e.args, e.fnames, depth);
+  }
+  if e.tag == parse.EX_FIELD {
+    let mut out: string = "";
+    match e.lhs {
+      Option.Some(b) => {
+        out = out + fmt_expr(prog, mut cur, b, depth);
+      },
+      Option.None => {},
+    }
+    return out + "." + e.name;
   }
   if e.tag == parse.EX_IDX {
     let mut out: string = "";
     match e.lhs {
       Option.Some(b) => {
-        out = out + fmt_expr(b);
+        out = out + fmt_expr(prog, mut cur, b, depth);
       },
       Option.None => {},
     }
     out = out + "[";
     match e.rhs {
       Option.Some(i) => {
-        out = out + fmt_expr(i);
+        out = out + fmt_expr(prog, mut cur, i, depth);
       },
       Option.None => {},
     }
@@ -249,26 +706,146 @@ pub fn fmt_expr(e: *Expr) -> string {
     let mut out: string = "";
     match e.lhs {
       Option.Some(b) => {
-        out = out + fmt_expr(b);
+        out = out + fmt_expr(prog, mut cur, b, depth);
       },
       Option.None => {},
     }
     out = out + "[";
     if e.op % 2 == 1 && len(e.args) > 0 {
-      out = out + fmt_expr(e.args[0]);
+      out = out + fmt_expr(prog, mut cur, e.args[0], depth);
     }
     out = out + "..";
     if (e.op / 2) % 2 == 1 && len(e.args) > 1 {
-      out = out + fmt_expr(e.args[1]);
+      out = out + fmt_expr(prog, mut cur, e.args[1], depth);
     }
     return out + "]";
+  }
+  if e.tag == parse.EX_ARR {
+    let mut out: string = "[";
+    let mut k: usize = 0;
+    while k < len(e.args) {
+      if k > 0 {
+        out = out + ", ";
+      }
+      out = out + fmt_expr(prog, mut cur, e.args[k], depth);
+      k = k + 1;
+    }
+    return out + "]";
+  }
+  if e.tag == parse.EX_NEW {
+    // new T { f: e, ... } — one line, boot's spacing (no padding
+    // inside the braces)
+    let mut out: string = "new " + e.name + " {";
+    let mut k: usize = 0;
+    while k < len(e.args) {
+      if k > 0 {
+        out = out + ", ";
+      }
+      if k < len(e.fnames) {
+        out = out + e.fnames[k] + ": ";
+      }
+      out = out + fmt_expr(prog, mut cur, e.args[k], depth);
+      k = k + 1;
+    }
+    return out + "}";
+  }
+  if e.tag == parse.EX_DEREF {
+    let mut out: string = "*(";
+    match e.lhs {
+      Option.Some(b) => {
+        out = out + fmt_expr(prog, mut cur, b, depth);
+      },
+      Option.None => {},
+    }
+    return out + ")";
+  }
+  if e.tag == parse.EX_Q {
+    let mut out: string = "";
+    match e.lhs {
+      Option.Some(b) => {
+        out = out + fmt_expr(prog, mut cur, b, depth);
+      },
+      Option.None => {},
+    }
+    return out + "?";
+  }
+  if e.tag == parse.EX_CLO {
+    // fn(params) -> T { body } — the block rides at this depth
+    let mut out: string = "fn(";
+    let mut k: usize = 0;
+    while k < len(e.fnames) {
+      if k > 0 {
+        out = out + ", ";
+      }
+      out = out + e.fnames[k];
+      if k < len(e.args) && len(e.args[k].name) > 0 {
+        out = out + ": " + e.args[k].name;
+      }
+      k = k + 1;
+    }
+    out = out + ")";
+    if len(e.name) > 0 {
+      out = out + " -> " + e.name;
+    }
+    out = out + " {";
+    out = out + "\n";
+    let mut body: []*Stmt = make([]*Stmt, 0);
+    if len(e.marms) > 0 {
+      body = e.marms[0].body;
+    }
+    out = out + fmt_block(prog, mut cur, body, depth + 1);
+    out = out + cmt_flush(prog, mut cur, block_end(body), depth + 1);
+    out = out + ind_of(depth);
+    return out + "}";
+  }
+  if e.tag == parse.EX_IF {
+    // if c { arm } else { arm } — the arms are single expressions
+    // riding as one-statement blocks (boot's block spelling)
+    let mut out: string = "if ";
+    match e.lhs {
+      Option.Some(c) => {
+        out = out + fmt_expr(prog, mut cur, c, depth);
+      },
+      Option.None => {},
+    }
+    out = out + " {\n";
+    if len(e.args) > 0 {
+      out = out + ind_of(depth + 1);
+      out = out + fmt_expr(prog, mut cur, e.args[0], depth + 1);
+      out = out + ";\n";
+    }
+    // the else arm: a nested if-expr rides inline (" else " + the
+    // nested if), a plain arm rides boot's block spelling
+    if len(e.args) > 1 {
+      let els: *Expr = e.args[1];
+      if els.tag == parse.EX_IF {
+        out = out + " else " + fmt_expr(prog, mut cur, els, depth);
+        return out;
+      }
+      out = out + " else {\n";
+      out = out + ind_of(depth + 1);
+      out = out + fmt_expr(prog, mut cur, els, depth + 1);
+      out = out + ";\n";
+    }
+    out = out + ind_of(depth);
+    return out + "}";
+  }
+  if e.tag == parse.EX_MATCH {
+    let mut scrut: *Expr = parse.lit(0);
+    match e.lhs {
+      Option.Some(s) => {
+        scrut = s;
+      },
+      Option.None => {},
+    }
+    return fmt_match(prog, mut cur, scrut, e.marms, depth);
   }
   // EX_BIN
   if e.op == 11 {
     let mut out: string = "(";
     match e.lhs {
       Option.Some(l) => {
-        out = out + fmt_expr(l);
+        out = out + fmt_expr(prog, mut cur, l, depth);
       },
       Option.None => {},
     }
@@ -278,55 +855,50 @@ pub fn fmt_expr(e: *Expr) -> string {
     let mut out: string = "!(";
     match e.rhs {
       Option.Some(r) => {
-        out = out + fmt_expr(r);
+        out = out + fmt_expr(prog, mut cur, r, depth);
       },
       Option.None => {},
     }
     return out + ")";
   }
-  // 0 - x spells -(x); -1 ^ x spells ~(x)
-  let mut lhs_zero: bool = false;
-  match e.lhs {
-    Option.Some(l) => {
-      if l.tag == parse.EX_LIT && l.lit == 0 && e.op == 1 {
-        lhs_zero = true;
-      }
-    },
-    Option.None => {},
-  }
-  if lhs_zero {
+  // a desugared unary minus (the parse leaves its marker in the
+  // binop's lit slot) spells -(x), boot's form; a source `0 - x`
+  // binop carries no marker and spells plainly
+  if e.op == 1 && e.lit == 1 {
     let mut out: string = "-(";
     match e.rhs {
       Option.Some(r) => {
-        out = out + fmt_expr(r);
+        out = out + fmt_expr(prog, mut cur, r, depth);
       },
       Option.None => {},
     }
     return out + ")";
   }
-  let mut lhs_neg1: bool = false;
-  match e.lhs {
-    Option.Some(l) => {
-      if l.tag == parse.EX_LIT && l.lit == 0 - 1 && e.op == 17 {
-        lhs_neg1 = true;
+  if e.op == 17 {
+    let mut neg1_lhs: bool = false;
+    match e.lhs {
+      Option.Some(l) => {
+        if l.tag == parse.EX_LIT && l.lit == (0 - 1) {
+          neg1_lhs = true;
+        }
+      },
+      Option.None => {},
+    }
+    if neg1_lhs {
+      let mut out: string = "~(";
+      match e.rhs {
+        Option.Some(r) => {
+          out = out + fmt_expr(prog, mut cur, r, depth);
+        },
+        Option.None => {},
       }
-    },
-    Option.None => {},
-  }
-  if lhs_neg1 {
-    let mut out: string = "~(";
-    match e.rhs {
-      Option.Some(r) => {
-        out = out + fmt_expr(r);
-      },
-      Option.None => {},
+      return out + ")";
     }
-    return out + ")";
   }
   let mut out: string = "(";
   match e.lhs {
     Option.Some(l) => {
-      out = out + fmt_expr(l);
+      out = out + fmt_expr(prog, mut cur, l, depth);
     },
     Option.None => {},
   }
@@ -335,21 +907,11 @@ pub fn fmt_expr(e: *Expr) -> string {
   out = out + " ";
   match e.rhs {
     Option.Some(r) => {
-      out = out + fmt_expr(r);
+      out = out + fmt_expr(prog, mut cur, r, depth);
     },
     Option.None => {},
   }
   return out + ")";
-}
-
-fn ind_of(depth: usize) -> string {
-  let mut out: string = "";
-  let mut k: usize = 0;
-  while k < depth {
-    out = out + "  ";
-    k = k + 1;
-  }
-  return out;
 }
 
 // ---- the comment replay (boot's fmt.c law: fmt may not drop a
@@ -397,7 +959,14 @@ pub fn fmt_line(prog: *Prog, mut cur: *CmtCur, st: *Stmt,
     out = out + " = ";
     match st.val {
       Option.Some(e) => {
-        out = out + fmt_expr(e);
+        // a literal under an unsigned declared type spells its u64
+        // bits (the lexer wrapped the token in place)
+        if e.tag == parse.EX_LIT && len(e.name) == 0 && e.lit < 0 &&
+            is_unsigned_type(st.fmt) {
+          out = out + fmt_ulit(e.lit);
+        } else {
+          out = out + fmt_expr(prog, mut cur, e, depth);
+        }
       },
       Option.None => {},
     }
@@ -408,7 +977,7 @@ pub fn fmt_line(prog: *Prog, mut cur: *CmtCur, st: *Stmt,
     let mut k: usize = 0;
     while k < len(st.args) {
       out = out + ", ";
-      out = out + fmt_expr(st.args[k]);
+      out = out + fmt_expr(prog, mut cur, st.args[k], depth);
       k = k + 1;
     }
     return out + ");\n";
@@ -418,7 +987,7 @@ pub fn fmt_line(prog: *Prog, mut cur: *CmtCur, st: *Stmt,
     match st.val {
       Option.Some(e) => {
         out = out + " ";
-        out = out + fmt_expr(e);
+        out = out + fmt_expr(prog, mut cur, e, depth);
       },
       Option.None => {},
     }
@@ -439,12 +1008,13 @@ pub fn fmt_line(prog: *Prog, mut cur: *CmtCur, st: *Stmt,
         },
         Option.None => {},
       }
-      return ind + st.name + " " + st.fmt + " " + fmt_expr(rhs) + ";\n";
+      return ind + st.name + " " + st.fmt + " " +
+        fmt_expr(prog, mut cur, rhs, depth) + ";\n";
     }
     let mut out: string = ind + st.name + " = ";
     match st.val {
       Option.Some(e) => {
-        out = out + fmt_expr(e);
+        out = out + fmt_expr(prog, mut cur, e, depth);
       },
       Option.None => {},
     }
@@ -453,12 +1023,62 @@ pub fn fmt_line(prog: *Prog, mut cur: *CmtCur, st: *Stmt,
   if st.tag == parse.ST_ISTORE {
     let mut out: string = ind + st.name + "[";
     if len(st.args) > 0 {
-      out = out + fmt_expr(st.args[0]);
+      out = out + fmt_expr(prog, mut cur, st.args[0], depth);
     }
     out = out + "] = ";
     match st.val {
       Option.Some(e) => {
-        out = out + fmt_expr(e);
+        out = out + fmt_expr(prog, mut cur, e, depth);
+      },
+      Option.None => {},
+    }
+    return out + ";\n";
+  }
+  if st.tag == parse.ST_FSTORE {
+    // base.f... / base.f[i] / base[i].f — the lvalue rebuilds from
+    // the store's path (and its index; ret == 1 marks index-first)
+    let mut lval: string = st.name;
+    if st.ret == 1 {
+      if len(st.args) > 0 {
+        lval = lval + "[" + fmt_expr(prog, mut cur, st.args[0], depth) +
+          "]";
+      }
+      let mut j: usize = 0;
+      while j < len(st.path) {
+        lval = lval + "." + st.path[j];
+        j = j + 1;
+      }
+    } else {
+      let mut j: usize = 0;
+      while j < len(st.path) {
+        lval = lval + "." + st.path[j];
+        j = j + 1;
+      }
+      if len(st.args) > 0 {
+        lval = lval + "[" + fmt_expr(prog, mut cur, st.args[0], depth) +
+          "]";
+      }
+    }
+    if len(st.fmt) > 1 {
+      let mut rhs: *Expr = parse.lit(0);
+      match st.val {
+        Option.Some(b) => {
+          match b.rhs {
+            Option.Some(r) => {
+              rhs = r;
+            },
+            Option.None => {},
+          }
+        },
+        Option.None => {},
+      }
+      return ind + lval + " " + st.fmt + " " +
+        fmt_expr(prog, mut cur, rhs, depth) + ";\n";
+    }
+    let mut out: string = ind + lval + " = ";
+    match st.val {
+      Option.Some(e) => {
+        out = out + fmt_expr(prog, mut cur, e, depth);
       },
       Option.None => {},
     }
@@ -468,11 +1088,23 @@ pub fn fmt_line(prog: *Prog, mut cur: *CmtCur, st: *Stmt,
     let mut out: string = ind;
     match st.val {
       Option.Some(e) => {
-        out = out + fmt_expr(e);
+        out = out + fmt_expr(prog, mut cur, e, depth);
       },
       Option.None => {},
     }
     return out + ";\n";
+  }
+  if st.tag == parse.ST_MATCH {
+    // the statement match shares the expression form's spelling and
+    // takes no trailing semicolon (boot's law)
+    let mut out: string = ind;
+    match st.val {
+      Option.Some(s) => {
+        out = out + fmt_match(prog, mut cur, s, st.marms, depth);
+      },
+      Option.None => {},
+    }
+    return out + "\n";
   }
   if st.tag == parse.ST_BLOCK {
     let mut out: string = ind + "{\n";
@@ -481,10 +1113,15 @@ pub fn fmt_line(prog: *Prog, mut cur: *CmtCur, st: *Stmt,
     return out + ind + "}\n";
   }
   if st.tag == parse.ST_IF {
-    let mut out: string = ind + "if ";
+    let mut out: string = ind;
+    if len(st.name) > 0 {
+      out = out + st.name;
+      out = out + ": ";
+    }
+    out = out + "if ";
     match st.val {
       Option.Some(c) => {
-        out = out + fmt_expr(c);
+        out = out + fmt_expr(prog, mut cur, c, depth);
       },
       Option.None => {},
     }
@@ -498,10 +1135,15 @@ pub fn fmt_line(prog: *Prog, mut cur: *CmtCur, st: *Stmt,
     let mut d: usize = depth;
     while len(tail) == 1 && tail[0].tag == parse.ST_IF {
       let nx = tail[0];
-      out = out + " else if ";
+      out = out + " else ";
+      if len(nx.name) > 0 {
+        out = out + nx.name;
+        out = out + ": ";
+      }
+      out = out + "if ";
       match nx.val {
         Option.Some(c) => {
-          out = out + fmt_expr(c);
+          out = out + fmt_expr(prog, mut cur, c, d);
         },
         Option.None => {},
       }
@@ -530,7 +1172,7 @@ pub fn fmt_line(prog: *Prog, mut cur: *CmtCur, st: *Stmt,
     out = out + "while ";
     match st.val {
       Option.Some(c) => {
-        out = out + fmt_expr(c);
+        out = out + fmt_expr(prog, mut cur, c, depth);
       },
       Option.None => {},
     }
@@ -605,17 +1247,74 @@ pub fn fmt_block(prog: *Prog, mut cur: *CmtCur, nodes: []*Stmt,
   return out;
 }
 
+// ---- declarations ----
+
+// one fn: pub, generics, params (mut views, the receiver's derived
+// annotation dropped on a dotted method, variadic rest), arrow, body
 fn fmt_fn(prog: *Prog, mut cur: *CmtCur, fd: *FnDef) -> string {
-  let mut out: string = "fn " + fd.name + "(";
+  let mut out: string = "";
+  if fd.ispub {
+    out = out + "pub ";
+  }
+  out = out + "fn " + fd.name;
+  if len(fd.tparams) > 0 {
+    out = out + "[";
+    let mut g: usize = 0;
+    while g < len(fd.tparams) {
+      if g > 0 {
+        out = out + ", ";
+      }
+      out = out + fd.tparams[g];
+      g = g + 1;
+    }
+    out = out + "]";
+  }
+  out = out + "(";
+  // a dotted method's receiver annotation is redundant when it spells
+  // the derived form: *Recv or Recv itself (boot's derivation law)
+  let mut recv: string = "";
+  let mut dot: i64 = 0 - 1;
+  let mut di: usize = 0;
+  while di < len(fd.name) {
+    if fd.name[di] == 46 {
+      dot = di as i64;
+    }
+    di = di + 1;
+  }
+  if dot >= 0 {
+    recv = fd.name[0..(dot as usize)];
+  }
   let mut k: usize = 0;
   while k < len(fd.params) {
     if k > 0 {
       out = out + ", ";
     }
-    out = out + fd.params[k];
-    if k < len(fd.ptypes) && len(fd.ptypes[k]) > 0 {
-      out = out + ": ";
-      out = out + fd.ptypes[k];
+    if k < len(fd.pmut) && fd.pmut[k] {
+      out = out + "mut ";
+    }
+    let mut annotated: bool = k < len(fd.ptypes) && len(fd.ptypes[k]) > 0;
+    if k == 0 && fd.params[k] == "self" && len(recv) > 0 && annotated {
+      // the pointer receiver rides bare; the value receiver keeps
+      // its annotation (boot's derivation law)
+      let pt: string = fd.ptypes[0];
+      if pt == ("*" + recv) {
+        annotated = false;
+      }
+    }
+    if annotated {
+      let mut st: string = fd.ptypes[k];
+      if k < len(fd.pvar) && fd.pvar[k] && len(st) >= 2 &&
+          st[0..2] == "[]" {
+        // the variadic's slice spelling desugars — boot spells the
+        // element form: ns: i64...
+        st = st[2..];
+      }
+      out = out + fd.params[k] + ": " + st;
+    } else {
+      out = out + fd.params[k];
+    }
+    if k < len(fd.pvar) && fd.pvar[k] {
+      out = out + "...";
     }
     k = k + 1;
   }
@@ -638,47 +1337,282 @@ fn fmt_fn(prog: *Prog, mut cur: *CmtCur, fd: *FnDef) -> string {
   return out + "}\n";
 }
 
-pub fn fmt_prog(prog: *Prog) -> string {
-  let mut cur = new CmtCur { i: 0 };
+fn fmt_use(u: usize, prog: *Prog) -> string {
   let mut out: string = "";
+  if u < prog.nuses && prog.usepub[u] {
+    out = out + "pub ";
+  }
+  out = out + "use " + prog.usepath[u];
+  if u < prog.nuses && len(prog.usealias[u]) > 0 {
+    out = out + " as " + prog.usealias[u];
+  }
+  return out + ";\n\n";
+}
+
+fn fmt_trait(td: *TraitDef) -> string {
+  let mut out: string = "trait " + td.name + " {\n";
+  let mut k: usize = 0;
+  while k < len(td.methods) {
+    out = out + "  fn " + td.methods[k] + "(self)";
+    if k < len(td.rtypes) && len(td.rtypes[k]) > 0 {
+      out = out + " -> " + td.rtypes[k];
+    }
+    out = out + ",\n";
+    k = k + 1;
+  }
+  return out + "}\n\n";
+}
+
+fn fmt_struct(sd: *StructDef) -> string {
+  let mut out: string = "struct " + sd.name;
+  if len(sd.tparams) > 0 {
+    out = out + "[";
+    let mut g: usize = 0;
+    while g < len(sd.tparams) {
+      if g > 0 {
+        out = out + ", ";
+      }
+      out = out + sd.tparams[g];
+      g = g + 1;
+    }
+    out = out + "]";
+  }
+  out = out + " {\n";
+  let mut k: usize = 0;
+  while k < len(sd.fields) {
+    out = out + "  " + sd.fields[k] + ": " + sd.types[k] + ",\n";
+    k = k + 1;
+  }
+  return out + "}\n\n";
+}
+
+fn fmt_enum(ed: *EnumDef) -> string {
+  let mut out: string = "enum " + ed.name;
+  if len(ed.tparams) > 0 {
+    out = out + "[";
+    let mut g: usize = 0;
+    while g < len(ed.tparams) {
+      if g > 0 {
+        out = out + ", ";
+      }
+      out = out + ed.tparams[g];
+      g = g + 1;
+    }
+    out = out + "]";
+  }
+  out = out + " {\n";
+  let mut v: usize = 0;
+  while v < ed.nv {
+    out = out + "  " + ed.vnames[v];
+    let nsl: usize = ed.vslots[v] as usize;
+    // the form rides the field-name pool: a struct-form payload
+    // spells its names one per line, a tuple payload keeps the
+    // parenthesized type list
+    let mut struct_form: bool = false;
+    {
+      let mut p: usize = 0;
+      while p < nsl {
+        if len(ed.vnpool[v * 8 + p]) > 0 {
+          struct_form = true;
+        }
+        p = p + 1;
+      }
+    }
+    if struct_form {
+      out = out + " {\n";
+      let mut p: usize = 0;
+      while p < nsl {
+        out = out + "    " + ed.vnpool[v * 8 + p] + ": " +
+            ed.vtpool[v * 8 + p] + ",\n";
+        p = p + 1;
+      }
+      out = out + "  }";
+    } else {
+      if nsl > 0 {
+        out = out + "(";
+        let mut p: usize = 0;
+        while p < nsl {
+          if p > 0 {
+            out = out + ", ";
+          }
+          let t: string = ed.vtpool[v * 8 + p];
+          if len(t) > 0 {
+            out = out + t;
+          } else {
+            out = out + "i64";
+          }
+          p = p + 1;
+        }
+        out = out + ")";
+      }
+    }
+    out = out + ",\n";
+    v = v + 1;
+  }
+  return out + "}\n\n";
+}
+
+// the first lined declaration's line — the replay anchor for the
+// header comments above a lineless first declaration (uses, structs,
+// enums, traits carry no lines of their own)
+fn first_lined_line(prog: *Prog) -> i64 {
+  let mut best: i64 = 2147483647;
   let mut c: usize = 0;
   while c < prog.nconsts {
-    // comments above this const print at file depth
-    out = out + cmt_flush(prog, mut cur, prog.cline[c], 0);
-    let mut ct: string = "";
-    if prog.cstatic[c] {
-      ct = ct + "static ";
-      if prog.cmuts[c] {
-        ct = ct + "mut ";
-      }
-      ct = ct + prog.consts[c];
-    } else {
-      ct = ct + "const ";
-      ct = ct + prog.consts[c];
+    if prog.cline[c] > 0 && prog.cline[c] < best {
+      best = prog.cline[c];
     }
-    if len(prog.ctypes[c]) > 0 {
-      ct = ct + ": ";
-      ct = ct + prog.ctypes[c];
-    }
-    ct = ct + " = " + fmt_expr(prog.cexprs[c]) + ";\n\n";
-    // a same-line note rides on the NEXT line, indented, and takes
-    // the blank separator's place (boot's decl tail: the comment
-    // leads the next construct's air)
-    if prog.clend[c] > 0 && cur.i < prog.ncmts &&
-        prog.clines[cur.i] == prog.clend[c] {
-      let cut: usize = len(ct) - 1;
-      ct = ct[0..cut] + "  " + prog.ctexts[cur.i] + "\n";
-      cur.i = cur.i + 1;
-    }
-    out = out + ct;
     c = c + 1;
   }
   let mut f: usize = 0;
   while f < len(prog.fns) {
-    // comments above this fn print at file depth
-    out = out + cmt_flush(prog, mut cur, prog.fns[f].line as i64, 0);
-    out = out + fmt_fn(prog, mut cur, prog.fns[f]);
+    if prog.fns[f].line > 0 && (prog.fns[f].line as i64) < best {
+      best = prog.fns[f].line as i64;
+    }
     f = f + 1;
+  }
+  if len(prog.main) > 0 && prog.main[0].line > 0 &&
+      (prog.main[0].line as i64) < best {
+    best = prog.main[0].line as i64;
+  }
+  return best;
+}
+
+pub fn fmt_prog(prog: *Prog) -> string {
+  let mut cur = new CmtCur { i: 0 };
+  let mut out: string = "";
+  // the earliest declaration's line anchors the file header (every
+  // decl table carries its keyword's line; uses ride the top block)
+  let mut firstd: i64 = 2147483647;
+  {
+    let mut c0: usize = 0;
+    while c0 < prog.nconsts {
+      if prog.cline[c0] < firstd {
+        firstd = prog.cline[c0];
+      }
+      c0 = c0 + 1;
+    }
+    let mut s0: usize = 0;
+    while s0 < len(prog.structs) {
+      if (prog.structs[s0].line as i64) < firstd {
+        firstd = prog.structs[s0].line as i64;
+      }
+      s0 = s0 + 1;
+    }
+    let mut e0: usize = 0;
+    while e0 < len(prog.enums) {
+      if (prog.enums[e0].line as i64) < firstd {
+        firstd = prog.enums[e0].line as i64;
+      }
+      e0 = e0 + 1;
+    }
+    let mut t0: usize = 0;
+    while t0 < len(prog.traits) {
+      if (prog.traits[t0].line as i64) < firstd {
+        firstd = prog.traits[t0].line as i64;
+      }
+      t0 = t0 + 1;
+    }
+    let mut f0: usize = 0;
+    while f0 < len(prog.fns) {
+      if (prog.fns[f0].line as i64) < firstd {
+        firstd = prog.fns[f0].line as i64;
+      }
+      f0 = f0 + 1;
+    }
+  }
+  out = out + cmt_flush(prog, mut cur, firstd, 0);
+  let mut u: usize = 0;
+  while u < prog.nuses {
+    out = out + fmt_use(u, prog);
+    u = u + 1;
+  }
+  // every declaration after the uses renders in source order: at each
+  // step the earliest-line unrendered decl wins
+  let mut cc: usize = 0;
+  let mut sc: usize = 0;
+  let mut ec: usize = 0;
+  let mut tc: usize = 0;
+  let mut fc: usize = 0;
+  while cc < prog.nconsts || sc < len(prog.structs) ||
+        ec < len(prog.enums) || tc < len(prog.traits) ||
+        fc < len(prog.fns) {
+    let mut best: i64 = 2147483647;
+    if cc < prog.nconsts && prog.cline[cc] < best {
+      best = prog.cline[cc];
+    }
+    if sc < len(prog.structs) && (prog.structs[sc].line as i64) < best {
+      best = prog.structs[sc].line as i64;
+    }
+    if ec < len(prog.enums) && (prog.enums[ec].line as i64) < best {
+      best = prog.enums[ec].line as i64;
+    }
+    if tc < len(prog.traits) && (prog.traits[tc].line as i64) < best {
+      best = prog.traits[tc].line as i64;
+    }
+    if fc < len(prog.fns) && (prog.fns[fc].line as i64) < best {
+      best = prog.fns[fc].line as i64;
+    }
+    if cc < prog.nconsts && prog.cline[cc] == best {
+      // comments above this const print at file depth
+      out = out + cmt_flush(prog, mut cur, best, 0);
+      let mut ct: string = "";
+      if prog.cstatic[cc] {
+        ct = ct + "static ";
+        if prog.cmuts[cc] {
+          ct = ct + "mut ";
+        }
+        ct = ct + prog.consts[cc];
+      } else {
+        ct = ct + "const ";
+        ct = ct + prog.consts[cc];
+      }
+      if len(prog.ctypes[cc]) > 0 {
+        ct = ct + ": ";
+        ct = ct + prog.ctypes[cc];
+      }
+      // a literal init under an unsigned declared type spells its u64
+      // bits (the lexer wrapped the token in place)
+      let ie: *Expr = prog.cexprs[cc];
+      if ie.tag == parse.EX_LIT && len(ie.name) == 0 && ie.lit < 0 &&
+          is_unsigned_type(prog.ctypes[cc]) {
+        ct = ct + " = " + fmt_ulit(ie.lit) + ";\n\n";
+      } else {
+        ct = ct + " = " + fmt_expr(prog, mut cur, ie, 0) + ";\n\n";
+      }
+      // a same-line note rides on the NEXT line, indented, and takes
+      // the blank separator's place (boot's decl tail: the comment
+      // leads the next construct's air)
+      if prog.clend[cc] > 0 && cur.i < prog.ncmts &&
+          prog.clines[cur.i] == prog.clend[cc] {
+        let cut: usize = len(ct) - 1;
+        ct = ct[0..cut] + "  " + prog.ctexts[cur.i] + "\n";
+        cur.i = cur.i + 1;
+      }
+      out = out + ct;
+      cc = cc + 1;
+    }
+    if sc < len(prog.structs) && (prog.structs[sc].line as i64) == best {
+      out = out + cmt_flush(prog, mut cur, best, 0);
+      out = out + fmt_struct(prog.structs[sc]);
+      sc = sc + 1;
+    }
+    if ec < len(prog.enums) && (prog.enums[ec].line as i64) == best {
+      out = out + cmt_flush(prog, mut cur, best, 0);
+      out = out + fmt_enum(prog.enums[ec]);
+      ec = ec + 1;
+    }
+    if tc < len(prog.traits) && (prog.traits[tc].line as i64) == best {
+      out = out + cmt_flush(prog, mut cur, best, 0);
+      out = out + fmt_trait(prog.traits[tc]);
+      tc = tc + 1;
+    }
+    if fc < len(prog.fns) && (prog.fns[fc].line as i64) == best {
+      // comments above this fn print at file depth
+      out = out + cmt_flush(prog, mut cur, best, 0);
+      out = out + fmt_fn(prog, mut cur, prog.fns[fc]);
+      fc = fc + 1;
+    }
   }
   // comments between the last declaration and main ride above main's
   // signature (main is not a prog.fns member — without this flush
@@ -686,7 +1620,11 @@ pub fn fmt_prog(prog: *Prog) -> string {
   // comments flush inside (above the brace) and after it (boot's
   // trailing flush)
   let mut mainline: i64 = 2147483647;
-  if len(prog.main) > 0 {
+  if prog.mainline > 0 {
+    // the fn main keyword's line — comments above it are main's own
+    // leading comments; body comments ride their statements inside
+    mainline = prog.mainline as i64;
+  } else if len(prog.main) > 0 {
     mainline = prog.main[0].line as i64;
   }
   out = out + cmt_flush(prog, mut cur, mainline, 0);
