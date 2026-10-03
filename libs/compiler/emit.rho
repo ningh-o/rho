@@ -4125,6 +4125,29 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
       return "    (local.get " + env_str_len_slot(env, a0.name).to_str() +
              ")\n";
     }
+    // a string- or slice-typed FIELD: the pair rides the field's two
+    // slots — read the length half back (len(st.fmt), len(st.args),
+    // len(fdef.params): the emitter's own loops over statement fields)
+    if a0.tag == parse.EX_FIELD &&
+        (is_stringy(a0, env, mut prog) || field_is_slice(a0, env,
+                                                         mut prog)) {
+      let fa6: i64 = nl.v;
+      let fl6: i64 = nl.v + 1;
+      nl.v = nl.v + 2;
+      let t6: string = push_string(mut pool, a0, mut env, mut prog,
+                                   mut nl);
+      return t6 + "    (local.set " + fl6.to_str() + ")\n" +
+             "    (local.set " + fa6.to_str() + ")\n" +
+             "    (local.get " + fl6.to_str() + ")\n";
+    }
+    // an unregistered variable: no lane claims its pair (a let over a
+    // call init inside a branch the env missed). Zero is the honest
+    // answer — the one consumer (the disabled dyn-coercion guard)
+    // treats 0 as skip — and dropping through used to emit a call to
+    // an undefined $u_len, refusing the child at wat2wasm
+    if a0.tag == parse.EX_VAR {
+      return "    (i64.const 0)\n";
+    }
     // len(f(...)): a call returning a pair parks (addr, len) — read
     // the length back. The pair must come from build_string_pair:
     // emit_expr collapses a pair-returning call onto its address lane
@@ -8011,6 +8034,24 @@ fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
                            l: nl.v + 1 };
     nl.v = nl.v + 2;
     return spm2;
+  }
+  // a plain pair-returning call (a string-returning user fn —
+  // dyn_vtable, type_ptr_target, the compiler's own helpers): the
+  // pair parks (addr, len) and the string-let lane binds both halves;
+  // the old fall-through returned bad, the let bound a scalar address
+  // slot, and every later pair read of the name stranded its length
+  if e.tag == parse.EX_CALL &&
+      rtype_is_pair(call_fn_rtype(prog, e, env)) {
+    let fa9: i64 = nl.v;
+    let fl9: i64 = nl.v + 1;
+    nl.v = nl.v + 2;
+    let t9: string = push_string(mut pool, e, mut env, mut prog,
+                                 mut nl);
+    let sp9 = new SPair { ok: true,
+      text: t9 + "    (local.set " + fl9.to_str() + ")\n" +
+            "    (local.set " + fa9.to_str() + ")\n",
+      a: fa9, l: fl9 };
+    return sp9;
   }
   return bad;
 }
