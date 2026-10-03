@@ -1,0 +1,45 @@
+{
+  "name": "prettier-plugin-rho",
+  "version": "0.1.0",
+  "description": "prettier plugin for the rho language — formats .rho through one pinned compiler generation's fmt wasm (a thin client: the compiler's canonical text is handed to prettier verbatim, never re-laid-out)",
+  "license": "MIT",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./runtime": "./src/runtime.js"
+  },
+  "files": [
+    "src",
+    "assets",
+    "tools",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build:artifact": "node tools/build-artifact.mjs",
+    "check:artifact": "node tools/build-artifact.mjs --check",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "peerDependencies": {
+    "prettier": ">=3"
+  },
+  "peerDependenciesMeta": {
+    "prettier": {
+      "optional": false
+    }
+  },
+  "devDependencies": {
+    "prettier": "^3.8.0"
+  },
+  "keywords": [
+    "prettier",
+    "prettier-plugin",
+    "rho",
+    "formatter",
+    "wasm"
+  ]
+}
