@@ -1,0 +1,46 @@
+{
+  "name": "vite-plugin-rho",
+  "version": "0.1.0",
+  "description": "vite plugin for the rho language — compiles .rho sources to wasm32-wasi inside vite dev/build, embedding one pinned compiler generation (baked from the self-hosted toolchain; its wasm is byte-identical to the CLI chain over the whole programs tier)",
+  "license": "MIT",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./compiler": "./src/compiler.js"
+  },
+  "files": [
+    "src",
+    "assets",
+    "vendor",
+    "tools",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build:artifact": "node tools/build-artifact.mjs",
+    "check:artifact": "node tools/build-artifact.mjs --check",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "peerDependencies": {
+    "vite": ">=5"
+  },
+  "peerDependenciesMeta": {
+    "vite": {
+      "optional": false
+    }
+  },
+  "devDependencies": {
+    "vite": "^7.1.11"
+  },
+  "keywords": [
+    "vite",
+    "vite-plugin",
+    "rho",
+    "wasm",
+    "webassembly"
+  ]
+}
