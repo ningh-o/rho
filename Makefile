@@ -28,6 +28,7 @@ selftest: $(BIN)
 test: selftest
 	./tests/run-fmt-tests.sh
 	./tests/run-fmt-self.sh
+	./tests/run-fmt-parity.sh
 	./tests/run-selfhost.sh
 	./tests/run-diff.sh
 	./tests/run-corpus-diff.sh
