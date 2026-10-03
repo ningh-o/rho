@@ -145,6 +145,55 @@ fn decoded_len(raw: string) -> i64 {
   return n;
 }
 
+// the decoded bytes of a raw span (escapes resolved to their bytes) —
+// the pool's dedup key beyond the raw spelling itself
+fn decode_raw(raw: string) -> string {
+  let mut out: string = "";
+  let mut i: usize = 0;
+  while i < len(raw) {
+    if raw[i] == 92 && i + 1 < len(raw) {
+      let mut e: u8 = raw[i + 1];
+      if e == 120 && i + 3 < len(raw) {
+        let hi: i64 = hex_val(raw[i + 2]);
+        let lo: i64 = hex_val(raw[i + 3]);
+        out = out + byte_escape(((hi * 16 + lo) as u8));
+        i = i + 4;
+        continue;
+      }
+      if e == 117 {
+        let mut j: usize = i + 3;
+        let mut cp: i64 = 0;
+        while j < len(raw) && raw[j] != 125 {
+          let h: i64 = hex_val(raw[j]);
+          if h < 0 {
+            break;
+          }
+          cp = cp * 16 + h;
+          j = j + 1;
+        }
+        out = out + utf8_escape(cp);
+        i = j + 1;
+        continue;
+      }
+      e = match e {
+        110 => 10,
+        116 => 9,
+        114 => 13,
+        48 => 0,
+        92 => 92,
+        34 => 34,
+        _ => e,
+      };
+      out = out + byte_escape(e);
+      i = i + 2;
+      continue;
+    }
+    out = out + byte_escape(raw[i]);
+    i = i + 1;
+  }
+  return out;
+}
+
 pub fn pool_intern(mut p: *Pool, raw: string) -> i64 {
   let mut i: usize = 0;
   while i < p.n {
@@ -153,8 +202,19 @@ pub fn pool_intern(mut p: *Pool, raw: string) -> i64 {
     }
     i = i + 1;
   }
+  // the same string under another spelling ("A" vs "\x41") shares one
+  // segment: the pool's key is the DECODED content
+  let dl: i64 = decoded_len(raw);
+  i = 0;
+  while i < p.n {
+    if p.lens[i] == dl && p.segs[i] != raw &&
+        decode_raw(p.segs[i]) == decode_raw(raw) {
+      return p.addrs[i];
+    }
+    i = i + 1;
+  }
   p.segs[p.n] = raw;
-  p.lens[p.n] = decoded_len(raw);
+  p.lens[p.n] = dl;
   p.addrs[p.n] = p.next;
   p.n = p.n + 1;
   p.next = p.next + p.lens[p.n - 1] + 1;
@@ -169,7 +229,9 @@ pub fn pool_len(p: *Pool, raw: string) -> i64 {
     }
     i = i + 1;
   }
-  return 0;
+  // a spelling deduped into another segment: its decoded length is the
+  // shared segment's length by construction
+  return decoded_len(raw);
 }
 
 // the WAT data-segment body for a raw span: escapes decoded, every
@@ -262,8 +324,10 @@ pub fn wat_data_body(raw: string) -> string {
 }
 
 // the decimal runtime the generated module carries: $w_i64 writes
-// |v|'s digits backward into [2048, 4096) and returns {addr, len}
-const BOOLTEXT: string = """
+// |v|'s digits backward into [2048, 4096) and returns {addr, len}.
+// Each runtime fn rides its own const (P1): only fns some kept code
+// calls ride the module — the reachability filter includes them.
+const W_BOOL: string = """
   (func $w_bool (param $v i64) (result i32) (result i32)
     (if (result i32) (i64.ne (local.get $v) (i64.const 0))
       (then (i32.const 4030))
@@ -274,7 +338,7 @@ const BOOLTEXT: string = """
   )
 """;
 
-const UINT: string = """
+const W_U64: string = """
   (func $w_u64 (param $v i64) (result i32) (result i32)
     (local $p i32) (local $u i64)
     (local.set $p (i32.const 4096))
@@ -292,7 +356,7 @@ const UINT: string = """
   )
 """;
 
-const CAT: string = """
+const W_CAT: string = """
   (func $w_cat (param $ap i64) (param $al i64) (param $bp i64)
                 (param $bl i64) (result i64) (result i64)
     (local $p i32) (local $i i64) (local $n i64)
@@ -333,7 +397,7 @@ const CAT: string = """
 // $w_itoa: an integer rendered into a fresh allocation {ptr,len};
 // digits write backward from the buffer's end (32 bytes: 20 digits
 // plus sign is the i64 worst case)
-const ITOA: string = """
+const W_ITOA: string = """
   (func $w_itoa (param $v i64) (result i64) (result i64)
     (local $b i32) (local $p i32) (local $neg i32) (local $u i64)
     (local.set $neg (i64.lt_s (local.get $v) (i64.const 0)))
@@ -360,7 +424,7 @@ const ITOA: string = """
   )
 """;
 
-const STREQ: string = """
+const W_STREQ: string = """
   (func $w_streq (param $ap i64) (param $al i64) (param $bp i64) (param $bl i64) (result i64)
     (local $i i64)
     (if (i64.ne (local.get $al) (local.get $bl))
@@ -380,7 +444,7 @@ const STREQ: string = """
 
 // element-wise enum equality: tag and payload slots as plain i64s
 // (string-payload enums grow a content-compare when they appear)
-const ENUQ: string = """
+const W_ENUQ: string = """
   (func $w_enuq (param $ap i64) (param $bp i64) (param $n i64) (result i64)
     (local $i i64)
     (loop $c
@@ -400,8 +464,13 @@ const ENUQ: string = """
   )
 """;
 
-const RUNTIME: string = """
+// the digit scratch top ($w_i64/$w_u64's shared write window) and the
+// signed printer
+const W_TOP: string = """
   (global $w_top (mut i32) (i32.const 4096))
+""";
+
+const W_I64: string = """
   (func $w_i64 (param $v i64) (result i32) (result i32)
     (local $p i32) (local $neg i32) (local $u i64)
     (local.set $p (i32.const 4096))
@@ -452,7 +521,7 @@ const IO_IMPORTS: string = """
       (param i32 i32 i32 i32 i32 i64 i64 i32 i32) (result i32)))
 """;
 
-const IO_TAIL: string = """
+const W_IO_READ_PACKED: string = """
   ;; raw read, byte-packed fill: nread, or -errno
   (func $w_fd_read_packed (param $fd i32) (param $buf i32)
     (param $cap i32)
@@ -465,6 +534,9 @@ const IO_TAIL: string = """
     (if (i32.ne (local.get $err) (i32.const 0))
       (then (return (i32.sub (i32.const 0) (local.get $err)))))
     (i32.load (i32.const 8)))
+""";
+
+const W_IO_WRITE: string = """
   ;; raw write to an opened fd: nwritten, or -errno
   (func $w_fd_write (param $fd i32) (param $buf i32) (param $n i32)
     (result i32)
@@ -476,9 +548,15 @@ const IO_TAIL: string = """
     (if (i32.ne (local.get $err) (i32.const 0))
       (then (return (i32.sub (i32.const 0) (local.get $err)))))
     (i32.load (i32.const 8)))
+""";
+
+const W_IO_CLOSE: string = """
   ;; raw close: 0, or -errno
   (func $w_fd_close (param $fd i32) (result i32)
     (i32.sub (i32.const 0) (call $fd_close (local.get $fd))))
+""";
+
+const W_IO_OPEN: string = """
   ;; open under the preopen: the new fd, or -errno. Rights ride the
   ;; mode: READ (bit 1) or WRITE (bit 6); oflags CREAT|TRUNC (9) on
   ;; the write side.
@@ -501,6 +579,9 @@ const IO_TAIL: string = """
     (if (i32.ne (local.get $err) (i32.const 0))
       (then (return (i32.sub (i32.const 0) (local.get $err)))))
     (i32.load (i32.const 8)))
+""";
+
+const W_IO_STRING_FROM: string = """
   ;; materialize the first n bytes of a byte window as a fresh string
   ;; (the packed mirror of fd_read_packed's fill: load8_u in, store8
   ;; out; a fresh exact block — strings are immutable)
@@ -531,7 +612,7 @@ fn alloc_wat(pool_top: i64) -> string {
          pool_top.to_str() + "))\n";
 }
 
-const ALLOC_BODY: string = """
+const W_ALLOC: string = """
   (func $w_alloc (param $n i32) (result i32)
     (local $p i32) (local $k i32) (local $old i32) (local $g i32)
     (if (i32.gt_u
@@ -592,6 +673,9 @@ const ALLOC_BODY: string = """
           (br $z))))
     (i32.add (local.get $p) (i32.const 16))
   )
+""";
+
+const W_RETAIN: string = """
   (func $w_retain (param $p i64)
     ;; statics (data literals below the heap floor) are immortal —
     ;; the data region spans megabytes when the program is large
@@ -612,6 +696,9 @@ const ALLOC_BODY: string = """
                                             (i32.const 8)))
                          (i64.const 1)))))))
   )
+""";
+
+const W_ALIVE: string = """
   (func $w_alive (param $p i64) (result i32)
     (if (i64.ne (local.get $p) (i64.const 0))
       (then
@@ -621,6 +708,9 @@ const ALLOC_BODY: string = """
       (else (return (i32.const 0))))
     (i32.const 0)
   )
+""";
+
+const W_APP: string = """
   ;; the amortized append (boot's rho_app law): x = x + t rides this —
   ;; in place when the block is unaliased (rc == 1), lives on the heap
   ;; (never a rodata literal: those sit below the floor) and its
@@ -695,6 +785,9 @@ const ALLOC_BODY: string = """
     (i64.extend_i32_u (local.get $p))
     (local.get $n)
   )
+""";
+
+const W_PANIC: string = """
   (func $w_panic (param $m i32) (param $l i32)
     ;; the kernel law: "panic: <msg>\n" to stderr, exit 101 — three
     ;; one-iovec writes (wasmtime 40 drops trailing iovs); the prefix
@@ -751,11 +844,6 @@ fn oob_check_idx(mut pool: *Pool, idx_text: string, len_text: string) -> string 
          ") (i32.const 19))))\n";
 }
 
-// one fd_write of nbytes at addr: the iovec cell pair at 64/68
-fn write_call(addr: i64, nbytes: i64) -> string {
-  return write_fd(addr, nbytes, 1);
-}
-
 fn write_fd(addr: i64, nbytes: i64, fd: i64) -> string {
   let mut out: string = "    (i32.store (i32.const 64) (i32.const " +
                     addr.to_str() + "))\n" +
@@ -763,43 +851,6 @@ fn write_fd(addr: i64, nbytes: i64, fd: i64) -> string {
                     nbytes.to_str() + "))\n" +
                     "    (drop (call $fd_write (i32.const " + fd.to_str() +
                     ") " +
-                    "(i32.const 64) (i32.const 1) (i32.const 96)))\n";
-  return out;
-}
-
-// a 0/1 i64 rides the stack: route it through $w_bool and write the
-// spelled word (true/false) — the same capture pair write_int uses
-fn write_bool_top() -> string {
-  return "    call $w_bool\n" +
-         "    (local.set $l)\n" +
-         "    (local.set $a)\n" +
-         "    (i32.store (i32.const 64) (local.get $a))\n" +
-         "    (i32.store (i32.const 68) (local.get $l))\n" +
-         "    (drop (call $fd_write (i32.const 1) " +
-         "(i32.const 64) (i32.const 1) (i32.const 96)))\n";
-}
-
-// unsigned print: the value rides the stack into $w_u64
-fn write_uint() -> string {
-  return "    call $w_u64\n" +
-         "    (local.set $l)\n" +
-         "    (local.set $a)\n" +
-         "    (i32.store (i32.const 64) (local.get $a))\n" +
-         "    (i32.store (i32.const 68) (local.get $l))\n" +
-         "    (drop (call $fd_write (i32.const 1) " +
-         "(i32.const 64) (i32.const 1) (i32.const 96)))\n";
-}
-
-// one fd_write of a runtime-formatted integer: $w_i64 leaves
-// {addr, len} on the stack; the locals capture the pair
-fn write_int() -> string {
-  // flat call: the expression's i64 rides the stack below it
-  let mut out: string = "    call $w_i64\n" +
-                    "    (local.set $l)\n" +
-                    "    (local.set $a)\n" +
-                    "    (i32.store (i32.const 64) (local.get $a))\n" +
-                    "    (i32.store (i32.const 68) (local.get $l))\n" +
-                    "    (drop (call $fd_write (i32.const 1) " +
                     "(i32.const 64) (i32.const 1) (i32.const 96)))\n";
   return out;
 }
@@ -908,19 +959,6 @@ fn env_str_is_runtime(e: *Env, name: string) -> bool {
     i = i - 1;
   }
   return false; // not a string at all
-}
-
-// one fd_write from a runtime {ptr, len} local pair
-fn write_runtime(a_slot: i64, l_slot: i64) -> string {
-  let mut out: string = "    (i32.store (i32.const 64) " +
-                    "(i32.wrap_i64 (local.get " + a_slot.to_str() +
-                    ")))\n" +
-                    "    (i32.store (i32.const 68) " +
-                    "(i32.wrap_i64 (local.get " + l_slot.to_str() +
-                    ")))\n" +
-                    "    (drop (call $fd_write (i32.const 1) " +
-                    "(i32.const 64) (i32.const 1) (i32.const 96)))\n";
-  return out;
 }
 
 // push a string expression's {addr, len} pair onto the i64 stack:
@@ -1231,32 +1269,6 @@ fn env_kind_of(e: *Env, name: string) -> i64 {
   return 0 - 1;
 }
 
-// decoded text of a raw span (for folding literal concatenations)
-fn decoded_text(raw: string) -> string {
-  let mut buf: []u8 = make([]u8, len(raw));
-  let mut o: usize = 0;
-  let mut i: usize = 0;
-  while i < len(raw) {
-    if raw[i] == 92 && i + 1 < len(raw) {
-      let e2: u8 = raw[i + 1];
-      buf[o] = match e2 {
-        110 => 10,
-        116 => 9,
-        92 => 92,
-        34 => 34,
-        _ => e2,
-      };
-      i = i + 2;
-    } else {
-      buf[o] = raw[i];
-      i = i + 1;
-    }
-    o = o + 1;
-  }
-  // re-encode as a raw span (identities round-trip)
-  return raw;
-}
-
 fn env_look(e: *Env, name: string) -> i64 {
   let mut i: usize = e.n;
   while i > 0 {
@@ -1314,7 +1326,8 @@ fn env_bind_val(mut e: *Env, name: string, base: i64, sname: string) {
   e.senum[e.n] = "";
   e.sval[e.n] = sname;
   e.vbases[e.n] = base;
-  e.n = e.n + 1;
+    e.fkind[e.n] = 0;
+e.n = e.n + 1;
 }
 
 fn env_bind_w(mut e: *Env, name: string, slot: i64, w: i64) {
@@ -1325,7 +1338,8 @@ fn env_bind_w(mut e: *Env, name: string, slot: i64, w: i64) {
   e.senum[e.n] = "";
   e.sval[e.n] = "";
   e.vbases[e.n] = 0;
-  e.n = e.n + 1;
+    e.fkind[e.n] = 0;
+e.n = e.n + 1;
 }
 
 // a pointer binding: the slot holds a *SName heap address
@@ -1337,7 +1351,8 @@ fn env_bind_ptr(mut e: *Env, name: string, slot: i64, sname: string) {
   e.senum[e.n] = "";
   e.sval[e.n] = "";
   e.vbases[e.n] = 0;
-  e.n = e.n + 1;
+    e.fkind[e.n] = 0;
+e.n = e.n + 1;
 }
 
 // an enum-value binding: the slot holds the box address
@@ -1349,7 +1364,8 @@ fn env_bind_enum(mut e: *Env, name: string, slot: i64, ename: string) {
   e.senum[e.n] = ename;
   e.sval[e.n] = "";
   e.vbases[e.n] = 0;
-  e.n = e.n + 1;
+    e.fkind[e.n] = 0;
+e.n = e.n + 1;
 }
 
 fn env_enum_of(e: *Env, name: string) -> string {
@@ -2981,8 +2997,19 @@ fn expr_is_fresh(e: *Expr) -> bool {
 }
 
 // retain a slot's value when the init was not fresh
+// the escape law's immortal face: a string literal's address is
+// rodata — strictly below \$w_base, where \$w_retain's guard never
+// bumps (and strings take no scope-exit release). The retain call for
+// such an init is a proven no-op; emitting it is pure waste.
+fn retain_is_dead(e: *Expr) -> bool {
+  if e.tag == parse.EX_STR {
+    return true;
+  }
+  return expr_is_fresh(e);
+}
+
 fn retain_if_shared(e: *Expr, slot: i64) -> string {
-  if expr_is_fresh(e) {
+  if retain_is_dead(e) {
     return "";
   }
   return "    (local.get " + slot.to_str() + ")\n" +
@@ -2991,7 +3018,7 @@ fn retain_if_shared(e: *Expr, slot: i64) -> string {
 
 // retain the named $t temp when the init was not fresh
 fn retain_t(e: *Expr) -> string {
-  if expr_is_fresh(e) {
+  if retain_is_dead(e) {
     return "";
   }
   return "    (local.get $t)\n" +
@@ -3686,6 +3713,127 @@ fn name_is_const(prog: *Prog, name: string) -> bool {
     i = i + 1;
   }
   return false;
+}
+
+// a const's written type, "" when the name is no const
+fn const_type(prog: *Prog, name: string) -> string {
+  let mut i: usize = 0;
+  while i < prog.nconsts {
+    if prog.consts[i] == name && !prog.cstatic[i] {
+      return prog.ctypes[i];
+    }
+    i = i + 1;
+  }
+  return "";
+}
+
+// one comptime int operand: the folded value, "" when the operand is
+// not a numeric literal or an int/bool const name
+fn comptime_int(prog: *Prog, e: *Expr) -> ?i64 {
+  if e.tag == parse.EX_LIT {
+    if e.name == "true" || e.name == "false" {
+      return Option.None;
+    }
+    return Option.Some(e.lit);
+  }
+  if e.tag == parse.EX_VAR && name_is_const(prog, e.name) {
+    let ty: string = const_type(prog, e.name);
+    if ty == "string" {
+      return Option.None;
+    }
+    return Option.Some(const_value(prog, e.name));
+  }
+  return Option.None;
+}
+
+// wrap a literal into an operand width like the runtime lane: signed
+// widths sign-extend, unsigned widths zero-extend (the n25 law — the
+// fold wraps AND sign-extends at the operand width)
+fn lit_at_width(lit: i64, w: i64) -> i64 {
+  if w == 0 || w >= 64 || w <= 0 - 64 {
+    return lit;
+  }
+  if w < 0 {
+    let bits: i64 = 0 - w;
+    let mask: i64 = (1 << bits) - 1;
+    return lit & mask;
+  }
+  let sh: i64 = 64 - w;
+  return (lit << sh) >> sh;
+}
+
+// the comptime bool of a condition (the fold's safe faces only: bool
+// literals, bool consts, and ==/!= over folded ints — no arithmetic
+// nests, no short-circuits), None when the condition does not fold
+fn comptime_cond(prog: *Prog, e: *Expr) -> ?bool {
+  if e.tag == parse.EX_LIT {
+    if e.name == "true" {
+      return Option.Some(true);
+    }
+    if e.name == "false" {
+      return Option.Some(false);
+    }
+    return Option.None;
+  }
+  if e.tag == parse.EX_VAR && name_is_const(prog, e.name) {
+    if const_type(prog, e.name) == "bool" {
+      return Option.Some(const_value(prog, e.name) != 0);
+    }
+    return Option.None;
+  }
+  if e.tag == parse.EX_BIN && (e.op == 9 || e.op == 12 || e.op == 10) {
+    let mut lv: ?i64 = Option.None;
+    match e.lhs {
+      Option.Some(l) => {
+        lv = comptime_int(prog, l);
+      },
+      Option.None => {},
+    }
+    let mut rv: ?i64 = Option.None;
+    match e.rhs {
+      Option.Some(r) => {
+        rv = comptime_int(prog, r);
+      },
+      Option.None => {},
+    }
+    match lv {
+      Option.Some(l2) => {
+        match rv {
+          Option.Some(r2) => {
+            // a const operand wraps the literal at its own width
+            // (the runtime loads the literal at the bin width)
+            let mut lw: i64 = 0;
+            let mut rw2: i64 = 0;
+            match e.lhs {
+              Option.Some(l) => {
+                if l.tag == parse.EX_VAR && name_is_const(prog, l.name) {
+                  lw = type_width(const_type(prog, l.name));
+                }
+              },
+              Option.None => {},
+            }
+            match e.rhs {
+              Option.Some(r) => {
+                if r.tag == parse.EX_VAR && name_is_const(prog, r.name) {
+                  rw2 = type_width(const_type(prog, r.name));
+                }
+              },
+              Option.None => {},
+            }
+            let l3: i64 = lit_at_width(l2, rw2);
+            let r3: i64 = lit_at_width(r2, lw);
+            if e.op == 10 {
+              return Option.Some(l3 != r3);
+            }
+            return Option.Some(l3 == r3);
+          },
+          Option.None => {},
+        }
+      },
+      Option.None => {},
+    }
+  }
+  return Option.None;
 }
 
 // a const/static's float kind by its written type, 0 when not float
@@ -5502,6 +5650,31 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
            "    (local.get " + a_slot2.to_str() + ")\n";
   }
   if e.tag == parse.EX_IF {
+    // a comptime condition folds whole: the live arm's value rides
+    // directly (float arms ride the same bits the (if (result i64))
+    // would carry)
+    let mut cf: ?bool = Option.None;
+    match e.lhs {
+      Option.Some(cond0) => {
+        cf = comptime_cond(prog, cond0);
+      },
+      Option.None => {},
+    }
+    match cf {
+      Option.Some(true) => {
+        if len(e.args) > 0 {
+          return emit_expr(mut pool, e.args[0], mut env, mut prog, mut nl);
+        }
+        return "    (i64.const 0)\n";
+      },
+      Option.Some(false) => {
+        if len(e.args) > 1 {
+          return emit_expr(mut pool, e.args[1], mut env, mut prog, mut nl);
+        }
+        return "    (i64.const 0)\n";
+      },
+      Option.None => {},
+    }
     // if c { a } else { b } as an expression: the arms ride one i64
     // (float arms ride bits — the lanes agree within one expression)
     let mut out: string = "";
@@ -6180,12 +6353,12 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
     if mbits > 64 {
       mbits = 64;
     }
-    out = out + "    (local.set $t)\n";
-    out = out + "    (i64.and (local.get $t) (i64.const ";
+    // the count masks on the operand stack (the lhs waits below it —
+    // the old form parked the rhs in $t twice, ping-ponging)
+    out = out + "    (i64.const ";
     out = out + (mbits - 1).to_str();
-    out = out + "))\n";
-    out = out + "    (local.set $t)\n";
-    out = out + "    (local.get $t)\n";
+    out = out + ")\n";
+    out = out + "    (i64.and)\n";
     let mut sop: string = "i64.shl";
     if e.op == 19 {
       if w < 0 {
@@ -6217,16 +6390,6 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
   return out;
 }
 
-// the arm chain from arm i on: (result i64) ifs for the expression
-// form, plain ifs for the statement form; the wildcard arm (or the
-// chain's end) closes with a zero value
-fn match_chain(mut pool: *Pool, arms: []*MatchArm, i: usize, bx: i64,
-               mut env: *Env, mut prog: *Prog, mut nl: *NextLocal,
-               as_expr: bool) -> string {
-  return match_chain_m(mut pool, arms, i, bx, mut env, mut prog, mut nl, as_expr,
-                       false, "");
-}
-
 // the Option/Result binder payload target (from the scrutinee's
 // element text) — "" leaves the plain lane
 
@@ -6246,7 +6409,7 @@ fn match_chain_m(mut pool: *Pool, arms: []*MatchArm, i: usize, bx: i64,
     return "";
   }
   let mut a: *MatchArm = arms[i];
-  let cond: string = arm_cond(a, mut prog, 0);
+  let mut cond: string = arm_cond(a, mut prog, 0);
   // the arm's code: binders load from the box (a *T payload binds
   // as a struct pointer — its fields stay reachable), then the
   // statements, then the tail expression
@@ -6260,10 +6423,34 @@ fn match_chain_m(mut pool: *Pool, arms: []*MatchArm, i: usize, bx: i64,
   }
   let mut k: usize = 0;
   let mut sl: i64 = 1; // the box slot cursor (slot 0 = the tag)
+  // a literal payload pattern (Option.Some(true) / Some(false)) pins
+  // the payload word, not just the tag: its condition ANDs into the
+  // arm's test, or the first Some(bool) arm swallows its tag-mates
+  // (boot parity: payload literal patterns pin values, not just the
+  // tag). The parser hands the literal spellings over as binder
+  // names — "true"/"false" are keywords, so no real binder collides.
+  let mut pin: string = "";
   while k < len(a.pat.binders) {
     let mut pty: string = "";
     if k < len(ptys) {
       pty = ptys[k];
+    }
+    if a.pat.binders[k] == "true" || a.pat.binders[k] == "false" {
+      let mut pv: i64 = 0;
+      if a.pat.binders[k] == "true" {
+        pv = 1;
+      }
+      let mut pw: string = "(i64.eq (i64.load (i32.add (i32.wrap_i64 " +
+          "(local.get " + bx.to_str() + ")) (i32.const " +
+          (sl * 8).to_str() + "))) (i64.const " + pv.to_str() + "))";
+      if len(pin) > 0 {
+        pin = "(i32.and " + pin + " " + pw + ")";
+      } else {
+        pin = pw;
+      }
+      sl = sl + 1;
+      k = k + 1;
+      continue;
     }
     // a string payload binder reads the pair (two slots) and binds a
     // runtime string; Result.Err's binder does too — the string error
@@ -6377,6 +6564,9 @@ fn match_chain_m(mut pool: *Pool, arms: []*MatchArm, i: usize, bx: i64,
     }
     k = k + 1;
   }
+  if len(pin) > 0 {
+    cond = "(i32.and " + cond + " " + pin + ")";
+  }
   armcode = armcode + emit_stmts(a.body, mut pool, mut env, mut nl, env.infn,
                                  env.retslot, mut prog, mut env.loops,mut 
                                  env.dstack, env.tfd);
@@ -6486,19 +6676,6 @@ fn arm_cond(a: *MatchArm, mut prog: *Prog, dslot: i64) -> string {
     }
   }
   return "(i64.eq (local.get $d) (i64.const " + tag.to_str() + "))";
-}
-
-// the scrutinee's discriminator parks in $d; enum scrutinees load the
-// box's tag first
-fn emit_scrut(mut pool: *Pool, sc: *Expr, mut env: *Env, mut prog: *Prog,
-              mut nl: *NextLocal) -> string {
-  let et: string = expr_enum_type(sc, env, mut prog);
-  let mut out: string = emit_expr(mut pool, sc, mut env, mut prog, mut nl);
-  if len(et) > 0 {
-    out = out + "    (i64.load (i32.wrap_i64))\n";
-  }
-  out = out + "    (local.set $d)\n";
-  return out;
 }
 
 // a fresh slice literal: n zeroed slots, each element stored in
@@ -6804,17 +6981,6 @@ fn rtype_is_pair(rt: string) -> bool {
   }
   // a fn-typed return rides its (idx, box) pair
   return len(rt) >= 2 && rt[0] == 102 && rt[1] == 110;
-}
-
-fn fn_returns_string(prog: *Prog, name: string) -> bool {
-  let mut i: usize = 0;
-  while i < len(prog.fns) {
-    if prog.fns[i].name == name {
-      return rtype_is_pair(prog.fns[i].rtype);
-    }
-    i = i + 1;
-  }
-  return false;
 }
 
 fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
@@ -8555,14 +8721,6 @@ fn expr_type(e: *Expr, env: *Env, prog: *Prog) -> string {
   return "";
 }
 
-// substitute type texts over a verbatim deep clone (the walkers
-// mutate in place; parse owns the constructors)
-fn subst_expr(e: *Expr, tps: []string, tys: []string) -> *Expr {
-  let mut out = parse.clone_expr(e);
-  subst_in_expr(mut out, tps, tys);
-  return out;
-}
-
 fn subst_in_expr(mut e: *Expr, tps: []string, tys: []string) {
   if e.tag == parse.EX_BIN && e.op == 11 {
     e.name = tsub_type(e.name, tps, tys);
@@ -8614,13 +8772,6 @@ fn subst_in_expr(mut e: *Expr, tps: []string, tys: []string) {
     }
     m = m + 1;
   }
-}
-
-fn subst_stmt(st: *Stmt, tps: []string, tys: []string) -> *Stmt {
-  let mut out = parse.clone_stmt(st);
-  out.fmt = tsub_type(st.fmt, tps, tys);
-  subst_in_stmt(mut out, tps, tys);
-  return out;
 }
 
 fn subst_in_stmt(mut st: *Stmt, tps: []string, tys: []string) {
@@ -9524,7 +9675,7 @@ fn emit_closure_fn(wat: string, caps: []string,
   let mut env = env_new(1024);
   env_bind_consts(mut env, prog, mut pool);
   let nparams: i64 = 1 + (len(params) as i64);
-  let mut nl = new NextLocal { v: nparams + 7 };
+  let mut nl = new NextLocal { v: nparams + 7, hi: nparams + 7 };
   let mut loops = loops_new();
   let mut dstack = dstack_new();
   let mut text: string = "";
@@ -9567,8 +9718,12 @@ fn emit_closure_fn(wat: string, caps: []string,
   out = out + "    (local $a i32) (local $l i32) (local $t i64)";
   out = out + " (local $r i64) (local $d i64)";
   out = out + " (local $sfa i32) (local $sfl i32)\n";
+  let mut nltop2: i64 = nl.v;
+  if nl.hi > nltop2 {
+    nltop2 = nl.hi;
+  }
   q = nparams + 7;
-  while q < nl.v {
+  while q < nltop2 {
     out = out + "    (local i64)\n";
     q = q + 1;
   }
@@ -9826,6 +9981,18 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
   while i < len(nodes) {
     let mut st = nodes[i];
     body = body + "    (;st" + st.tag.to_str() + ";)\n";
+    // P6's live-range law: a statement that binds no name and defers
+    // no fn leaves its temporary slots dead at its end — the next
+    // statement reuses them, so the module's local count tracks live
+    // ranges instead of statement count. Bindings veto the reset —
+    // scalar binds ride env.n, string/slice pair binds ride env.sn
+    // (their element texts on sel_n) — and defers (dstack.cursor)
+    // veto too: their texts outlive the statement.
+    let sw: i64 = nl.v;
+    let senv: usize = env.n;
+    let ssn: usize = env.sn;
+    let ssel: usize = env.sel_n;
+    let sdc: usize = dstack.cursor;
     if st.tag == parse.ST_RET && in_fn {
       // a fn's return: the value parks in $r while the open scopes'
       // defers unwind (LIFO), then rides home — unless the value is a
@@ -9925,11 +10092,18 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
             if rv.tag == parse.EX_VAR {
               skipn = rv.name;
             }
+            let unw: string = dunwind_emit_skip(mut dstack, skipn);
             body = body + emit_expr(mut pool, rv, mut env, mut prog, mut nl);
-            body = body + "    (local.set $r)\n";
-            body = body + dunwind_emit_skip(mut dstack, skipn);
-            body = body + "    (local.get $r)\n";
-            body = body + "    return\n";
+            if len(unw) == 0 {
+              // no defers to run: the value rides the operand stack
+              // home — the $r park-and-read is pure ping-pong here
+              body = body + "    return\n";
+            } else {
+              body = body + "    (local.set $r)\n";
+              body = body + unw;
+              body = body + "    (local.get $r)\n";
+              body = body + "    return\n";
+            }
           },
           Option.None => {
             body = body + dunwind_emit(mut dstack);
@@ -11706,8 +11880,16 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
               }
             }
           }
+          // the arms' bindings die with the match (boot pops the arm
+          // scope; without the pop a same-named inner let kept shadowing
+          // every later read — P6's watermark `ssn` read a dead slot
+          // through the mirror-compiled emitter and its reset never
+          // fired, the leg-4 divergence)
+          // the arms' bindings die with the match (boot's scope law)
+          let mut sc_mark: usize = env.n;
           body = body + match_chain_m(mut pool, st.marms, 0, bx, mut env,
                                       mut prog, mut nl, false, false, optpt);
+          env.n = sc_mark;
           // a fresh scrutinee box dies with the match
           if expr_is_fresh(sc) {
             let scet2: string = expr_enum_type(sc, env, mut prog);
@@ -11749,16 +11931,42 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
     if st.tag == parse.ST_IF {
       match st.val {
         Option.Some(cond) => {
+          // a comptime condition folds whole: only the live arm emits
+          // (the dead arm is unreachable code, skipped at the source)
+          let folded: ?bool = comptime_cond(prog, cond);
+          match folded {
+            Option.Some(true) => {
+              // the folded arm is still a scope: its binds die with it
+              // (boot's folded-if pops the live branch)
+              let mut if_mark: usize = env.n;
+              body = body + emit_stmts(st.body, mut pool, mut env, mut nl, in_fn, ret_slot, mut prog, mut loops, mut dstack, tfd);
+              env.n = if_mark;
+            },
+            Option.Some(false) => {
+              if len(st.body2) > 0 {
+                let mut if_mark: usize = env.n;
+                body = body + emit_stmts(st.body2, mut pool, mut env, mut nl,
+ in_fn, ret_slot, mut prog, mut loops, mut dstack, tfd);
+                env.n = if_mark;
+              }
+            },
+            Option.None => {
           // flat if: the condition's stack code precedes the keyword
           body = body + emit_expr(mut pool, cond, mut env, mut prog, mut nl);
           body = body + "    (i32.wrap_i64)\n    if\n";
+          // each arm's bindings die at the arm's end (boot's scope law)
+          let mut if_mark: usize = env.n;
           body = body + emit_stmts(st.body, mut pool, mut env, mut nl, in_fn, ret_slot, mut prog, mut loops, mut dstack, tfd);
+          env.n = if_mark;
           if len(st.body2) > 0 {
             body = body + "    else\n";
             body = body + emit_stmts(st.body2, mut pool, mut env, mut nl,
  in_fn, ret_slot, mut prog, mut loops, mut dstack, tfd);
+            env.n = if_mark;
           }
           body = body + "    end\n";
+            },
+          }
         },
         Option.None => {},
       }
@@ -11766,9 +11974,11 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
     if st.tag == parse.ST_BLOCK {
       // a bare block: its statements inline; the nested emit_stmts
       // opens its own defer frame, so the block's defers unwind at
-      // its end
+      // its end. The block's bindings die with it (boot's scope law).
+      let mut bk_mark: usize = env.n;
       body = body + emit_stmts(st.body, mut pool, mut env, mut nl, in_fn,
                                ret_slot, mut prog, mut loops, mut dstack, tfd);
+      env.n = bk_mark;
     }
     if st.tag == parse.ST_DEFER {
       match st.sub {
@@ -11827,6 +12037,35 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
     if st.tag == parse.ST_WHILE {
       match st.val {
         Option.Some(cond) => {
+          // a comptime-false loop never runs: its body (and its defer
+          // frame) emits nothing. A comptime-true loop drops the
+          // always-passing check.
+          let wfolded: ?bool = comptime_cond(prog, cond);
+          match wfolded {
+            Option.Some(false) => {},
+            Option.Some(true) => {
+              let bk2: string = "$b" + loops.next_id.to_str();
+              let w2: string = "$w" + loops.next_id.to_str();
+              loops.next_id = loops.next_id + 1;
+              loops_push_with(mut loops, st.name, bk2, w2, dstack);
+              body = body + "    (block ";
+              body = body + bk2;
+              body = body + "\n";
+              body = body + "    (loop ";
+              body = body + w2;
+              body = body + "\n";
+              // the folded body is still a scope (boot's scope law)
+              let mut wh_mark: usize = env.n;
+              body = body + emit_stmts(st.body, mut pool, mut env, mut nl, in_fn, ret_slot, mut prog, mut loops, mut dstack, tfd);
+              env.n = wh_mark;
+              body = body + "      (br ";
+              body = body + w2;
+              body = body + ")\n";
+              body = body + "    )\n";
+              body = body + "    )\n";
+              loops_pop(mut loops);
+            },
+            Option.None => {
           let bk: string = "$b" + loops.next_id.to_str();
           let w: string = "$w" + loops.next_id.to_str();
           loops.next_id = loops.next_id + 1;
@@ -11839,7 +12078,10 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
           body = body + "\n";
           body = body + emit_expr(mut pool, cond, mut env, mut prog, mut nl);
           body = body + "    (i32.wrap_i64)\n    if\n";
+          // the body's bindings die with the body (boot's scope law)
+          let mut wh_mark: usize = env.n;
           body = body + emit_stmts(st.body, mut pool, mut env, mut nl, in_fn, ret_slot, mut prog, mut loops, mut dstack, tfd);
+          env.n = wh_mark;
           body = body + "      (br ";
           body = body + w;
           body = body + ")\n";
@@ -11847,9 +12089,18 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
           body = body + "    )\n";
           body = body + "    )\n";
           loops_pop(mut loops);
+            },
+          }
         },
         Option.None => {},
       }
+    }
+    if env.n == senv && env.sn == ssn && env.sel_n == ssel &&
+        dstack.cursor == sdc {
+      if nl.v > nl.hi {
+        nl.hi = nl.v;
+      }
+      nl.v = sw;
     }
     i = i + 1;
   }
@@ -11860,6 +12111,8 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
 // the next-local counter threads through the recursion
 struct NextLocal {
   v: i64,
+  hi: i64, // the high-water mark: the resets lower v, the prologue
+           // sizes from the maximum any kept text ever touched
 }
 
 // one user fn: params as i64 locals, an i64 result. wname overrides
@@ -11887,7 +12140,7 @@ fn emit_fn(fd: *FnDef, mut pool: *Pool, mut prog: *Prog,
            wname: string) -> string {
   let mut env = env_new(1024);
   env_bind_consts(mut env, prog, mut pool);
-  let mut nl = new NextLocal { v: 0 };
+  let mut nl = new NextLocal { v: 0, hi: 0 };
   let param_slots: i64 = capture_at_after(fd);
   let mut nparams: i64 = 0;
   let mut k0: usize = 0;
@@ -12056,8 +12309,12 @@ fn emit_fn(fd: *FnDef, mut pool: *Pool, mut prog: *Prog,
   }
   // locals: the capture pair and the expression temps, then the lets
   out = out + "\n    (local $a i32) (local $l i32) (local $t i64) (local $r i64) (local $d i64) (local $sfa i32) (local $sfl i32)\n";
+  let mut nltop: i64 = nl.v;
+  if nl.hi > nltop {
+    nltop = nl.hi;
+  }
   q = param_slots;
-  while q < nl.v {
+  while q < nltop {
     out = out + "    (local i64)\n";
     q = q + 1;
   }
@@ -12450,37 +12707,203 @@ static mut FLOAT_WANTED: i64 = 0;
 // the float cluster, compiled through the compiler's own front end and
 // emitted beside the program (its pool strings ride the same data
 // segment — one address space, one intern pass, deterministic)
-fn float_runtime_wat(mut pool: *Pool) -> string {
-  let mut toks: []*Tok = lex.lex(FLOATSRC);
-  let mut fprog: *Prog = parse.parse(toks, FLOATSRC);
-  let mut out: string = "";
-  let mut fi: usize = 0;
-  while fi < len(fprog.fns) {
-    out = out + emit_fn(fprog.fns[fi], mut pool, mut fprog, "");
-    fi = fi + 1;
+// ---- P1: the reachability filter ----
+// Every candidate fn rides a (name, text) chunk. The chunks hash into
+// an open-addressing table; $_start's body and the closure table seed
+// a BFS over the $tokens each kept text mentions. A chunk nothing
+// reachable calls never rides the module, and a static no kept text
+// touches loses its globals (and the data intern its emission would
+// have spent). Purely subtractive after emission: pool state and
+// every emission side effect are exactly today's.
+
+// the wasm fn name a chunk's text defines (the first "(func $name"),
+// "" when the text defines none (the caller then force-keeps it)
+fn chunk_name(text: string) -> string {
+  let n: usize = len(text);
+  let mut i: usize = 0;
+  while i + 7 <= n {
+    if text[i] == 40 && text[i + 1] == 102 && text[i + 2] == 117 &&
+        text[i + 3] == 110 && text[i + 4] == 99 && text[i + 5] == 32 &&
+        text[i + 6] == 36 {
+      let mut j: usize = i + 7;
+      let mut out: string = "$";
+      while j < n {
+        let b: u8 = text[j];
+        if b == 32 || b == 40 || b == 41 || b == 10 || b == 13 {
+          break;
+        }
+        out = out + text[j..(j + 1)];
+        j = j + 1;
+      }
+      return out;
+    }
+    i = i + 1;
   }
-  return out;
+  return "";
 }
 
+// a chunk bucket: (name, text) pairs, overflowing into a string that
+// always rides the module (the filter degrades, never misdrops)
+struct Chunks {
+  names: []string,
+  texts: []string,
+  n: usize,
+  forced: string,
+}
+
+fn chunks_add(mut c: *Chunks, t: string) {
+  if c.n < len(c.names) {
+    c.names[c.n] = chunk_name(t);
+    c.texts[c.n] = t;
+    c.n = c.n + 1;
+    return;
+  }
+  c.forced = c.forced + t;
+}
+
+// FNV-1a over the bytes (i64 wraparound is the modulus)
+fn reach_hash(s: string) -> i64 {
+  let mut h: i64 = 0 - 3750763034362895579;
+  let mut i: usize = 0;
+  while i < len(s) {
+    h = (h ^ (s[i] as i64)) * 1099511628211;
+    i = i + 1;
+  }
+  return h;
+}
+
+// name -> val open addressing; vals encode chunk indices (>= 0) and
+// static indices (<= -2, decoded as (-v) - 2); -1 is the empty slot
+struct Reach {
+  keys: []string,
+  vals: []i64,
+  mask: i64,
+  keep: []bool,
+  queue: []usize,
+  qn: usize,
+  stat_hit: []bool,
+}
+
+fn reach_new(nchunks: usize, nstats: usize) -> *Reach {
+  // the table sizes from the entry count (a quarter full at worst) —
+  // a fixed cap would infinite-loop the probe on a pathological program
+  let mut cap: usize = 1024;
+  while cap < (nchunks + nstats + 1) * 4 {
+    cap = cap * 2;
+  }
+  let mut r: *Reach = new Reach {
+    keys: make([]string, cap),
+    vals: make([]i64, cap),
+    mask: (cap as i64) - 1,
+    keep: make([]bool, nchunks + 1),
+    queue: make([]usize, nchunks + 1),
+    qn: 0,
+    stat_hit: make([]bool, nstats + 1),
+  };
+  let mut i: usize = 0;
+  while i < cap {
+    r.vals[i] = 0 - 1;
+    i = i + 1;
+  }
+  return r;
+}
+
+fn reach_put(mut r: *Reach, k: string, v: i64) {
+  let mut s: i64 = reach_hash(k) & r.mask;
+  while r.vals[s as usize] != 0 - 1 {
+    if r.keys[s as usize] == k {
+      return;
+    }
+    s = (s + 1) & r.mask;
+  }
+  r.keys[s as usize] = k;
+  r.vals[s as usize] = v;
+}
+
+fn reach_get(r: *Reach, k: string) -> i64 {
+  let mut s: i64 = reach_hash(k) & r.mask;
+  while r.vals[s as usize] != 0 - 1 {
+    if r.keys[s as usize] == k {
+      return r.vals[s as usize];
+    }
+    s = (s + 1) & r.mask;
+  }
+  return 0 - 1;
+}
+
+// was a named fn's chunk kept? (the module's hand-gated globals read it)
+fn reach_kept_fn(r: *Reach, name: string) -> bool {
+  let v: i64 = reach_get(r, name);
+  if v >= 0 {
+    return r.keep[v as usize];
+  }
+  return false;
+}
+
+// one pass over a WAT text: every $token naming a chunk marks and
+// enqueues it (the BFS edge); every $g_ token naming a static marks
+// the static's hit. Over-collecting only ever over-keeps.
+fn reach_scan(mut r: *Reach, text: string) {
+  let n: usize = len(text);
+  let mut i: usize = 0;
+  while i < n {
+    if text[i] == 36 {
+      let mut j: usize = i + 1;
+      while j < n {
+        let b: u8 = text[j];
+        if b == 32 || b == 10 || b == 9 || b == 13 || b == 40 || b == 41 {
+          break;
+        }
+        j = j + 1;
+      }
+      if j > i + 1 {
+        let v: i64 = reach_get(r, text[i..j]);
+        if v >= 0 {
+          let ci: usize = v as usize;
+          if !r.keep[ci] {
+            r.keep[ci] = true;
+            r.queue[r.qn] = ci;
+            r.qn = r.qn + 1;
+          }
+        } else {
+          if v <= 0 - 2 {
+            r.stat_hit[((0 - v) - 2) as usize] = true;
+          }
+        }
+      }
+      i = j;
+    } else {
+      i = i + 1;
+    }
+  }
+}
 
 pub fn emit(mut prog: *Prog) -> string {
   let mut pool = new_pool();
   let mut env = env_new(1024);
   env_bind_consts(mut env, prog, mut pool);
-  let mut nl = new NextLocal { v: 8 }; // 0/1 capture, 2 exit, 3 $t, 4 $r, 5 $d, 6/7 io scratch
+  let mut nl = new NextLocal { v: 8, hi: 8 }; // 0/1 capture, 2 exit, 3 $t, 4 $r, 5 $d, 6/7 io scratch
   let mut loops = loops_new();
   let mut dstack = dstack_new();
   let mut body: string = emit_stmts(prog.main, mut pool, mut env, mut nl, false,
                                 2, mut prog, mut loops, mut dstack,
                                 Option.None); // slot 2: exit
-  let nl_n: i64 = nl.v;
+  let mut nl_n: i64 = nl.v;
+  if nl.hi > nl_n {
+    nl_n = nl.hi;
+  }
+  // P1 chunk collection: every candidate fn rides (name, text) until
+  // the reachability filter decides what the module still needs
+  let mut chs: *Chunks = new Chunks { names: make([]string, 8192),
+                                       texts: make([]string, 8192),
+                                       n: 0, forced: "" };
   let mut fntext: string = "";
   let mut fi: usize = 0;
   while fi < len(prog.fns) {
     if len(prog.fns[fi].tparams) == 0 &&
         !gstruct_method_skip(mut prog, prog.fns[fi]) {
-      fntext = fntext + emit_fn(prog.fns[fi], mut pool, mut prog,
-                                wasm_fn_name(prog, prog.fns[fi]));
+      chunks_add(mut chs, emit_fn(prog.fns[fi], mut pool, mut prog,
+                                  wasm_fn_name(prog, prog.fns[fi])));
     }
     fi = fi + 1;
   }
@@ -12529,13 +12952,13 @@ pub fn emit(mut prog: *Prog) -> string {
         np2 = np2 + 1;
       }
       let carrier2: *FnDef = pool.gi.clo_fds[gdone];
-      fntext = fntext + emit_closure_fn(wat2, capnames, captypes,
-                                        ncaps2,
-                                        cparams[0..np2],
-                                        carrier2.body,mut 
-                                        pool, mut prog);
+      chunks_add(mut chs, emit_closure_fn(wat2, capnames, captypes,
+                                          ncaps2,
+                                          cparams[0..np2],
+                                          carrier2.body,mut 
+                                          pool, mut prog));
     } else {
-      fntext = fntext + emit_fn(pool.gi.fds[gdone], mut pool, mut prog, "");
+      chunks_add(mut chs, emit_fn(pool.gi.fds[gdone], mut pool, mut prog, ""));
     }
     gdone = gdone + 1;
   }
@@ -12543,10 +12966,103 @@ pub fn emit(mut prog: *Prog) -> string {
   // the bottom)
   let mut rdone2: usize = 0;
   while rdone2 < pool.rel_n {
-    fntext = fntext + pool.rel_texts[rdone2];
+    chunks_add(mut chs, pool.rel_texts[rdone2]);
     rdone2 = rdone2 + 1;
   }
   let rdone2_done: usize = pool.rel_n;
+  // the float runtime compiles through the emitter's own front end
+  // when a float hole printed (its fns ride the same filter)
+  if FLOAT_WANTED > 0 {
+    let mut toks: []*Tok = lex.lex(FLOATSRC);
+    let mut fprog: *Prog = parse.parse(toks, FLOATSRC);
+    let mut fi2: usize = 0;
+    while fi2 < len(fprog.fns) {
+      chunks_add(mut chs, emit_fn(fprog.fns[fi2], mut pool, mut fprog, ""));
+      fi2 = fi2 + 1;
+    }
+  }
+  // _start's own emission registers thunks after the first drain:
+  // drain again (idempotent — registry entries append)
+  let mut rdone3: usize = rdone2_done;
+  while rdone3 < pool.rel_n {
+    chunks_add(mut chs, pool.rel_texts[rdone3]);
+    rdone3 = rdone3 + 1;
+  }
+  // the runtime templates ride the same filter: each fn its own chunk,
+  // kept only when kept code still calls it
+  chunks_add(mut chs, W_ALLOC);
+  chunks_add(mut chs, W_RETAIN);
+  chunks_add(mut chs, W_ALIVE);
+  chunks_add(mut chs, W_APP);
+  chunks_add(mut chs, W_PANIC);
+  chunks_add(mut chs, W_I64);
+  chunks_add(mut chs, W_U64);
+  chunks_add(mut chs, W_CAT);
+  chunks_add(mut chs, W_ITOA);
+  chunks_add(mut chs, W_STREQ);
+  chunks_add(mut chs, W_ENUQ);
+  chunks_add(mut chs, W_BOOL);
+  if pool.has_io {
+    chunks_add(mut chs, W_IO_READ_PACKED);
+    chunks_add(mut chs, W_IO_WRITE);
+    chunks_add(mut chs, W_IO_CLOSE);
+    chunks_add(mut chs, W_IO_OPEN);
+    chunks_add(mut chs, W_IO_STRING_FROM);
+  }
+  // ---- the filter: BFS from _start + the closure table over call
+  // tokens; unreachable chunks and untouched statics drop ----
+  let mut reach: *Reach = reach_new(chs.n, prog.nconsts as usize);
+  let mut ci5: usize = 0;
+  while ci5 < chs.n {
+    if len(chs.names[ci5]) > 0 {
+      reach_put(mut reach, chs.names[ci5], ci5 as i64);
+    }
+    ci5 = ci5 + 1;
+  }
+  let mut si3: usize = 0;
+  while si3 < prog.nconsts {
+    if prog.cstatic[si3] {
+      let gname: string = "$g_" + prog.consts[si3];
+      let sval: i64 = 0 - ((si3 as i64) + 2);
+      reach_put(mut reach, gname, sval);
+      if prog.ctypes[si3] == "string" {
+        reach_put(mut reach, gname + "_l", sval);
+      }
+    }
+    si3 = si3 + 1;
+  }
+  reach_scan(mut reach, body);
+  // _start's own prologue rides the assembly, not the body text — its
+  // none-box init pins $w_alloc (every module's one forced callee)
+  reach_scan(mut reach,
+             "    (global.set $w_none_box (i64.extend_i32_u (call $w_alloc (i32.const 2))))\n");
+  let mut ti3: usize = 0;
+  while ti3 < pool.gi.cfn {
+    let v3: i64 = reach_get(reach, pool.gi.clo_wasms[ti3]);
+    if v3 >= 0 {
+      let ci6: usize = v3 as usize;
+      if !reach.keep[ci6] {
+        reach.keep[ci6] = true;
+        reach.queue[reach.qn] = ci6;
+        reach.qn = reach.qn + 1;
+      }
+    }
+    ti3 = ti3 + 1;
+  }
+  let mut qi2: usize = 0;
+  while qi2 < reach.qn {
+    reach_scan(mut reach, chs.texts[reach.queue[qi2]]);
+    qi2 = qi2 + 1;
+  }
+  // the kept fns (collection order) — unreachable chunks never ride
+  let mut ci7: usize = 0;
+  while ci7 < chs.n {
+    if reach.keep[ci7] || len(chs.names[ci7]) == 0 {
+      fntext = fntext + chs.texts[ci7];
+    }
+    ci7 = ci7 + 1;
+  }
+  fntext = fntext + chs.forced;
   // assemble: header, memory, runtime, _start with the let locals
   let mut out: string = "";
   out = out + "(module\n";
@@ -12574,7 +13090,7 @@ pub fn emit(mut prog: *Prog) -> string {
   out = out + "  (export \"memory\" (memory 0))\n";
   let mut gi: usize = 0;
   while gi < prog.nconsts {
-    if prog.cstatic[gi] {
+    if prog.cstatic[gi] && reach.stat_hit[gi] {
       let mut ginit: string = prog.cvals[gi].to_str();
       if prog.ctypes[gi] == "string" {
         // a string static's pair rides TWO globals — the address and
@@ -12615,19 +13131,11 @@ pub fn emit(mut prog: *Prog) -> string {
     }
     gi = gi + 1;
   }
-  out = out + RUNTIME;
-  out = out + UINT;
-  out = out + CAT;
-  out = out + ITOA;
   out = out + alloc_wat((pool.next + 7) / 8 * 8);
-  out = out + ALLOC_BODY;
-  if pool.has_io {
-    out = out + IO_TAIL;
-  }
-  out = out + STREQ;
-  out = out + ENUQ;
   out = out + NONEBOX;
-  out = out + BOOLTEXT;
+  if reach_kept_fn(reach, "$w_i64") || reach_kept_fn(reach, "$w_u64") {
+    out = out + W_TOP;
+  }
   if pool.gi.cfn > 0 {
     // the closure table: one funcref per entry, the indirect-call
     // types for the arities the calls used (flag 1 = scalar result,
@@ -12675,18 +13183,6 @@ pub fn emit(mut prog: *Prog) -> string {
     }
     out = out + ")\n";
   }
-  if FLOAT_WANTED > 0 {
-    out = out + float_runtime_wat(mut pool);
-  }
-  // _start's own emission registers thunks after the first drain:
-  // drain again (idempotent — registry entries append)
-  let mut rdone3: usize = 0;
-  while rdone3 < pool.rel_n {
-    if rdone3 >= rdone2_done {
-      fntext = fntext + pool.rel_texts[rdone3];
-    }
-    rdone3 = rdone3 + 1;
-  }
   out = out + fntext;
   out = out + "  (export \"_start\" (func $_start))\n";
   out = out + "  (func $_start (local $a i32) (local $l i32) (local $rc i32) (local $t i64) (local $r i64) (local $d i64) (local $sfa i32) (local $sfl i32)\n";
@@ -12700,10 +13196,11 @@ pub fn emit(mut prog: *Prog) -> string {
   out = out + "    (global.set $w_none_box (i64.extend_i32_u ";
   out = out + "(call $w_alloc (i32.const 2))))\n";
   // a float-typed static's bits cannot ride a wasm global initializer
-  // (reinterpret is no const expr) — the value lands at _start
+  // (reinterpret is no const expr) — the value lands at _start, but
+  // only for statics some kept fn still touches
   let mut fsi: usize = 0;
   while fsi < prog.nconsts {
-    if prog.cstatic[fsi] &&
+    if prog.cstatic[fsi] && reach.stat_hit[fsi] &&
         (prog.ctypes[fsi] == "f64" || prog.ctypes[fsi] == "f32") {
       let ie: *Expr = prog.cexprs[fsi];
       if ie.tag == parse.EX_FLIT {
@@ -12722,7 +13219,9 @@ pub fn emit(mut prog: *Prog) -> string {
   out = out + "    (call $proc_exit (i32.and (local.get 2) ";
   out = out + "(i32.const 255)))\n";
   out = out + "  )\n";
-  out = out + "  (data (i32.const 4030) \"truefalse\")\n";
+  if reach_kept_fn(reach, "$w_bool") {
+    out = out + "  (data (i32.const 4030) \"truefalse\")\n";
+  }
   let mut d: usize = 0;
   while d < pool.n {
     out = out + "  (data (i32.const ";
@@ -12735,5 +13234,3 @@ pub fn emit(mut prog: *Prog) -> string {
   out = out + ")\n";
   return out;
 }
-
-
