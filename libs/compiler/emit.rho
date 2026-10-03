@@ -9650,7 +9650,7 @@ fn emit_closure_fn(wat: string, caps: []string,
   let mut env = env_new(1024);
   env_bind_consts(mut env, prog, mut pool);
   let nparams: i64 = 1 + (len(params) as i64);
-  let mut nl = new NextLocal { v: nparams + 7 };
+  let mut nl = new NextLocal { v: nparams + 7, hi: nparams + 7 };
   let mut loops = loops_new();
   let mut dstack = dstack_new();
   let mut text: string = "";
@@ -9693,8 +9693,12 @@ fn emit_closure_fn(wat: string, caps: []string,
   out = out + "    (local $a i32) (local $l i32) (local $t i64)";
   out = out + " (local $r i64) (local $d i64)";
   out = out + " (local $sfa i32) (local $sfl i32)\n";
+  let mut nltop2: i64 = nl.v;
+  if nl.hi > nltop2 {
+    nltop2 = nl.hi;
+  }
   q = nparams + 7;
-  while q < nl.v {
+  while q < nltop2 {
     out = out + "    (local i64)\n";
     q = q + 1;
   }
@@ -9952,6 +9956,18 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
   while i < len(nodes) {
     let mut st = nodes[i];
     body = body + "    (;st" + st.tag.to_str() + ";)\n";
+    // P6's live-range law: a statement that binds no name and defers
+    // no fn leaves its temporary slots dead at its end — the next
+    // statement reuses them, so the module's local count tracks live
+    // ranges instead of statement count. Bindings veto the reset —
+    // scalar binds ride env.n, string/slice pair binds ride env.sn
+    // (their element texts on sel_n) — and defers (dstack.cursor)
+    // veto too: their texts outlive the statement.
+    let sw: i64 = nl.v;
+    let senv: usize = env.n;
+    let ssn: usize = env.sn;
+    let ssel: usize = env.sel_n;
+    let sdc: usize = dstack.cursor;
     if st.tag == parse.ST_RET && in_fn {
       // a fn's return: the value parks in $r while the open scopes'
       // defers unwind (LIFO), then rides home — unless the value is a
@@ -12001,6 +12017,13 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
         Option.None => {},
       }
     }
+    if env.n == senv && env.sn == ssn && env.sel_n == ssel &&
+        dstack.cursor == sdc {
+      if nl.v > nl.hi {
+        nl.hi = nl.v;
+      }
+      nl.v = sw;
+    }
     i = i + 1;
   }
   body = body + dpop_emit(mut dstack);
@@ -12010,6 +12033,8 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
 // the next-local counter threads through the recursion
 struct NextLocal {
   v: i64,
+  hi: i64, // the high-water mark: the resets lower v, the prologue
+           // sizes from the maximum any kept text ever touched
 }
 
 // one user fn: params as i64 locals, an i64 result. wname overrides
@@ -12037,7 +12062,7 @@ fn emit_fn(fd: *FnDef, mut pool: *Pool, mut prog: *Prog,
            wname: string) -> string {
   let mut env = env_new(1024);
   env_bind_consts(mut env, prog, mut pool);
-  let mut nl = new NextLocal { v: 0 };
+  let mut nl = new NextLocal { v: 0, hi: 0 };
   let param_slots: i64 = capture_at_after(fd);
   let mut nparams: i64 = 0;
   let mut k0: usize = 0;
@@ -12206,8 +12231,12 @@ fn emit_fn(fd: *FnDef, mut pool: *Pool, mut prog: *Prog,
   }
   // locals: the capture pair and the expression temps, then the lets
   out = out + "\n    (local $a i32) (local $l i32) (local $t i64) (local $r i64) (local $d i64) (local $sfa i32) (local $sfl i32)\n";
+  let mut nltop: i64 = nl.v;
+  if nl.hi > nltop {
+    nltop = nl.hi;
+  }
   q = param_slots;
-  while q < nl.v {
+  while q < nltop {
     out = out + "    (local i64)\n";
     q = q + 1;
   }
@@ -12775,13 +12804,16 @@ pub fn emit(mut prog: *Prog) -> string {
   let mut pool = new_pool();
   let mut env = env_new(1024);
   env_bind_consts(mut env, prog, mut pool);
-  let mut nl = new NextLocal { v: 8 }; // 0/1 capture, 2 exit, 3 $t, 4 $r, 5 $d, 6/7 io scratch
+  let mut nl = new NextLocal { v: 8, hi: 8 }; // 0/1 capture, 2 exit, 3 $t, 4 $r, 5 $d, 6/7 io scratch
   let mut loops = loops_new();
   let mut dstack = dstack_new();
   let mut body: string = emit_stmts(prog.main, mut pool, mut env, mut nl, false,
                                 2, mut prog, mut loops, mut dstack,
                                 Option.None); // slot 2: exit
-  let nl_n: i64 = nl.v;
+  let mut nl_n: i64 = nl.v;
+  if nl.hi > nl_n {
+    nl_n = nl.hi;
+  }
   // P1 chunk collection: every candidate fn rides (name, text) until
   // the reachability filter decides what the module still needs
   let mut chs: *Chunks = new Chunks { names: make([]string, 8192),
