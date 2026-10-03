@@ -262,8 +262,10 @@ pub fn wat_data_body(raw: string) -> string {
 }
 
 // the decimal runtime the generated module carries: $w_i64 writes
-// |v|'s digits backward into [2048, 4096) and returns {addr, len}
-const BOOLTEXT: string = """
+// |v|'s digits backward into [2048, 4096) and returns {addr, len}.
+// Each runtime fn rides its own const (P1): only fns some kept code
+// calls ride the module — the reachability filter includes them.
+const W_BOOL: string = """
   (func $w_bool (param $v i64) (result i32) (result i32)
     (if (result i32) (i64.ne (local.get $v) (i64.const 0))
       (then (i32.const 4030))
@@ -274,7 +276,7 @@ const BOOLTEXT: string = """
   )
 """;
 
-const UINT: string = """
+const W_U64: string = """
   (func $w_u64 (param $v i64) (result i32) (result i32)
     (local $p i32) (local $u i64)
     (local.set $p (i32.const 4096))
@@ -292,7 +294,7 @@ const UINT: string = """
   )
 """;
 
-const CAT: string = """
+const W_CAT: string = """
   (func $w_cat (param $ap i64) (param $al i64) (param $bp i64)
                 (param $bl i64) (result i64) (result i64)
     (local $p i32) (local $i i64) (local $n i64)
@@ -333,7 +335,7 @@ const CAT: string = """
 // $w_itoa: an integer rendered into a fresh allocation {ptr,len};
 // digits write backward from the buffer's end (32 bytes: 20 digits
 // plus sign is the i64 worst case)
-const ITOA: string = """
+const W_ITOA: string = """
   (func $w_itoa (param $v i64) (result i64) (result i64)
     (local $b i32) (local $p i32) (local $neg i32) (local $u i64)
     (local.set $neg (i64.lt_s (local.get $v) (i64.const 0)))
@@ -360,7 +362,7 @@ const ITOA: string = """
   )
 """;
 
-const STREQ: string = """
+const W_STREQ: string = """
   (func $w_streq (param $ap i64) (param $al i64) (param $bp i64) (param $bl i64) (result i64)
     (local $i i64)
     (if (i64.ne (local.get $al) (local.get $bl))
@@ -380,7 +382,7 @@ const STREQ: string = """
 
 // element-wise enum equality: tag and payload slots as plain i64s
 // (string-payload enums grow a content-compare when they appear)
-const ENUQ: string = """
+const W_ENUQ: string = """
   (func $w_enuq (param $ap i64) (param $bp i64) (param $n i64) (result i64)
     (local $i i64)
     (loop $c
@@ -400,8 +402,13 @@ const ENUQ: string = """
   )
 """;
 
-const RUNTIME: string = """
+// the digit scratch top ($w_i64/$w_u64's shared write window) and the
+// signed printer
+const W_TOP: string = """
   (global $w_top (mut i32) (i32.const 4096))
+""";
+
+const W_I64: string = """
   (func $w_i64 (param $v i64) (result i32) (result i32)
     (local $p i32) (local $neg i32) (local $u i64)
     (local.set $p (i32.const 4096))
@@ -452,7 +459,7 @@ const IO_IMPORTS: string = """
       (param i32 i32 i32 i32 i32 i64 i64 i32 i32) (result i32)))
 """;
 
-const IO_TAIL: string = """
+const W_IO_READ_PACKED: string = """
   ;; raw read, byte-packed fill: nread, or -errno
   (func $w_fd_read_packed (param $fd i32) (param $buf i32)
     (param $cap i32)
@@ -465,6 +472,9 @@ const IO_TAIL: string = """
     (if (i32.ne (local.get $err) (i32.const 0))
       (then (return (i32.sub (i32.const 0) (local.get $err)))))
     (i32.load (i32.const 8)))
+""";
+
+const W_IO_WRITE: string = """
   ;; raw write to an opened fd: nwritten, or -errno
   (func $w_fd_write (param $fd i32) (param $buf i32) (param $n i32)
     (result i32)
@@ -476,9 +486,15 @@ const IO_TAIL: string = """
     (if (i32.ne (local.get $err) (i32.const 0))
       (then (return (i32.sub (i32.const 0) (local.get $err)))))
     (i32.load (i32.const 8)))
+""";
+
+const W_IO_CLOSE: string = """
   ;; raw close: 0, or -errno
   (func $w_fd_close (param $fd i32) (result i32)
     (i32.sub (i32.const 0) (call $fd_close (local.get $fd))))
+""";
+
+const W_IO_OPEN: string = """
   ;; open under the preopen: the new fd, or -errno. Rights ride the
   ;; mode: READ (bit 1) or WRITE (bit 6); oflags CREAT|TRUNC (9) on
   ;; the write side.
@@ -501,6 +517,9 @@ const IO_TAIL: string = """
     (if (i32.ne (local.get $err) (i32.const 0))
       (then (return (i32.sub (i32.const 0) (local.get $err)))))
     (i32.load (i32.const 8)))
+""";
+
+const W_IO_STRING_FROM: string = """
   ;; materialize the first n bytes of a byte window as a fresh string
   ;; (the packed mirror of fd_read_packed's fill: load8_u in, store8
   ;; out; a fresh exact block — strings are immutable)
@@ -531,7 +550,7 @@ fn alloc_wat(pool_top: i64) -> string {
          pool_top.to_str() + "))\n";
 }
 
-const ALLOC_BODY: string = """
+const W_ALLOC: string = """
   (func $w_alloc (param $n i32) (result i32)
     (local $p i32) (local $k i32) (local $old i32) (local $g i32)
     (if (i32.gt_u
@@ -592,6 +611,9 @@ const ALLOC_BODY: string = """
           (br $z))))
     (i32.add (local.get $p) (i32.const 16))
   )
+""";
+
+const W_RETAIN: string = """
   (func $w_retain (param $p i64)
     ;; statics (data literals below the heap floor) are immortal —
     ;; the data region spans megabytes when the program is large
@@ -612,6 +634,9 @@ const ALLOC_BODY: string = """
                                             (i32.const 8)))
                          (i64.const 1)))))))
   )
+""";
+
+const W_ALIVE: string = """
   (func $w_alive (param $p i64) (result i32)
     (if (i64.ne (local.get $p) (i64.const 0))
       (then
@@ -621,6 +646,9 @@ const ALLOC_BODY: string = """
       (else (return (i32.const 0))))
     (i32.const 0)
   )
+""";
+
+const W_APP: string = """
   ;; the amortized append (boot's rho_app law): x = x + t rides this —
   ;; in place when the block is unaliased (rc == 1), lives on the heap
   ;; (never a rodata literal: those sit below the floor) and its
@@ -695,6 +723,9 @@ const ALLOC_BODY: string = """
     (i64.extend_i32_u (local.get $p))
     (local.get $n)
   )
+""";
+
+const W_PANIC: string = """
   (func $w_panic (param $m i32) (param $l i32)
     ;; the kernel law: "panic: <msg>\n" to stderr, exit 101 — three
     ;; one-iovec writes (wasmtime 40 drops trailing iovs); the prefix
@@ -12450,16 +12481,175 @@ static mut FLOAT_WANTED: i64 = 0;
 // the float cluster, compiled through the compiler's own front end and
 // emitted beside the program (its pool strings ride the same data
 // segment — one address space, one intern pass, deterministic)
-fn float_runtime_wat(mut pool: *Pool) -> string {
-  let mut toks: []*Tok = lex.lex(FLOATSRC);
-  let mut fprog: *Prog = parse.parse(toks, FLOATSRC);
-  let mut out: string = "";
-  let mut fi: usize = 0;
-  while fi < len(fprog.fns) {
-    out = out + emit_fn(fprog.fns[fi], mut pool, mut fprog, "");
-    fi = fi + 1;
+// ---- P1: the reachability filter ----
+// Every candidate fn rides a (name, text) chunk. The chunks hash into
+// an open-addressing table; $_start's body and the closure table seed
+// a BFS over the $tokens each kept text mentions. A chunk nothing
+// reachable calls never rides the module, and a static no kept text
+// touches loses its globals (and the data intern its emission would
+// have spent). Purely subtractive after emission: pool state and
+// every emission side effect are exactly today's.
+
+// the wasm fn name a chunk's text defines (the first "(func $name"),
+// "" when the text defines none (the caller then force-keeps it)
+fn chunk_name(text: string) -> string {
+  let n: usize = len(text);
+  let mut i: usize = 0;
+  while i + 7 <= n {
+    if text[i] == 40 && text[i + 1] == 102 && text[i + 2] == 117 &&
+        text[i + 3] == 110 && text[i + 4] == 99 && text[i + 5] == 32 &&
+        text[i + 6] == 36 {
+      let mut j: usize = i + 7;
+      let mut out: string = "$";
+      while j < n {
+        let b: u8 = text[j];
+        if b == 32 || b == 40 || b == 41 || b == 10 || b == 13 {
+          break;
+        }
+        out = out + text[j..(j + 1)];
+        j = j + 1;
+      }
+      return out;
+    }
+    i = i + 1;
   }
-  return out;
+  return "";
+}
+
+// a chunk bucket: (name, text) pairs, overflowing into a string that
+// always rides the module (the filter degrades, never misdrops)
+struct Chunks {
+  names: []string,
+  texts: []string,
+  n: usize,
+  forced: string,
+}
+
+fn chunks_add(mut c: *Chunks, t: string) {
+  if c.n < len(c.names) {
+    c.names[c.n] = chunk_name(t);
+    c.texts[c.n] = t;
+    c.n = c.n + 1;
+    return;
+  }
+  c.forced = c.forced + t;
+}
+
+// FNV-1a over the bytes (i64 wraparound is the modulus)
+fn reach_hash(s: string) -> i64 {
+  let mut h: i64 = 0 - 3750763034362895579;
+  let mut i: usize = 0;
+  while i < len(s) {
+    h = (h ^ (s[i] as i64)) * 1099511628211;
+    i = i + 1;
+  }
+  return h;
+}
+
+// name -> val open addressing; vals encode chunk indices (>= 0) and
+// static indices (<= -2, decoded as (-v) - 2); -1 is the empty slot
+struct Reach {
+  keys: []string,
+  vals: []i64,
+  mask: i64,
+  keep: []bool,
+  queue: []usize,
+  qn: usize,
+  stat_hit: []bool,
+}
+
+fn reach_new(nchunks: usize, nstats: usize) -> *Reach {
+  // the table sizes from the entry count (a quarter full at worst) —
+  // a fixed cap would infinite-loop the probe on a pathological program
+  let mut cap: usize = 1024;
+  while cap < (nchunks + nstats + 1) * 4 {
+    cap = cap * 2;
+  }
+  let mut r: *Reach = new Reach {
+    keys: make([]string, cap),
+    vals: make([]i64, cap),
+    mask: (cap as i64) - 1,
+    keep: make([]bool, nchunks + 1),
+    queue: make([]usize, nchunks + 1),
+    qn: 0,
+    stat_hit: make([]bool, nstats + 1),
+  };
+  let mut i: usize = 0;
+  while i < cap {
+    r.vals[i] = 0 - 1;
+    i = i + 1;
+  }
+  return r;
+}
+
+fn reach_put(mut r: *Reach, k: string, v: i64) {
+  let mut s: i64 = reach_hash(k) & r.mask;
+  while r.vals[s as usize] != 0 - 1 {
+    if r.keys[s as usize] == k {
+      return;
+    }
+    s = (s + 1) & r.mask;
+  }
+  r.keys[s as usize] = k;
+  r.vals[s as usize] = v;
+}
+
+fn reach_get(r: *Reach, k: string) -> i64 {
+  let mut s: i64 = reach_hash(k) & r.mask;
+  while r.vals[s as usize] != 0 - 1 {
+    if r.keys[s as usize] == k {
+      return r.vals[s as usize];
+    }
+    s = (s + 1) & r.mask;
+  }
+  return 0 - 1;
+}
+
+// was a named fn's chunk kept? (the module's hand-gated globals read it)
+fn reach_kept_fn(r: *Reach, name: string) -> bool {
+  let v: i64 = reach_get(r, name);
+  if v >= 0 {
+    return r.keep[v as usize];
+  }
+  return false;
+}
+
+// one pass over a WAT text: every $token naming a chunk marks and
+// enqueues it (the BFS edge); every $g_ token naming a static marks
+// the static's hit. Over-collecting only ever over-keeps.
+fn reach_scan(mut r: *Reach, text: string) {
+  let n: usize = len(text);
+  let mut i: usize = 0;
+  while i < n {
+    if text[i] == 36 {
+      let mut j: usize = i + 1;
+      while j < n {
+        let b: u8 = text[j];
+        if b == 32 || b == 10 || b == 9 || b == 13 || b == 40 || b == 41 {
+          break;
+        }
+        j = j + 1;
+      }
+      if j > i + 1 {
+        let v: i64 = reach_get(r, text[i..j]);
+        if v >= 0 {
+          let ci: usize = v as usize;
+          if !r.keep[ci] {
+            r.keep[ci] = true;
+            r.queue[r.qn] = ci;
+            r.qn = r.qn + 1;
+          }
+        } else {
+          if v <= 0 - 2 {
+            r.stat_hit[((0 - v) - 2) as usize] = true;
+          }
+        }
+      }
+      i = j;
+    } else {
+      i = i + 1;
+    }
+  }
 }
 
 
@@ -12474,13 +12664,18 @@ pub fn emit(mut prog: *Prog) -> string {
                                 2, mut prog, mut loops, mut dstack,
                                 Option.None); // slot 2: exit
   let nl_n: i64 = nl.v;
+  // P1 chunk collection: every candidate fn rides (name, text) until
+  // the reachability filter decides what the module still needs
+  let mut chs: *Chunks = new Chunks { names: make([]string, 8192),
+                                       texts: make([]string, 8192),
+                                       n: 0, forced: "" };
   let mut fntext: string = "";
   let mut fi: usize = 0;
   while fi < len(prog.fns) {
     if len(prog.fns[fi].tparams) == 0 &&
         !gstruct_method_skip(mut prog, prog.fns[fi]) {
-      fntext = fntext + emit_fn(prog.fns[fi], mut pool, mut prog,
-                                wasm_fn_name(prog, prog.fns[fi]));
+      chunks_add(mut chs, emit_fn(prog.fns[fi], mut pool, mut prog,
+                                  wasm_fn_name(prog, prog.fns[fi])));
     }
     fi = fi + 1;
   }
@@ -12529,13 +12724,13 @@ pub fn emit(mut prog: *Prog) -> string {
         np2 = np2 + 1;
       }
       let carrier2: *FnDef = pool.gi.clo_fds[gdone];
-      fntext = fntext + emit_closure_fn(wat2, capnames, captypes,
-                                        ncaps2,
-                                        cparams[0..np2],
-                                        carrier2.body,mut 
-                                        pool, mut prog);
+      chunks_add(mut chs, emit_closure_fn(wat2, capnames, captypes,
+                                          ncaps2,
+                                          cparams[0..np2],
+                                          carrier2.body,mut 
+                                          pool, mut prog));
     } else {
-      fntext = fntext + emit_fn(pool.gi.fds[gdone], mut pool, mut prog, "");
+      chunks_add(mut chs, emit_fn(pool.gi.fds[gdone], mut pool, mut prog, ""));
     }
     gdone = gdone + 1;
   }
@@ -12543,10 +12738,103 @@ pub fn emit(mut prog: *Prog) -> string {
   // the bottom)
   let mut rdone2: usize = 0;
   while rdone2 < pool.rel_n {
-    fntext = fntext + pool.rel_texts[rdone2];
+    chunks_add(mut chs, pool.rel_texts[rdone2]);
     rdone2 = rdone2 + 1;
   }
   let rdone2_done: usize = pool.rel_n;
+  // the float runtime compiles through the emitter's own front end
+  // when a float hole printed (its fns ride the same filter)
+  if FLOAT_WANTED > 0 {
+    let mut toks: []*Tok = lex.lex(FLOATSRC);
+    let mut fprog: *Prog = parse.parse(toks, FLOATSRC);
+    let mut fi2: usize = 0;
+    while fi2 < len(fprog.fns) {
+      chunks_add(mut chs, emit_fn(fprog.fns[fi2], mut pool, mut fprog, ""));
+      fi2 = fi2 + 1;
+    }
+  }
+  // _start's own emission registers thunks after the first drain:
+  // drain again (idempotent — registry entries append)
+  let mut rdone3: usize = rdone2_done;
+  while rdone3 < pool.rel_n {
+    chunks_add(mut chs, pool.rel_texts[rdone3]);
+    rdone3 = rdone3 + 1;
+  }
+  // the runtime templates ride the same filter: each fn its own chunk,
+  // kept only when kept code still calls it
+  chunks_add(mut chs, W_ALLOC);
+  chunks_add(mut chs, W_RETAIN);
+  chunks_add(mut chs, W_ALIVE);
+  chunks_add(mut chs, W_APP);
+  chunks_add(mut chs, W_PANIC);
+  chunks_add(mut chs, W_I64);
+  chunks_add(mut chs, W_U64);
+  chunks_add(mut chs, W_CAT);
+  chunks_add(mut chs, W_ITOA);
+  chunks_add(mut chs, W_STREQ);
+  chunks_add(mut chs, W_ENUQ);
+  chunks_add(mut chs, W_BOOL);
+  if pool.has_io {
+    chunks_add(mut chs, W_IO_READ_PACKED);
+    chunks_add(mut chs, W_IO_WRITE);
+    chunks_add(mut chs, W_IO_CLOSE);
+    chunks_add(mut chs, W_IO_OPEN);
+    chunks_add(mut chs, W_IO_STRING_FROM);
+  }
+  // ---- the filter: BFS from _start + the closure table over call
+  // tokens; unreachable chunks and untouched statics drop ----
+  let mut reach: *Reach = reach_new(chs.n, prog.nconsts as usize);
+  let mut ci5: usize = 0;
+  while ci5 < chs.n {
+    if len(chs.names[ci5]) > 0 {
+      reach_put(mut reach, chs.names[ci5], ci5 as i64);
+    }
+    ci5 = ci5 + 1;
+  }
+  let mut si3: usize = 0;
+  while si3 < prog.nconsts {
+    if prog.cstatic[si3] {
+      let gname: string = "$g_" + prog.consts[si3];
+      let sval: i64 = 0 - ((si3 as i64) + 2);
+      reach_put(mut reach, gname, sval);
+      if prog.ctypes[si3] == "string" {
+        reach_put(mut reach, gname + "_l", sval);
+      }
+    }
+    si3 = si3 + 1;
+  }
+  reach_scan(mut reach, body);
+  // _start's own prologue rides the assembly, not the body text — its
+  // none-box init pins $w_alloc (every module's one forced callee)
+  reach_scan(mut reach,
+             "    (global.set $w_none_box (i64.extend_i32_u (call $w_alloc (i32.const 2))))\n");
+  let mut ti3: usize = 0;
+  while ti3 < pool.gi.cfn {
+    let v3: i64 = reach_get(reach, pool.gi.clo_wasms[ti3]);
+    if v3 >= 0 {
+      let ci6: usize = v3 as usize;
+      if !reach.keep[ci6] {
+        reach.keep[ci6] = true;
+        reach.queue[reach.qn] = ci6;
+        reach.qn = reach.qn + 1;
+      }
+    }
+    ti3 = ti3 + 1;
+  }
+  let mut qi2: usize = 0;
+  while qi2 < reach.qn {
+    reach_scan(mut reach, chs.texts[reach.queue[qi2]]);
+    qi2 = qi2 + 1;
+  }
+  // the kept fns (collection order) — unreachable chunks never ride
+  let mut ci7: usize = 0;
+  while ci7 < chs.n {
+    if reach.keep[ci7] || len(chs.names[ci7]) == 0 {
+      fntext = fntext + chs.texts[ci7];
+    }
+    ci7 = ci7 + 1;
+  }
+  fntext = fntext + chs.forced;
   // assemble: header, memory, runtime, _start with the let locals
   let mut out: string = "";
   out = out + "(module\n";
@@ -12574,7 +12862,7 @@ pub fn emit(mut prog: *Prog) -> string {
   out = out + "  (export \"memory\" (memory 0))\n";
   let mut gi: usize = 0;
   while gi < prog.nconsts {
-    if prog.cstatic[gi] {
+    if prog.cstatic[gi] && reach.stat_hit[gi] {
       let mut ginit: string = prog.cvals[gi].to_str();
       if prog.ctypes[gi] == "string" {
         // a string static's pair rides TWO globals — the address and
@@ -12615,19 +12903,11 @@ pub fn emit(mut prog: *Prog) -> string {
     }
     gi = gi + 1;
   }
-  out = out + RUNTIME;
-  out = out + UINT;
-  out = out + CAT;
-  out = out + ITOA;
   out = out + alloc_wat((pool.next + 7) / 8 * 8);
-  out = out + ALLOC_BODY;
-  if pool.has_io {
-    out = out + IO_TAIL;
-  }
-  out = out + STREQ;
-  out = out + ENUQ;
   out = out + NONEBOX;
-  out = out + BOOLTEXT;
+  if reach_kept_fn(reach, "$w_i64") || reach_kept_fn(reach, "$w_u64") {
+    out = out + W_TOP;
+  }
   if pool.gi.cfn > 0 {
     // the closure table: one funcref per entry, the indirect-call
     // types for the arities the calls used (flag 1 = scalar result,
@@ -12675,18 +12955,6 @@ pub fn emit(mut prog: *Prog) -> string {
     }
     out = out + ")\n";
   }
-  if FLOAT_WANTED > 0 {
-    out = out + float_runtime_wat(mut pool);
-  }
-  // _start's own emission registers thunks after the first drain:
-  // drain again (idempotent — registry entries append)
-  let mut rdone3: usize = 0;
-  while rdone3 < pool.rel_n {
-    if rdone3 >= rdone2_done {
-      fntext = fntext + pool.rel_texts[rdone3];
-    }
-    rdone3 = rdone3 + 1;
-  }
   out = out + fntext;
   out = out + "  (export \"_start\" (func $_start))\n";
   out = out + "  (func $_start (local $a i32) (local $l i32) (local $rc i32) (local $t i64) (local $r i64) (local $d i64) (local $sfa i32) (local $sfl i32)\n";
@@ -12700,10 +12968,11 @@ pub fn emit(mut prog: *Prog) -> string {
   out = out + "    (global.set $w_none_box (i64.extend_i32_u ";
   out = out + "(call $w_alloc (i32.const 2))))\n";
   // a float-typed static's bits cannot ride a wasm global initializer
-  // (reinterpret is no const expr) — the value lands at _start
+  // (reinterpret is no const expr) — the value lands at _start, but
+  // only for statics some kept fn still touches
   let mut fsi: usize = 0;
   while fsi < prog.nconsts {
-    if prog.cstatic[fsi] &&
+    if prog.cstatic[fsi] && reach.stat_hit[fsi] &&
         (prog.ctypes[fsi] == "f64" || prog.ctypes[fsi] == "f32") {
       let ie: *Expr = prog.cexprs[fsi];
       if ie.tag == parse.EX_FLIT {
@@ -12722,7 +12991,9 @@ pub fn emit(mut prog: *Prog) -> string {
   out = out + "    (call $proc_exit (i32.and (local.get 2) ";
   out = out + "(i32.const 255)))\n";
   out = out + "  )\n";
-  out = out + "  (data (i32.const 4030) \"truefalse\")\n";
+  if reach_kept_fn(reach, "$w_bool") {
+    out = out + "  (data (i32.const 4030) \"truefalse\")\n";
+  }
   let mut d: usize = 0;
   while d < pool.n {
     out = out + "  (data (i32.const ";
