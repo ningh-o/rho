@@ -258,106 +258,239 @@ fn is_unsigned_type(t: string) -> bool {
   return false;
 }
 
-// ---- float literals: the raw token text back to a double, then the
-// canonical %.17g spelling through f64.to_str (the prelude rides
-// boot's own dtoa, so the spelling is the judge's by construction).
-// Exact for any mantissa <= 2^53 with |exponent| <= 22 (the mantissa
-// and the power of ten are exact doubles; the one divide/multiply is
-// correctly rounded = strtod). Wider mantissas and bigger exponents
-// scale a double-double pair by exact 1e9 chunks. ----
+// ---- float literals: the token's exact decimal → the nearest f64
+// (C strtod's law) → the %.17g spelling (the runtime's dec_text
+// through f64.to_str, minus its with_frac wrapper). The parse runs on
+// exact u32-limb bignums: the kept digit string times 5^k (10^k =
+// 5^k × 2^k), then a 54-bit (mantissa + guard) normalize with a
+// sticky for everything below — round-to-nearest-even lands the
+// strtod bit pattern; denormals renormalize onto the 2^-1074 grid.
+// The dd experiment this replaces was blind past its exact window
+// (5e-324 came out e-22). ----
 
-struct DD {
-  hi: f64,
-  lo: f64,
+// little-endian u32-limb bignum with a sticky bit for lost low data
+struct BN {
+  l: []i64,
+  n: usize,
+  s: bool,
 }
 
-// exact product of two doubles (Dekker's twoProduct, no fma needed)
-fn dd_two_prod(a: f64, b: f64) -> *DD {
-  let split: f64 = 134217729.0;
-  let ca: f64 = split * a;
-  let ahi: f64 = ca - (ca - a);
-  let alo: f64 = a - ahi;
-  let cb: f64 = split * b;
-  let bhi: f64 = cb - (cb - b);
-  let blo: f64 = b - bhi;
-  let p: f64 = a * b;
-  let err: f64 = ((ahi * bhi - p) + ahi * blo + alo * bhi) + alo * blo;
-  return new DD { hi: p, lo: err };
+fn bn_new() -> *BN {
+  return new BN { l: make([]i64, 200), n: 1, s: false };
 }
 
-// exact sum of two doubles (Knuth's twoSum)
-fn dd_two_sum(a: f64, b: f64) -> *DD {
-  let s: f64 = a + b;
-  let bb: f64 = s - a;
-  let err: f64 = (a - (s - bb)) + (b - bb);
-  return new DD { hi: s, lo: err };
-}
-
-// (hi, lo) * y for an exact scalar y — a DDMul step, renormalized
-fn dd_scale(hi: f64, lo: f64, y: f64) -> *DD {
-  let p: *DD = dd_two_prod(hi, y);
-  let t: *DD = dd_two_sum(p.lo, lo * y);
-  let s: f64 = p.hi + t.hi;
-  // |s| >= |t.lo| holds here — the quick form renormalizes exactly
-  let z: f64 = s + t.lo;
-  let e: f64 = t.lo - (z - s);
-  return new DD { hi: z, lo: e };
-}
-
-// 10^k as an exact double, k <= 22
-fn pow10(k: i64) -> f64 {
-  if k == 0 { return 1.0; }
-  if k == 1 { return 10.0; }
-  if k == 2 { return 100.0; }
-  if k == 3 { return 1000.0; }
-  if k == 4 { return 10000.0; }
-  if k == 5 { return 100000.0; }
-  if k == 6 { return 1000000.0; }
-  if k == 7 { return 10000000.0; }
-  if k == 8 { return 100000000.0; }
-  if k == 9 { return 1000000000.0; }
-  if k == 10 { return 10000000000.0; }
-  if k == 11 { return 100000000000.0; }
-  if k == 12 { return 1000000000000.0; }
-  if k == 13 { return 10000000000000.0; }
-  if k == 14 { return 100000000000000.0; }
-  if k == 15 { return 1000000000000000.0; }
-  if k == 16 { return 10000000000000000.0; }
-  if k == 17 { return 100000000000000000.0; }
-  if k == 18 { return 1000000000000000000.0; }
-  if k == 19 { return 10000000000000000000.0; }
-  if k == 20 { return 100000000000000000000.0; }
-  if k == 21 { return 1000000000000000000000.0; }
-  return 10000000000000000000000.0;
-}
-
-// the double a decimal token spells: digits [.digits] [e[+-]digits]
-fn flit_value(text: string) -> f64 {
+fn bn_mul_small(mut a: *BN, m: i64) {
+  let mut carry: i64 = 0;
   let mut i: usize = 0;
-  let mut mant: i64 = 0;
-  let mut seen: i64 = 0; // significant digits kept (the rest round)
-  let mut frac: i64 = 0; // fraction digits consumed
-  let mut overflow: bool = false; // an integer digit past the cap
+  while i < a.n {
+    let t: i64 = a.l[i] * m + carry;
+    a.l[i] = t - ((t >> 32) << 32);
+    carry = t >> 32;
+    i = i + 1;
+  }
+  while carry > 0 {
+    a.l[a.n] = carry - ((carry >> 32) << 32);
+    carry = carry >> 32;
+    a.n = a.n + 1;
+  }
+}
+
+fn bn_add_small(mut a: *BN, v: i64) {
+  a.l[0] = a.l[0] + v;
+  let mut i: usize = 0;
+  while a.l[i] > 4294967295 {
+    a.l[i] = a.l[i] - 4294967296;
+    i = i + 1;
+    if i == a.n {
+      a.l[a.n] = 1;
+      a.n = a.n + 1;
+      return;
+    }
+    a.l[i] = a.l[i] + 1;
+  }
+}
+
+fn bn_is_zero(a: *BN) -> bool {
+  let mut i: usize = 0;
+  while i < a.n {
+    if a.l[i] != 0 {
+      return false;
+    }
+    i = i + 1;
+  }
+  return true;
+}
+
+fn bn_bitlen(a: *BN) -> i64 {
+  let mut i: usize = a.n;
+  while i > 0 {
+    i = i - 1;
+    if a.l[i] != 0 {
+      let mut v: i64 = a.l[i];
+      let mut b: i64 = (i as i64) * 32;
+      while v > 0 {
+        b = b + 1;
+        v = v >> 1;
+      }
+      return b;
+    }
+  }
+  return 0;
+}
+
+// one bit right; reports the bit left behind (the caller ORs sticky)
+fn bn_shr1(mut a: *BN) -> bool {
+  let lost: bool = (a.l[0] - ((a.l[0] >> 1) << 1)) == 1;
+  let mut i: usize = 0;
+  while i < a.n - 1 {
+    a.l[i] = (a.l[i] >> 1) | ((a.l[i + 1] - ((a.l[i + 1] >> 1) << 1)) << 31);
+    i = i + 1;
+  }
+  a.l[a.n - 1] = a.l[a.n - 1] >> 1;
+  if a.n > 1 && a.l[a.n - 1] == 0 {
+    a.n = a.n - 1;
+  }
+  return lost;
+}
+
+fn bn_shr(mut a: *BN, sh: i64) {
+  let mut k: i64 = 0;
+  while k < sh {
+    let lost = bn_shr1(mut a);
+    if lost {
+      a.s = true;
+    }
+    k = k + 1;
+  }
+}
+
+fn bn_shl(mut a: *BN, sh: i64) {
+  let mut k: i64 = 0;
+  while k < sh {
+    let mut carry: i64 = 0;
+    let mut i: usize = 0;
+    while i < a.n {
+      let t: i64 = (a.l[i] << 1) | carry;
+      a.l[i] = t - ((t >> 32) << 32);
+      carry = t >> 32;
+      i = i + 1;
+    }
+    if carry > 0 {
+      a.l[a.n] = carry;
+      a.n = a.n + 1;
+    }
+    k = k + 1;
+  }
+}
+
+fn bn_cmp(a: *BN, b: *BN) -> i64 {
+  if a.n != b.n {
+    if a.n < b.n {
+      return 0 - 1;
+    }
+    return 1;
+  }
+  let mut i: usize = a.n;
+  while i > 0 {
+    i = i - 1;
+    if a.l[i] != b.l[i] {
+      if a.l[i] < b.l[i] {
+        return 0 - 1;
+      }
+      return 1;
+    }
+  }
+  return 0;
+}
+
+// a -= b (the caller keeps a >= b)
+fn bn_sub(mut a: *BN, b: *BN) {
+  let mut borrow: i64 = 0;
+  let mut i: usize = 0;
+  while i < a.n {
+    let bi: i64 = if i < b.n { b.l[i] } else { 0 };
+    let t: i64 = a.l[i] - bi - borrow;
+    if t < 0 {
+      a.l[i] = t + 4294967296;
+      borrow = 1;
+    } else {
+      a.l[i] = t;
+      borrow = 0;
+    }
+    i = i + 1;
+  }
+  while a.n > 1 && a.l[a.n - 1] == 0 {
+    a.n = a.n - 1;
+  }
+}
+
+struct FLR {
+  v: f64,
+  inf: bool,
+  neg: bool,
+}
+
+fn fl_pow2(e: i64) -> f64 {
+  let mut p: f64 = 1.0;
+  let mut k: i64 = 0;
+  while k < e {
+    p = p * 2.0;
+    k = k + 1;
+  }
+  return p;
+}
+
+// value = m × 2^e, both exact — rebuild by power-of-two steps (each
+// step exact: the significand never changes, only the exponent)
+fn fl_rebuild(m: i64, e: i64) -> f64 {
+  let mut v: f64 = m as f64;
+  let mut ee: i64 = e;
+  while ee >= 30 {
+    v = v * 1073741824.0;
+    ee = ee - 30;
+  }
+  while ee <= -30 {
+    v = v / 1073741824.0;
+    ee = ee + 30;
+  }
+  if ee > 0 {
+    v = v * fl_pow2(ee);
+  }
+  if ee < 0 {
+    v = v / fl_pow2(0 - ee);
+  }
+  return v;
+}
+
+// the token's digits → (mantissa bignum, significant count, frac
+// digits, decimal exponent, negative flag)
+// the token's digits: mantissa bignum, significant count, fraction
+// digits, decimal exponent, sign
+struct FLNUM {
+  mant: *BN,
+  seen: i64,
+  frac: i64,
+  exp10: i64,
+  neg: bool,
+}
+
+fn fl_scan(text: string) -> *FLNUM {
+  let mut neg: bool = false;
+  let mut i: usize = 0;
+  if i < len(text) && text[i] == 45 {
+    neg = true;
+    i = i + 1;
+  }
+  let mut mant = bn_new();
+  let mut seen: i64 = 0;
+  let mut frac: i64 = 0;
+  let mut exp10: i64 = 0;
+  let mut infrac: bool = false;
   while i < len(text) {
     let c: u8 = text[i];
     if c == 46 {
+      infrac = true;
       i = i + 1;
-      while i < len(text) {
-        let c2: u8 = text[i];
-        if c2 == 95 {
-          i = i + 1;
-          continue;
-        }
-        if c2 < 48 || c2 > 57 {
-          break;
-        }
-        if seen < 18 {
-          mant = mant * 10 + ((c2 as i64) - 48);
-          seen = seen + 1;
-        }
-        frac = frac + 1;
-        i = i + 1;
-      }
       continue;
     }
     if c == 101 || c == 69 {
@@ -366,87 +499,240 @@ fn flit_value(text: string) -> f64 {
     if c < 48 || c > 57 {
       break;
     }
-    if seen < 18 {
-      mant = mant * 10 + ((c as i64) - 48);
+    let d: i64 = (c as i64) - 48;
+    if infrac {
+      frac = frac + 1;
+    }
+    if d == 0 && seen == 0 {
+      // a leading zero carries no significance (its fraction slot
+      // already counted through frac)
+      i = i + 1;
+      continue;
+    }
+    if seen < 1200 {
+      bn_mul_small(mut mant, 10);
+      bn_add_small(mut mant, d);
       seen = seen + 1;
     } else {
-      overflow = true;
+      if d != 0 {
+        mant.s = true;
+      }
     }
     i = i + 1;
   }
-  let mut exp: i64 = 0;
+  let mut have_exp: bool = false;
   if i < len(text) && (text[i] == 101 || text[i] == 69) {
     i = i + 1;
-    let mut neg: bool = false;
-    if i < len(text) && (text[i] == 45 || text[i] == 43) {
-      neg = text[i] == 45;
+    have_exp = len(text) > i && (text[i] == 43 || text[i] == 45 ||
+                                 (text[i] >= 48 && text[i] <= 57));
+  }
+  if have_exp {
+    let mut eneg: bool = false;
+    if i < len(text) && (text[i] == 43 || text[i] == 45) {
+      eneg = text[i] == 45;
       i = i + 1;
     }
     let mut v: i64 = 0;
     while i < len(text) {
-      let c3: u8 = text[i];
-      if c3 == 95 {
-        i = i + 1;
-        continue;
-      }
-      if c3 < 48 || c3 > 57 {
+      let c2: u8 = text[i];
+      if c2 < 48 || c2 > 57 {
         break;
       }
-      if v < 1000000000 {
-        v = v * 10 + ((c3 as i64) - 48);
+      if v < 100000000 {
+        v = v * 10 + ((c2 as i64) - 48);
       }
       i = i + 1;
     }
-    if neg {
-      exp = 0 - v;
+    if eneg {
+      exp10 = 0 - v;
     } else {
-      exp = v;
+      exp10 = v;
     }
   }
-  // value = mant * 10^k
-  let k: i64 = exp - frac;
-  let m: f64 = mant as f64;
-  if k >= 0 && k <= 22 && !overflow {
-    return m * pow10(k);
-  }
-  if k < 0 && k >= (0 - 22) && !overflow {
-    return m / pow10(0 - k);
-  }
-  // general path: the exact pair (m, err) — err is the rounding
-  // residue of the i64 mantissa, a small integer — scaled by exact
-  // 1e9 chunks (k < 0 beyond the exact window: the reciprocal is
-  // inexact, the corpus never lands here, best effort applies)
-  let mhi: i64 = m as i64;
-  let err: i64 = mant - mhi;
-  let mut hi: f64 = m;
-  let mut lo: f64 = err as f64;
-  let mut left: i64 = k;
-  if left < 0 {
-    // beyond the exact window the reciprocal is inexact — the
-    // corpus's decimals never land here, best effort applies
-    let mut neg: i64 = 0 - left;
-    if neg > 300 {
-      neg = 300;
-    }
-    return m / pow10(neg);
-  }
-  while left >= 9 {
-    let d: *DD = dd_scale(hi, lo, 1000000000.0);
-    hi = d.hi;
-    lo = d.lo;
-    left = left - 9;
-  }
-  if left > 0 {
-    let d2: *DD = dd_scale(hi, lo, pow10(left));
-    hi = d2.hi;
-    lo = d2.lo;
-    left = 0;
-  }
-  return hi + lo;
+  return new FLNUM { mant: mant, seen: seen, frac: frac, exp10: exp10,
+                     neg: neg };
 }
 
+// G (54 bits: 53 mantissa + guard) out of a bignum normalized to
+// exactly 54 bits (two limbs: bit 53 rides limb 1)
+fn bn_top54(a: *BN) -> i64 {
+  return (a.l[a.n - 1] << 32) | a.l[a.n - 2];
+}
+
+// the double the token spells (strtod's nearest-even law)
+fn flit_parse(text: string) -> *FLR {
+  let f = fl_scan(text);
+  if f.seen == 0 {
+    return new FLR { v: 0.0, inf: false, neg: f.neg };
+  }
+  let k: i64 = f.exp10 - f.frac;
+  // value ∈ [10^(seen+k-1), 10^(seen+k)) — the shortcuts only fire
+  // where the full path could not change the verdict
+  if f.seen + k - 1 >= 309 {
+    return new FLR { v: 0.0, inf: true, neg: f.neg };
+  }
+  if f.seen + k <= 0 - 324 {
+    return new FLR { v: 0.0, inf: false, neg: f.neg };
+  }
+  let mut g: i64 = 0; // 54 bits: 53 mantissa + guard at bit 0
+  let mut e2: i64 = 0; // value ≈ g × 2^e2 (± the sticky fraction)
+  let mut sticky: bool = false;
+  if k >= 0 {
+    // value = mant × 5^k × 2^k — the product is exact, normalize
+    let mut n: *BN = f.mant;
+    let mut j: i64 = 0;
+    while j < k {
+      bn_mul_small(mut n, 5);
+      j = j + 1;
+    }
+    sticky = n.s;
+    let bl: i64 = bn_bitlen(n);
+    if bl > 54 {
+      bn_shr(mut n, bl - 54);
+      sticky = sticky || n.s;
+    } else {
+      bn_shl(mut n, 54 - bl);
+    }
+    e2 = k + (bl - 54);
+    g = bn_top54(n);
+  } else {
+    // value = mant / 5^m × 2^-m — divide at 54-bit precision, the
+    // remainder joins the sticky
+    let m: i64 = 0 - k;
+    let mut den: *BN = bn_new();
+    den.l[0] = 1;
+    let mut j: i64 = 0;
+    while j < m {
+      bn_mul_small(mut den, 5);
+      j = j + 1;
+    }
+    sticky = f.mant.s;
+    // t: the left shift that lands floor(mant × 2^t / den) near 2^54
+    let t: i64 = 54 - bn_bitlen(f.mant) + bn_bitlen(den);
+    let mut x: *BN = f.mant;
+    if t > 0 {
+      bn_shl(mut x, t);
+    } else {
+      if t < 0 {
+        bn_shr(mut x, 0 - t);
+        sticky = sticky || x.s;
+      }
+    }
+    // binary long division: q = floor(x / den), x rides out the rest
+    // (the t shift pins bitlen(x) at 54 + bitlen(den): d == 54)
+    let d: i64 = bn_bitlen(x) - bn_bitlen(den);
+    let mut q: *BN = bn_new();
+    let mut den2 = bn_new();
+    let mut w: usize = 0;
+    while w < den.n {
+      den2.l[w] = den.l[w];
+      w = w + 1;
+    }
+    den2.n = den.n;
+    bn_shl(mut den2, d);
+    let mut i4: i64 = 0;
+    while i4 <= d {
+      bn_shl(mut q, 1);
+      if bn_cmp(x, den2) >= 0 {
+        bn_sub(mut x, den2);
+        q.l[0] = q.l[0] | 1;
+      }
+      if i4 < d {
+        bn_shr1(mut den2);
+      }
+      i4 = i4 + 1;
+    }
+    e2 = 0 - m - t;
+    if !bn_is_zero(x) {
+      sticky = true;
+    }
+    // normalize the quotient to exactly 54 bits
+    let bq: i64 = bn_bitlen(q);
+    if bq > 54 {
+      bn_shr(mut q, bq - 54);
+      e2 = e2 + (bq - 54);
+    } else {
+      if bq < 54 {
+        bn_shl(mut q, 54 - bq);
+        e2 = e2 - (54 - bq);
+      }
+    }
+    g = bn_top54(q);
+  }
+  // one nearest-even rounding from the exact decimal: guard at bit 0,
+  // sticky everything below. Normal targets round at 53 bits;
+  // subnormals (e < -1074) re-anchor on the 2^-1074 grid first.
+  let mut e: i64 = e2 + 1;
+  if e >= 972 {
+    return new FLR { v: 0.0, inf: true, neg: f.neg };
+  }
+  let mut m53: i64 = g >> 1;
+  if e >= -1074 {
+    let guard: i64 = g - ((g >> 1) << 1);
+    if guard == 1 && (sticky || (m53 - ((m53 >> 1) << 1)) == 1) {
+      m53 = m53 + 1;
+    }
+    if m53 == 9007199254740992 {
+      m53 = 4503599627370496;
+      e = e + 1;
+      if e >= 972 {
+        return new FLR { v: 0.0, inf: true, neg: f.neg };
+      }
+    }
+    return new FLR { v: fl_rebuild(m53, e), inf: false, neg: f.neg };
+  }
+  // subnormal: shift onto the 2^-1074 grid, one nearest-even round
+  let sh2: i64 = (0 - 1074) as i64 - e;
+  let mut k2: i64 = 0;
+  let mut round_up: bool = false;
+  if sh2 > 54 {
+    // the whole mantissa sits below half the grid unit: no round-up
+    k2 = 0;
+  } else {
+    k2 = m53 >> sh2;
+    let guard2: i64 = (m53 >> (sh2 - 1)) -
+                      ((m53 >> sh2) << 1);
+    let lowmask: i64 = (1 << (sh2 - 1)) - 1;
+    let st2: bool = sticky || ((m53 & lowmask) != 0);
+    round_up = guard2 == 1 && (st2 || (k2 - ((k2 >> 1) << 1)) == 1);
+  }
+  if round_up {
+    k2 = k2 + 1;
+  }
+  return new FLR { v: fl_rebuild(k2, -1074), inf: false, neg: f.neg };
+}
+
+// the %.17g spelling of a float token: strtod's nearest double, then
+// the runtime's dec_text(bits, 17) — through f64.to_str, whose
+// with_frac wrapper (integral floats keep a visible ".0") is undone:
+// boot's %.17g spells them bare
 fn fmt_flit(text: string) -> string {
-  return flit_value(text).to_str();
+  let r = flit_parse(text);
+  if r.inf {
+    if r.neg {
+      return "-inf";
+    }
+    return "inf";
+  }
+  if r.v == 0.0 {
+    if r.neg {
+      return "-0";
+    }
+    return "0";
+  }
+  let mut v: f64 = r.v;
+  if r.neg {
+    v = 0.0 - v;
+  }
+  let s: string = v.to_str();
+  // with_frac keeps a visible fraction on integral values; dec_text's
+  // drop_zeros never leaves a genuine ".0" tail — so a dotless-exponent
+  // string ending in ".0" is exactly the wrapper's artifact, and boot's
+  // %.17g spells the integer bare
+  if len(s) >= 2 && s[len(s) - 1] == 48 && s[len(s) - 2] == 46 {
+    return s[0..(len(s) - 2)];
+  }
+  return s;
 }
 
 // ---- expressions ----
@@ -494,7 +780,11 @@ fn fmt_arm_rhs(prog: *Prog, mut cur: *CmtCur, arm: *MatchArm,
     out = out + " {";
     out = out + "\n";
     out = out + fmt_block(prog, mut cur, arm.body, depth + 1);
-    out = out + cmt_flush(prog, mut cur, block_end(arm.body), depth + 1);
+    // comments above the block's closing brace print at the block's
+    // OUTER depth (boot's fmt_block flushes after its depth drop)
+    if arm.bend > 0 {
+      out = out + cmt_flush(prog, mut cur, arm.bend as i64, depth);
+    }
     // a block arm can carry a tail expression beside its statements —
     // it rides as the block's final `expr;` line
     match arm.val {
@@ -528,6 +818,14 @@ pub fn fmt_pattern(prog: *Prog, p: *Pat) -> string {
     return "_";
   }
   if p.kind == 1 {
+    // the bool words ride their own lane (boot's NT_PLIT op-2): the
+    // parser keeps the spelling, the value still compares as 0/1
+    if p.bval {
+      if p.lit == 1 {
+        return "true";
+      }
+      return "false";
+    }
     return fmt_lit(p.lit);
   }
   // a variant: Enum.Var(binders) tuple-form or Enum.Var{binders}
@@ -794,7 +1092,12 @@ pub fn fmt_expr(prog: *Prog, mut cur: *CmtCur, e: *Expr,
       body = e.marms[0].body;
     }
     out = out + fmt_block(prog, mut cur, body, depth + 1);
-    out = out + cmt_flush(prog, mut cur, block_end(body), depth + 1);
+    // comments above the closure's closing brace ride at the block's
+    // OUTER depth (boot's fmt_block law), anchored on the brace line
+    if len(e.marms) > 0 && e.marms[0].bend > 0 {
+      out = out + cmt_flush(prog, mut cur, e.marms[0].bend as i64,
+                            depth);
+    }
     out = out + ind_of(depth);
     return out + "}";
   }
@@ -815,9 +1118,13 @@ pub fn fmt_expr(prog: *Prog, mut cur: *CmtCur, e: *Expr,
       out = out + ";\n";
     }
     // the else arm: a nested if-expr rides inline (" else " + the
-    // nested if), a plain arm rides boot's block spelling
+    // nested if), a plain arm rides boot's block spelling — both
+    // close the then-block first (boot's fmt_block ends with its own
+    // "}" before the " else" text)
     if len(e.args) > 1 {
       let els: *Expr = e.args[1];
+      out = out + ind_of(depth);
+      out = out + "}";
       if els.tag == parse.EX_IF {
         out = out + " else " + fmt_expr(prog, mut cur, els, depth);
         return out;
@@ -935,7 +1242,8 @@ fn cmt_flush(prog: *Prog, mut cur: *CmtCur, before_line: i64,
 }
 
 // the block's last replay line: its final statement's end (an empty
-// block has nothing riding above its closer)
+// block has nothing riding above its closer) — kept for callers that
+// have no stamped brace line
 fn block_end(nodes: []*Stmt) -> i64 {
   if len(nodes) == 0 {
     return 0 - 1;
@@ -1107,9 +1415,13 @@ pub fn fmt_line(prog: *Prog, mut cur: *CmtCur, st: *Stmt,
     return out + "\n";
   }
   if st.tag == parse.ST_BLOCK {
-    let mut out: string = ind + "{\n";
+    // a bare block statement rides fmt_block's own " {" opener —
+    // boot's spelling carries the space (n12: "   {" at depth 1)
+    let mut out: string = ind + " {\n";
     out = out + fmt_block(prog, mut cur, st.body, depth + 1);
-    out = out + cmt_flush(prog, mut cur, block_end(st.body), depth + 1);
+    if st.bend > 0 {
+      out = out + cmt_flush(prog, mut cur, st.bend as i64, depth);
+    }
     return out + ind + "}\n";
   }
   if st.tag == parse.ST_IF {
@@ -1127,12 +1439,15 @@ pub fn fmt_line(prog: *Prog, mut cur: *CmtCur, st: *Stmt,
     }
     out = out + " {\n";
     out = out + fmt_block(prog, mut cur, st.body, depth + 1);
-    out = out + cmt_flush(prog, mut cur, block_end(st.body), depth + 1);
+    if st.bend > 0 {
+      out = out + cmt_flush(prog, mut cur, st.bend as i64, depth);
+    }
     out = out + ind;
     out = out + "}";
     // else-if chains ride inline; a plain else takes one space
     let mut tail: []*Stmt = st.body2;
     let mut d: usize = depth;
+    let mut bend2: i64 = st.bend2 as i64;
     while len(tail) == 1 && tail[0].tag == parse.ST_IF {
       let nx = tail[0];
       out = out + " else ";
@@ -1149,15 +1464,20 @@ pub fn fmt_line(prog: *Prog, mut cur: *CmtCur, st: *Stmt,
       }
       out = out + " {\n";
       out = out + fmt_block(prog, mut cur, nx.body, d + 1);
-      out = out + cmt_flush(prog, mut cur, block_end(nx.body), d + 1);
+      if nx.bend > 0 {
+        out = out + cmt_flush(prog, mut cur, nx.bend as i64, d);
+      }
       out = out + ind_of(d);
       out = out + "}";
       tail = nx.body2;
+      bend2 = nx.bend2 as i64;
     }
     if len(tail) > 0 {
       out = out + " else {\n";
       out = out + fmt_block(prog, mut cur, tail, depth + 1);
-      out = out + cmt_flush(prog, mut cur, block_end(tail), depth + 1);
+      if bend2 > 0 {
+        out = out + cmt_flush(prog, mut cur, bend2, depth);
+      }
       out = out + ind;
       out = out + "}";
     }
@@ -1178,7 +1498,9 @@ pub fn fmt_line(prog: *Prog, mut cur: *CmtCur, st: *Stmt,
     }
     out = out + " {\n";
     out = out + fmt_block(prog, mut cur, st.body, depth + 1);
-    out = out + cmt_flush(prog, mut cur, block_end(st.body), depth + 1);
+    if st.bend > 0 {
+      out = out + cmt_flush(prog, mut cur, st.bend as i64, depth);
+    }
     return out + ind + "}\n";
   }
   if st.tag == parse.ST_LOOP {
@@ -1189,7 +1511,9 @@ pub fn fmt_line(prog: *Prog, mut cur: *CmtCur, st: *Stmt,
     }
     out = out + "loop {\n";
     out = out + fmt_block(prog, mut cur, st.body, depth + 1);
-    out = out + cmt_flush(prog, mut cur, block_end(st.body), depth + 1);
+    if st.bend > 0 {
+      out = out + cmt_flush(prog, mut cur, st.bend as i64, depth);
+    }
     return out + ind + "}\n";
   }
   if st.tag == parse.ST_BREAK {
@@ -1248,6 +1572,90 @@ pub fn fmt_block(prog: *Prog, mut cur: *CmtCur, nodes: []*Stmt,
 }
 
 // ---- declarations ----
+
+// one fn's parameter list: mut views, the receiver's derived
+// annotation dropped on a dotted method (recv = the receiver type),
+// variadic rest — shared by the plain-fn and impl-member spellings
+fn fn_params_text(fd: *FnDef, recv: string) -> string {
+  let mut out: string = "(";
+  let mut k: usize = 0;
+  while k < len(fd.params) {
+    if k > 0 {
+      out = out + ", ";
+    }
+    if k < len(fd.pmut) && fd.pmut[k] {
+      out = out + "mut ";
+    }
+    let mut annotated: bool = k < len(fd.ptypes) && len(fd.ptypes[k]) > 0;
+    if k == 0 && fd.params[k] == "self" && len(recv) > 0 && annotated {
+      // the pointer receiver rides bare; the value receiver keeps
+      // its annotation (boot's derivation law)
+      let pt: string = fd.ptypes[0];
+      if pt == ("*" + recv) {
+        annotated = false;
+      }
+    }
+    if annotated {
+      let mut st: string = fd.ptypes[k];
+      if k < len(fd.pvar) && fd.pvar[k] && len(st) >= 2 &&
+          st[0..2] == "[]" {
+        // the variadic's slice spelling desugars — boot spells the
+        // element form: ns: i64...
+        st = st[2..];
+      }
+      out = out + fd.params[k] + ": " + st;
+    } else {
+      out = out + fd.params[k];
+    }
+    if k < len(fd.pvar) && fd.pvar[k] {
+      out = out + "...";
+    }
+    k = k + 1;
+  }
+  return out + ")";
+}
+
+// one impl member: boot's NT_IMPL arm prints the BARE method name
+// (the receiver derivation homes on the impl target) and the body
+// block at the impl's depth
+fn fmt_impl_member(prog: *Prog, mut cur: *CmtCur, fd: *FnDef,
+                   irecv: string) -> string {
+  let mut nm: string = fd.name;
+  {
+    let mut di: usize = 0;
+    let mut dot: i64 = 0 - 1;
+    while di < len(nm) {
+      if nm[di] == 46 {
+        dot = di as i64;
+      }
+      di = di + 1;
+    }
+    if dot >= 0 {
+      nm = nm[(dot as usize + 1)..len(nm)];
+    }
+  }
+  let mut out: string = "fn " + nm;
+  out = out + fn_params_text(fd, irecv);
+  if len(fd.rtype) > 0 {
+    out = out + " -> ";
+    out = out + fd.rtype;
+  }
+  out = out + " {\n";
+  out = out + fmt_block(prog, mut cur, fd.body, 2);
+  if fd.end_line > 0 {
+    // the body block's outer depth is the impl's member depth
+    out = out + cmt_flush(prog, mut cur, fd.end_line as i64, 1);
+  }
+  out = out + "  }";
+  // a same-line note rides the member's closing brace (boot's
+  // cmt_tail: the newline follows after)
+  if fd.end_line > 0 && cur.i < prog.ncmts &&
+      prog.clines[cur.i] == (fd.end_line as i64) {
+    out = out + "  " + prog.ctexts[cur.i];
+    cur.i = cur.i + 1;
+  }
+  return out + "\n";
+}
 
 // one fn: pub, generics, params (mut views, the receiver's derived
 // annotation dropped on a dotted method, variadic rest), arrow, body
@@ -1325,7 +1733,12 @@ fn fmt_fn(prog: *Prog, mut cur: *CmtCur, fd: *FnDef) -> string {
   }
   out = out + " {\n";
   out = out + fmt_block(prog, mut cur, fd.body, 1);
-  out = out + cmt_flush(prog, mut cur, fd.end_line as i64, 1);
+  // comments above the body's closing brace print at the block's
+  // OUTER depth (boot's fmt_block flushes after its depth drop)
+  if fd.end_line > 0 {
+    out = out + cmt_flush(prog, mut cur, fd.end_line as i64, 0);
+  }
+  out = out + "}\n";
   // a same-line note rides the closing brace (boot's tail_back:
   // back over the newline, append, restore)
   if fd.end_line > 0 && cur.i < prog.ncmts &&
@@ -1334,7 +1747,7 @@ fn fmt_fn(prog: *Prog, mut cur: *CmtCur, fd: *FnDef) -> string {
     out = out[0..cut] + "  " + prog.ctexts[cur.i] + "\n";
     cur.i = cur.i + 1;
   }
-  return out + "}\n";
+  return out;
 }
 
 fn fmt_use(u: usize, prog: *Prog) -> string {
@@ -1520,6 +1933,26 @@ pub fn fmt_prog(prog: *Prog) -> string {
       }
       f0 = f0 + 1;
     }
+    // main is a decl in boot's table — on a main-only program it is
+    // the ONLY anchor: without it the header flush runs at INT_MAX
+    // and swallows every comment in the file in one gulp
+    if prog.mainline > 0 {
+      if (prog.mainline as i64) < firstd {
+        firstd = prog.mainline as i64;
+      }
+    } else {
+      if len(prog.main) > 0 && prog.main[0].line > 0 &&
+          (prog.main[0].line as i64) < firstd {
+        firstd = prog.main[0].line as i64;
+      }
+    }
+    let mut i0: usize = 0;
+    while i0 < prog.nimpls {
+      if prog.ilines[i0] < firstd {
+        firstd = prog.ilines[i0];
+      }
+      i0 = i0 + 1;
+    }
   }
   out = out + cmt_flush(prog, mut cur, firstd, 0);
   let mut u: usize = 0;
@@ -1527,16 +1960,30 @@ pub fn fmt_prog(prog: *Prog) -> string {
     out = out + fmt_use(u, prog);
     u = u + 1;
   }
+  // main is a decl in boot's table: it merges by its keyword's line
+  // like everything else (fns AFTER main must print AFTER it), and
+  // the file tail's comments flush after its closing brace
+  let mut mainline: i64 = 2147483647;
+  if prog.mainline > 0 {
+    // the fn main keyword's line — comments above it are main's own
+    // leading comments; body comments ride their statements inside
+    mainline = prog.mainline as i64;
+  } else if len(prog.main) > 0 {
+    mainline = prog.main[0].line as i64;
+  }
+  let mainend: i64 = prog.mainend as i64;
+  let mut maindone: bool = len(prog.main) == 0;
   // every declaration after the uses renders in source order: at each
   // step the earliest-line unrendered decl wins
   let mut cc: usize = 0;
   let mut sc: usize = 0;
   let mut ec: usize = 0;
   let mut tc: usize = 0;
+  let mut ic: usize = 0;
   let mut fc: usize = 0;
   while cc < prog.nconsts || sc < len(prog.structs) ||
         ec < len(prog.enums) || tc < len(prog.traits) ||
-        fc < len(prog.fns) {
+        ic < prog.nimpls || fc < len(prog.fns) || !maindone {
     let mut best: i64 = 2147483647;
     if cc < prog.nconsts && prog.cline[cc] < best {
       best = prog.cline[cc];
@@ -1550,8 +1997,15 @@ pub fn fmt_prog(prog: *Prog) -> string {
     if tc < len(prog.traits) && (prog.traits[tc].line as i64) < best {
       best = prog.traits[tc].line as i64;
     }
-    if fc < len(prog.fns) && (prog.fns[fc].line as i64) < best {
+    if ic < prog.nimpls && prog.ilines[ic] < best {
+      best = prog.ilines[ic];
+    }
+    if fc < len(prog.fns) && (prog.fimpl[fc] < 0) &&
+        (prog.fns[fc].line as i64) < best {
       best = prog.fns[fc].line as i64;
+    }
+    if !maindone && mainline < best {
+      best = mainline;
     }
     if cc < prog.nconsts && prog.cline[cc] == best {
       // comments above this const print at file depth
@@ -1607,30 +2061,56 @@ pub fn fmt_prog(prog: *Prog) -> string {
       out = out + fmt_trait(prog.traits[tc]);
       tc = tc + 1;
     }
-    if fc < len(prog.fns) && (prog.fns[fc].line as i64) == best {
+    if ic < prog.nimpls && prog.ilines[ic] == best {
+      // the impl decl: header, then its member fns at depth 1 (boot's
+      // NT_IMPL arm; the receiver derivation homes on the impl target)
+      out = out + cmt_flush(prog, mut cur, best, 0);
+      out = out + "impl " + prog.itraits[ic] + " for " +
+        prog.itypes[ic] + " {\n";
+      let mut m: usize = 0;
+      while m < len(prog.fns) {
+        if prog.fimpl[m] == (ic as i64) {
+          out = out + "  " +
+            fmt_impl_member(prog, mut cur, prog.fns[m],
+                            prog.itypes[ic]);
+        }
+        m = m + 1;
+      }
+      // the members never take the fn branch (their fimpl >= 0):
+      // walk fc past them or the merge loop spins forever
+      while fc < len(prog.fns) && prog.fimpl[fc] == (ic as i64) {
+        fc = fc + 1;
+      }
+      out = out + "}\n\n";
+      ic = ic + 1;
+    }
+    if fc < len(prog.fns) && (prog.fimpl[fc] < 0) &&
+        (prog.fns[fc].line as i64) == best {
       // comments above this fn print at file depth
       out = out + cmt_flush(prog, mut cur, best, 0);
       out = out + fmt_fn(prog, mut cur, prog.fns[fc]);
       fc = fc + 1;
     }
+    if !maindone && mainline == best {
+      out = out + cmt_flush(prog, mut cur, mainline, 0);
+      out = out + "fn main() -> i32 {\n" +
+            fmt_block(prog, mut cur, prog.main, 1);
+      // comments above main's closing brace ride at the block's outer
+      // depth (boot's block-close law), anchored on the brace line
+      if mainend > 0 {
+        out = out + cmt_flush(prog, mut cur, mainend, 0);
+      }
+      out = out + "}\n";
+      // a same-line note rides main's closing brace (boot's
+      // tail_back: back over the newline, append, restore)
+      if mainend > 0 && cur.i < prog.ncmts &&
+          prog.clines[cur.i] == mainend {
+        let cut: usize = len(out) - 1;
+        out = out[0..cut] + "  " + prog.ctexts[cur.i] + "\n";
+        cur.i = cur.i + 1;
+      }
+      maindone = true;
+    }
   }
-  // comments between the last declaration and main ride above main's
-  // signature (main is not a prog.fns member — without this flush
-  // the file header landed inside main's body); the file tail's own
-  // comments flush inside (above the brace) and after it (boot's
-  // trailing flush)
-  let mut mainline: i64 = 2147483647;
-  if prog.mainline > 0 {
-    // the fn main keyword's line — comments above it are main's own
-    // leading comments; body comments ride their statements inside
-    mainline = prog.mainline as i64;
-  } else if len(prog.main) > 0 {
-    mainline = prog.main[0].line as i64;
-  }
-  out = out + cmt_flush(prog, mut cur, mainline, 0);
-  out = out + "fn main() -> i32 {\n" +
-        fmt_block(prog, mut cur, prog.main, 1);
-  out = out + cmt_flush(prog, mut cur, 2147483647, 1);
-  out = out + "}\n";
   return out + cmt_flush(prog, mut cur, 2147483647, 0);
 }

@@ -40,28 +40,35 @@ for f in tests/suites/programs/*.rho(N); do
   # boot: the judge, twice — its own roundtrip stability decides which
   # fixpoint law applies to this program
   perl -e 'alarm 60; exec @ARGV' -- "$RHO" fmt "$f" >$T/boot1-$name.txt 2>/dev/null
-  cp $T/boot1-$name.txt $T/bootin-$name.rho
-  perl -e 'alarm 60; exec @ARGV' -- "$RHO" fmt $T/bootin-$name.rho >$T/boot2-$name.txt 2>/dev/null
+  # boot's second hop must reparse where the module tree resolves: a
+  # fmt output carried to $T loses the modules and boot refuses its
+  # own output (an artifact, not a drift). The scratch file rides a
+  # dot name — zsh's *.rho glob skips dotfiles, so no later run sees it
+  # — and is removed the moment its hop is done
+  cp $T/boot1-$name.txt tests/suites/programs/.fmtck-$name.rho
+  perl -e 'alarm 60; exec @ARGV' -- "$RHO" fmt \
+      tests/suites/programs/.fmtck-$name.rho >$T/boot2-$name.txt 2>/dev/null
+  rm -f tests/suites/programs/.fmtck-$name.rho
   if ! cmp -s $T/boot1-$name.txt $T/boot2-$name.txt; then
     bootfix=0
   else
     bootfix=1
   fi
   # the mirror: the compiler baked with this program as SRC, fmt mode
-  if ! "$RHO" build libs/compiler/main.rho -o $T/mc1-$name.wasm \
+  if ! perl -e 'alarm 120; exec @ARGV' -- "$RHO" build libs/compiler/main.rho -o $T/mc1-$name.wasm \
       --set "SRC=$src" --set "MODS=$mods" --set FMT=1 >$T/mc1-$name.log 2>&1; then
     echo "DIFF $name: the mirror refuses the program"
     fail=$((fail+1)); failed="$failed $name:build"; continue
   fi
-  wasmtime $T/mc1-$name.wasm >$T/mir1-$name.txt 2>/dev/null
+  perl -e 'alarm 60; exec @ARGV' -- wasmtime $T/mc1-$name.wasm >$T/mir1-$name.txt 2>/dev/null
   # hop two: the mirror re-formats its own output (the fixpoint probe)
   src2=$(cat $T/mir1-$name.txt)
-  if ! "$RHO" build libs/compiler/main.rho -o $T/mc2-$name.wasm \
+  if ! perl -e 'alarm 120; exec @ARGV' -- "$RHO" build libs/compiler/main.rho -o $T/mc2-$name.wasm \
       --set "SRC=$src2" --set "MODS=$mods" --set FMT=1 >$T/mc2-$name.log 2>&1; then
     echo "DIFF $name: the mirror refuses its own fmt output"
     fail=$((fail+1)); failed="$failed $name:rebuild"; continue
   fi
-  wasmtime $T/mc2-$name.wasm >$T/mir2-$name.txt 2>/dev/null
+  perl -e 'alarm 60; exec @ARGV' -- wasmtime $T/mc2-$name.wasm >$T/mir2-$name.txt 2>/dev/null
   # the verdict ladder: parity first (hop one), then the fixpoint law
   # at hop two — a parity failure reports as parity, never masked by
   # the hop-two outcome

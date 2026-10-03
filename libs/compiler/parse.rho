@@ -54,12 +54,15 @@ pub struct MatchArm {
   pat: *Pat,
   body: []*Stmt,
   val: ?*Expr,
+  bend: i32, // a block arm's closing-brace line (fmt's flush anchor)
 }
 
 // a pattern: _ | INT | Enum.Var | Enum.Var(a, b) | Enum.Var { a, b }
 pub struct Pat {
   kind: i32,      // 0 wildcard, 1 literal, 2 variant
   lit: i64,       // literal value
+  bval: bool,     // literal: the bool words spell true/false (boot's
+                  //   NT_PLIT op-2 lane; the value still rides lit 0/1)
   ename: string,  // variant: the enum name
   vname: string,  // variant: the variant name
   binders: []string,
@@ -103,6 +106,9 @@ pub struct Stmt {
   end_line: i32,   // the last consumed token's line (fmt rides the tail)
   init_line: i32,  // the init expr's first token — the literal lanes'
   init_col: i32,   //   diagnostics point at the value, boot-exact
+  bend: i32,       // the body block's closing-brace line (fmt's
+                   //   above-the-brace comment flush anchor)
+  bend2: i32,      // if: the final else block's closing-brace line
 }
 
 fn mk_stmt(tag: i32) -> *Stmt {
@@ -111,7 +117,8 @@ fn mk_stmt(tag: i32) -> *Stmt {
                     body: make([]*Stmt, 0), body2: make([]*Stmt, 0),
                     sub: Option.None, path: make([]string, 0),
                     marms: make([]*MatchArm, 0), line: 0, col: 0,
-                    end_line: 0, init_line: 0, init_col: 0 };
+                    end_line: 0, init_line: 0, init_col: 0,
+                    bend: 0, bend2: 0 };
 }
 
 // verbatim deep clones (other modules rebind type texts over them)
@@ -149,7 +156,7 @@ pub fn clone_expr(e: *Expr) -> *Expr {
       q = q + 1;
     }
     let mut arm = new MatchArm { pat: src.pat, body: nab,
-                             val: src.val };
+                             val: src.val, bend: src.bend };
     match src.val {
       Option.Some(v13) => {
         arm.val = Option.Some(clone_expr(v13));
@@ -171,7 +178,8 @@ pub fn clone_stmt(st: *Stmt) -> *Stmt {
                        sub: st.sub, path: st.path,
                        marms: st.marms, line: st.line, col: st.col,
                        end_line: st.end_line,
-                       init_line: st.init_line, init_col: st.init_col };
+                       init_line: st.init_line, init_col: st.init_col,
+                       bend: st.bend, bend2: st.bend2 };
   let mut k: usize = 0;
   while k < len(st.args) {
     out.args[k] = clone_expr(st.args[k]);
@@ -231,7 +239,7 @@ pub fn new_fndef(body: []*Stmt) -> *FnDef {
 pub fn clo_expr(params: []string, body: []*Stmt,
                 rtype: string) -> *Expr {
   let mut arm = new MatchArm { pat: mk_pat(0), body: body,
-                           val: Option.None };
+                           val: Option.None, bend: 0 };
   let mut arms: []*MatchArm = make([]*MatchArm, 1);
   arms[0] = arm;
   return new Expr { amut: false, aline: 0, acol: 0,
@@ -264,11 +272,11 @@ pub fn wrap_expr_stmt(e: *Expr) -> *Stmt {
 }
 
 pub fn mk_arm(p: *Pat, body: []*Stmt, val: ?*Expr) -> *MatchArm {
-  return new MatchArm { pat: p, body: body, val: val };
+  return new MatchArm { pat: p, body: body, val: val, bend: 0 };
 }
 
 pub fn mk_pat(kind: i32) -> *Pat {
-  return new Pat { kind: kind, lit: 0, ename: "", vname: "",
+  return new Pat { kind: kind, lit: 0, bval: false, ename: "", vname: "",
                    binders: make([]string, 0) };
 }
 
@@ -414,6 +422,12 @@ pub struct Prog {
   fns: []*FnDef,
   main: []*Stmt,
   mainline: i32, // the fn main keyword's line (fmt's main-block anchor)
+  mainend: i32,  // main's closing-brace line (fmt's block-close flush)
+  itraits: []string, // impl records: trait, type, keyword line, and
+  itypes: []string,  //   the per-fn membership index (fmt spells the
+  ilines: []i64,     //   impl decl back; boot's NT_IMPL)
+  nimpls: usize,
+  fimpl: []i64, // per-fn: the owning impl record (-1 = none)
   consts: []string, // module-level const/static names
   cvals: []i64,     // their folded initializer values
   cstatic: []bool,  // true = a static mut (a wasm global), false = a const
@@ -680,6 +694,8 @@ struct PCur {
   pos: usize,
   perrs: i64, // parse-fallback hits: any hit refuses, never emits
   impl_type: string, // inside an impl block: fns take "Type." names
+  impl_trait: string, // the impl header's trait (fmt spells the impl)
+  impl_idx: i32, // the open impl's record index (-1 = none open)
 }
 
 fn tk(c: *PCur) -> *Tok {
@@ -1268,6 +1284,43 @@ fn parse_primary(mut c: *PCur) -> *Expr {
   return parse_postfix(mut c, e);
 }
 
+
+// one if-expr arm's braced block: boot's fmt spells the arm's value
+// as the block's final `expr;` line, so the reparse reads STATEMENTS
+// — the arm's value is the last expression statement (a bare tail
+// before the closer takes the same lane); non-expression statements
+// (a let) ride parse_stmt and only the value lane is kept (§9 arms
+// are same-type expressions; the corpus's arms are single exprs)
+fn parse_if_arm(mut c: *PCur) -> *Expr {
+  let mut last: *Expr = lit(0);
+  let mut found: bool = false;
+  while !is_punct(tk(c), 125) && tk(c).kind != lex.TK_EOF {
+    let save: usize = c.pos;
+    let psave: i64 = c.perrs;
+    let e = parse_bin(mut c, 0);
+    if (is_punct(tk(c), 59) || is_punct(tk(c), 125)) && c.perrs == psave {
+      if is_punct(tk(c), 59) {
+        tkadv(mut c);
+      }
+      last = e;
+      found = true;
+      continue;
+    }
+    // not a clean expression statement: rewind, consume it as a
+    // statement (a `return;`, a let — boot's block arms are blocks)
+    c.pos = save;
+    c.perrs = psave;
+    parse_stmt(mut c);
+  }
+  if !found {
+    // an arm with no value expression is not an §9 expression arm:
+    // the construct is boot's statement form — poison the parse so a
+    // speculative tail probe rewinds to parse_stmt
+    c.perrs = c.perrs + 1;
+  }
+  return last;
+}
+
 fn parse_atom(mut c: *PCur) -> *Expr {
   let t = tk(c);
   if t.kind == lex.TK_KEYWORD && t.text == "fn" &&
@@ -1284,12 +1337,14 @@ fn parse_atom(mut c: *PCur) -> *Expr {
     let params = parse_params2(mut c, mut pstr2, mut pslc2, mut ptypes2, mut pvar2, mut pmut2);
     let rtype2: string = eat_arrow_typed(mut c);
     let mut body2: []*Stmt = make([]*Stmt, 0);
+    let mut clobend: i32 = 0;
     if eat_punct(mut c, 123) {
       let mut bstmts: []*Stmt = make([]*Stmt, 16);
       let mut bn: usize = 0;
       while tk(c).kind != lex.TK_EOF {
         if is_punct(tk(c), 125) {
           tkadv(mut c);
+          clobend = c.toks[c.pos - 1].line;
           break;
         }
         if bn >= len(bstmts) {
@@ -1301,6 +1356,7 @@ fn parse_atom(mut c: *PCur) -> *Expr {
       body2 = bstmts[0..bn];
     }
     let mut cx = clo_expr(params, body2, rtype2);
+    cx.marms[0].bend = clobend;
     {
       // the param types ride the idle args channel — fmt spells them
       // (fn(x: i32)); nothing else reads a closure's args
@@ -1381,7 +1437,7 @@ fn parse_atom(mut c: *PCur) -> *Expr {
     let cond = parse_bin(mut c, 0);
     let mut thenv: *Expr = lit(0);
     if eat_punct(mut c, 123) {
-      thenv = parse_bin(mut c, 0);
+      thenv = parse_if_arm(mut c);
       eat_punct(mut c, 125);
     }
     let mut elsev: *Expr = lit(0);
@@ -1391,7 +1447,7 @@ fn parse_atom(mut c: *PCur) -> *Expr {
         elsev = parse_primary(mut c);
       } else {
         if eat_punct(mut c, 123) {
-          elsev = parse_bin(mut c, 0);
+          elsev = parse_if_arm(mut c);
           eat_punct(mut c, 125);
         }
       }
@@ -1636,6 +1692,7 @@ fn parse_pat(mut c: *PCur) -> *Pat {
     if name0 == "true" || name0 == "false" {
       tkadv(mut c);
       let mut bp = mk_pat(1);
+      bp.bval = true;
       if name0 == "true" {
         bp.lit = 1;
       }
@@ -1769,11 +1826,32 @@ fn parse_arms(mut c: *PCur) -> []*MatchArm {
         // a tail expression: an expr followed by } (no ';') — the
         // probe is speculative: a statement head that falls into the
         // atom fallback must not count as a parse error once the
-        // cursor rewinds (parse_stmt re-parses it for real)
+        // cursor rewinds (parse_stmt re-parses it for real). A match
+        // construct never rides the tail lane: boot parses it at
+        // statement position as a statement (no trailing ';' — the
+        // statement match refuses one), so `match … {…}` before the
+        // closer is a body statement, and taking it as the tail would
+        // print an `expr;` the reparse reads back as a statement —
+        // the round trip would drift one semicolon per hop
         let save: usize = c.pos;
         let psave: i64 = c.perrs;
+        // a statement head never rides the tail lane: boot parses
+        // if/match/while/… at statement position as statements (their
+        // blocks are full blocks), and a speculative expression probe
+        // would swallow the whole construct as a degenerate if-expr
+        let mut stmt_head: bool = false;
+        {
+          let ht = tk(c);
+          if ht.kind == lex.TK_KEYWORD {
+            let w: string = ht.text;
+            stmt_head = w == "let" || w == "return" ||
+                        w == "while" || w == "loop" || w == "match" ||
+                        w == "break" || w == "continue" || w == "defer";
+          }
+        }
         let mut e = parse_bin(mut c, 0);
-        if is_punct(tk(c), 125) {
+        if is_punct(tk(c), 125) && !stmt_head && e.tag != EX_MATCH &&
+            c.perrs == psave {
           tail = Option.Some(e);
           tkadv(mut c);
           break;
@@ -1783,7 +1861,9 @@ fn parse_arms(mut c: *PCur) -> []*MatchArm {
         body[nb] = parse_stmt(mut c);
         nb = nb + 1;
       }
-      arms[na] = mk_arm(pat, body[0..nb], tail);
+      let mut arm = mk_arm(pat, body[0..nb], tail);
+      arm.bend = c.toks[c.pos - 1].line;
+      arms[na] = arm;
     } else {
       let mut e = parse_bin(mut c, 0);
       arms[na] = mk_arm(pat, make([]*Stmt, 0), Option.Some(e));
@@ -2224,6 +2304,7 @@ fn parse_stmt_i(mut c: *PCur) -> *Stmt {
     // follow the closing brace
     let mut st = mk_stmt(ST_BLOCK);
     st.body = parse_block(mut c);
+    st.bend = c.toks[c.pos - 1].line;
     eat_punct(mut c, 59);
     return st;
   }
@@ -2233,6 +2314,7 @@ fn parse_stmt_i(mut c: *PCur) -> *Stmt {
     let cond = parse_bin(mut c, 0);
     st.val = Option.Some(cond);
     st.body = parse_block(mut c);
+    st.bend = c.toks[c.pos - 1].line;
     let mut t2 = tk(c);
     if t2.kind == lex.TK_KEYWORD && t2.text == "else" {
       tkadv(mut c);
@@ -2244,6 +2326,7 @@ fn parse_stmt_i(mut c: *PCur) -> *Stmt {
         st.body2 = nested[0..1];
       } else {
         st.body2 = parse_block(mut c);
+        st.bend2 = c.toks[c.pos - 1].line;
       }
     }
     return st;
@@ -2295,6 +2378,7 @@ fn parse_stmt_i(mut c: *PCur) -> *Stmt {
     tkadv(mut c);
     let mut st = mk_stmt(ST_LOOP);
     st.body = parse_block(mut c);
+    st.bend = c.toks[c.pos - 1].line;
     return st;
   }
   if t.kind == lex.TK_KEYWORD && t.text == "while" {
@@ -2303,7 +2387,25 @@ fn parse_stmt_i(mut c: *PCur) -> *Stmt {
     let cond = parse_bin(mut c, 0);
     st.val = Option.Some(cond);
     st.body = parse_block(mut c);
+    st.bend = c.toks[c.pos - 1].line;
     return st;
+  }
+  // a bare expression statement: `expr;` — boot's final statement arm
+  // (the fmt tail `note;` inside a match's block arm rides back in
+  // through here); anything that is not `;`-closed falls through to
+  // the unknown-statement error
+  {
+    let save: usize = c.pos;
+    let psave: i64 = c.perrs;
+    let e = parse_bin(mut c, 0);
+    if is_punct(tk(c), 59) {
+      tkadv(mut c);
+      let mut st = mk_stmt(ST_CALL);
+      st.val = Option.Some(e);
+      return st;
+    }
+    c.pos = save;
+    c.perrs = psave;
   }
   // unknown statement: skip a token so the walk makes progress —
   // the fallback count refuses the program before anything emits
@@ -2509,10 +2611,18 @@ pub fn parse_full(toks: []*Tok, src: string, ctexts: []string,
   // sweep's local doubling retired)
   let mut fns = collections.vec_of[*FnDef](16);
   let mut nf: usize = 0;
+  // the impl records: one per `impl Trait for Type` header, with the
+  // per-fn membership index — fmt spells the impl form back (boot's
+  // NT_IMPL decl), sem keeps the dotted-fn view
+  let mut itraits = collections.vec_str(8);
+  let mut itypes = collections.vec_str(8);
+  let mut ilines = collections.vec_i64(8);
+  let mut fimpl = collections.vec_i64(16);
+  let mut nimpls: usize = 0;
   let mut nodes = collections.vec_of[*Stmt](len(src) + 4);
   let mut n: usize = 0;
   let mut c = new PCur { toks: toks, pos: 0, perrs: 0,
-                    impl_type: "" };
+                    impl_type: "", impl_trait: "", impl_idx: 0 - 1 };
   // the five value tables ride std Vec (grow by *2+1 — the old
   // fixed-64 arrays were written unguarded, and parse.rho itself
   // already rode 33 of the 64); the init expressions ride vec_of
@@ -2538,6 +2648,7 @@ pub fn parse_full(toks: []*Tok, src: string, ctexts: []string,
   let mut nu: usize = 0;
   let mut pending_pub: bool = false;
   let mut mline: i32 = 0;
+  let mut mainend: i32 = 0;
   let mut ntr: usize = 0;
   let mut break_to_fn: bool = false;
   while tk(c).kind != lex.TK_EOF {
@@ -2613,14 +2724,24 @@ pub fn parse_full(toks: []*Tok, src: string, ctexts: []string,
        (c.toks[c.pos + 1].kind == lex.TK_IDENT ||
         c.toks[c.pos + 1].kind == lex.TK_KEYWORD) {
       // impl Trait for Type { fn ... } — the fns register as the
-      // type's methods (the trait itself is a compile-time fact)
+      // type's methods (the trait itself is a compile-time fact);
+      // the header rides an impl record so fmt spells the form back
       tkadv(mut c); // impl
+      let trt = tk(c);
       tkadv(mut c); // the trait name
+      c.impl_type = "";
+      c.impl_trait = "";
       if tk(c).kind == lex.TK_IDENT && tk(c).text == "for" {
         tkadv(mut c); // for
         let itp = tk(c);
         if itp.kind == lex.TK_IDENT || itp.kind == lex.TK_KEYWORD {
           c.impl_type = itp.text;
+          c.impl_trait = trt.text;
+          c.impl_idx = nimpls as i32;
+          itraits.push(trt.text);
+          itypes.push(itp.text);
+          ilines.push(t.line as i64);
+          nimpls = nimpls + 1;
           tkadv(mut c);
         }
       }
@@ -2642,6 +2763,8 @@ pub fn parse_full(toks: []*Tok, src: string, ctexts: []string,
           continue;
         }
         c.impl_type = "";
+        c.impl_trait = "";
+        c.impl_idx = 0 - 1;
       }
       continue;
     }
@@ -3014,6 +3137,7 @@ pub fn parse_full(toks: []*Tok, src: string, ctexts: []string,
           while tk(c).kind != lex.TK_EOF {
             if is_punct(tk(c), 125) {
               tkadv(mut c);
+              mainend = c.toks[c.pos - 1].line;
               break;
             }
             nodes.push(parse_stmt(mut c));
@@ -3101,11 +3225,14 @@ pub fn parse_full(toks: []*Tok, src: string, ctexts: []string,
                            line: fnline, end_line: endl };
       pending_pub = false;
       fns.push(fd);
+      fimpl.push(c.impl_idx as i64);
       nf = nf + 1;
       if len(c.impl_type) > 0 && is_punct(tk(c), 125) {
         // the impl block closes: further fns are plain again
         tkadv(mut c);
         c.impl_type = "";
+        c.impl_trait = "";
+        c.impl_idx = 0 - 1;
         break_to_fn = false;
       }
       continue;
@@ -3113,7 +3240,10 @@ pub fn parse_full(toks: []*Tok, src: string, ctexts: []string,
     tkadv(mut c);
   }
   let mut prog = new Prog { fns: fns.view(), main: nodes.view(),
-                        mainline: mline,
+                        mainline: mline, mainend: mainend,
+                        itraits: itraits.view(), itypes: itypes.view(),
+                        ilines: ilines.view(), nimpls: nimpls,
+                        fimpl: fimpl.view(),
                         consts: cnames.view(), cvals: cvals.view(),
                         cstatic: cstatic.view(), ctypes: ctypes.view(),
                         cmuts: cmuts.view(), cexprs: cexprs.view(),
