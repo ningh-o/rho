@@ -145,6 +145,55 @@ fn decoded_len(raw: string) -> i64 {
   return n;
 }
 
+// the decoded bytes of a raw span (escapes resolved to their bytes) —
+// the pool's dedup key beyond the raw spelling itself
+fn decode_raw(raw: string) -> string {
+  let mut out: string = "";
+  let mut i: usize = 0;
+  while i < len(raw) {
+    if raw[i] == 92 && i + 1 < len(raw) {
+      let mut e: u8 = raw[i + 1];
+      if e == 120 && i + 3 < len(raw) {
+        let hi: i64 = hex_val(raw[i + 2]);
+        let lo: i64 = hex_val(raw[i + 3]);
+        out = out + byte_escape(((hi * 16 + lo) as u8));
+        i = i + 4;
+        continue;
+      }
+      if e == 117 {
+        let mut j: usize = i + 3;
+        let mut cp: i64 = 0;
+        while j < len(raw) && raw[j] != 125 {
+          let h: i64 = hex_val(raw[j]);
+          if h < 0 {
+            break;
+          }
+          cp = cp * 16 + h;
+          j = j + 1;
+        }
+        out = out + utf8_escape(cp);
+        i = j + 1;
+        continue;
+      }
+      e = match e {
+        110 => 10,
+        116 => 9,
+        114 => 13,
+        48 => 0,
+        92 => 92,
+        34 => 34,
+        _ => e,
+      };
+      out = out + byte_escape(e);
+      i = i + 2;
+      continue;
+    }
+    out = out + byte_escape(raw[i]);
+    i = i + 1;
+  }
+  return out;
+}
+
 pub fn pool_intern(mut p: *Pool, raw: string) -> i64 {
   let mut i: usize = 0;
   while i < p.n {
@@ -153,8 +202,19 @@ pub fn pool_intern(mut p: *Pool, raw: string) -> i64 {
     }
     i = i + 1;
   }
+  // the same string under another spelling ("A" vs "\x41") shares one
+  // segment: the pool's key is the DECODED content
+  let dl: i64 = decoded_len(raw);
+  i = 0;
+  while i < p.n {
+    if p.lens[i] == dl && p.segs[i] != raw &&
+        decode_raw(p.segs[i]) == decode_raw(raw) {
+      return p.addrs[i];
+    }
+    i = i + 1;
+  }
   p.segs[p.n] = raw;
-  p.lens[p.n] = decoded_len(raw);
+  p.lens[p.n] = dl;
   p.addrs[p.n] = p.next;
   p.n = p.n + 1;
   p.next = p.next + p.lens[p.n - 1] + 1;
@@ -169,7 +229,9 @@ pub fn pool_len(p: *Pool, raw: string) -> i64 {
     }
     i = i + 1;
   }
-  return 0;
+  // a spelling deduped into another segment: its decoded length is the
+  // shared segment's length by construction
+  return decoded_len(raw);
 }
 
 // the WAT data-segment body for a raw span: escapes decoded, every
@@ -3717,6 +3779,127 @@ fn name_is_const(prog: *Prog, name: string) -> bool {
     i = i + 1;
   }
   return false;
+}
+
+// a const's written type, "" when the name is no const
+fn const_type(prog: *Prog, name: string) -> string {
+  let mut i: usize = 0;
+  while i < prog.nconsts {
+    if prog.consts[i] == name && !prog.cstatic[i] {
+      return prog.ctypes[i];
+    }
+    i = i + 1;
+  }
+  return "";
+}
+
+// one comptime int operand: the folded value, "" when the operand is
+// not a numeric literal or an int/bool const name
+fn comptime_int(prog: *Prog, e: *Expr) -> ?i64 {
+  if e.tag == parse.EX_LIT {
+    if e.name == "true" || e.name == "false" {
+      return Option.None;
+    }
+    return Option.Some(e.lit);
+  }
+  if e.tag == parse.EX_VAR && name_is_const(prog, e.name) {
+    let ty: string = const_type(prog, e.name);
+    if ty == "string" {
+      return Option.None;
+    }
+    return Option.Some(const_value(prog, e.name));
+  }
+  return Option.None;
+}
+
+// wrap a literal into an operand width like the runtime lane: signed
+// widths sign-extend, unsigned widths zero-extend (the n25 law — the
+// fold wraps AND sign-extends at the operand width)
+fn lit_at_width(lit: i64, w: i64) -> i64 {
+  if w == 0 || w >= 64 || w <= 0 - 64 {
+    return lit;
+  }
+  if w < 0 {
+    let bits: i64 = 0 - w;
+    let mask: i64 = (1 << bits) - 1;
+    return lit & mask;
+  }
+  let sh: i64 = 64 - w;
+  return (lit << sh) >> sh;
+}
+
+// the comptime bool of a condition (the fold's safe faces only: bool
+// literals, bool consts, and ==/!= over folded ints — no arithmetic
+// nests, no short-circuits), None when the condition does not fold
+fn comptime_cond(prog: *Prog, e: *Expr) -> ?bool {
+  if e.tag == parse.EX_LIT {
+    if e.name == "true" {
+      return Option.Some(true);
+    }
+    if e.name == "false" {
+      return Option.Some(false);
+    }
+    return Option.None;
+  }
+  if e.tag == parse.EX_VAR && name_is_const(prog, e.name) {
+    if const_type(prog, e.name) == "bool" {
+      return Option.Some(const_value(prog, e.name) != 0);
+    }
+    return Option.None;
+  }
+  if e.tag == parse.EX_BIN && (e.op == 9 || e.op == 12 || e.op == 10) {
+    let mut lv: ?i64 = Option.None;
+    match e.lhs {
+      Option.Some(l) => {
+        lv = comptime_int(prog, l);
+      },
+      Option.None => {},
+    }
+    let mut rv: ?i64 = Option.None;
+    match e.rhs {
+      Option.Some(r) => {
+        rv = comptime_int(prog, r);
+      },
+      Option.None => {},
+    }
+    match lv {
+      Option.Some(l2) => {
+        match rv {
+          Option.Some(r2) => {
+            // a const operand wraps the literal at its own width
+            // (the runtime loads the literal at the bin width)
+            let mut lw: i64 = 0;
+            let mut rw2: i64 = 0;
+            match e.lhs {
+              Option.Some(l) => {
+                if l.tag == parse.EX_VAR && name_is_const(prog, l.name) {
+                  lw = type_width(const_type(prog, l.name));
+                }
+              },
+              Option.None => {},
+            }
+            match e.rhs {
+              Option.Some(r) => {
+                if r.tag == parse.EX_VAR && name_is_const(prog, r.name) {
+                  rw2 = type_width(const_type(prog, r.name));
+                }
+              },
+              Option.None => {},
+            }
+            let l3: i64 = lit_at_width(l2, rw2);
+            let r3: i64 = lit_at_width(r2, lw);
+            if e.op == 10 {
+              return Option.Some(l3 != r3);
+            }
+            return Option.Some(l3 == r3);
+          },
+          Option.None => {},
+        }
+      },
+      Option.None => {},
+    }
+  }
+  return Option.None;
 }
 
 // a const/static's float kind by its written type, 0 when not float
