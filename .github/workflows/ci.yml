@@ -27,8 +27,10 @@ jobs:
       - name: pin wabt + wasmtime
         run: |
           cd /tmp
+          # wabt renamed its ubuntu asset to -linux-x64 (1.0.39 ships no
+          # -ubuntu.tar.gz; the 404 page fed tar the not-in-gzip-format death)
           curl -sL \
-            "https://github.com/WebAssembly/wabt/releases/download/${WABT_VERSION}/wabt-${WABT_VERSION}-ubuntu.tar.gz" \
+            "https://github.com/WebAssembly/wabt/releases/download/${WABT_VERSION}/wabt-${WABT_VERSION}-linux-x64.tar.gz" \
             | tar xz
           sudo cp wabt-${WABT_VERSION}/bin/wat2wasm wabt-${WABT_VERSION}/bin/wasm2wat /usr/local/bin/
           curl -sL \
