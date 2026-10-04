@@ -965,7 +965,24 @@ section — no placeholder stages. boot is the reference compiler.
       tag alone used to decide, silently matching every payload); the
       matched flag gates every arm unconditionally (same-tag arms
       used to clobber each other); guards evaluate after the binders
-      and never close exhaustiveness.
+      and never close exhaustiveness. **Self-host calibration wave,
+      2026-10-04**: the mirror's §19 half arrived as a boot-parity
+      rewrite of the pattern layer — recursive Pat (nested payloads,
+      int/float/bool/string literal lanes), or-pattern alternatives,
+      guards, bare-variant resolution against the scrutinee's enum at
+      emission, bare binder arms taking the whole subject. The old
+      mirror matched `Some(3)` on the tag alone (Some(4) took the
+      arm), hard-wired bare Some/None to prelude tags (a user enum
+      with a different variant order silently mismatched), read bare
+      names as wildcards, and refused `|`/`if` arms outright. The
+      gate's leg 4 then caught the rewrite's own bug: the bool pin
+      read the lane marker instead of the value, both Some(bool) arms
+      pinned 1, and every `while true` in the compiler's own source
+      folded away — n26's law reborn through the rewrite, fixed by
+      reading lit, and two arena-cap overflows (the string pool's
+      fixed 2048, the arm table's fixed 12) grown on demand. n29 pins
+      the program-level face; 674 suite cases and the 100-program fmt
+      parity ride it.
 - [x] **T3.10** Bare receiver in impl methods (§18): `self` = `*T`
       read-only, `mut self` = writable — the type inferred from the
       implemented type; fully-typed receivers stay legal; signature
@@ -1627,13 +1644,22 @@ dependencies, shape, acceptance law, npm version policy. They start
 only when their listed dependencies close.
 **LANDED 2026-10-04** (packages/vite-plugin-rho, packages/prettier-plugin-rho):
 each embeds its compiler wasm and pins the generation it was baked
-from; the vite plugin's wasm is byte-identical to the CLI's on every
-programs-tier program it can ride (the three package-module programs
-refuse at the runtime face — the app face's runtime channel is
-/main.rho + /mode, documented in the package README), and the
+from; the vite plugin's wasm is byte-identical to the CLI's on EVERY
+programs-tier program — the runtime module channel (the app face reads
+/mods, 2026-10-04) closed the package-module gap, so the three former
+refusals (032/107/t09) compile plugin-side byte-exact too — and the
 prettier plugin is byte-faithful across the whole tier with the
-fixpoint law holding — the formatter-gap pin closed at zero. The
-bench and the LSP stay unstarted (no owner call yet).
+fixpoint law holding — the formatter-gap pin closed at zero.
+
+The post-freeze ecosystem pair landed the same day, owner-approved:
+tools/bench (docs/ecosystem.md §1) — the compile/exec/chain trend-line
+harness, 76 tests green, a real --iters 1 run over the corpus clean;
+packages/rho-lsp (§4) — the language server over the canonical
+boot-bake + bare-wasmtime embedding face, diagnostics/hover/definition/
+completion/format plus the §18 mut hint, every request time-capped,
+the degradation latch and the generation pin (startup re-hash, inert on
+drift) tested — 114/114 and both tsc configs clean; its generation
+artifacts re-pin with `npm run build:generation`.
 
 ## Phase 6 — freeze and 0.1.0
 

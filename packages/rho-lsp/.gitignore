@@ -1,3 +1,6 @@
 node_modules/
 dist/
 *.tsbuildinfo
+artifacts/generation.json
+artifacts/*.wasm
+artifacts/*.wat
