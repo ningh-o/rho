@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "rho-lsp.generation/1",
+  "rhoCommit": "1bf1224f3f82e47f737d67fd68717b298750d6ae",
+  "compilerSources": {
+    "check.rho": "520c116785a1673d987e0c5363ccb1346c2225ea4dd7d3d85dd4c82b8229515e",
+    "emit.rho": "5a2df7937473702ccdfd4e41ea5bef4a4bb67eb2b3f61880c3dcca77ccaad6aa",
+    "fmt.rho": "abd534ea6856ceed05cd702314e4879e50b93fd80f018949734952a7d0d0858e",
+    "lex.rho": "81777270916af7e9affe2cda5aa959a54b39339b01c5f0eaef183b44a485aa2b",
+    "main.rho": "835b966179dcd4365284b1f8fae3aff0b5d7d24caa34096e4f0f12acb8b6f6de",
+    "parse.rho": "f1bab2403240e09420599c71fa9accaa8db3d71fdef0b31d46e87169ae06b9ce"
+  },
+  "artifacts": {
+    "rho-check.wasm": "9395a8b1d268d2a4201b6cde2bbd879f637e0df30624131e59876bf878780ccb",
+    "rho-fmt.wasm": "78941ae6d7409d1352b0deec7e448fed9f835a7cf11602db8110f96581be5c02"
+  },
+  "tools": {
+    "wasmtime": "wasmtime 40.0.0 (0807b003e 2025-12-22)",
+    "wat2wasm": "1.0.39"
+  },
+  "rebuildIdentical": true
+}

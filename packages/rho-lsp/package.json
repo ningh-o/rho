@@ -1,0 +1,31 @@
+{
+  "name": "rho-lsp",
+  "version": "0.1.0",
+  "description": "Language Server Protocol server for the rho language, driven by the real compiler: every diagnostic is the compiler's own refusal, produced through the same boot -> self-hosted-compiler -> wasmtime face the repo's gates run.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "rho-lsp": "dist/main.js"
+  },
+  "main": "dist/main.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist",
+    "artifacts",
+    "tools",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
+    "test": "vitest run",
+    "build:generation": "node tools/build-check.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.9",
+    "typescript": "~5.9.3",
+    "vitest": "^3.2.7"
+  }
+}
