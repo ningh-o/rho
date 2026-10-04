@@ -80,7 +80,10 @@ int cmd_build(int argc, char **argv) {
   // briefly under heavy /tmp churn (macOS), and a spurious EBUSY must
   // never fail a deterministic build
   snprintf(tmppath, sizeof tmppath, "%s.tmp", wasmpath);
-  char cmd[1024];
+  // sized for the worst case outright (watpath + tmppath at their full
+  // widths plus the verb): a truncation warning is a build failure
+  // under -Werror on the Linux runner's fortified headers
+  char cmd[2048];
   snprintf(cmd, sizeof cmd, "wat2wasm %s -o %s", watpath, tmppath);
   if (system(cmd) != 0) {
     fprintf(stderr, "rho: wat2wasm failed; WAT kept at %s\n", watpath);
@@ -110,7 +113,11 @@ int cmd_run(int argc, char **argv) {
   char wasmt[] = "/tmp/rho-run.XXXXXX.wasm";
   int fd = mkstemps(watz, 4);
   close(fd);
-  mkstemps(wasmt, 5);
+  // the template's fd is never read (wasmtime reopens by path); the
+  // Linux runner's warn_unused_result demands the return be consumed
+  int fdw = mkstemps(wasmt, 5);
+  if (fdw >= 0)
+    close(fdw);
   char *wat = NULL;
   size_t wat_len = 0;
   emit_program(p, false, &wat, &wat_len);

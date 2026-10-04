@@ -269,7 +269,13 @@ static int run_program(const char *wat, size_t wat_len, char **out_s,
   int fd = mkstemps(watp, 4);
   if (fd < 0)
     return -1;
-  write(fd, wat, wat_len);
+  // a short write means the WAT never reached disk — fail the case,
+  // never feed wasmtime a truncated module (the return is also the
+  // Linux runner's warn_unused_result demand)
+  if (write(fd, wat, wat_len) != (ssize_t)wat_len) {
+    close(fd);
+    return -1;
+  }
   close(fd);
   if (mkstemps(wasmp, 5) < 0 || mkstemps(outp, 4) < 0 ||
       mkstemps(errp, 4) < 0) {
