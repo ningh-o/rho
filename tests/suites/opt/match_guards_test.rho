@@ -3,10 +3,13 @@
 // out: small
 // out: medium
 // out: large
-// ratified §19 ergonomics, not implemented in boot yet: today check
-// refuses `if` between pattern and arrow; the trailing `_` arm is the
-// ratified shape — a match whose arms are all guarded still needs a
-// fallback, so this match keeps one
+// out: big
+// out: v=2
+// out: none
+// §19 guards landed (T3.9, 2026-09-26): the guard evaluates after the
+// pattern matches, in scope of its bindings; a failed guard falls to
+// the next arm, and a guarded arm never counts toward exhaustiveness
+// (this match keeps its `_` fallback)
 fn classify(n: i32) -> string {
   return match n {
     x if x < 10 => "small",
@@ -15,9 +18,25 @@ fn classify(n: i32) -> string {
   };
 }
 
+enum Opt {
+  None,
+  Some(i32),
+}
+
+fn size(o: Opt) -> string {
+  return match o {
+    Some(v) if v > 5 => "big",
+    Some(v) => format("v={}", v),
+    None => "none",
+  };
+}
+
 fn main() -> i32 {
   printf("{}\n", classify(3));
   printf("{}\n", classify(42));
   printf("{}\n", classify(1000));
+  printf("{}\n", size(Opt.Some(9)));
+  printf("{}\n", size(Opt.Some(2)));
+  printf("{}\n", size(Opt.None));
   return 0;
 }

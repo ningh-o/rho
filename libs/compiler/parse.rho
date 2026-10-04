@@ -47,25 +47,38 @@ pub struct Expr {
   acol: i32,     //   diagnostic anchors there, boot-exact
 }
 
-// one match arm: a pattern, its statements, and the arm's final
-// expression (an expression match rides the tail; a block arm's
-// statements precede it)
+// one match arm: a pattern, its optional guard, its statements, and
+// the arm's final expression (an expression match rides the tail; a
+// block arm's statements precede it)
 pub struct MatchArm {
   pat: *Pat,
+  guard: ?*Expr, // §19: `pat if cond =>` — checked in the binder scope
   body: []*Stmt,
   val: ?*Expr,
   bend: i32, // a block arm's closing-brace line (fmt's flush anchor)
 }
 
-// a pattern: _ | INT | Enum.Var | Enum.Var(a, b) | Enum.Var { a, b }
+// a pattern: _ | LIT | binder | Enum.Var | Enum.Var(subs) |
+// Enum.Var { f, g: sub } | a bare Var candidate (parens/brace force
+// the variant form; the scrutinee's enum resolves it) | pat | pat
 pub struct Pat {
-  kind: i32,      // 0 wildcard, 1 literal, 2 variant
-  lit: i64,       // literal value
+  kind: i32,      // 0 wildcard, 1 literal, 2 variant, 3 binder, 4 or
+  lop: i32,       // literal lane: 0 int, 1 float, 2 bool, 3 string
+  lit: i64,       // literal int value
   bval: bool,     // literal: the bool words spell true/false (boot's
                   //   NT_PLIT op-2 lane; the value still rides lit 0/1)
-  ename: string,  // variant: the enum name
+  ftext: string,  // literal float: the raw decimal text rides it (the
+                  //   emitter's f64.const does strtod, like flit)
+  sval: string,   // literal string: the decoded content
+  name: string,   // binder name (kind 3)
+  ename: string,  // variant: the enum name ("" = a bare candidate —
+                  //   the scrutinee's enum resolves it, §19)
   vname: string,  // variant: the variant name
-  binders: []string,
+  vop: i32,       // variant payload: 0 unit, 1 tuple, 2 struct
+  subs: []*Pat,   // variant payload sub-patterns (tuple: positional;
+                  //   struct: per fnames)
+  fnames: []string, // struct payload: the field names, parallel to subs
+  alts: []*Pat,   // or-pattern alternatives (kind 4)
 }
 
 pub const ST_PF: i32 = 0;
@@ -155,8 +168,15 @@ pub fn clone_expr(e: *Expr) -> *Expr {
       nab[q] = clone_stmt(src.body[q]);
       q = q + 1;
     }
-    let mut arm = new MatchArm { pat: src.pat, body: nab,
+    let mut arm = new MatchArm { pat: clone_pat(src.pat),
+                             guard: Option.None, body: nab,
                              val: src.val, bend: src.bend };
+    match src.guard {
+      Option.Some(g0) => {
+        arm.guard = Option.Some(clone_expr(g0));
+      },
+      Option.None => {},
+    }
     match src.val {
       Option.Some(v13) => {
         arm.val = Option.Some(clone_expr(v13));
@@ -238,8 +258,8 @@ pub fn new_fndef(body: []*Stmt) -> *FnDef {
 
 pub fn clo_expr(params: []string, body: []*Stmt,
                 rtype: string) -> *Expr {
-  let mut arm = new MatchArm { pat: mk_pat(0), body: body,
-                           val: Option.None, bend: 0 };
+  let mut arm = new MatchArm { pat: mk_pat(0), guard: Option.None,
+                           body: body, val: Option.None, bend: 0 };
   let mut arms: []*MatchArm = make([]*MatchArm, 1);
   arms[0] = arm;
   return new Expr { amut: false, aline: 0, acol: 0,
@@ -271,13 +291,48 @@ pub fn wrap_expr_stmt(e: *Expr) -> *Stmt {
   return st;
 }
 
-pub fn mk_arm(p: *Pat, body: []*Stmt, val: ?*Expr) -> *MatchArm {
-  return new MatchArm { pat: p, body: body, val: val, bend: 0 };
+pub fn mk_arm(p: *Pat, guard: ?*Expr, body: []*Stmt,
+              val: ?*Expr) -> *MatchArm {
+  return new MatchArm { pat: p, guard: guard, body: body, val: val,
+                        bend: 0 };
 }
 
 pub fn mk_pat(kind: i32) -> *Pat {
-  return new Pat { kind: kind, lit: 0, bval: false, ename: "", vname: "",
-                   binders: make([]string, 0) };
+  return new Pat { kind: kind, lop: 0, lit: 0, bval: false, ftext: "",
+                   sval: "", name: "", ename: "", vname: "", vop: 0,
+                   subs: make([]*Pat, 0), fnames: make([]string, 0),
+                   alts: make([]*Pat, 0) };
+}
+
+// a deep pattern clone (the generic-clone paths share arms across
+// instantiations; emission resolves bare candidates against the
+// scrutinee's enum, so a shared node would let one instantiation's
+// resolution leak into another's)
+pub fn clone_pat(p: *Pat) -> *Pat {
+  let mut out = mk_pat(p.kind);
+  out.lop = p.lop;
+  out.lit = p.lit;
+  out.bval = p.bval;
+  out.ftext = p.ftext;
+  out.sval = p.sval;
+  out.name = p.name;
+  out.ename = p.ename;
+  out.vname = p.vname;
+  out.vop = p.vop;
+  out.fnames = p.fnames;
+  out.subs = make([]*Pat, len(p.subs));
+  let mut k: usize = 0;
+  while k < len(p.subs) {
+    out.subs[k] = clone_pat(p.subs[k]);
+    k = k + 1;
+  }
+  out.alts = make([]*Pat, len(p.alts));
+  let mut a: usize = 0;
+  while a < len(p.alts) {
+    out.alts[a] = clone_pat(p.alts[a]);
+    a = a + 1;
+  }
+  return out;
 }
 
 pub fn var(name: string) -> *Expr {
@@ -1630,8 +1685,96 @@ fn parse_bin(mut c: *PCur, min_prec: i32) -> *Expr {
   return lhs;
 }
 
-// one pattern: _ | INT | Enum.Var | Enum.Var(a, b) | Enum.Var { a, b }
-fn parse_pat(mut c: *PCur) -> *Pat {
+// one more pattern slot: the payload tables grow on demand — a fixed
+// cap was the same out-of-bounds class the param and arg tables held
+// before them
+fn pat_grow(old: []*Pat) -> []*Pat {
+  let mut big: []*Pat = make([]*Pat, len(old) * 2);
+  let mut i: usize = 0;
+  while i < len(old) {
+    big[i] = old[i];
+    i = i + 1;
+  }
+  return big;
+}
+
+// the ( ... ) tuple or { ... } struct payload of a variant pattern —
+// sub-patterns recurse (a literal pins the payload's value, a binder
+// binds it, a nested variant digs into the inner box)
+fn parse_variant_payload(mut c: *PCur, mut p: *Pat) {
+  if is_punct(tk(c), 40) {
+    p.vop = 1;
+    tkadv(mut c);
+    let mut subs: []*Pat = make([]*Pat, 4);
+    let mut ns: usize = 0;
+    while tk(c).kind != lex.TK_EOF {
+      if is_punct(tk(c), 41) {
+        tkadv(mut c);
+        break;
+      }
+      if ns + 1 > len(subs) {
+        subs = pat_grow(subs);
+      }
+      subs[ns] = parse_pattern(mut c);
+      ns = ns + 1;
+      if !eat_punct(mut c, 44) {
+        eat_punct(mut c, 41);
+        break;
+      }
+    }
+    p.subs = subs[0..ns];
+    return;
+  }
+  if is_punct(tk(c), 123) {
+    // struct payload: 'field: sub' pairs — a bare name binds itself
+    // (the field's own name), boot's NT_FIELD law
+    p.vop = 2;
+    tkadv(mut c);
+    let mut subs: []*Pat = make([]*Pat, 4);
+    let mut fns = collections.vec_str(8);
+    let mut ns: usize = 0;
+    while tk(c).kind != lex.TK_EOF {
+      if is_punct(tk(c), 125) {
+        tkadv(mut c);
+        break;
+      }
+      let ft = tk(c);
+      if ft.kind == lex.TK_IDENT || ft.kind == lex.TK_KEYWORD {
+        tkadv(mut c);
+        if ns + 1 > len(subs) {
+          subs = pat_grow(subs);
+        }
+        fns.push(ft.text);
+        if is_punct(tk(c), 58) {
+          tkadv(mut c); // :
+          subs[ns] = parse_pattern(mut c);
+        } else {
+          let mut bp = mk_pat(3);
+          bp.name = ft.text;
+          subs[ns] = bp;
+        }
+        ns = ns + 1;
+      } else {
+        tkadv(mut c);
+      }
+      if !eat_punct(mut c, 44) {
+        eat_punct(mut c, 125);
+        break;
+      }
+    }
+    p.subs = subs[0..ns];
+    p.fnames = fns.view();
+    return;
+  }
+  // no payload braces: the unit form
+  p.vop = 0;
+}
+
+// one pattern: literals (int/float/bool/string), the wildcard, a
+// binder, a path variant Enum.Var, or a bare variant candidate — an
+// ident followed by ( or { (§19: the scrutinee's enum resolves the
+// name; a name that is not a variant stays a binder there)
+fn parse_pattern(mut c: *PCur) -> *Pat {
   let t = tk(c);
   if t.kind == lex.TK_IDENT && t.text == "_" {
     tkadv(mut c);
@@ -1640,7 +1783,15 @@ fn parse_pat(mut c: *PCur) -> *Pat {
   if t.kind == lex.TK_INT {
     tkadv(mut c);
     let mut p = mk_pat(1);
+    p.lop = 0;
     p.lit = t.ival;
+    return p;
+  }
+  if t.kind == lex.TK_FLOAT {
+    tkadv(mut c);
+    let mut p = mk_pat(1);
+    p.lop = 1;
+    p.ftext = t.text;
     return p;
   }
   if is_punct(t, 45) && c.pos + 1 < len(c.toks) &&
@@ -1650,7 +1801,15 @@ fn parse_pat(mut c: *PCur) -> *Pat {
     let it = tk(c);
     tkadv(mut c);
     let mut p = mk_pat(1);
+    p.lop = 0;
     p.lit = 0 - it.ival;
+    return p;
+  }
+  if t.kind == lex.TK_STR {
+    tkadv(mut c);
+    let mut p = mk_pat(1);
+    p.lop = 3;
+    p.sval = t.text;
     return p;
   }
   if t.kind == lex.TK_IDENT || t.kind == lex.TK_KEYWORD {
@@ -1661,6 +1820,7 @@ fn parse_pat(mut c: *PCur) -> *Pat {
     if name0 == "true" || name0 == "false" {
       tkadv(mut c);
       let mut bp = mk_pat(1);
+      bp.lop = 2;
       bp.bval = true;
       if name0 == "true" {
         bp.lit = 1;
@@ -1668,102 +1828,65 @@ fn parse_pat(mut c: *PCur) -> *Pat {
       return bp;
     }
     tkadv(mut c);
-    // the prelude's variants ride bare (Some(x) / None / Ok(v) / Err(e)
-    // — ambient like boot's, which consults the prelude table): they
-    // normalize to their enum's dotted form here
-    let mut ambient: string = "";
-    if name0 == "Some" || name0 == "None" {
-      ambient = "Option";
-    } else {
-      if name0 == "Ok" || name0 == "Err" {
-        ambient = "Result";
-      }
-    }
-    if is_punct(tk(c), 46) || len(ambient) > 0 {
-      let mut vt: string = name0;
-      let mut en: string = name0;
-      if len(ambient) > 0 {
-        en = ambient;
-      } else {
-        tkadv(mut c); // .
-        vt = tk(c).text;
-        tkadv(mut c);
-      }
+    // a path variant? ident '.' ident
+    if is_punct(tk(c), 46) && c.pos + 1 < len(c.toks) &&
+        c.toks[c.pos + 1].kind == lex.TK_IDENT {
+      tkadv(mut c); // .
+      let vt: string = tk(c).text;
+      tkadv(mut c);
       let mut p = mk_pat(2);
-      p.ename = en;
+      p.ename = name0;
       p.vname = vt;
-      let mut binders = collections.vec_str(8);
-      if is_punct(tk(c), 40) {
-        // tuple payload binders
-        tkadv(mut c);
-        while true {
-          if is_punct(tk(c), 41) {
-            tkadv(mut c);
-            break;
-          }
-          let bt = tk(c);
-          if bt.kind == lex.TK_IDENT || bt.kind == lex.TK_KEYWORD {
-            binders.push(bt.text);
-            tkadv(mut c);
-          } else {
-            tkadv(mut c);
-          }
-          if !eat_punct(mut c, 44) {
-            eat_punct(mut c, 41);
-            break;
-          }
-        }
-      } else {
-        if is_punct(tk(c), 123) {
-          // struct payload binders: 'field: binder' pairs — the name
-          // after the colon binds (the field name itself does not)
-          tkadv(mut c);
-          while tk(c).kind != lex.TK_EOF {
-            if is_punct(tk(c), 125) {
-              tkadv(mut c);
-              break;
-            }
-            let bt = tk(c);
-            if bt.kind == lex.TK_IDENT || bt.kind == lex.TK_KEYWORD {
-              tkadv(mut c);
-              if is_punct(tk(c), 58) {
-                // 'field: binder' — the name after the colon binds
-                tkadv(mut c); // :
-                let bnd = tk(c);
-                if bnd.kind == lex.TK_IDENT ||
-                    bnd.kind == lex.TK_KEYWORD {
-                  binders.push(bnd.text);
-                  tkadv(mut c);
-                }
-              } else {
-                // a bare name binds itself (the field's own name)
-                binders.push(bt.text);
-              }
-            } else {
-              tkadv(mut c);
-            }
-            if !eat_punct(mut c, 44) {
-              eat_punct(mut c, 125);
-              break;
-            }
-          }
-        }
-      }
-      let vs: []string = binders.view();
-      p.binders = vs;
+      parse_variant_payload(mut c, mut p);
       return p;
     }
-    // a bare name: a wildcard-like binder — treated as wildcard
-    let p0 = mk_pat(0);
-    return p0;
+    // a bare variant candidate: Some(v) / None — parens or brace
+    // demand the variant form; the scrutinee's enum resolves the name
+    // (§19), and a name that is not a variant stays a binder there
+    if is_punct(tk(c), 40) || is_punct(tk(c), 123) {
+      let mut p = mk_pat(2);
+      p.ename = "";
+      p.vname = name0;
+      parse_variant_payload(mut c, mut p);
+      return p;
+    }
+    // a plain binder: binds the whole subject (boot's NT_PBIND)
+    let mut bp = mk_pat(3);
+    bp.name = name0;
+    return bp;
   }
   c.perrs = c.perrs + 1;
   tkadv(mut c);
   return mk_pat(0);
 }
 
-// the arm list: PAT => expr, | PAT => { stmts tail-expr }, — the
-// trailing comma is optional after the last arm
+// the arm's full pattern: one pattern, then `|` alternatives (§19
+// or-patterns — every alternative must bind the identical name set,
+// which the checker refuses)
+fn parse_pat_top(mut c: *PCur) -> *Pat {
+  let first = parse_pattern(mut c);
+  if !is_punct(tk(c), 124) {
+    return first;
+  }
+  let mut p = mk_pat(4);
+  p.alts = make([]*Pat, 4);
+  p.alts[0] = first;
+  let mut na: usize = 1;
+  while is_punct(tk(c), 124) {
+    tkadv(mut c);
+    if na + 1 > len(p.alts) {
+      p.alts = pat_grow(p.alts);
+    }
+    p.alts[na] = parse_pattern(mut c);
+    na = na + 1;
+  }
+  p.alts = p.alts[0..na];
+  return p;
+}
+
+// the arm list: PAT => expr, | PAT if cond => { stmts tail-expr }, —
+// the trailing comma is optional after the last arm; `|` alternatives
+// and the `if` guard are §19's ergonomics
 fn parse_arms(mut c: *PCur) -> []*MatchArm {
   let mut arms: []*MatchArm = make([]*MatchArm, 12);
   let mut na: usize = 0;
@@ -1775,7 +1898,22 @@ fn parse_arms(mut c: *PCur) -> []*MatchArm {
       tkadv(mut c);
       break;
     }
-    let pat = parse_pat(mut c);
+    // the arm table grows on demand — a fixed cap of 12 was an
+    // out-of-bounds write the day a match rode a 13th arm (std/num's
+    // 23-arm dispatch rode it silently until the arena layout shifted
+    // and the chain's determinism leg caught the corruption)
+    if na + 1 > len(arms) {
+      arms = stmt_grow_arms(arms);
+    }
+    let pat = parse_pat_top(mut c);
+    // the §19 guard: `pat if cond =>` — evaluated after the pattern
+    // matches, in scope of its bindings; a guarded arm never counts
+    // toward exhaustiveness
+    let mut guard: ?*Expr = Option.None;
+    if tk(c).kind == lex.TK_KEYWORD && tk(c).text == "if" {
+      tkadv(mut c);
+      guard = Option.Some(parse_bin(mut c, 0));
+    }
     eat_punct(mut c, 61); // = (the arrow's two tokens)
     eat_punct(mut c, 62); // >
     if is_punct(tk(c), 123) {
@@ -1830,12 +1968,12 @@ fn parse_arms(mut c: *PCur) -> []*MatchArm {
         body[nb] = parse_stmt(mut c);
         nb = nb + 1;
       }
-      let mut arm = mk_arm(pat, body[0..nb], tail);
+      let mut arm = mk_arm(pat, guard, body[0..nb], tail);
       arm.bend = c.toks[c.pos - 1].line;
       arms[na] = arm;
     } else {
       let mut e = parse_bin(mut c, 0);
-      arms[na] = mk_arm(pat, make([]*Stmt, 0), Option.Some(e));
+      arms[na] = mk_arm(pat, guard, make([]*Stmt, 0), Option.Some(e));
     }
     na = na + 1;
     if !eat_punct(mut c, 44) {
@@ -1852,6 +1990,17 @@ fn parse_arms(mut c: *PCur) -> []*MatchArm {
 // held before it)
 fn stmt_grow(old: []*Stmt) -> []*Stmt {
   let mut big: []*Stmt = make([]*Stmt, len(old) * 2);
+  let mut i: usize = 0;
+  while i < len(old) {
+    big[i] = old[i];
+    i = i + 1;
+  }
+  return big;
+}
+
+// one more arm slot (parse_arms' table — see the grow there)
+fn stmt_grow_arms(old: []*MatchArm) -> []*MatchArm {
+  let mut big: []*MatchArm = make([]*MatchArm, len(old) * 2);
   let mut i: usize = 0;
   while i < len(old) {
     big[i] = old[i];

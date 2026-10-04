@@ -1,0 +1,127 @@
+// programs tier — whole-program pin, dissolved from
+// corpus/ at the freeze (T6.4).
+// out: three
+// out: v=4
+// out: none
+// out: hit
+// out: v=7
+// out: none
+// out: inner=5
+// out: outer
+// out: exact
+// out: t=other
+// out: 6
+// out: big
+// out: v=2
+// out: bound
+// exit: 0
+// n29 — the §19 calibration pin: the mirror once matched `Some(3)` on
+// the tag alone (Some(4) took the arm and printed "three"), resolved
+// bare variants against hard-wired prelude tags (a user enum whose
+// variant order differed silently mismatched), fell over bare binder
+// arms, and refused `|` alternatives and `if` guards outright. Boot's
+// law (T3.9, ratified §19): literal payloads pin values, bare names
+// resolve against the scrutinee's enum, a bare non-variant name binds
+// the whole subject, or-patterns and guards ride every form.
+enum Opt {
+  None,
+  Some(i32),
+}
+
+enum Wrap {
+  W(Opt),
+  End,
+}
+
+enum OptS {
+  S(string),
+  N,
+}
+
+fn tag_test(o: Opt) -> string {
+  return match o {
+    Some(3) => "three",
+    Some(v) => format("v={}", v),
+    None => "none",
+  };
+}
+
+fn or_arms(o: Opt) -> string {
+  return match o {
+    Some(1) | Some(2) => "hit",
+    Some(v) => format("v={}", v),
+    None => "none",
+  };
+}
+
+fn nested(w: Wrap) -> string {
+  return match w {
+    Wrap.W(Some(v)) => format("inner={}", v),
+    Wrap.W(None) => "empty",
+    Wrap.End => "outer",
+  };
+}
+
+fn str_pin(s: OptS) -> string {
+  return match s {
+    S("exact") => "exact",
+    S(t) => format("t={}", t),
+    N => "n",
+  };
+}
+
+fn area(s: Shape) -> i32 {
+  return match s {
+    Shape.Circle(r) => r * r,
+    Shape.Rec { w, h } => w * h,
+    Shape.Dot => 0,
+  };
+}
+
+enum Shape {
+  Circle(i32),
+  Rec { w: i32, h: i32 },
+  Dot,
+}
+
+fn guarded(o: Opt) -> string {
+  return match o {
+    Some(v) if v > 5 => "big",
+    Some(v) => format("v={}", v),
+    None => "none",
+  };
+}
+
+fn bound(x: i32) -> string {
+  return match x {
+    3 => "three",
+    other => "bound",
+  };
+}
+
+fn main() -> i32 {
+  // the literal payload pins the value: Some(4) must fall past Some(3)
+  printf("{}\n", tag_test(Opt.Some(3)));
+  printf("{}\n", tag_test(Opt.Some(4)));
+  printf("{}\n", tag_test(Opt.None));
+  // or-patterns, bare and qualified
+  printf("{}\n", or_arms(Opt.Some(2)));
+  printf("{}\n", or_arms(Opt.Some(7)));
+  printf("{}\n", or_arms(Opt.None));
+  // a nested bare variant digs into the inner box; the outer arm order
+  // puts the unit variant first
+  printf("{}\n", nested(Wrap.W(Opt.Some(5))));
+  printf("{}\n", nested(Wrap.End));
+  // a string literal payload pins the content pair
+  printf("{}\n", str_pin(OptS.S("exact")));
+  printf("{}\n", str_pin(OptS.S("other")));
+  // a struct-form variant's pattern binds the declared fields
+  printf("{}\n", area(Shape.Rec(w: 2, h: 3)));
+  // guards evaluate in the binder scope; a failed guard falls through
+  printf("{}\n", guarded(Opt.Some(9)));
+  printf("{}\n", guarded(Opt.Some(2)));
+  // a bare non-variant name binds the whole subject (a scalar
+  // scrutinee — boot's covering law leaves enum binder arms no run)
+  printf("{}\n", bound(7));
+  return 0;
+}

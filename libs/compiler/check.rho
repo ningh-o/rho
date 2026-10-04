@@ -474,6 +474,50 @@ fn expr_walk(e: *Expr, prog: *Prog, mut bound: []string, mut muts: []bool,
   }
 }
 
+// a pattern's binder-name collector: the walker threads it by
+// pointer, growing the table on demand (a fixed cap was the same
+// out-of-bounds class the param and arg tables held before it)
+struct NameBox {
+  names: []string,
+  n: usize,
+}
+
+// one pattern's binder names, in order (nested payloads recurse; an
+// or-pattern's alternatives ride the identical-binder law and then
+// all collect — duplicate names in the scope are harmless lookups)
+fn pat_binders_into(p: *Pat, mut b: *NameBox) {
+  if p.kind == 3 {
+    if b.n >= len(b.names) {
+      let mut big: []string = make([]string, len(b.names) * 2);
+      let mut i: usize = 0;
+      while i < len(b.names) {
+        big[i] = b.names[i];
+        i = i + 1;
+      }
+      b.names = big;
+    }
+    b.names[b.n] = p.name;
+    b.n = b.n + 1;
+    return;
+  }
+  if p.kind == 4 {
+    let mut a: usize = 0;
+    while a < len(p.alts) {
+      pat_binders_into(p.alts[a], mut b);
+      a = a + 1;
+    }
+    return;
+  }
+  if p.kind == 2 {
+    let mut k: usize = 0;
+    while k < len(p.subs) {
+      pat_binders_into(p.subs[k], mut b);
+      k = k + 1;
+    }
+    return;
+  }
+}
+
 fn walk_arm(a: *MatchArm, prog: *Prog, mut bound: []string,
             mut muts: []bool, nb0: usize, mut errs: *ErrBox) {
   let mut nb: usize = nb0;
@@ -485,14 +529,58 @@ fn walk_arm(a: *MatchArm, prog: *Prog, mut bound: []string,
     save_n = bound[nb];
     save_m = muts[nb];
   }
+  // §19's identical-binder law: every or-alternative binds the same
+  // name set — count and membership — else the checker refuses
+  if a.pat.kind == 4 && len(a.pat.alts) > 1 {
+    let mut b0 = new NameBox { names: make([]string, 8), n: 0 };
+    pat_binders_into(a.pat.alts[0], mut b0);
+    let mut ai: usize = 1;
+    while ai < len(a.pat.alts) {
+      let mut bi = new NameBox { names: make([]string, 8), n: 0 };
+      pat_binders_into(a.pat.alts[ai], mut bi);
+      if bi.n != b0.n {
+        eprintf("check: or-pattern alternatives bind different names\n");
+        errs.n = errs.n + 1;
+      } else {
+        let mut x: usize = 0;
+        while x < bi.n {
+          let mut hit: bool = false;
+          let mut y: usize = 0;
+          while y < b0.n {
+            if b0.names[y] == bi.names[x] {
+              hit = true;
+            }
+            y = y + 1;
+          }
+          if !hit {
+            eprintf("check: or-pattern alternatives bind different names\n");
+            errs.n = errs.n + 1;
+          }
+          x = x + 1;
+        }
+      }
+      ai = ai + 1;
+    }
+  }
+  let mut nb_all = new NameBox { names: make([]string, 8), n: 0 };
+  pat_binders_into(a.pat, mut nb_all);
   let mut k: usize = 0;
-  while k < len(a.pat.binders) {
+  while k < nb_all.n {
     if nb < len(bound) {
-      bound[nb] = a.pat.binders[k];
+      bound[nb] = nb_all.names[k];
       muts[nb] = false; // a binder is a let without mut
       nb = nb + 1;
     }
     k = k + 1;
+  }
+  match a.guard {
+    Option.Some(gd) => {
+      // the §19 guard evaluates after the pattern matches, in scope
+      // of its bindings: the guard's names resolve against the
+      // pattern's binders
+      expr_walk(gd, prog, mut bound, mut muts, nb, mut errs);
+    },
+    Option.None => {},
   }
   // the block arm's statements walk with the binders in scope, the
   // tail expression riding as a final statement (its names resolve

@@ -194,6 +194,30 @@ fn decode_raw(raw: string) -> string {
   return out;
 }
 
+// the pool tables grow on demand — the fixed 2048 was an
+// out-of-bounds write the day the source's distinct string literals
+// crossed the cap (the writes clobbered arena neighbors: AST nodes
+// read back with corrupted tags and the chain's determinism leg
+// caught the divergence)
+fn pool_grow(mut p: *Pool) {
+  if p.n < len(p.segs) {
+    return;
+  }
+  let mut ns: []string = make([]string, len(p.segs) * 2);
+  let mut nl: []i64 = make([]i64, len(p.lens) * 2);
+  let mut na: []i64 = make([]i64, len(p.addrs) * 2);
+  let mut i: usize = 0;
+  while i < len(p.segs) {
+    ns[i] = p.segs[i];
+    nl[i] = p.lens[i];
+    na[i] = p.addrs[i];
+    i = i + 1;
+  }
+  p.segs = ns;
+  p.lens = nl;
+  p.addrs = na;
+}
+
 pub fn pool_intern(mut p: *Pool, raw: string) -> i64 {
   let mut i: usize = 0;
   while i < p.n {
@@ -213,6 +237,7 @@ pub fn pool_intern(mut p: *Pool, raw: string) -> i64 {
     }
     i = i + 1;
   }
+  pool_grow(mut p);
   p.segs[p.n] = raw;
   p.lens[p.n] = dl;
   p.addrs[p.n] = p.next;
@@ -5624,8 +5649,9 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
         }
       }
     }
+    let scen: string = expr_enum_type(sc, env, mut prog);
     out = out + match_chain_m(mut pool, e.marms, 0, bx, mut env, mut prog, mut nl,
-                              true, false, optpt);
+                              true, false, optpt, scen);
     // a fresh scrutinee box dies with the match (its payload walks)
     if expr_is_fresh(sc) {
       let scet: string = expr_enum_type(sc, env, mut prog);
@@ -6418,10 +6444,15 @@ fn emit_expr(mut pool: *Pool, e: *Expr, mut env: *Env, mut prog: *Prog,
 
 // pair mode: every arm's tail rides a {addr,len} pair and the chain
 // results are two i64s (a string-valued match)
+struct BindOut {
+  code: string,
+  pin: string,
+}
+
 fn match_chain_m(mut pool: *Pool, arms: []*MatchArm, i: usize, bx: i64,
                  mut env: *Env, mut prog: *Prog, mut nl: *NextLocal,
                  as_expr: bool, as_pair: bool,
-                 optpt: string) -> string {
+                 optpt: string, scen: string) -> string {
   if i >= len(arms) {
     if as_expr {
       if as_pair {
@@ -6432,165 +6463,178 @@ fn match_chain_m(mut pool: *Pool, arms: []*MatchArm, i: usize, bx: i64,
     return "";
   }
   let mut a: *MatchArm = arms[i];
-  let mut cond: string = arm_cond(a, mut prog, 0);
-  // the arm's code: binders load from the box (a *T payload binds
-  // as a struct pointer — its fields stay reachable), then the
-  // statements, then the tail expression
-  let mut armcode: string = "";
-  let mut vi: i64 = 0 - 1;
-  let mut ptys: []string = make([]string, 0);
-  if a.pat.kind == 2 && a.pat.ename != "Option" &&
-      a.pat.ename != "Result" {
-    ptys = enum_variant_ptys(mut prog, a.pat.ename, a.pat.vname);
-    vi = en_vtag(prog, en_index(mut prog, a.pat.ename), a.pat.vname);
+  // §19 or-patterns: the arm's alternatives share the body — each
+  // alternative emits its own test and binds, and the body rides each
+  // (variants are disjoint, literal alternatives distinct, so at most
+  // one can match a given subject; the if/else chain keeps the arms
+  // exclusive without a matched flag — boot's flat chain needs one,
+  // the mirror's nesting gives it structurally)
+  let mut alts: []*Pat = make([]*Pat, 1);
+  alts[0] = a.pat;
+  if a.pat.kind == 4 {
+    alts = a.pat.alts;
   }
-  let mut k: usize = 0;
-  let mut sl: i64 = 1; // the box slot cursor (slot 0 = the tag)
-  // a literal payload pattern (Option.Some(true) / Some(false)) pins
-  // the payload word, not just the tag: its condition ANDs into the
-  // arm's test, or the first Some(bool) arm swallows its tag-mates
-  // (boot parity: payload literal patterns pin values, not just the
-  // tag). The parser hands the literal spellings over as binder
-  // names — "true"/"false" are keywords, so no real binder collides.
-  let mut pin: string = "";
-  while k < len(a.pat.binders) {
-    let mut pty: string = "";
-    if k < len(ptys) {
-      pty = ptys[k];
+  let rest: string = match_chain_m(mut pool, arms, i + 1, bx, mut env, mut prog,
+                                   mut nl, as_expr, as_pair, optpt, scen);
+  return chain_alts(mut pool, alts, 0, a, bx, mut env, mut prog, mut nl,
+                    as_expr, as_pair, optpt, scen, rest);
+}
+
+// one arm's alternatives folded into nested ifs: alternative j's test
+// gates its binds and its body, its else carries the next
+// alternative, and the last alternative's else carries the next arm
+// (rest). A bare candidate resolves against the scrutinee's enum
+// (§19) — a name that is not a variant stays a binder taking the
+// whole subject.
+fn chain_alts(mut pool: *Pool, alts: []*Pat, j: usize, a: *MatchArm,
+              bx: i64, mut env: *Env, mut prog: *Prog, mut nl: *NextLocal,
+              as_expr: bool, as_pair: bool, optpt: string, scen: string,
+              rest: string) -> string {
+  if j >= len(alts) {
+    return rest;
+  }
+  let mut alt: *Pat = alts[j];
+  let mut is_var: bool = false;
+  let mut ename: string = "";
+  let mut vname: string = "";
+  let mut binder_subject: bool = false;
+  if alt.kind == 2 {
+    is_var = true;
+    ename = alt.ename;
+    vname = alt.vname;
+    if len(ename) == 0 {
+      ename = scen;
     }
-    if a.pat.binders[k] == "true" || a.pat.binders[k] == "false" {
-      let mut pv: i64 = 0;
-      if a.pat.binders[k] == "true" {
-        pv = 1;
-      }
-      let mut pw: string = "(i64.eq (i64.load (i32.add (i32.wrap_i64 " +
-          "(local.get " + bx.to_str() + ")) (i32.const " +
-          (sl * 8).to_str() + "))) (i64.const " + pv.to_str() + "))";
-      if len(pin) > 0 {
-        pin = "(i32.and " + pin + " " + pw + ")";
+  } else {
+    if alt.kind == 3 {
+      if len(scen) > 0 && scen_variant_tag(mut prog, scen, alt.name) >= 0 {
+        is_var = true;
+        ename = scen;
+        vname = alt.name;
       } else {
-        pin = pw;
+        binder_subject = true;
       }
-      sl = sl + 1;
-      k = k + 1;
-      continue;
     }
-    // a string payload binder reads the pair (two slots) and binds a
-    // runtime string; Result.Err's binder does too — the string error
-    // is the idiom its boxes carry
-    let sbind: bool = pty == "string" ||
-        (a.pat.ename == "Result" && a.pat.vname == "Err") ||
-        ((a.pat.ename == "Option" || a.pat.ename == "Result") &&
-         optpt == "string");
-    if sbind {
-      let ba: i64 = nl.v;
-      let bl: i64 = nl.v + 1;
-      nl.v = nl.v + 2;
-      armcode = armcode + "    (i64.load (i32.add (i32.wrap_i64 ";
-      armcode = armcode + "(local.get ";
-      armcode = armcode + bx.to_str();
-      armcode = armcode + ")) (i32.const ";
-      armcode = armcode + (sl * 8).to_str();
-      armcode = armcode + ")))\n";
-      armcode = armcode + "    (local.set ";
-      armcode = armcode + ba.to_str();
-      armcode = armcode + ")\n";
-      armcode = armcode + "    (i64.load (i32.add (i32.wrap_i64 ";
-      armcode = armcode + "(local.get ";
-      armcode = armcode + bx.to_str();
-      armcode = armcode + ")) (i32.const ";
-      armcode = armcode + ((sl + 1) * 8).to_str();
-      armcode = armcode + ")))\n";
-      armcode = armcode + "    (local.set ";
-      armcode = armcode + bl.to_str();
-      armcode = armcode + ")\n";
-      env_str_bind_runtime(mut env, a.pat.binders[k], ba, bl, 1);
-      sl = sl + 2;
-      k = k + 1;
-      continue;
+  }
+  let mut cond: string = "";
+  if alt.kind == 1 {
+    cond = "(i64.eq (local.get $d) (i64.const " + alt.lit.to_str() + "))";
+  } else {
+    if is_var {
+      cond = var_tag_cond(ename, vname, mut prog);
     }
-    let bslot: i64 = nl.v;
-    nl.v = nl.v + 1;
-    armcode = armcode + "    (i64.load (i32.add (i32.wrap_i64 ";
-    armcode = armcode + "(local.get ";
-    armcode = armcode + bx.to_str();
-    armcode = armcode + ")) (i32.const ";
-    armcode = armcode + (sl * 8).to_str();
-    armcode = armcode + ")))\n";
-    armcode = armcode + "    (local.set ";
-    armcode = armcode + bslot.to_str();
-    armcode = armcode + ")\n";
-    sl = sl + 1;
-    let ptgt: string = type_ptr_target(pty);
-    if len(ptgt) > 0 && st_index(mut prog, ptgt) >= 0 {
-      env_bind_ptr(mut env, a.pat.binders[k], bslot, ptgt);
+  }
+  // the payload types: Option/Result ride the runtime's
+  // single-payload convention (the sbind law keys on ename/vname/
+  // optpt — Err's string error is the idiom its boxes carry); user
+  // enums read the variant's declared payload types
+  let mut ptys: []string = make([]string, 0);
+  if is_var {
+    if ename == "Option" || ename == "Result" {
+      ptys = make([]string, 1);
+      ptys[0] = "";
     } else {
-      if pty == "f64" || pty == "f32" {
-        let mut fk2: i64 = 1;
-        if pty == "f32" {
-          fk2 = 2;
+      ptys = enum_variant_ptys(mut prog, ename, vname);
+    }
+  }
+  // the arm's code: binders load from the box (a *T payload binds as
+  // a struct pointer — its fields stay reachable); a literal payload
+  // pins the value, not just the tag (the first Some(3) arm once
+  // swallowed its tag-mates on the tag-only test); a nested variant
+  // digs into the inner box
+  let mut armcode: string = "";
+  let mut pin: string = "";
+  if is_var {
+    let bp = bind_payload(mut pool, alt.subs, alt.vop, alt.fnames, ptys,
+                          ename, vname, optpt,
+                          "(local.get " + bx.to_str() + ")", 1,
+                          mut env, mut prog, mut nl);
+    armcode = bp.code;
+    pin = bp.pin;
+  } else {
+    if binder_subject {
+      // a bare binder takes the whole subject (boot's NT_PBIND): the
+      // box address for enum-ish scrutinees, the value for scalars —
+      // the env lanes follow the scrutinee's shape
+      if len(scen) > 0 {
+        env_bind_enum(mut env, alt.name, bx, scen);
+        if len(optpt) > 0 {
+          env_bind_sliceelem(mut env, alt.name, optpt);
         }
-        env_bind_f(mut env, a.pat.binders[k], bslot, fk2);
       } else {
-        if (a.pat.ename == "Option" || a.pat.ename == "Result") &&
-            len(optpt) > 0 &&
-            st_index(mut prog, st_name_of(optpt)) >= 0 {
-          // a Some/Ok binder over a *T element: the pointer lane keeps
-          // its fields reachable — the gate reads the BARE struct name
-          // (st_index's star handling lives in its bracket arm, so a
-          // starred non-generic spelling once missed and the binder
-          // fell to the scalar lane: the box read as the payload and
-          // every field off it read 0 — smap_of[*Pt]'s upsert binder
-          // was the first witness)
-          env_bind_ptr(mut env, a.pat.binders[k], bslot, optpt);
-        } else {
-          // an enum-ish builtin payload — ?T sugar over a non-struct,
-          // or a spelled Option/Result (read_line's Result[?string,
-          // IoError]): the binder holds the OPTION box's address, so
-          // its enum name AND payload text must register or the inner
-          // match reads the address as the tag (every arm fell through)
-          if (a.pat.ename == "Option" || a.pat.ename == "Result") &&
-              len(optpt) > 0 &&
-              st_index(mut prog, st_name_of(optpt)) < 0 &&
-              (optpt[0] == 63 || starts_open(optpt, "Option") ||
-               starts_open(optpt, "Result")) {
-            let mut ben: string = "Option";
-            if optpt[0] != 63 && starts_open(optpt, "Result") {
-              ben = "Result";
-            }
-            env_bind_enum(mut env, a.pat.binders[k], bslot, ben);
-            let mut bpay: string = optpt[1..len(optpt)];
-            if optpt[0] != 63 {
-              let ob2: i64 = open_bracket(optpt);
-              if ob2 >= 0 {
-                let tas2: []string = split_type_args(
-                    optpt[((ob2 as usize) + 1)..(len(optpt) - 1)]);
-                if len(tas2) > 0 {
-                  bpay = tas2[0];
-                }
-              }
-            }
-            if len(bpay) > 0 {
-              env_bind_sliceelem(mut env, a.pat.binders[k], bpay);
-            }
-          } else {
-            if optpt == "bool" {
-              // a bool payload binder records its type — the hole
-              // classifiers read it to spell true/false (a bare binder
-              // once printed the box tag as 1/0)
-              env_bool_bind(mut env, a.pat.binders[k]);
-            }
-            env_bind(mut env, a.pat.binders[k], bslot);
-          }
-        }
+        env_bind(mut env, alt.name, bx);
       }
     }
-    k = k + 1;
   }
   if len(pin) > 0 {
-    cond = "(i32.and " + cond + " " + pin + ")";
+    if len(cond) > 0 {
+      cond = "(i32.and " + cond + " " + pin + ")";
+    } else {
+      cond = pin;
+    }
   }
-  armcode = armcode + emit_stmts(a.body, mut pool, mut env, mut nl, env.infn,
+  let nextalt: string = chain_alts(mut pool, alts, j + 1, a, bx, mut env,
+                                   mut prog, mut nl, as_expr, as_pair,
+                                   optpt, scen, rest);
+  let bodytext: string = arm_body(mut pool, a, mut env, mut prog, mut nl,
+                                  as_expr, as_pair);
+  let mut drops: string = "";
+  if !as_expr {
+    drops = "    drop\n";
+    if as_pair {
+      drops = "    drop\n    drop\n";
+    }
+  }
+  let mut res: string = "";
+  if as_expr {
+    if as_pair {
+      res = "(result i64) (result i64) ";
+    } else {
+      res = "(result i64) ";
+    }
+  }
+  // the §19 guard: evaluated after the pattern matches, in scope of
+  // its bindings; a failed guard falls through to the next
+  // alternative or arm (boot's matched-flag semantics ride the else)
+  let mut guardpart: string = "";
+  match a.guard {
+    Option.Some(g) => {
+      let gres: string = emit_expr(mut pool, g, mut env, mut prog, mut nl) +
+                         "    (i32.wrap_i64)\n";
+      guardpart = gres + "    (if " + res + "(then\n" + bodytext + drops +
+                  "      )\n      (else\n" + nextalt + "      ))\n";
+    },
+    Option.None => {},
+  }
+  if len(cond) == 0 {
+    // the wildcard / binder-subject arm closes the chain — except a
+    // guard keeps the fall-through alive
+    if len(guardpart) > 0 {
+      return armcode + guardpart;
+    }
+    return armcode + bodytext + drops;
+  }
+  if len(guardpart) > 0 {
+    return "    (if " + res + cond + "\n" +
+           "      (then\n" + armcode + guardpart + "      )\n" +
+           "      (else\n" + nextalt + "      ))\n";
+  }
+  if as_expr {
+    return "    (if " + res + cond + "\n" +
+           "      (then\n" + armcode + bodytext + "      )\n" +
+           "      (else\n" + nextalt + "      ))\n";
+  }
+  return "    (if " + cond + "\n" +
+         "      (then\n" + armcode + bodytext + drops + "      )\n" +
+         "      (else\n" + nextalt + "      ))\n";
+}
+
+// the arm's statements plus its tail expression (an expression match
+// rides the tail; the statement form keeps the tail's effects and the
+// caller drops its value)
+fn arm_body(mut pool: *Pool, a: *MatchArm, mut env: *Env, mut prog: *Prog,
+            mut nl: *NextLocal, as_expr: bool, as_pair: bool) -> string {
+  let mut t: string = emit_stmts(a.body, mut pool, mut env, mut nl, env.infn,
                                  env.retslot, mut prog, mut env.loops,mut 
                                  env.dstack, env.tfd);
   let mut tail: string = "    (i64.const 0)\n";
@@ -6616,44 +6660,276 @@ fn match_chain_m(mut pool: *Pool, arms: []*MatchArm, i: usize, bx: i64,
     },
     Option.None => {},
   }
-  if len(cond) == 0 {
-    // the wildcard arm closes the chain (the statement form keeps
-    // the tail's effects and drops its value)
-    if as_expr {
-      return armcode + tail;
-    }
-    if as_pair {
-      return armcode + tail + "    drop\n    drop\n";
-    }
-    return armcode + tail + "    drop\n";
-  }
-  let rest: string = match_chain_m(mut pool, arms, i + 1, bx, mut env, mut prog,mut 
-                                   nl, as_expr, as_pair, optpt);
-  if as_expr {
-    if as_pair {
-      return "    (if (result i64) (result i64) " + cond + "\n" +
-             "      (then\n" + armcode + tail + "      )\n" +
-             "      (else\n" + rest + "      ))\n";
-    }
-    return "    (if (result i64) " + cond + "\n" +
-           "      (then\n" + armcode + tail + "      )\n" +
-           "      (else\n" + rest + "      ))\n";
-  }
-  if as_pair {
-    return "    (if " + cond + "\n" +
-           "      (then\n" + armcode + tail + "    drop\n    drop\n" +
-           "      )\n" +
-           "      (else\n" + rest + "      ))\n";
-  }
-  return "    (if " + cond + "\n" +
-         "      (then\n" + armcode + tail + "    drop\n" +
-         "      )\n" +
-         "      (else\n" + rest + "      ))\n";
+  return t + tail;
 }
 
-// one arm's discriminator condition text ("" for the wildcard): the
-// tag local rides $d for enum scrutinees, the value itself for
-// scalars
+// one payload sub-pattern layer: binders load from the box slots (the
+// registration cascade keyed on the payload type), literals pin the
+// slot's value, a nested variant digs into the inner box. base = the
+// i64 address expression the slots read; sl0 = the slot cursor (the
+// tag rides slot 0). Returns the accumulated bind code and pin.
+fn bind_payload(mut pool: *Pool, subs: []*Pat, vop: i32, fnames: []string,
+                ptys: []string, ename: string, vname: string, optpt: string,
+                base: string, sl0: i64, mut env: *Env, mut prog: *Prog,
+                mut nl: *NextLocal) -> *BindOut {
+  let mut out = new BindOut { code: "", pin: "" };
+  // the struct-payload field order: subs ride the source's field
+  // names — map each to its position in the variant's declared fields
+  // (vnpool, 8 slots per variant) so `{ h: hh, w: ww }` reads the
+  // right slots
+  let mut ei: i64 = 0 - 1;
+  let mut vi: i64 = 0 - 1;
+  if vop == 2 && len(prog.enums) > 0 {
+    ei = en_index(mut prog, ename);
+    if ei >= 0 {
+      vi = en_vtag(prog, ei, vname);
+    }
+  }
+  let mut sl: i64 = sl0;
+  let mut k: usize = 0;
+  while k < len(subs) {
+    let mut pty: string = "";
+    if k < len(ptys) {
+      pty = ptys[k];
+    }
+    if vop == 2 && vi >= 0 && k < len(fnames) {
+      let mut f: usize = 0;
+      while f < 8 {
+        let fnm: string =
+            prog.enums[(ei as usize)].vnpool[((vi as usize) * 8) + f];
+        if len(fnm) == 0 {
+          break;
+        }
+        if fnm == fnames[k] {
+          let pj: usize = ((vi as usize) * 8) + f;
+          let vb: usize = (vi as usize) * 8;
+          if pj - vb < len(ptys) {
+            pty = ptys[pj - vb];
+          }
+          break;
+        }
+        f = f + 1;
+      }
+    }
+    let sub = subs[k];
+    let mut w: i64 = 1;
+    let sbind: bool = pty == "string" ||
+        (ename == "Result" && vname == "Err") ||
+        ((ename == "Option" || ename == "Result") && optpt == "string");
+    if sbind {
+      w = 2;
+    }
+    if sub.kind == 0 {
+      sl = sl + w;
+      k = k + 1;
+      continue;
+    }
+    if sub.kind == 1 {
+      // a literal payload pins the value, not just the tag
+      let sv: string = "(i64.load (i32.add (i32.wrap_i64 " + base +
+                       ") (i32.const " + (sl * 8).to_str() + ")))";
+      let mut pw: string = "";
+      if sub.lop == 0 {
+        pw = "(i64.eq " + sv + " (i64.const " + sub.lit.to_str() + "))";
+      } else {
+        if sub.lop == 2 {
+          // the bool words spell the lane (bval marks it); the VALUE
+          // rides lit 0/1 — reading bval here once pinned both arms
+          // to 1 and the first Some(bool) arm swallowed its tag-mate
+          // (n26's law, reborn through the rewrite)
+          pw = "(i64.eq " + sv + " (i64.const " + sub.lit.to_str() + "))";
+        } else {
+          if sub.lop == 3 && sbind {
+            // the string pair rides slots sl (addr) and sl+1 (len);
+            // the literal interns into the data image once
+            let di: i64 = pool_intern(mut pool, sub.sval);
+            let dl: i64 = pool_len(pool, sub.sval);
+            pw = "(i32.and (i64.eq " + sv + " (i64.const " +
+                 di.to_str() + ")) (i64.eq (i64.load (i32.add " +
+                 "(i32.wrap_i64 " + base + ") (i32.const " +
+                 ((sl + 1) * 8).to_str() + "))) (i64.const " +
+                 dl.to_str() + ")))";
+          } else {
+            if sub.lop == 1 {
+              pw = "(f64.eq (f64.reinterpret_i64 " + sv +
+                   ") (f64.const " + sub.ftext + "))";
+            } else {
+              // a string literal over a non-pair payload cannot match
+              pw = "(i32.const 0)";
+            }
+          }
+        }
+      }
+      if len(out.pin) > 0 {
+        out.pin = "(i32.and " + out.pin + " " + pw + ")";
+      } else {
+        out.pin = pw;
+      }
+      sl = sl + w;
+      k = k + 1;
+      continue;
+    }
+    if sub.kind == 3 {
+      // a binder: load the slot, register the env lanes by type
+      if sbind {
+        let ba: i64 = nl.v;
+        let bl: i64 = nl.v + 1;
+        nl.v = nl.v + 2;
+        out.code = out.code + "    (i64.load (i32.add (i32.wrap_i64 " +
+                   base + ") (i32.const " + (sl * 8).to_str() + ")))\n";
+        out.code = out.code + "    (local.set " + ba.to_str() + ")\n";
+        out.code = out.code + "    (i64.load (i32.add (i32.wrap_i64 " +
+                   base + ") (i32.const " + ((sl + 1) * 8).to_str() +
+                   ")))\n";
+        out.code = out.code + "    (local.set " + bl.to_str() + ")\n";
+        env_str_bind_runtime(mut env, sub.name, ba, bl, 1);
+      } else {
+        let bslot: i64 = nl.v;
+        nl.v = nl.v + 1;
+        out.code = out.code + "    (i64.load (i32.add (i32.wrap_i64 " +
+                   base + ") (i32.const " + (sl * 8).to_str() + ")))\n";
+        out.code = out.code + "    (local.set " + bslot.to_str() + ")\n";
+        let ptgt: string = type_ptr_target(pty);
+        if len(ptgt) > 0 && st_index(mut prog, ptgt) >= 0 {
+          env_bind_ptr(mut env, sub.name, bslot, ptgt);
+        } else {
+          if pty == "f64" || pty == "f32" {
+            let mut fk2: i64 = 1;
+            if pty == "f32" {
+              fk2 = 2;
+            }
+            env_bind_f(mut env, sub.name, bslot, fk2);
+          } else {
+            if (ename == "Option" || ename == "Result") &&
+                len(optpt) > 0 &&
+                st_index(mut prog, st_name_of(optpt)) >= 0 {
+              // a Some/Ok binder over a *T element: the pointer lane
+              // keeps its fields reachable
+              env_bind_ptr(mut env, sub.name, bslot, optpt);
+            } else {
+              // an enum-ish builtin payload — ?T sugar over a
+              // non-struct, or a spelled Option/Result: the binder
+              // holds the option box's address, so its enum name AND
+              // payload text must register or the inner match reads
+              // the address as the tag
+              if (ename == "Option" || ename == "Result") &&
+                  len(optpt) > 0 &&
+                  st_index(mut prog, st_name_of(optpt)) < 0 &&
+                  (optpt[0] == 63 || starts_open(optpt, "Option") ||
+                   starts_open(optpt, "Result")) {
+                let mut ben: string = "Option";
+                if optpt[0] != 63 && starts_open(optpt, "Result") {
+                  ben = "Result";
+                }
+                env_bind_enum(mut env, sub.name, bslot, ben);
+                let mut bpay: string = optpt[1..len(optpt)];
+                if optpt[0] != 63 {
+                  let ob2: i64 = open_bracket(optpt);
+                  if ob2 >= 0 {
+                    let tas2: []string = split_type_args(
+                        optpt[((ob2 as usize) + 1)..(len(optpt) - 1)]);
+                    if len(tas2) > 0 {
+                      bpay = tas2[0];
+                    }
+                  }
+                }
+                if len(bpay) > 0 {
+                  env_bind_sliceelem(mut env, sub.name, bpay);
+                }
+              } else {
+                if optpt == "bool" {
+                  // a bool payload binder records its type — the hole
+                  // classifiers read it to spell true/false
+                  env_bool_bind(mut env, sub.name);
+                }
+                env_bind(mut env, sub.name, bslot);
+              }
+            }
+          }
+        }
+      }
+      sl = sl + w;
+      k = k + 1;
+      continue;
+    }
+    if sub.kind == 2 {
+      // a nested variant digs into the inner box: an enum-typed
+      // payload slot holds the inner box's address, the pin tests its
+      // tag word, the subs recurse against the inner payload types
+      let mut sub_en: string = sub.ename;
+      if len(sub_en) == 0 {
+        if len(pty) > 0 && pty[0] == 63 {
+          sub_en = "Option";
+        } else {
+          if starts_open(pty, "Option") || starts_open(pty, "Result") {
+            let ob3: i64 = open_bracket(pty);
+            if ob3 > 0 {
+              sub_en = pty[0..(ob3 as usize)];
+            }
+          } else {
+            sub_en = pty;
+          }
+        }
+      }
+      let stag: i64 = scen_variant_tag(mut prog, sub_en, sub.vname);
+      if stag >= 0 {
+        let sv2: string = "(i64.load (i32.add (i32.wrap_i64 " + base +
+                          ") (i32.const " + (sl * 8).to_str() + ")))";
+        let pw2: string = "(i64.eq (i64.load (i32.wrap_i64 " + sv2 +
+                          ")) (i64.const " + stag.to_str() + "))";
+        if len(out.pin) > 0 {
+          out.pin = "(i32.and " + out.pin + " " + pw2 + ")";
+        } else {
+          out.pin = pw2;
+        }
+        let sptys: []string = enum_variant_ptys(mut prog, sub_en, sub.vname);
+        let inner = bind_payload(mut pool, sub.subs, sub.vop, sub.fnames,
+                                 sptys, sub_en, sub.vname, "", sv2, 1,
+                                 mut env, mut prog, mut nl);
+        out.code = out.code + inner.code;
+        if len(inner.pin) > 0 {
+          out.pin = "(i32.and " + out.pin + " " + inner.pin + ")";
+        }
+      }
+      sl = sl + w;
+      k = k + 1;
+      continue;
+    }
+    sl = sl + w;
+    k = k + 1;
+  }
+  return out;
+}
+
+// the scrutinee's variant tag for a bare name (§19's resolution
+// table): Option/Result ride the runtime's own tags, user enums their
+// declared order; -1 = not a variant of this enum
+fn scen_variant_tag(mut prog: *Prog, scen: string, name: string) -> i64 {
+  if scen == "Option" {
+    if name == "Some" {
+      return 1;
+    }
+    if name == "None" {
+      return 0;
+    }
+    return 0 - 1;
+  }
+  if scen == "Result" {
+    if name == "Ok" {
+      return 1;
+    }
+    if name == "Err" {
+      return 2;
+    }
+    return 0 - 1;
+  }
+  let ei: i64 = en_index(mut prog, scen);
+  if ei < 0 {
+    return 0 - 1;
+  }
+  return en_vtag(prog, ei, name);
+}
+
 // a qualified const's folded value, -1 when absent (tags are >= 0,
 // so -1 reads as "this arm can never match")
 fn const_i64(mut prog: *Prog, qname: string) -> i64 {
@@ -6667,39 +6943,38 @@ fn const_i64(mut prog: *Prog, qname: string) -> i64 {
   return 0 - 1;
 }
 
-fn arm_cond(a: *MatchArm, mut prog: *Prog, dslot: i64) -> string {
-  if a.pat.kind == 0 {
-    return "";
-  }
-  if a.pat.kind == 1 {
-    return "(i64.eq (local.get $d) (i64.const " + a.pat.lit.to_str() +
-           "))";
-  }
+// one resolved variant alternative's discriminator condition text:
+// the tag local rides $d for enum scrutinees, the value itself for
+// scalars. A qualified const's folded value rides the consts table
+// (-1 reads as "this arm can never match").
+fn var_tag_cond(ename: string, vname: string, mut prog: *Prog) -> string {
   let mut tag: i64 = 0;
-  if a.pat.ename == "Option" || a.pat.ename == "Result" {
-    if a.pat.vname == "Some" || a.pat.vname == "Ok" {
+  if ename == "Option" || ename == "Result" {
+    if vname == "Some" || vname == "Ok" {
       tag = 1;
     } else {
-      if a.pat.ename == "Result" {
+      if ename == "Result" {
         tag = 2;
       } else {
         tag = 0;
       }
     }
   } else {
-    let ei: i64 = en_index(mut prog, a.pat.ename);
+    let ei: i64 = en_index(mut prog, ename);
     if ei >= 0 {
-      tag = en_vtag(prog, ei, a.pat.vname);
+      tag = en_vtag(prog, ei, vname);
     } else {
       // a module-qualified CONST pattern (match e.tag {
       // parse.EX_VAR => ... }): the comparison constant rides the
       // consts table's qualified entry — en_index("parse") is -1 and
       // the tag once folded to -1, killing every arm after it
-      tag = const_i64(mut prog, a.pat.ename + "." + a.pat.vname);
+      tag = const_i64(mut prog, ename + "." + vname);
     }
   }
   return "(i64.eq (local.get $d) (i64.const " + tag.to_str() + "))";
 }
+
+// a fresh slice literal: n zeroed slots, each element stored in
 
 // a fresh slice literal: n zeroed slots, each element stored in
 // order — leaves the {addr, len} pair on the stack
@@ -7781,8 +8056,9 @@ fn build_string_pair(e: *Expr, mut pool: *Pool, mut env: *Env, mut prog: *Prog,
           }
         }
       }
+      let scen5: string = expr_enum_type(sc, env, mut prog);
       text = text + match_chain_m(mut pool, e.marms, 0, bx, mut env, mut prog,
-                                  mut nl, true, true, optpt5);
+                                  mut nl, true, true, optpt5, scen5);
       text = text + "    (local.set ";
       text = text + t_l.to_str();
       text = text + ")\n";
@@ -11931,8 +12207,10 @@ fn emit_stmts(nodes: []*Stmt, mut pool: *Pool, mut env: *Env,
           // fired, the leg-4 divergence)
           // the arms' bindings die with the match (boot's scope law)
           let mut sc_mark: usize = env.n;
+          let scen2: string = expr_enum_type(sc, env, mut prog);
           body = body + match_chain_m(mut pool, st.marms, 0, bx, mut env,
-                                      mut prog, mut nl, false, false, optpt);
+                                      mut prog, mut nl, false, false, optpt,
+                                      scen2);
           env.n = sc_mark;
           // a fresh scrutinee box dies with the match
           if expr_is_fresh(sc) {

@@ -1,24 +1,44 @@
 // spec: TODO.md §19 — variant resolution by scrutinee: no Option. prefix needed
 // spec: syntax.md §7 — a variant name in an arm resolves against the matched enum
+// out: three
 // out: some
 // out: none
-// PENDING the T3.9 scrutinee-resolution law (TODO.md §19, ratified but
-// not implemented): the bare `None` arm must resolve against the
-// scrutinee's enum — no `Option.` prefix. Today the bare name parses
-// as an ordinary binder pattern, so the match fails exhaustiveness
-// ("missing Option.None") — that check failure is the pending marker.
-// The tuple-payload half of the law (`Some(v) => …` bare) cannot live
-// here yet: `Some(` does not even parse today (arm grammar rejects the
-// paren). When T3.9 lands this case goes green and can grow that arm.
+// out: big
+// out: small
+// out: none
+// §19 landed (T3.9, 2026-09-26): the bare variant arm resolves against
+// the scrutinee's enum — prelude Option and user enums alike — and the
+// tuple-payload form parses. The literal payload pins the VALUE, not
+// just the tag (the mirror once matched Some(3) on tag alone and let
+// Some(4) take the arm; the calibration wave closed it, n29 pins the
+// program-level face)
 fn describe(o: ?i32) -> string {
   return match o {
-    Option.Some(v) => "some",
+    Some(3) => "three",
+    Some(v) => "some",
+    None => "none",
+  };
+}
+
+enum Opt {
+  None,
+  Some(i32),
+}
+
+fn size(o: Opt) -> string {
+  return match o {
+    Some(v) if v > 5 => "big",
+    Some(_) => "small",
     None => "none",
   };
 }
 
 fn main() -> i32 {
   printf("{}\n", describe(Option.Some(3)));
+  printf("{}\n", describe(Option.Some(4)));
   printf("{}\n", describe(Option.None));
+  printf("{}\n", size(Opt.Some(9)));
+  printf("{}\n", size(Opt.Some(2)));
+  printf("{}\n", size(Opt.None));
   return 0;
 }

@@ -3,14 +3,20 @@
 // out: 9
 // out: 16
 // out: 0
-// ratified §19 ergonomics, not implemented in boot yet: today check
-// refuses the `|` arm separator outright; the same binder `r` on both
-// alternatives is the ratified shape — full paths keep the bare-variant
-// sugar out of this file so it pins exactly the or-pattern law
+// out: hit
+// §19 or-patterns landed (T3.9, 2026-09-26): alternatives join on `|`,
+// the identical-binder law holds (the same binder `r` on both
+// alternatives is the ratified shape; a mismatched set refuses at
+// check), and the bare variant form rides the same alternatives
 enum Shape {
   Circle(i32),
   Square(i32),
   Dot,
+}
+
+enum Opt {
+  None,
+  Some(i32),
 }
 
 fn area(s: Shape) -> i32 {
@@ -20,9 +26,18 @@ fn area(s: Shape) -> i32 {
   };
 }
 
+fn hit(o: Opt) -> string {
+  return match o {
+    Some(1) | Some(2) => "hit",
+    Some(v) => "v",
+    None => "none",
+  };
+}
+
 fn main() -> i32 {
   printf("{}\n", area(Shape.Circle(3)));
   printf("{}\n", area(Shape.Square(4)));
   printf("{}\n", area(Shape.Dot));
+  printf("{}\n", hit(Opt.Some(2)));
   return 0;
 }

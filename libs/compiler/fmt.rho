@@ -823,61 +823,81 @@ pub fn fmt_pattern(prog: *Prog, p: *Pat) -> string {
     return "_";
   }
   if p.kind == 1 {
-    // the bool words ride their own lane (boot's NT_PLIT op-2): the
-    // parser keeps the spelling, the value still compares as 0/1
-    if p.bval {
+    // the literal lanes: int/float/bool/string — the bool words ride
+    // their own lane (boot's NT_PLIT op-2), floats re-spell at %.17g
+    if p.lop == 1 {
+      return fmt_flit(p.ftext);
+    }
+    if p.lop == 2 {
       if p.lit == 1 {
         return "true";
       }
       return "false";
     }
+    if p.lop == 3 {
+      return "\"" + p.sval + "\"";
+    }
     return fmt_lit(p.lit);
   }
-  // a variant: Enum.Var(binders) tuple-form or Enum.Var{binders}
-  // struct-form — the form rides the declaration's field-name pool
-  // (a named payload spells its fields; a tuple payload's stay empty)
-  let mut struct_form: bool = false;
-  {
-    let mut ei: usize = 0;
-    while ei < len(prog.enums) {
-      if prog.enums[ei].name == p.ename {
-        let ed = prog.enums[ei];
-        let mut v: usize = 0;
-        while v < ed.nv {
-          if ed.vnames[v] == p.vname {
-            let mut q: usize = 0;
-            while q < (ed.vslots[v] as usize) {
-              if len(ed.vnpool[v * 8 + q]) > 0 {
-                struct_form = true;
-              }
-              q = q + 1;
-            }
-          }
-          v = v + 1;
-        }
-      }
-      ei = ei + 1;
-    }
+  if p.kind == 3 {
+    return p.name;
   }
-  let mut out: string = p.ename + "." + p.vname;
-  if len(p.binders) > 0 {
-    if struct_form {
-      out = out + " {";
-    } else {
-      out = out + "(";
+  if p.kind == 4 {
+    // the or-pattern: the alternatives join on " | "
+    let mut out: string = "";
+    let mut a: usize = 0;
+    while a < len(p.alts) {
+      if a > 0 {
+        out = out + " | ";
+      }
+      out = out + fmt_pattern(prog, p.alts[a]);
+      a = a + 1;
     }
+    return out;
+  }
+  // a variant: the source's own payload form — Var(...) tuple,
+  // Var { f, g: sub } struct, or bare Var (the unit spell); the bare
+  // candidate prints unqualified (§19's resolution rides emission,
+  // not the source text)
+  let mut out: string = "";
+  if len(p.ename) > 0 {
+    out = p.ename + ".";
+  }
+  out = out + p.vname;
+  if p.vop == 1 {
+    out = out + "(";
     let mut k: usize = 0;
-    while k < len(p.binders) {
+    while k < len(p.subs) {
       if k > 0 {
         out = out + ", ";
       }
-      out = out + p.binders[k];
+      out = out + fmt_pattern(prog, p.subs[k]);
       k = k + 1;
     }
-    if struct_form {
+    out = out + ")";
+  } else {
+    if p.vop == 2 {
+      out = out + " {";
+      let mut k: usize = 0;
+      while k < len(p.subs) {
+        if k > 0 {
+          out = out + ", ";
+        }
+        if k < len(p.fnames) {
+          // a bare field binder spells just its name (the field's
+          // own); anything else rides 'field: sub'
+          let sub = p.subs[k];
+          if sub.kind == 3 && sub.name == p.fnames[k] {
+            out = out + p.fnames[k];
+          } else {
+            out = out + p.fnames[k] + ": " + fmt_pattern(prog, p.subs[k]);
+          }
+        } else {
+          out = out + fmt_pattern(prog, p.subs[k]);
+        }
+        k = k + 1;
+      }
       out = out + "}";
-    } else {
-      out = out + ")";
     }
   }
   return out;
@@ -892,6 +912,13 @@ fn fmt_arms(prog: *Prog, mut cur: *CmtCur, arms: []*MatchArm,
     let arm: *MatchArm = arms[k];
     out = out + ind_of(depth);
     out = out + fmt_pattern(prog, arm.pat);
+    match arm.guard {
+      Option.Some(g) => {
+        // the §19 guard rides between the pattern and the arrow
+        out = out + " if " + fmt_expr(prog, mut cur, g, depth);
+      },
+      Option.None => {},
+    }
     out = out + " => ";
     out = out + fmt_arm_rhs(prog, mut cur, arm, depth);
     out = out + "\n";
