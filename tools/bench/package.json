@@ -1,0 +1,19 @@
+{
+  "name": "rho-bench",
+  "private": true,
+  "version": "0.1.0",
+  "description": "rho's benchmark harness: compile-time and execution-time trend lines over the corpus (docs/ecosystem.md section 1).",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "bench": "node src/cli.ts",
+    "test": "node --test \"test/*.test.ts\"",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.0",
+    "typescript": "^5.9.0"
+  }
+}
