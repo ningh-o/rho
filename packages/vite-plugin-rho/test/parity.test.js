@@ -5,28 +5,19 @@
 //
 // Plugin side: the pinned artifact on the Node runtime face, the WAT
 // assembled by the vendored wabt (the site's own vendor file). CLI
-// side: the differential's mirror leg (tools/cli-reference.mjs). A program
-// the plugin cannot compile through the app face — the corpus-package
-// users, whose modules the app face has no runtime channel for — must
-// refuse CLEANLY (the honest gap, asserted, never a wrong artifact).
+// side: the differential's mirror leg (tools/cli-reference.mjs). The
+// package-module users (032/107/t09) once refused cleanly — the app
+// face had no runtime module channel; the /mods channel closed the
+// gap, so every program now compiles on both sides and the bytes must
+// agree.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { compileRho, warmCompiler } from "../src/compiler.js";
+import { collectModulesFor } from "../src/index.js";
 import { pkgDir, repoAvailable, cliTools, cliReference, parseGoldens } from "../tools/cli-reference.mjs";
-
-// the programs whose modules live in the corpus packages (geom/web/pk):
-// the CLI bakes their module tree into MODS; the plugin's artifact
-// bakes the std tree only and the app face reads no module tree at
-// run time, so these refuse cleanly. The gap is the app face's
-// runtime channel (libs/compiler/main.rho), not the compiler.
-const PACKAGE_USERS = new Set([
-  "032_pkg_test",
-  "107_mod_structs_test",
-  "t09_pub_use_forms_test",
-]);
 
 test("programs-tier byte parity: plugin == CLI, every program", { timeout: 900_000 }, async (t) => {
   if (!repoAvailable()) {
@@ -39,7 +30,7 @@ test("programs-tier byte parity: plugin == CLI, every program", { timeout: 900_0
   const files = readdirSync(join(pkgDir, "..", "..", "tests", "suites", "programs"))
     .filter((f) => f.endsWith(".rho"))
     .sort();
-  assert.equal(files.length, 99, `the programs tier pins 99 cases (found ${files.length})`);
+  assert.equal(files.length, 100, `the programs tier pins 100 cases (found ${files.length})`);
 
   const results = [];
   const CONCURRENCY = 6;
@@ -56,14 +47,10 @@ test("programs-tier byte parity: plugin == CLI, every program", { timeout: 900_0
   await Promise.all(Array.from({ length: CONCURRENCY }, worker));
 
   const identical = results.filter((r) => r.status === "identical");
-  const refusals = results.filter((r) => r.status === "expected-refusal");
-  const red = results.filter((r) => r.status !== "identical" && r.status !== "expected-refusal");
+  const red = results.filter((r) => r.status !== "identical");
   const sets = results.filter((r) => r.goldens.sets.length > 0);
 
-  console.log(`parity: ${identical.length} byte-identical, ${refusals.length} expected refusals (package-module users), ${red.length} red`);
-  if (refusals.length) {
-    console.log(`  refusals: ${refusals.map((r) => r.name).join(", ")}`);
-  }
+  console.log(`parity: ${identical.length} byte-identical, ${red.length} red`);
   if (sets.length) {
     console.log(`  NOTE: ${sets.length} program(s) carry // set: headers — they rode the comparison verbatim`);
   }
@@ -71,7 +58,7 @@ test("programs-tier byte parity: plugin == CLI, every program", { timeout: 900_0
     console.log(`  RED ${r.name}: ${r.detail}`);
   }
   assert.equal(red.length, 0, `byte parity failed for: ${red.map((r) => r.name).join(", ")}`);
-  assert.equal(identical.length + refusals.length, files.length, "every programs-tier case is classified exactly once");
+  assert.equal(identical.length, files.length, "every programs-tier case is classified exactly once");
 });
 
 async function parityOne(name, src) {
@@ -85,16 +72,13 @@ async function parityOne(name, src) {
   if (!cli.ok) {
     return { status: "red", detail: `CLI reference path failed (rc=${cli.rc}): ${cli.stderr.slice(0, 200)}`, goldens };
   }
-  const plugin = await compileRho(src);
-  if (PACKAGE_USERS.has(name)) {
-    if (plugin.ok) {
-      return { status: "red", detail: "compiled but was expected to refuse (module channel gap)", goldens };
-    }
-    if (!plugin.stderr.includes("mods: unresolved module path(s)")) {
-      return { status: "red", detail: `wrong refusal: ${plugin.stderr.slice(0, 200)}`, goldens };
-    }
-    return { status: "expected-refusal", detail: "package-module user refuses cleanly", goldens };
+  let modules = null;
+  try {
+    modules = collectModulesFor(join(pkgDir, "..", "..", "tests", "suites", "programs", name + ".rho"), src);
+  } catch (e) {
+    return { status: "red", detail: `module collection failed: ${String(e.message).slice(0, 200)}`, goldens };
   }
+  const plugin = await compileRho(src, { modules });
   if (!plugin.ok) {
     return { status: "red", detail: `plugin compile failed: ${plugin.stderr.slice(0, 200)}`, goldens };
   }

@@ -84,15 +84,17 @@ compiler, same flags). The CLI path is the repo differential's
 self-hosted leg: `rho build libs/compiler/main.rho --set SRC=… --set
 MODS=…`, run to WAT under wasmtime, assembled by wat2wasm. The
 package's test (`test/parity.test.js`) proves it over the whole
-programs tier (96 programs), plus behavior against the suite's
+programs tier (100 programs), plus behavior against the suite's
 stdout/exit goldens.
 
-Known boundary: programs whose modules live outside the std tree
-(package users, e.g. `use geom;`) refuse cleanly with `mods:
-unresolved module path(s)` — the app face reads `/main.rho` and a
-`/mode` marker from its filesystem, but a module tree can only ride
-the artifact at bake time. Compile package-using sources with the
-CLI, or bake a custom artifact (see below).
+Module trees ride the runtime channel: the transform collects every
+non-std `use` next to the source (facade `geom/lib.rho` or file
+`web/strs.rho`, recursively), assembles the loader's `@MOD@` tree, and
+the artifact reads it from `/mods` at run time. A module that does not
+resolve next to the importing source refuses at transform time with
+the lookup it tried; `lib.rho` and `x.rho` coexisting refuses the
+loader's ambiguity. Std (`use std.io;`) needs no channel — the std
+tree is baked into the artifact.
 
 ## How the artifact is built
 

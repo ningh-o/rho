@@ -54,18 +54,29 @@ export function warmCompiler() {
 // One compiler face over the app-face verbs. mode maps to the /mode
 // marker the artifact reads — "build" (default, no marker),
 // "check", "fmt" — the same verb surface the CLI's flags drive.
+// modules rides the runtime module channel: a map of root-relative
+// paths to source texts ("geom.rho" -> text), assembled into the
+// @MOD@ format the loader parses and written to /mods (the baked
+// MODS_APP std tree loads behind whatever lands here).
 // Resolves { ok, wat, bytes, stderr, ms }:
 //   ok:     exit 0 and the WAT assembled cleanly
 //   wat:    the compiler's canonical WAT (stdout)
 //   bytes:  the program's wasm bytes (wabt-assembled; null for check)
 //   stderr: diagnostics (empty on success)
-export async function compileRho(source, { mode = "build" } = {}) {
+export async function compileRho(source, { mode = "build", modules = null } = {}) {
   await warmCompiler();
   const module = cachedModule;
   const fs = createFS();
   fs.write("/main.rho", new TextEncoder().encode(source));
   if (mode === "check" || mode === "fmt") {
     fs.write("/mode", new TextEncoder().encode(mode));
+  }
+  if (modules && Object.keys(modules).length > 0) {
+    let mods = "";
+    for (const path of Object.keys(modules).sort()) {
+      mods += `@MOD@ ${path}\n${modules[path]}\n`;
+    }
+    fs.write("/mods", new TextEncoder().encode(mods));
   }
   const t0 = performance.now();
   const result = await runWasm(cachedBytes, {

@@ -1,12 +1,12 @@
 {
-  "generation": "f112cbe2abde9d7a26955b52374d541fc4d4bf6ba1f20f5d02de6819cd554236",
-  "generationShort": "f112cbe2abde",
-  "rhoCommit": "1b7f571c9271aba55df6c04120c589f55260a65a",
+  "generation": "c8a76d7f568f03f5abcb5b0cee669b1537f445aed794a59b054ab299367c98b9",
+  "generationShort": "c8a76d7f568f",
+  "rhoCommit": "1bf1224f3f82e47f737d67fd68717b298750d6ae",
   "chain": "boot (build/rho) + libs/compiler mirror, app face with EMPTY MODS_APP (the §7 chain-law shape: byte-identical to the chain's own builds) — the std-baked site recipe is NOT usable for fmt: load_mods merges the baked modules into the Prog before /mode is read, so the fmt face would format the whole std tree after the user's program, while boot fmt formats the file's own code only — then wasm-opt -Oz --enable-bulk-memory --enable-multivalue (tools/build-site.sh's shrinker step)",
   "build": "./build/rho build libs/compiler/main.rho -o m-app.wasm --set 'MODS_APP=' && wasm-opt -Oz --enable-bulk-memory --enable-multivalue  # in the worktree root",
   "artifact": "rho-compiler.wasm",
-  "artifactSha256": "34fedf838cf452b8c10c8d63dd942a636d1c404deaa418602df8f05fc44265e3",
-  "artifactBytes": 358731,
+  "artifactSha256": "df321a52de71430e1027ee72a145a52a0d26cf889607cd0b908efc34e446fafc",
+  "artifactBytes": 366950,
   "bakeTools": {
     "wasm-opt (binaryen)": "wasm-opt version 125",
     "wasmtime": "wasmtime 40.0.0 (0807b003e 2025-12-22)",
@@ -14,7 +14,7 @@
     "note": "no wabt is vendored or used at run time — the fmt face emits canonical text, never WAT; the wat2wasm version is recorded only because the repo's gate toolchain carries it"
   },
   "inputs": {
-    "#rhoCommit": "1b7f571c9271aba55df6c04120c589f55260a65a",
+    "#rhoCommit": "1bf1224f3f82e47f737d67fd68717b298750d6ae",
     "boot/check.c": "2b9a79eb066fc65ec0fdb6deb2a7867b4abfc9a67f77a11104581c0176e5804e",
     "boot/check2.c": "8ac62338dc4319b0388d2118d96623ad4f9a86c35f9bb38fb757f133ea67b84a",
     "boot/check3.c": "26c8ff88e7f8aea18afae79fb59fc58ba0ccb439867119582d8b76ea4dd37bc4",
@@ -34,11 +34,11 @@
     "boot/test.c": "1c091f12c3d4c4c845fa01270a8afac41cd49b397d446542cd2e39bcb681f8ae",
     "boot/util.c": "d2fa5dec13d2f9d085b1509ac328ef56d571c5afb21c7616fa98dd886f5aad03",
     "boot/wat/kernel.wat": "2a214780b58a72b50e8cde29b7f1df3ccef7dccbb8172ea124100170e524dc7d",
-    "libs/compiler/check.rho": "91fab26a812e759e303492999e9cfc50afcf1fddae0ada5e47a55f76a1cb5c5e",
-    "libs/compiler/emit.rho": "4c83fa439c191a221e933048a52f94ba3eb0337c9e5a22752cbada0aeabec7c6",
-    "libs/compiler/fmt.rho": "cb3b2fd3b6d0a20e39b383a5f541d2f9f2df54968091fe7d34da8cf1d9895b91",
+    "libs/compiler/check.rho": "520c116785a1673d987e0c5363ccb1346c2225ea4dd7d3d85dd4c82b8229515e",
+    "libs/compiler/emit.rho": "5a2df7937473702ccdfd4e41ea5bef4a4bb67eb2b3f61880c3dcca77ccaad6aa",
+    "libs/compiler/fmt.rho": "abd534ea6856ceed05cd702314e4879e50b93fd80f018949734952a7d0d0858e",
     "libs/compiler/lex.rho": "81777270916af7e9affe2cda5aa959a54b39339b01c5f0eaef183b44a485aa2b",
-    "libs/compiler/main.rho": "16c35c1d59328e66528d6b70d795b3f01bd176e83afafcd30c1848d9c7904892",
-    "libs/compiler/parse.rho": "ffd6f682114d17eb76e8ddf91a6863808414d7eb00c444585201a7c681c0ad07"
+    "libs/compiler/main.rho": "835b966179dcd4365284b1f8fae3aff0b5d7d24caa34096e4f0f12acb8b6f6de",
+    "libs/compiler/parse.rho": "f1bab2403240e09420599c71fa9accaa8db3d71fdef0b31d46e87169ae06b9ce"
   }
 }

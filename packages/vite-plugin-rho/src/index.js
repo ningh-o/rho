@@ -31,9 +31,75 @@
 // dies with the artifact that fed it.
 
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { compileRho, loadGeneration, warmCompiler } from "./compiler.js";
 
 const WASM_MAGIC = new Uint8Array([0x00, 0x61, 0x73, 0x6d]); // "\0asm"
+
+// the use lines a source carries (dotted paths, an optional `as`
+// rename); the baked std tree skips the channel — it rides MODS_APP
+function scanUses(code) {
+  const paths = [];
+  const re = /^\s*use\s+([A-Za-z_][A-Za-z0-9_.]*)\s*(?:as\s+[A-Za-z_][A-Za-z0-9_]*)?\s*;/gm;
+  let m;
+  while ((m = re.exec(code))) {
+    const name = m[1];
+    if (name === "std" || name.startsWith("std.")) continue;
+    paths.push(name.replace(/\./g, "/"));
+  }
+  return paths;
+}
+
+// the user's module tree, the loader's own law mirrored:
+//   facade   `use geom;`  -> geom/lib.rho (its dir threads down to the
+//                            interior's own uses)
+//   file     `use web.strs;` -> web/strs.rho (a loose file owns its dir)
+// lib.rho and x.rho coexisting is the loader's ambiguity refusal — the
+// collector reports it instead of guessing. Paths ride the @MOD@ tree
+// root-relative, exactly the spellings mods_find looks up.
+function collectFrom(absDir, relDir, code, seen, errors, mods) {
+  for (const use of scanUses(code)) {
+    if (seen.has(relDir + use)) continue;
+    seen.add(relDir + use);
+    let facText = null;
+    let fileText = null;
+    try {
+      facText = readFileSync(join(absDir, use, "lib.rho"), "utf8");
+    } catch {}
+    try {
+      fileText = readFileSync(join(absDir, use + ".rho"), "utf8");
+    } catch {}
+    if (facText !== null && fileText !== null) {
+      errors.push(`${relDir}${use}: lib.rho and ${use}.rho coexist (ambiguity)`);
+      continue;
+    }
+    if (facText === null && fileText === null) {
+      errors.push(`${relDir}${use} (looked for ${relDir}${use}/lib.rho and ${relDir}${use}.rho next to ${absDir})`);
+      continue;
+    }
+    if (facText !== null) {
+      mods[relDir + use + "/lib.rho"] = facText;
+      collectFrom(join(absDir, use), relDir + use + "/", facText, seen, errors, mods);
+    } else {
+      const fileRel = relDir + use + ".rho";
+      mods[fileRel] = fileText;
+      const ownDir = use.includes("/") ? use.slice(0, use.lastIndexOf("/") + 1) : "";
+      collectFrom(join(absDir, ownDir), relDir + ownDir, fileText, seen, errors, mods);
+    }
+  }
+  return mods;
+}
+
+// the entry the transform and the tests share
+function collectModulesFor(file, code) {
+  const errors = [];
+  const mods = collectFrom(dirname(resolve(file)), "", code, new Set(), errors, {});
+  if (errors.length) {
+    throw new Error(`vite-plugin-rho: ${file} uses modules that do not resolve next to it: ${errors.join("; ")}`);
+  }
+  return mods;
+}
 
 export default function vitePluginRho(options = {}) {
   const mode = options.mode ?? "build";
@@ -57,16 +123,29 @@ export default function vitePluginRho(options = {}) {
       const file = id.split("?", 1)[0];
       if (!file || !file.endsWith(".rho")) return null;
 
+      // the module tree joins the cache key: a module edit must bust
+      // the entry just like the main source's own bytes do
+      let modules = null;
+      if (mode !== "fmt") {
+        try {
+          const collected = collectModulesFor(file, code);
+          if (Object.keys(collected).length > 0) modules = collected;
+        } catch (e) {
+          this.error(e.message);
+        }
+      }
       const key = createHash("sha256")
         .update(generation.generation)
         .update("\0")
         .update(mode)
         .update("\0")
         .update(code, "utf8")
+        .update("\0")
+        .update(modules ? JSON.stringify(modules) : "")
         .digest("hex");
       let entry = cache.get(key);
       if (!entry) {
-        entry = await compileRho(code, { mode });
+        entry = await compileRho(code, { mode, modules });
         cache.set(key, entry);
       }
 
@@ -105,4 +184,4 @@ export default function vitePluginRho(options = {}) {
 }
 
 // named exports for programmatic consumers (tests, custom pipelines)
-export { compileRho, loadGeneration, warmCompiler };
+export { compileRho, loadGeneration, warmCompiler, collectModulesFor, scanUses };

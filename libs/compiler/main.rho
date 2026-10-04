@@ -58,7 +58,21 @@ fn app_compile(src: string) -> i32 {
     }
     return 0;
   }
-  if len(MODS_APP) > 0 && !parse.load_mods(mut prog, MODS_APP) {
+  // the runtime module channel: /mods carries the user's module tree
+  // in the @MOD@ format — the host writes it when the program's use
+  // lines reach past the baked std tree (the vite plugin's multi-
+  // module face). One load pass carries both trees — the user's ride
+  // ahead of the baked std tree, so each use resolves exactly once
+  // and a user spelling shadows std on a path collision. Absent
+  // /mods → the baked std tree alone.
+  let mut tree: string = MODS_APP;
+  match io.read_file("/mods") {
+    Result.Ok(mt) => {
+      tree = mt + MODS_APP;
+    },
+    Result.Err(_) => {},
+  }
+  if len(tree) > 0 && !parse.load_mods(mut prog, tree) {
     eprintf("mods: unresolved module path(s)\n");
     return 1;
   }
