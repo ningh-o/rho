@@ -39,5 +39,9 @@ jobs:
           sudo cp wasmtime-v${WASMTIME_VERSION}-x86_64-linux/wasmtime /usr/local/bin/
           wat2wasm --version
           wasmtime --version
+      # the test runners speak zsh (glob qualifiers ride the runners'
+      # modsrc assembly); ubuntu-latest ships without it
+      - name: zsh
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
       - name: make test
         run: make test
