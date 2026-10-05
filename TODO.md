@@ -1824,19 +1824,37 @@ to their positive forms.
       binder width bug, T8.10; (3) whatever surfaces behind those two
       (the facade's parse fallbacks shrink with each fix — re-probe
       with the run-mods-diff harness patterns per fix).
+- [ ] **T8.11** Closure captures of MANAGED handles miscompile in the
+      mirror's emitter: `let mut xs: []i32 = make([]i32, 3);` captured
+      by a closure reading `xs[0]` — boot prints 9, the mirror 0. The
+      §6.8 hatch's emit path (the capture slot rides the wrong lane).
+      Pre-existing; T8.9's checker work exposed it.
+- [ ] **T8.12** BOOT-side (reference compiler): `let mut s: string`
+      captured by a closure segfaults the COMPILED program (wasmtime
+      rc 139; build succeeds). The managed hatch's string lane in
+      boot's own emit — not a parity item, a reference defect the
+      audit surfaced while picking a hatch witness.
+- [ ] **T8.13** The mirror's checker misses return-type mismatch:
+      `fn() -> i32 { return len(s); }` (len is usize) — boot refuses,
+      the mirror compiles. Part of the type-layer milestone.
 - [ ] **T8.10** Slice-payload variant binder: `enum J { Arr([]i32) }`,
       `J.Arr([5, 6])` then `J.Arr(xs) => xs[0]` — boot prints 5; the
       mirror emits type-broken WAT (`i64.ge_u` fed an i32 lane — the
       pattern-bound slice's ptr/len lanes swap widths). Emit-level, in
       the match-binder path; the corpus-differential program rides the
       fix.
-- [ ] **T8.9** S6.8 mut-capture refusal: boot refuses a closure
+- [x] **T8.9** S6.8 mut-capture refusal: boot refuses a closure
       capturing a `mut` local ("a value copy would diverge; share a
       heap object through a pointer instead") — the mirror's checker
       accepts it and the runtime silently diverges (each call mutates a
       fresh copy; the outer binding never moves: `f() f() n` prints
-      `2 2 1`). The must-fail diagnostic (`capture_mut_value`) is
-      missing on the mirror.
+      `2 2 1`). LANDED: the checker threads a value-type face per
+      binding (annotation, or literal-init inference; untyped stays
+      allowed — the law refuses only on knowledge) and the closure body
+      walks its own scope stack (an inner `let` of the same name
+      shadows the capture out; nested closures enforce their own;
+      innermost binding wins). Managed handles stay legal per §6.8 —
+      their emit is T8.11's bug.
 
 ---
 

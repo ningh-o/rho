@@ -212,12 +212,247 @@ fn method_known(prog: *Prog, mname: string) -> bool {
   return false;
 }
 
+// the scalar faces the §6.8 capture law refuses on: a mut binding of
+// one of these types carries its value IN the binding, so the
+// closure's copy diverges on any rebind
+fn vty_scalar(ty: string) -> bool {
+  return ty == "i8" || ty == "i16" || ty == "i32" || ty == "i64" ||
+         ty == "u8" || ty == "u16" || ty == "u32" || ty == "u64" ||
+         ty == "usize" || ty == "f32" || ty == "f64" || ty == "bool";
+}
+
+// §6.8's walker: the closure body's identifier reads are its
+// captures. The body walks in its OWN stack (seeded with the
+// enclosing bindings, the closure's params shadowing first) — rho's
+// value semantics pop every inner scope for free, so an inner `let`
+// of the same name shadows the capture out of the law's reach and a
+// nested closure enforces its own captures against what it sees.
+fn clo_captures(e: *Expr, bound: []string, muts: []bool, vtys: []bool,
+                nb: usize, mut errs: *ErrBox) {
+  let mut n: usize = nb;
+  let mut names: []string = make([]string, 128);
+  let mut imuts: []bool = make([]bool, 128);
+  let mut ivtys: []bool = make([]bool, 128);
+  let mut si: usize = 0;
+  while si < nb && n < 128 {
+    names[n] = bound[si];
+    imuts[n] = muts[si];
+    ivtys[n] = vtys[si];
+    n = n + 1;
+    si = si + 1;
+  }
+  let mut k: usize = 0;
+  while k < len(e.fnames) && n < 128 {
+    names[n] = e.fnames[k];
+    imuts[n] = false;
+    ivtys[n] = false;
+    n = n + 1;
+    k = k + 1;
+  }
+  if len(e.marms) > 0 {
+    clo_stmts(e.marms[0].body, mut names, mut imuts, mut ivtys, n, mut errs);
+  }
+}
+
+fn clo_expr(e: *Expr, mut names: []string, mut imuts: []bool,
+            mut ivtys: []bool, n: usize, mut errs: *ErrBox) {
+  let mut n: usize = n;
+  if e.tag == parse.EX_VAR {
+    // innermost binding wins (boot's lookup): scan from the top and
+    // judge only the first name hit
+    let mut k: usize = n;
+    while k > 0 {
+      k = k - 1;
+      if names[k] == e.name {
+        if imuts[k] && ivtys[k] {
+          eprintf("check: a closure may not capture the mut local '{}' (a value copy would diverge; share a heap object through a pointer instead)\n", e.name);
+          errs.n = errs.n + 1;
+        }
+        return;
+      }
+    }
+    return;
+  }
+  if e.tag == parse.EX_CLO {
+    let mut k2: usize = 0;
+    while k2 < len(e.fnames) && n < len(names) {
+      names[n] = e.fnames[k2];
+      imuts[n] = false;
+      ivtys[n] = false;
+      n = n + 1;
+      k2 = k2 + 1;
+    }
+    if len(e.marms) > 0 {
+      clo_stmts(e.marms[0].body, mut names, mut imuts, mut ivtys, n, mut errs);
+    }
+    return;
+  }
+  match e.lhs {
+    Option.Some(b) => {
+      clo_expr(b, mut names, mut imuts, mut ivtys, n, mut errs);
+    },
+    Option.None => {},
+  }
+  match e.rhs {
+    Option.Some(r) => {
+      clo_expr(r, mut names, mut imuts, mut ivtys, n, mut errs);
+    },
+    Option.None => {},
+  }
+  let mut k3: usize = 0;
+  while k3 < len(e.args) {
+    clo_expr(e.args[k3], mut names, mut imuts, mut ivtys, n, mut errs);
+    k3 = k3 + 1;
+  }
+  let mut k4: usize = 0;
+  while k4 < len(e.marms) {
+    let arm = e.marms[k4];
+    let mut b0 = new NameBox { names: make([]string, 8), n: 0 };
+    pat_binders_into(arm.pat, mut b0);
+    let mut k5: usize = 0;
+    while k5 < b0.n && n < len(names) {
+      names[n] = b0.names[k5];
+      imuts[n] = false;
+      ivtys[n] = false;
+      n = n + 1;
+      k5 = k5 + 1;
+    }
+    match arm.val {
+      Option.Some(av) => {
+        clo_expr(av, mut names, mut imuts, mut ivtys, n, mut errs);
+      },
+      Option.None => {},
+    }
+    match arm.guard {
+      Option.Some(gd) => {
+        clo_expr(gd, mut names, mut imuts, mut ivtys, n, mut errs);
+      },
+      Option.None => {},
+    }
+    clo_stmts(arm.body, mut names, mut imuts, mut ivtys, n, mut errs);
+    k4 = k4 + 1;
+  }
+}
+
+fn clo_stmts(nodes: []*Stmt, mut names: []string, mut imuts: []bool,
+             mut ivtys: []bool, n: usize, mut errs: *ErrBox) {
+  let mut n: usize = n;
+  let mut i: usize = 0;
+  while i < len(nodes) {
+    let st = nodes[i];
+    if st.tag == parse.ST_LET {
+      match st.val {
+        Option.Some(v) => {
+          clo_expr(v, mut names, mut imuts, mut ivtys, n, mut errs);
+        },
+        Option.None => {},
+      }
+      if n < len(names) {
+        names[n] = st.name;
+        imuts[n] = st.ret == 1;
+        ivtys[n] = false;
+        if len(st.fmt) > 0 {
+          ivtys[n] = vty_scalar(st.fmt);
+        } else {
+          match st.val {
+            Option.Some(e9) => {
+              ivtys[n] = e9.tag == parse.EX_LIT;
+            },
+            Option.None => {},
+          }
+        }
+        n = n + 1;
+      }
+    }
+    if st.tag == parse.ST_SET || st.tag == parse.ST_CALL ||
+        st.tag == parse.ST_RET || st.tag == parse.ST_PF {
+      match st.val {
+        Option.Some(v) => {
+          clo_expr(v, mut names, mut imuts, mut ivtys, n, mut errs);
+        },
+        Option.None => {},
+      }
+    }
+    if st.tag == parse.ST_ISTORE || st.tag == parse.ST_FSTORE {
+      let mut k: usize = 0;
+      while k < len(st.args) {
+        clo_expr(st.args[k], mut names, mut imuts, mut ivtys, n, mut errs);
+        k = k + 1;
+      }
+      match st.val {
+        Option.Some(v) => {
+          clo_expr(v, mut names, mut imuts, mut ivtys, n, mut errs);
+        },
+        Option.None => {},
+      }
+    }
+    if st.tag == parse.ST_MATCH {
+      match st.val {
+        Option.Some(sc) => {
+          clo_expr(sc, mut names, mut imuts, mut ivtys, n, mut errs);
+        },
+        Option.None => {},
+      }
+      let mut k2: usize = 0;
+      while k2 < len(st.marms) {
+        let arm = st.marms[k2];
+        let mut b0 = new NameBox { names: make([]string, 8), n: 0 };
+        pat_binders_into(arm.pat, mut b0);
+        let mut k5: usize = 0;
+        while k5 < b0.n && n < len(names) {
+          names[n] = b0.names[k5];
+          imuts[n] = false;
+          ivtys[n] = false;
+          n = n + 1;
+          k5 = k5 + 1;
+        }
+        match arm.val {
+          Option.Some(av) => {
+            clo_expr(av, mut names, mut imuts, mut ivtys, n, mut errs);
+          },
+          Option.None => {},
+        }
+        match arm.guard {
+          Option.Some(gd) => {
+            clo_expr(gd, mut names, mut imuts, mut ivtys, n, mut errs);
+          },
+          Option.None => {},
+        }
+        clo_stmts(arm.body, mut names, mut imuts, mut ivtys, n, mut errs);
+        k2 = k2 + 1;
+      }
+    }
+    if st.tag == parse.ST_IF || st.tag == parse.ST_WHILE ||
+        st.tag == parse.ST_LOOP || st.tag == parse.ST_BLOCK {
+      match st.val {
+        Option.Some(v) => {
+          clo_expr(v, mut names, mut imuts, mut ivtys, n, mut errs);
+        },
+        Option.None => {},
+      }
+      clo_stmts(st.body, mut names, mut imuts, mut ivtys, n, mut errs);
+      clo_stmts(st.body2, mut names, mut imuts, mut ivtys, n, mut errs);
+    }
+    if st.tag == parse.ST_DEFER {
+      match st.sub {
+        Option.Some(inner) => {
+          let mut one: []*Stmt = make([]*Stmt, 1);
+          one[0] = inner;
+          clo_stmts(one, mut names, mut imuts, mut ivtys, n, mut errs);
+        },
+        Option.None => {},
+      }
+    }
+    i = i + 1;
+  }
+}
+
 fn expr_walk(e: *Expr, prog: *Prog, mut bound: []string, mut muts: []bool,
-             nb: usize, mut errs: *ErrBox) {
+             mut vtys: []bool, nb: usize, mut errs: *ErrBox) {
   if e.tag == parse.EX_MAKE {
     let mut k: usize = 0;
     while k < len(e.args) {
-      expr_walk(e.args[k], prog, mut bound, mut muts, nb, mut errs);
+      expr_walk(e.args[k], prog, mut bound, mut muts, mut vtys, nb, mut errs);
       k = k + 1;
     }
     return;
@@ -225,13 +460,13 @@ fn expr_walk(e: *Expr, prog: *Prog, mut bound: []string, mut muts: []bool,
   if e.tag == parse.EX_IDX {
     match e.lhs {
       Option.Some(b) => {
-        expr_walk(b, prog, mut bound, mut muts, nb, mut errs);
+        expr_walk(b, prog, mut bound, mut muts, mut vtys, nb, mut errs);
       },
       Option.None => {},
     }
     match e.rhs {
       Option.Some(i) => {
-        expr_walk(i, prog, mut bound, mut muts, nb, mut errs);
+        expr_walk(i, prog, mut bound, mut muts, mut vtys, nb, mut errs);
       },
       Option.None => {},
     }
@@ -240,13 +475,13 @@ fn expr_walk(e: *Expr, prog: *Prog, mut bound: []string, mut muts: []bool,
   if e.tag == parse.EX_SLICE2 {
     match e.lhs {
       Option.Some(b) => {
-        expr_walk(b, prog, mut bound, mut muts, nb, mut errs);
+        expr_walk(b, prog, mut bound, mut muts, mut vtys, nb, mut errs);
       },
       Option.None => {},
     }
     let mut k: usize = 0;
     while k < len(e.args) {
-      expr_walk(e.args[k], prog, mut bound, mut muts, nb, mut errs);
+      expr_walk(e.args[k], prog, mut bound, mut muts, mut vtys, nb, mut errs);
       k = k + 1;
     }
     return;
@@ -258,7 +493,7 @@ fn expr_walk(e: *Expr, prog: *Prog, mut bound: []string, mut muts: []bool,
     }
     let mut k: usize = 0;
     while k < len(e.args) {
-      expr_walk(e.args[k], prog, mut bound, mut muts, nb, mut errs);
+      expr_walk(e.args[k], prog, mut bound, mut muts, mut vtys, nb, mut errs);
       k = k + 1;
     }
     return;
@@ -283,7 +518,7 @@ fn expr_walk(e: *Expr, prog: *Prog, mut bound: []string, mut muts: []bool,
     }
     match e.lhs {
       Option.Some(b) => {
-        expr_walk(b, prog, mut bound, mut muts, nb, mut errs);
+        expr_walk(b, prog, mut bound, mut muts, mut vtys, nb, mut errs);
       },
       Option.None => {},
     }
@@ -292,7 +527,7 @@ fn expr_walk(e: *Expr, prog: *Prog, mut bound: []string, mut muts: []bool,
   if e.tag == parse.EX_Q {
     match e.lhs {
       Option.Some(inner) => {
-        expr_walk(inner, prog, mut bound, mut muts, nb, mut errs);
+        expr_walk(inner, prog, mut bound, mut muts, mut vtys, nb, mut errs);
       },
       Option.None => {},
     }
@@ -301,13 +536,13 @@ fn expr_walk(e: *Expr, prog: *Prog, mut bound: []string, mut muts: []bool,
   if e.tag == parse.EX_MATCH {
     match e.lhs {
       Option.Some(sc) => {
-        expr_walk(sc, prog, mut bound, mut muts, nb, mut errs);
+        expr_walk(sc, prog, mut bound, mut muts, mut vtys, nb, mut errs);
       },
       Option.None => {},
     }
     let mut k: usize = 0;
     while k < len(e.marms) {
-      walk_arm(e.marms[k], prog, mut bound, mut muts, nb, mut errs);
+      walk_arm(e.marms[k], prog, mut bound, mut muts, mut vtys, nb, mut errs);
       k = k + 1;
     }
     return;
@@ -335,7 +570,7 @@ fn expr_walk(e: *Expr, prog: *Prog, mut bound: []string, mut muts: []bool,
           // the prelude's to_str rides every primitive
           let mut ka: usize = 0;
           while ka < len(e.args) {
-            expr_walk(e.args[ka], prog, mut bound, mut muts, nb, mut errs);
+            expr_walk(e.args[ka], prog, mut bound, mut muts, mut vtys, nb, mut errs);
             ka = ka + 1;
           }
           return;
@@ -358,7 +593,7 @@ fn expr_walk(e: *Expr, prog: *Prog, mut bound: []string, mut muts: []bool,
           }
           pair = true;
         } else {
-          expr_walk(r, prog, mut bound, mut muts, nb, mut errs);
+          expr_walk(r, prog, mut bound, mut muts, mut vtys, nb, mut errs);
           if !method_known(prog, e.name) {
             eprintf("check: unknown method '{}'\n", e.name);
             errs.n = errs.n + 1;
@@ -379,14 +614,19 @@ fn expr_walk(e: *Expr, prog: *Prog, mut bound: []string, mut muts: []bool,
       if pair {
         marker_law(e.args[k], bound, muts, nb, mut errs);
       }
-      expr_walk(e.args[k], prog, mut bound, mut muts, nb, mut errs);
+      expr_walk(e.args[k], prog, mut bound, mut muts, mut vtys, nb, mut errs);
       k = k + 1;
     }
     return;
   }
   if e.tag == parse.EX_CLO {
     // a closure literal: its body binds its own params and captures
-    // (the emitter resolves captures against the enclosing env)
+    // (the emitter resolves captures against the enclosing env) — and
+    // §6.8's capture law runs here: a mut local of VALUE type may not
+    // ride along (the copy would diverge from the original on any
+    // rebind). Managed handles capture fine; the law refuses only on
+    // knowledge, so an untyped binding stays allowed.
+    clo_captures(e, bound, muts, vtys, nb, mut errs);
     return;
   }
   if e.tag == parse.EX_CALL {
@@ -394,7 +634,7 @@ fn expr_walk(e: *Expr, prog: *Prog, mut bound: []string, mut muts: []bool,
     if len(e.name) == 0 {
       match e.lhs {
         Option.Some(callee) => {
-          expr_walk(callee, prog, mut bound, mut muts, nb, mut errs);
+          expr_walk(callee, prog, mut bound, mut muts, mut vtys, nb, mut errs);
         },
         Option.None => {},
       }
@@ -403,7 +643,7 @@ fn expr_walk(e: *Expr, prog: *Prog, mut bound: []string, mut muts: []bool,
         // §18: boot pairs markers against the fn-value signature —
         // the root-binding tail rides here
         marker_law(e.args[k3], bound, muts, nb, mut errs);
-        expr_walk(e.args[k3], prog, mut bound, mut muts, nb, mut errs);
+        expr_walk(e.args[k3], prog, mut bound, mut muts, mut vtys, nb, mut errs);
         k3 = k3 + 1;
       }
       return;
@@ -432,7 +672,7 @@ fn expr_walk(e: *Expr, prog: *Prog, mut bound: []string, mut muts: []bool,
     }
     let mut k: usize = 0;
     while k < len(e.args) {
-      expr_walk(e.args[k], prog, mut bound, mut muts, nb, mut errs);
+      expr_walk(e.args[k], prog, mut bound, mut muts, mut vtys, nb, mut errs);
       k = k + 1;
     }
     return;
@@ -462,13 +702,13 @@ fn expr_walk(e: *Expr, prog: *Prog, mut bound: []string, mut muts: []bool,
   }
   match e.lhs {
     Option.Some(l) => {
-      expr_walk(l, prog, mut bound, mut muts, nb, mut errs);
+      expr_walk(l, prog, mut bound, mut muts, mut vtys, nb, mut errs);
     },
     Option.None => {},
   }
   match e.rhs {
     Option.Some(r) => {
-      expr_walk(r, prog, mut bound, mut muts, nb, mut errs);
+      expr_walk(r, prog, mut bound, mut muts, mut vtys, nb, mut errs);
     },
     Option.None => {},
   }
@@ -519,15 +759,18 @@ fn pat_binders_into(p: *Pat, mut b: *NameBox) {
 }
 
 fn walk_arm(a: *MatchArm, prog: *Prog, mut bound: []string,
-            mut muts: []bool, nb0: usize, mut errs: *ErrBox) {
+            mut muts: []bool, mut vtys: []bool, nb0: usize,
+            mut errs: *ErrBox) {
   let mut nb: usize = nb0;
   // the outer slot the binders are about to take may hold a live
   // outer name — put it back when the arm's scope closes
   let mut save_n: string = "";
   let mut save_m: bool = false;
+  let mut save_v: bool = false;
   if nb < len(bound) {
     save_n = bound[nb];
     save_m = muts[nb];
+    save_v = vtys[nb];
   }
   // §19's identical-binder law: every or-alternative binds the same
   // name set — count and membership — else the checker refuses
@@ -569,6 +812,7 @@ fn walk_arm(a: *MatchArm, prog: *Prog, mut bound: []string,
     if nb < len(bound) {
       bound[nb] = nb_all.names[k];
       muts[nb] = false; // a binder is a let without mut
+      vtys[nb] = false; // and a fresh value: never the capture hazard
       nb = nb + 1;
     }
     k = k + 1;
@@ -578,7 +822,7 @@ fn walk_arm(a: *MatchArm, prog: *Prog, mut bound: []string,
       // the §19 guard evaluates after the pattern matches, in scope
       // of its bindings: the guard's names resolve against the
       // pattern's binders
-      expr_walk(gd, prog, mut bound, mut muts, nb, mut errs);
+      expr_walk(gd, prog, mut bound, mut muts, mut vtys, nb, mut errs);
     },
     Option.None => {},
   }
@@ -594,17 +838,18 @@ fn walk_arm(a: *MatchArm, prog: *Prog, mut bound: []string,
         q = q + 1;
       }
       all[q] = parse.wrap_expr_stmt(v);
-      stmts_walk(all, prog, mut bound, mut muts, nb,
+      stmts_walk(all, prog, mut bound, mut muts, mut vtys, nb,
                  mut make([]string, 32), 0, mut errs);
     },
     Option.None => {
-      stmts_walk(a.body, prog, mut bound, mut muts, nb,
+      stmts_walk(a.body, prog, mut bound, mut muts, mut vtys, nb,
                  mut make([]string, 32), 0, mut errs);
     },
   }
   if nb0 < len(bound) {
     bound[nb0] = save_n;
     muts[nb0] = save_m;
+    vtys[nb0] = save_v;
   }
 }
 
@@ -736,8 +981,8 @@ fn label_known(labels: []string, nl: usize, name: string) -> bool {
 }
 
 fn stmts_walk(nodes: []*Stmt, prog: *Prog, mut bound: []string,
-              mut muts: []bool, nb0: usize, mut labels: []string, nl0: usize,
-              mut errs: *ErrBox) {
+              mut muts: []bool, mut vtys: []bool, nb0: usize,
+              mut labels: []string, nl0: usize, mut errs: *ErrBox) {
   let mut nb: usize = nb0;
   let mut nl: usize = nl0;
   let mut i: usize = 0;
@@ -757,7 +1002,7 @@ fn stmts_walk(nodes: []*Stmt, prog: *Prog, mut bound: []string,
         st.tag == parse.ST_FSTORE {
       match st.val {
         Option.Some(e) => {
-          expr_walk(e, prog, mut bound, mut muts, nb, mut errs);
+          expr_walk(e, prog, mut bound, mut muts, mut vtys, nb, mut errs);
         },
         Option.None => {},
       }
@@ -789,6 +1034,17 @@ fn stmts_walk(nodes: []*Stmt, prog: *Prog, mut bound: []string,
         if nb < len(bound) {
           bound[nb] = st.name;
           muts[nb] = st.ret == 1; // the mut flag rides the ret slot
+          vtys[nb] = false;
+          if len(st.fmt) > 0 {
+            vtys[nb] = vty_scalar(st.fmt);
+          } else {
+            match st.val {
+              Option.Some(e9) => {
+                vtys[nb] = e9.tag == parse.EX_LIT;
+              },
+              Option.None => {},
+            }
+          }
           nb = nb + 1;
         }
       }
@@ -797,7 +1053,7 @@ fn stmts_walk(nodes: []*Stmt, prog: *Prog, mut bound: []string,
         // name); what remains is the store's own operands
         let mut q: usize = 0;
         while q < len(st.args) {
-          expr_walk(st.args[q], prog, mut bound, mut muts, nb, mut errs);
+          expr_walk(st.args[q], prog, mut bound, mut muts, mut vtys, nb, mut errs);
           q = q + 1;
         }
       }
@@ -805,20 +1061,20 @@ fn stmts_walk(nodes: []*Stmt, prog: *Prog, mut bound: []string,
     if st.tag == parse.ST_PF {
       let mut k: usize = 0;
       while k < len(st.args) {
-        expr_walk(st.args[k], prog, mut bound, mut muts, nb, mut errs);
+        expr_walk(st.args[k], prog, mut bound, mut muts, mut vtys, nb, mut errs);
         k = k + 1;
       }
     }
     if st.tag == parse.ST_MATCH {
       match st.val {
         Option.Some(sc) => {
-          expr_walk(sc, prog, mut bound, mut muts, nb, mut errs);
+          expr_walk(sc, prog, mut bound, mut muts, mut vtys, nb, mut errs);
         },
         Option.None => {},
       }
       let mut k: usize = 0;
       while k < len(st.marms) {
-        walk_arm(st.marms[k], prog, mut bound, mut muts, nb, mut errs);
+        walk_arm(st.marms[k], prog, mut bound, mut muts, mut vtys, nb, mut errs);
         k = k + 1;
       }
     }
@@ -828,16 +1084,19 @@ fn stmts_walk(nodes: []*Stmt, prog: *Prog, mut bound: []string,
           // the deferred scope: slot nb may hold a live outer name
           let mut save_n: string = "";
           let mut save_m: bool = false;
+          let mut save_v: bool = false;
           if nb < len(bound) {
             save_n = bound[nb];
             save_m = muts[nb];
+            save_v = vtys[nb];
           }
           let mut one: []*Stmt = make([]*Stmt, 1);
           one[0] = inner;
-          stmts_walk(one, prog, mut bound, mut muts, nb, mut labels, nl, mut errs);
+          stmts_walk(one, prog, mut bound, mut muts, mut vtys, nb, mut labels, nl, mut errs);
           if nb < len(bound) {
             bound[nb] = save_n;
             muts[nb] = save_m;
+            vtys[nb] = save_v;
           }
         },
         Option.None => {},
@@ -846,12 +1105,12 @@ fn stmts_walk(nodes: []*Stmt, prog: *Prog, mut bound: []string,
     if st.tag == parse.ST_ISTORE {
       let mut k: usize = 0;
       while k < len(st.args) {
-        expr_walk(st.args[k], prog, mut bound, mut muts, nb, mut errs);
+        expr_walk(st.args[k], prog, mut bound, mut muts, mut vtys, nb, mut errs);
         k = k + 1;
       }
       match st.val {
         Option.Some(e) => {
-          expr_walk(e, prog, mut bound, mut muts, nb, mut errs);
+          expr_walk(e, prog, mut bound, mut muts, mut vtys, nb, mut errs);
         },
         Option.None => {},
       }
@@ -859,32 +1118,36 @@ fn stmts_walk(nodes: []*Stmt, prog: *Prog, mut bound: []string,
     if st.tag == parse.ST_IF {
       match st.val {
         Option.Some(e) => {
-          expr_walk(e, prog, mut bound, mut muts, nb, mut errs);
+          expr_walk(e, prog, mut bound, mut muts, mut vtys, nb, mut errs);
         },
         Option.None => {},
       }
       // each branch scope: put back the outer slot the branch may take
       let mut save_n: string = "";
       let mut save_m: bool = false;
+      let mut save_v: bool = false;
       if nb < len(bound) {
         save_n = bound[nb];
         save_m = muts[nb];
+        save_v = vtys[nb];
       }
-      stmts_walk(st.body, prog, mut bound, mut muts, nb, mut labels, nl, mut errs);
+      stmts_walk(st.body, prog, mut bound, mut muts, mut vtys, nb, mut labels, nl, mut errs);
       if nb < len(bound) {
         bound[nb] = save_n;
         muts[nb] = save_m;
+        vtys[nb] = save_v;
       }
-      stmts_walk(st.body2, prog, mut bound, mut muts, nb, mut labels, nl, mut errs);
+      stmts_walk(st.body2, prog, mut bound, mut muts, mut vtys, nb, mut labels, nl, mut errs);
       if nb < len(bound) {
         bound[nb] = save_n;
         muts[nb] = save_m;
+        vtys[nb] = save_v;
       }
     }
     if st.tag == parse.ST_WHILE {
       match st.val {
         Option.Some(e) => {
-          expr_walk(e, prog, mut bound, mut muts, nb, mut errs);
+          expr_walk(e, prog, mut bound, mut muts, mut vtys, nb, mut errs);
         },
         Option.None => {},
       }
@@ -896,14 +1159,17 @@ fn stmts_walk(nodes: []*Stmt, prog: *Prog, mut bound: []string,
       }
       let mut save_n: string = "";
       let mut save_m: bool = false;
+      let mut save_v: bool = false;
       if nb < len(bound) {
         save_n = bound[nb];
         save_m = muts[nb];
+        save_v = vtys[nb];
       }
-      stmts_walk(st.body, prog, mut bound, mut muts, nb, mut labels, nl, mut errs);
+      stmts_walk(st.body, prog, mut bound, mut muts, mut vtys, nb, mut labels, nl, mut errs);
       if nb < len(bound) {
         bound[nb] = save_n;
         muts[nb] = save_m;
+        vtys[nb] = save_v;
       }
     }
     if st.tag == parse.ST_LOOP {
@@ -915,14 +1181,17 @@ fn stmts_walk(nodes: []*Stmt, prog: *Prog, mut bound: []string,
       }
       let mut save_n: string = "";
       let mut save_m: bool = false;
+      let mut save_v: bool = false;
       if nb < len(bound) {
         save_n = bound[nb];
         save_m = muts[nb];
+        save_v = vtys[nb];
       }
-      stmts_walk(st.body, prog, mut bound, mut muts, nb, mut labels, nl, mut errs);
+      stmts_walk(st.body, prog, mut bound, mut muts, mut vtys, nb, mut labels, nl, mut errs);
       if nb < len(bound) {
         bound[nb] = save_n;
         muts[nb] = save_m;
+        vtys[nb] = save_v;
       }
     }
     // break/continue bind no names; a named jump must target an
@@ -946,20 +1215,23 @@ pub fn check(prog: *Prog) -> i64 {
     let fd0: *FnDef = prog.fns[nf];
     let mut bound: []string = make([]string, 64);
     let mut muts: []bool = make([]bool, 64);
+    let mut vtys: []bool = make([]bool, 64);
     let mut k: usize = 0;
     while k < len(fd0.params) {
       bound[k] = fd0.params[k];
       muts[k] = fd0.pmut[k]; // a mut view grants the writes (§18)
+      vtys[k] = vty_scalar(fd0.ptypes[k]);
       k = k + 1;
     }
     let mut labels: []string = make([]string, 32);
-    stmts_walk(fd0.body, prog, mut bound, mut muts, k, mut labels, 0, mut errs_box);
+    stmts_walk(fd0.body, prog, mut bound, mut muts, mut vtys, k, mut labels, 0, mut errs_box);
     nf = nf + 1;
   }
   let mut bound: []string = make([]string, 64);
   let mut muts: []bool = make([]bool, 64);
+  let mut vtys: []bool = make([]bool, 64);
   let mut labels: []string = make([]string, 32);
-  stmts_walk(prog.main, prog, mut bound, mut muts, 0, mut labels, 0, mut errs_box);
+  stmts_walk(prog.main, prog, mut bound, mut muts, mut vtys, 0, mut labels, 0, mut errs_box);
   return errs_box.n;
 }
 
