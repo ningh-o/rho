@@ -1805,10 +1805,17 @@ to their positive forms.
       mods_load as a MODULE path and dies "unresolved" — the item face
       (modsys `item_type_import`, boot-green) is missing in the
       mirror's load_mods.
-- [ ] **T8.5** Facade bindings: a package whose facade is re-export-only
-      (no own `pub fn`) leaves the checker without the facade name
-      ("unknown name 'pkg'"), and a re-exported type used in the
-      facade's own signature fails at mods level.
+- [x] **T8.5** Facade bindings: a package whose facade is re-export-only
+      (no own `pub fn`) left the checker without the facade name
+      ("unknown name 'pkg'"). LANDED in two pieces: consts ride the
+      export table at load (pub-uses sell from rows, and a const had no
+      row — statics stay module-private by law), and the qualified
+      rewrites are const-aware (the dotted nullary `stdx.Ten` rides the
+      same EX_MCALL shape as a call but lands in the consts table). The
+      "re-exported type in the facade's own signature" half DISSOLVES:
+      the spelling was illegal rho (bare struct literals), and the
+      legal shape is boot's §8 ambiguity refusal — which the mirror
+      MISSES (T8.14).
 - [x] **T8.6** Interior→facade use cycle: a package file doing `use
       geom;` (legal per §2's two bases) was unresolved in the mirror —
       the module qualifier only ever tried the module's own dir.
@@ -1838,6 +1845,11 @@ to their positive forms.
       rc 139; build succeeds). The managed hatch's string lane in
       boot's own emit — not a parity item, a reference defect the
       audit surfaced while picking a hatch witness.
+- [ ] **T8.14** Cross-module type ambiguity refusal missing: a facade
+      re-exporting a type it also names (via its own modules) is boot's
+      §8 refusal ("ambiguous type 'Point' (visible from multiple
+      modules)") — the mirror accepts and compiles. The dangerous
+      direction: boot-red, mirror-green.
 - [ ] **T8.13** The mirror's checker misses return-type mismatch:
       `fn() -> i32 { return len(s); }` (len is usize) — boot refuses,
       the mirror compiles. Part of the type-layer milestone.

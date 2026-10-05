@@ -4135,6 +4135,12 @@ fn mods_load(mut prog: *Prog, mods: string, path: string,
       mods_const_add(mut prog, qn, mp.cvals[ci2], mp.ctypes[ci2],
                      mp.cexprs[ci2], false, false);
     }
+    // a const rides the export table too (pub-uses sell from rows, and
+    // a facade re-export of a const had nothing to sell — stdx.Ten was
+    // the witness). statics never ride: module-private by law (§5)
+    if !mp.cstatic[ci2] {
+      mods_export_add(mut prog, canon, mp.consts[ci2], qn);
+    }
     ci2 = ci2 + 1;
   }
   // the module's structs and enums register bare — module-local `new`
@@ -4159,7 +4165,11 @@ fn mods_load(mut prog: *Prog, mods: string, path: string,
 fn mods_resolve_expr(mut e: *Expr, mut prog: *Prog, bnames: []string,
                      bcans: []string, nb: usize) {
   if e.tag == EX_FIELD {
-    // binding.CONST — a module's exported const as a value
+    // binding.CONST — a module's exported const as a value. The
+    // facade's re-export sells through the export table (the fn face's
+    // twin law): a const re-exported by a facade registers under its
+    // OWNER's canon, so a plain qualified spelling lands nowhere — the
+    // row carries the registered target
     match e.lhs {
       Option.Some(rb2) => {
         if rb2.tag == EX_VAR {
@@ -4171,6 +4181,17 @@ fn mods_resolve_expr(mut e: *Expr, mut prog: *Prog, bnames: []string,
                 e.tag = EX_VAR;
                 e.name = qname2;
                 e.lhs = Option.None;
+              } else {
+                let mut ei3: usize = 0;
+                while ei3 < prog.nx {
+                  if prog.xown[ei3] == bcans[qb2] &&
+                      prog.xitem[ei3] == e.name {
+                    e.tag = EX_VAR;
+                    e.name = prog.xtar[ei3];
+                    e.lhs = Option.None;
+                  }
+                  ei3 = ei3 + 1;
+                }
               }
             }
             qb2 = qb2 + 1;
@@ -4197,12 +4218,22 @@ fn mods_resolve_expr(mut e: *Expr, mut prog: *Prog, bnames: []string,
                 let xhit2: bool = xit2 == e.name ||
                     (has_targs(e.name) && xit2 == targs_base(e.name));
                 if prog.xown[ei] == bcans[bi] && xhit2 {
-                  e.tag = EX_CALL;
-                  if xit2 == e.name {
+                  // a const re-export sells a VALUE — the dotted
+                  // nullary spelling rides the same EX_MCALL shape as
+                  // a call, but the target lands in the consts table,
+                  // not the fns (stdx.Ten was the witness: the checker
+                  // met the binding name with no fn behind it)
+                  if mods_const_in(prog, prog.xtar[ei]) {
+                    e.tag = EX_VAR;
                     e.name = prog.xtar[ei];
                   } else {
-                    e.name = prog.xtar[ei] +
-                        e.name[len(xit2)..len(e.name)];
+                    e.tag = EX_CALL;
+                    if xit2 == e.name {
+                      e.name = prog.xtar[ei];
+                    } else {
+                      e.name = prog.xtar[ei] +
+                          e.name[len(xit2)..len(e.name)];
+                    }
                   }
                   e.lhs = Option.None;
                 }
