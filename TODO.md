@@ -1769,6 +1769,60 @@ the numbers can mean something.
 
 ---
 
+## Phase 8 — mirror parity: the shipped face catches the gate
+
+The browser artifact (libs/compiler in its app configuration) lags the
+boot reference on a set of faces probed on 2026-10-06 by the
+rho.ningh.org course audit. Every item below is **boot-green and
+mirror-red today** — each lands as its own fix with a differential
+corpus program added, so the gate's parity legs catch the face from
+then on. The course site carries honest warn notes pinned to this
+ledger; when an item lands, those notes free back to their positive
+forms.
+
+- [ ] **T8.1** Element-wise struct `==` (§10): the mirror compares
+      `*T`-carried structs by reference identity — the gate's
+      `eq_struct_nested_value_test.rho` prints `eq=false` through the
+      app face, `eq=true` through boot.
+- [ ] **T8.2** Aggregate-valued `match`/`if` arms in let position: the
+      mirror silently binds the WRONG arm (a struct-valued match yields
+      the default arm's value — worse than a panic). Add the gate pin
+      boot currently lacks.
+- [ ] **T8.3** The §15 operator-trait face: `impl Eq` is silently
+      ignored (== falls back to reference identity), `impl Ord`
+      dispatches `lt` to identity (only `>=` is accidentally right),
+      `impl Hash` emits a call to an undefined function (wabt refuses
+      the WAT).
+- [ ] **T8.4** §2 item-level imports: `use math.Vec2;` resolves at
+      mods_load as a MODULE path and dies "unresolved" — the item face
+      (modsys `item_type_import`, boot-green) is missing in the
+      mirror's load_mods.
+- [ ] **T8.5** Facade bindings: a package whose facade is re-export-only
+      (no own `pub fn`) leaves the checker without the facade name
+      ("unknown name 'pkg'"), and a re-exported type used in the
+      facade's own signature fails at mods level.
+- [ ] **T8.6** Interior→facade use cycle: a package file doing `use
+      geom;` (legal per §2's two bases) is unresolved in the mirror.
+- [ ] **T8.7** Slice `==` refusal: boot refuses with "slices never
+      compare (write a loop)" — the mirror ACCEPTS and compares only
+      LENGTHS, silently (two same-length different-content slices
+      compare equal). A checker-refusal gap, the worst class: the law
+      is a compile error and the mirror hands back a wrong `true`.
+- [ ] **T8.8** `std.json` through the runtime /mods face: the baked
+      tree fails to resolve it ("mods: unresolved module path(s)")
+      while boot builds the identical shape green — likely the mirror's
+      parser lagging json/lib.rho's own syntax; diagnose from the
+      load_mods perr.
+- [ ] **T8.9** S6.8 mut-capture refusal: boot refuses a closure
+      capturing a `mut` local ("a value copy would diverge; share a
+      heap object through a pointer instead") — the mirror's checker
+      accepts it and the runtime silently diverges (each call mutates a
+      fresh copy; the outer binding never moves: `f() f() n` prints
+      `2 2 1`). The must-fail diagnostic (`capture_mut_value`) is
+      missing on the mirror.
+
+---
+
 ## The design (the law — ratified 2026-09-25)
 
 ### 1. Identity
