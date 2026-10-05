@@ -3547,6 +3547,27 @@ fn mods_export_copy(mut prog: *Prog, from_own: string, to_own: string) {
   }
 }
 
+// a Type.assoc(...) call inside the module: the head names one of the
+// module's own types — its associated fns register qualified with the
+// owner (canon.Type.name), so the call must ride the same canon
+fn mods_type_in(mp: *Prog, nm: string) -> bool {
+  let mut i: usize = 0;
+  while i < len(mp.structs) {
+    if mp.structs[i].name == nm {
+      return true;
+    }
+    i = i + 1;
+  }
+  let mut j: usize = 0;
+  while j < len(mp.enums) {
+    if mp.enums[j].name == nm {
+      return true;
+    }
+    j = j + 1;
+  }
+  return false;
+}
+
 // a bare call inside a module resolves to the module's own fn first
 // (the qualification runs before the names move, so mp.fns still
 // carries the bare names)
@@ -3646,6 +3667,7 @@ fn mods_qual_expr(mut e: *Expr, mp: *Prog, canon: string,
       Option.Some(rb) => {
         if rb.tag == EX_VAR {
           let mut qb: usize = 0;
+          let mut bnd: bool = false;
           while qb < nb {
             if bnames[qb] == rb.name {
               let mut sold: bool = false;
@@ -3675,8 +3697,23 @@ fn mods_qual_expr(mut e: *Expr, mp: *Prog, canon: string,
                 e.name = bcans[qb] + "." + e.name;
                 e.lhs = Option.None;
               }
+              bnd = true;
             }
             qb = qb + 1;
+          }
+          if !bnd && mods_type_in(mp, rb.name) &&
+              mods_fn_in(mp, rb.name + "." + e.name) {
+            // Type.assoc(args) — the head is one of the module's OWN
+            // types AND the module carries that associated fn (the
+            // fn-presence guard keeps the variant paths out: Json.Null
+            // rides the same EX_MCALL shape with no fn behind it).
+            // Rewrite one canon deeper, where the qualified
+            // registration put the fn (json's Big.build was the first
+            // witness — the checker met the bare dotted call with the
+            // fn moved under the canon)
+            e.tag = EX_CALL;
+            e.name = canon + "." + rb.name + "." + e.name;
+            e.lhs = Option.None;
           }
         }
       },

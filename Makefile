@@ -31,6 +31,7 @@ test: selftest
 	./tests/run-fmt-parity.sh
 	./tests/run-selfhost.sh
 	./tests/run-diff.sh
+	./tests/run-mods-diff.sh
 	./tests/run-corpus-diff.sh
 	./tests/run-corpus-repo.sh
 	./tests/run-robust.sh

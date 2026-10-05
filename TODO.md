@@ -1809,10 +1809,19 @@ forms.
       compare equal). A checker-refusal gap, the worst class: the law
       is a compile error and the mirror hands back a wrong `true`.
 - [ ] **T8.8** `std.json` through the runtime /mods face: the baked
-      tree fails to resolve it ("mods: unresolved module path(s)")
-      while boot builds the identical shape green — likely the mirror's
-      parser lagging json/lib.rho's own syntax; diagnose from the
-      load_mods perr.
+      tree fails to load ("mods: unresolved module path(s)") while boot
+      builds the identical shape green. Diagnosis landed as THREE
+      faces: (1) the associated-call rewrite — FIXED, see T8.10's
+      commit; (2) match arms over slice-payload variants — the MV
+      binder width bug, T8.10; (3) whatever surfaces behind those two
+      (the facade's parse fallbacks shrink with each fix — re-probe
+      with the run-mods-diff harness patterns per fix).
+- [ ] **T8.10** Slice-payload variant binder: `enum J { Arr([]i32) }`,
+      `J.Arr([5, 6])` then `J.Arr(xs) => xs[0]` — boot prints 5; the
+      mirror emits type-broken WAT (`i64.ge_u` fed an i32 lane — the
+      pattern-bound slice's ptr/len lanes swap widths). Emit-level, in
+      the match-binder path; the corpus-differential program rides the
+      fix.
 - [ ] **T8.9** S6.8 mut-capture refusal: boot refuses a closure
       capturing a `mut` local ("a value copy would diverge; share a
       heap object through a pointer instead") — the mirror's checker
