@@ -1773,12 +1773,20 @@ the numbers can mean something.
 
 The browser artifact (libs/compiler in its app configuration) lags the
 boot reference on a set of faces probed on 2026-10-06 by the
-rho.ningh.org course audit. Every item below is **boot-green and
-mirror-red today** — each lands as its own fix with a differential
-corpus program added, so the gate's parity legs catch the face from
-then on. The course site carries honest warn notes pinned to this
-ledger; when an item lands, those notes free back to their positive
-forms.
+rho.ningh.org course audit. **The root cause is architectural**: the
+mirror's checker is name-level only (check.rho resolves names, fns,
+methods, labels, markers — it never computes an expression type), and
+the emitter therefore rides untyped lanes. Boot's check.c/check2.c is
+the full type system the mirror never grew. Every item below is
+**boot-green and mirror-red today**; the equality/mut/aggregate faces
+all sit on the same missing foundation, so the campaign's real first
+milestone is a type-checking layer in the mirror (boot's checker is
+the spec; port it law by law) — the items below then become local
+diagnostics and width fixes on top of it. Each landed fix carries its
+differential program (tests/run-mods-diff.sh is the module-face leg;
+run-diff.sh the single-file one). The course site carries honest warn
+notes pinned to this ledger; when an item lands, those notes free back
+to their positive forms.
 
 - [ ] **T8.1** Element-wise struct `==` (§10): the mirror compares
       `*T`-carried structs by reference identity — the gate's
