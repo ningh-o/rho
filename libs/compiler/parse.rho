@@ -3496,6 +3496,19 @@ fn mods_const_add(mut prog: *Prog, nm: string, cv: i64, ct: string,
 }
 
 // is a const registered under this (possibly qualified) name?
+// a fn of the ROOT program by name (the item-import rewrite's
+// existence check — parse-local, the checker's face would cycle)
+fn prog_fn_named(prog: *Prog, nm: string) -> bool {
+  let mut i: usize = 0;
+  while i < len(prog.fns) {
+    if prog.fns[i].name == nm {
+      return true;
+    }
+    i = i + 1;
+  }
+  return false;
+}
+
 fn mods_const_in(prog: *Prog, nm: string) -> bool {
   let mut i: usize = 0;
   while i < prog.nconsts {
@@ -4164,6 +4177,36 @@ fn mods_load(mut prog: *Prog, mods: string, path: string,
 // exported fn (check and emit then see one known name)
 fn mods_resolve_expr(mut e: *Expr, mut prog: *Prog, bnames: []string,
                      bcans: []string, nb: usize) {
+  // §2's item-import face: a bare call or const read bound by
+  // `use m.item;` rewrites onto the qualified registration — only
+  // when the qualified target EXISTS, so plain names never move
+  if e.tag == EX_CALL {
+    match e.lhs {
+      Option.None => {
+        let mut qk: usize = 0;
+        while qk < nb {
+          if bnames[qk] == e.name && !prog_fn_named(prog, e.name) {
+            if prog_fn_named(prog, bcans[qk]) {
+              e.name = bcans[qk];
+            }
+          }
+          qk = qk + 1;
+        }
+      },
+      Option.Some(_) => {},
+    }
+  }
+  if e.tag == EX_VAR {
+    let mut vk: usize = 0;
+    while vk < nb {
+      if bnames[vk] == e.name && !mods_const_in(prog, e.name) {
+        if mods_const_in(prog, bcans[vk]) {
+          e.name = bcans[vk];
+        }
+      }
+      vk = vk + 1;
+    }
+  }
   if e.tag == EX_FIELD {
     // binding.CONST — a module's exported const as a value. The
     // facade's re-export sells through the export table (the fn face's
@@ -4347,7 +4390,56 @@ pub fn load_mods(mut prog: *Prog, mods: string) -> bool {
   let mut nb: usize = 0;
   let mut ui: usize = 0;
   while ui < prog.nuses {
-    let can: string = mods_load(mut prog, mods, prog.usepath[ui], "");
+    let mut can: string = mods_load(mut prog, mods, prog.usepath[ui], "");
+    let mut itemcan: string = "";
+    if len(can) == 0 {
+      // §2's module-or-item face: the final segment may name a public
+      // ITEM of the module the prefix resolves to (the gate's
+      // item_type_import: use math.Vec2; then new Vec2). The prefix
+      // loads; the binding's canonical face becomes canon.item, which
+      // the resolver's existence-checked rewrites land on
+      let up0: string = prog.usepath[ui];
+      let lastdot0: i64 = mods_find_sub(up0, ".", 0);
+      if lastdot0 >= 0 {
+        let prefix: string = up0[0..(lastdot0 as usize)];
+        let pcan: string = mods_load(mut prog, mods, prefix, "");
+        if len(pcan) > 0 {
+          let item: string = up0[((lastdot0 as usize) + 1)..len(up0)];
+          let mut ei4: usize = 0;
+          while ei4 < prog.nx {
+            if prog.xown[ei4] == pcan &&
+                (prog.xitem[ei4] == item ||
+                 (has_targs(item) &&
+                  prog.xitem[ei4] == targs_base(item))) {
+              itemcan = prog.xtar[ei4];
+            }
+            ei4 = ei4 + 1;
+          }
+          if len(itemcan) == 0 {
+            // types ride no rows (structs/enums register bare for the
+            // module-local `new`), so the item face scans them too —
+            // the gate's item_type_import names a struct
+            let mut si9: usize = 0;
+            while si9 < len(prog.structs) {
+              if prog.structs[si9].name == item {
+                itemcan = pcan + "." + item;
+              }
+              si9 = si9 + 1;
+            }
+            let mut ei9: usize = 0;
+            while ei9 < len(prog.enums) {
+              if prog.enums[ei9].name == item {
+                itemcan = pcan + "." + item;
+              }
+              ei9 = ei9 + 1;
+            }
+          }
+          if len(itemcan) > 0 {
+            can = pcan;
+          }
+        }
+      }
+    }
     if len(can) == 0 {
       prog.perrs = prog.perrs + 1;
       return false;
@@ -4367,7 +4459,11 @@ pub fn load_mods(mut prog: *Prog, mods: string) -> bool {
     }
     if nb < len(bnames) {
       bnames[nb] = bname;
-      bcans[nb] = can;
+      if len(itemcan) > 0 {
+        bcans[nb] = itemcan;
+      } else {
+        bcans[nb] = can;
+      }
       nb = nb + 1;
     }
     ui = ui + 1;

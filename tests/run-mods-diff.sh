@@ -137,6 +137,44 @@ fn main() -> i32 {
   return 0;
 }' $T/cycle
 
+# --- T8.4's face: item-level imports (§2's module-or-item law) — a
+#     type, a fn, and a const, each bound by use m.item;
+M=$T/items
+mkdir -p $M
+cat > $M/math.rho <<'EOF'
+pub struct Vec2 {
+  x: i32,
+  y: i32,
+}
+
+pub fn twice(n: i32) -> i32 {
+  return n * 2;
+}
+
+pub const SCALE: i32 = 100;
+EOF
+cat > $M/main.rho <<'EOF'
+use math.Vec2;
+use math.twice;
+use math.SCALE;
+
+fn main() -> i32 {
+  let v = new Vec2 { x: 3, y: 4 };
+  printf("{} {} {}\n", v.x + v.y, twice(21), SCALE);
+  return 0;
+}
+EOF
+mods_diff_one item-imports \
+  'use math.Vec2;
+use math.twice;
+use math.SCALE;
+
+fn main() -> i32 {
+  let v = new Vec2 { x: 3, y: 4 };
+  printf("{} {} {}\n", v.x + v.y, twice(21), SCALE);
+  return 0;
+}' $T/items
+
 if [ "$FAILED" -eq 0 ]; then
   echo "mods-differential: ok (boot == self-hosted on the module faces)"
 else

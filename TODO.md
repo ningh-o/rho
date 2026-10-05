@@ -1801,10 +1801,17 @@ to their positive forms.
       dispatches `lt` to identity (only `>=` is accidentally right),
       `impl Hash` emits a call to an undefined function (wabt refuses
       the WAT).
-- [ ] **T8.4** §2 item-level imports: `use math.Vec2;` resolves at
-      mods_load as a MODULE path and dies "unresolved" — the item face
-      (modsys `item_type_import`, boot-green) is missing in the
-      mirror's load_mods.
+- [x] **T8.4** §2 item-level imports: `use math.Vec2;` resolved at
+      mods_load as a MODULE path and died "unresolved" — the item face
+      (modsys `item_type_import`, boot-green) was missing in the
+      mirror's load_mods. LANDED: the module-or-item law at the root
+      binding (the prefix module loads; the binding's canonical face
+      becomes canon.item, existing in the export rows or the bare
+      struct/enum tables), plus existence-checked bare rewrites in
+      mods_resolve_expr (a bare call or const read bound by
+      `use m.item;` lands on the qualified registration only when it
+      exists — plain names never move). Type, fn, and const item
+      imports all ride run-mods-diff.
 - [x] **T8.5** Facade bindings: a package whose facade is re-export-only
       (no own `pub fn`) left the checker without the facade name
       ("unknown name 'pkg'"). LANDED in two pieces: consts ride the
