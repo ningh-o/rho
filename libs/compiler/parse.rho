@@ -3950,7 +3950,13 @@ fn mods_load(mut prog: *Prog, mods: string, path: string,
         ui = ui + 1;
         continue;
       }
-      let can2: string = mods_load(mut prog, mods, modpart0, mdir);
+      let mut can2: string = mods_load(mut prog, mods, modpart0, mdir);
+      if len(can2) == 0 && len(mdir) > 0 {
+        // §2's two bases: the module's own dir missed — the entry's
+        // dir gets its turn (the interior-to-facade use: geom/inner
+        // naming geom, the package the file already lives in)
+        can2 = mods_load(mut prog, mods, modpart0, "");
+      }
       if len(can2) == 0 {
         prog.perrs = prog.perrs + 1;
         return "";
@@ -3998,7 +4004,12 @@ fn mods_load(mut prog: *Prog, mods: string, path: string,
         continue;
       }
     }
-    let subcan: string = mods_load(mut prog, mods, upath, mdir);
+    let mut subcan: string = mods_load(mut prog, mods, upath, mdir);
+    if len(subcan) == 0 && len(mdir) > 0 {
+      // §2's second base: the entry file's dir (the interior-to-
+      // facade use rides this — the binding the cycle law names)
+      subcan = mods_load(mut prog, mods, upath, "");
+    }
     if len(subcan) == 0 {
       prog.perrs = prog.perrs + 1;
       return "";

@@ -1809,8 +1809,12 @@ to their positive forms.
       (no own `pub fn`) leaves the checker without the facade name
       ("unknown name 'pkg'"), and a re-exported type used in the
       facade's own signature fails at mods level.
-- [ ] **T8.6** Interior→facade use cycle: a package file doing `use
-      geom;` (legal per §2's two bases) is unresolved in the mirror.
+- [x] **T8.6** Interior→facade use cycle: a package file doing `use
+      geom;` (legal per §2's two bases) was unresolved in the mirror —
+      the module qualifier only ever tried the module's own dir.
+      LANDED: the §2 second-base retry (own dir misses → the entry's
+      dir) in both module-use resolution sites; witness rides
+      run-mods-diff.
 - [ ] **T8.7** Slice `==` refusal: boot refuses with "slices never
       compare (write a loop)" — the mirror ACCEPTS and compares only
       LENGTHS, silently (two same-length different-content slices

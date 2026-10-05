@@ -112,6 +112,31 @@ fn main() -> i32 {
   return 0;
 }' $T/facade
 
+# --- T8.6's face: an interior file importing its OWN facade (the §2
+#     entry-base retry — geom/inner names geom, the package it lives in)
+M=$T/cycle
+mkdir -p $M/geom
+cat > $M/geom/lib.rho <<'EOF'
+pub use inner.peri;
+
+pub fn area(w: i32, h: i32) -> i32 {
+  return w * h;
+}
+EOF
+cat > $M/geom/inner.rho <<'EOF'
+use geom;
+
+pub fn peri(w: i32, h: i32) -> i32 {
+  return geom.area(w, h) + 1;
+}
+EOF
+mods_diff_one interior-facade-cycle \
+  'use geom;
+fn main() -> i32 {
+  printf("{}\n", geom.peri(3, 4));
+  return 0;
+}' $T/cycle
+
 if [ "$FAILED" -eq 0 ]; then
   echo "mods-differential: ok (boot == self-hosted on the module faces)"
 else
