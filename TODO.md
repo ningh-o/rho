@@ -1852,6 +1852,16 @@ to their positive forms.
       rc 139; build succeeds). The managed hatch's string lane in
       boot's own emit — not a parity item, a reference defect the
       audit surfaced while picking a hatch witness.
+- [ ] **T8.15** Chained index-field store: `self.items[self.n].key =
+      k;` (json/lib.rho's ObjB.push) — the statement parser handles one
+      index at ONE position (index-first `base[i].f` or trailing
+      `base.f[i]`) and a MIDDLE index falls to the unknown-statement
+      fallback (18 parse refusals across json/lib.rho). The fix spans
+      parse (an index allowed after any path segment, its position
+      riding the stmt) and emit (the FSTORE walk loads the
+      bounds-checked element mid-path, then continues the frame/heap
+      walk — the index-first branch at emit.rho's FSTORE is the shape
+      to generalize).
 - [ ] **T8.14** Cross-module type ambiguity refusal missing: a facade
       re-exporting a type it also names (via its own modules) is boot's
       §8 refusal ("ambiguous type 'Point' (visible from multiple
